@@ -10,6 +10,31 @@ if (!(window as any).__GROUND_LINK_LOADED__) {
       executeToolCall(event.data.data);
     }
   });
+
+  if (document.body) {
+    injectInitButton();
+  } else {
+    document.addEventListener('DOMContentLoaded', injectInitButton);
+  }
+}
+
+function injectInitButton() {
+  const btn = document.createElement('button');
+  btn.textContent = '🔗 初始化';
+  btn.style.cssText = 'position:fixed;bottom:80px;right:20px;z-index:99999;padding:8px 14px;background:#1677ff;color:#fff;border:none;border-radius:20px;cursor:pointer;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,0.3)';
+  btn.onclick = sendInitPrompt;
+  document.body.appendChild(btn);
+}
+
+async function sendInitPrompt() {
+  const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
+  if (!apiUrl) { alert('请先在插件中配置 API 地址'); return; }
+  const headers: any = { 'Content-Type': 'application/json' };
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+  const resp = await fetch(`${apiUrl}/prompt`, { headers });
+  if (!resp.ok) { alert('获取初始化提示词失败'); return; }
+  const text = await resp.text();
+  fillAndSend(text, true);
 }
 
 async function executeToolCall(toolCall: any) {

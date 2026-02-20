@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/afumu/ground-link/internal/executor"
 	"github.com/afumu/ground-link/internal/security"
@@ -52,6 +54,7 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/config", s.handleConfig)
 	s.router.GET("/tools", s.handleListTools)
 	s.router.POST("/exec", s.handleExec)
+	s.router.GET("/prompt", s.handlePrompt)
 }
 
 func (s *Server) handleHealth(c *gin.Context) {
@@ -82,6 +85,15 @@ func (s *Server) handleConfig(c *gin.Context) {
 		"rootDir": s.config.RootDir,
 		"timeout": s.config.Timeout,
 	})
+}
+
+func (s *Server) handlePrompt(c *gin.Context) {
+	content, err := os.ReadFile(filepath.Join(s.config.RootDir, "init_prompt.txt"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "init_prompt.txt not found"})
+		return
+	}
+	c.String(http.StatusOK, string(content))
 }
 
 func (s *Server) handleListTools(c *gin.Context) {
