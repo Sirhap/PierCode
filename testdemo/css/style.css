@@ -1,0 +1,415 @@
+/* ========== 基础样式 ========== */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    min-height: 100vh;
+    overflow: hidden;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* ========== 菜单样式 ========== */
+.menu {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    padding: 20px;
+    transition: opacity 0.3s, visibility 0.3s;
+    opacity: 0;
+    visibility: hidden;
+    z-index: 10;
+}
+
+.menu.active {
+    opacity: 1;
+    visibility: visible;
+}
+
+.menu.overlay {
+    background: rgba(0, 0, 0, 0.9);
+    z-index: 20;
+}
+
+.game-title {
+    font-size: 3rem;
+    color: #00ff88;
+    text-shadow: 0 0 20px #00ff88, 0 0 40px #00ff88;
+    margin-bottom: 10px;
+    animation: glow 2s ease-in-out infinite;
+}
+
+@keyframes glow {
+    0%, 100% { text-shadow: 0 0 20px #00ff88, 0 0 40px #00ff88; }
+    50% { text-shadow: 0 0 30px #00ff88, 0 0 60px #00ff88; }
+}
+
+.subtitle {
+    color: #888;
+    font-size: 1.2rem;
+    margin-bottom: 30px;
+}
+
+.menu-section {
+    margin: 15px 0;
+    text-align: center;
+}
+
+.menu-section h3 {
+    color: #fff;
+    font-size: 1rem;
+    margin-bottom: 10px;
+}
+
+/* ========== 选择器样式 ========== */
+.mode-selector, .difficulty-selector, .theme-selector {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.mode-btn, .diff-btn, .theme-btn {
+    padding: 10px 20px;
+    border: 2px solid #00ff88;
+    background: rgba(0, 255, 136, 0.1);
+    color: #00ff88;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s;
+    font-size: 0.9rem;
+}
+
+.mode-btn:hover, .diff-btn:hover, .theme-btn:hover {
+    background: rgba(0, 255, 136, 0.3);
+    transform: scale(1.05);
+}
+
+.mode-btn.active, .diff-btn.active, .theme-btn.active {
+    background: #00ff88;
+    color: #1a1a2e;
+}
+
+/* ========== 按钮样式 ========== */
+.menu-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 20px;
+    width: 100%;
+    max-width: 250px;
+}
+
+.primary-btn, .secondary-btn, .danger-btn, .icon-btn {
+    padding: 12px 24px;
+    font-size: 1rem;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s;
+    font-weight: bold;
+}
+
+.primary-btn {
+    background: #00ff88;
+    color: #1a1a2e;
+}
+
+.primary-btn:hover {
+    background: #00cc6a;
+    transform: scale(1.05);
+    box-shadow: 0 0 20px rgba(0, 255, 136, 0.5);
+}
+
+.secondary-btn {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.secondary-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.danger-btn {
+    background: #ff0055;
+    color: #fff;
+}
+
+.danger-btn:hover {
+    background: #cc0044;
+}
+
+.icon-btn {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    padding: 8px 12px;
+    font-size: 1.2rem;
+}
+
+/* ========== 游戏界面 ========== */
+.screen {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 10px;
+}
+
+.screen.active {
+    display: flex;
+}
+
+.game-header {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 15px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.score-display {
+    background: rgba(0, 255, 136, 0.1);
+    padding: 10px 20px;
+    border-radius: 8px;
+    border: 1px solid #00ff88;
+    text-align: center;
+}
+
+.score-display .label {
+    display: block;
+    font-size: 0.75rem;
+    color: #888;
+    margin-bottom: 5px;
+}
+
+.score-display span:last-child {
+    color: #00ff88;
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+#gameCanvas {
+    border: 3px solid #00ff88;
+    border-radius: 10px;
+    box-shadow: 0 0 30px rgba(0, 255, 136, 0.5);
+    background-color: #0a0a15;
+    max-width: 100%;
+    max-height: 60vh;
+}
+
+.game-info {
+    display: flex;
+    gap: 20px;
+    margin-top: 15px;
+    color: #888;
+    font-size: 0.9rem;
+}
+
+/* ========== 移动端控制 ========== */
+.mobile-controls {
+    margin-top: 20px;
+    display: none;
+}
+
+.direction-pad {
+    display: grid;
+    grid-template-columns: repeat(3, 60px);
+    grid-template-rows: repeat(3, 60px);
+    gap: 5px;
+}
+
+.dir-btn {
+    background: rgba(0, 255, 136, 0.2);
+    border: 2px solid #00ff88;
+    color: #00ff88;
+    font-size: 1.5rem;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.dir-btn:hover {
+    background: rgba(0, 255, 136, 0.4);
+}
+
+.dir-btn:active {
+    transform: scale(0.9);
+    background: rgba(0, 255, 136, 0.6);
+}
+
+/* ========== 游戏结束/最终得分 ========== */
+.final-score {
+    text-align: center;
+    margin: 20px 0;
+}
+
+.final-score p {
+    color: #fff;
+    font-size: 1.2rem;
+    margin: 10px 0;
+}
+
+.final-score #finalScore {
+    color: #00ff88;
+    font-size: 2rem;
+    font-weight: bold;
+}
+
+.new-record {
+    color: #ffaa00;
+    font-size: 1.5rem;
+    animation: pulse 0.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+}
+
+/* ========== 排行榜 ========== */
+.leaderboard-list {
+    width: 100%;
+    max-width: 350px;
+    margin: 20px 0;
+}
+
+.leaderboard-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 12px 20px;
+    margin: 5px 0;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    color: #fff;
+}
+
+.leaderboard-item.top3 {
+    background: rgba(0, 255, 136, 0.2);
+    border: 1px solid #00ff88;
+}
+
+.leaderboard-item .rank {
+    font-weight: bold;
+    color: #ffaa00;
+}
+
+.leaderboard-item .score {
+    color: #00ff88;
+}
+
+/* ========== 成就系统 ========== */
+.achievements-list {
+    width: 100%;
+    max-width: 400px;
+    max-height: 60vh;
+    overflow-y: auto;
+    margin: 20px 0;
+}
+
+.achievement-item {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    padding: 15px;
+    margin: 5px 0;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    color: #fff;
+}
+
+.achievement-item.unlocked {
+    background: rgba(0, 255, 136, 0.1);
+    border: 1px solid #00ff88;
+}
+
+.achievement-item.locked {
+    opacity: 0.5;
+}
+
+.achievement-icon {
+    font-size: 2rem;
+}
+
+.achievement-info h4 {
+    margin-bottom: 5px;
+}
+
+.achievement-info p {
+    font-size: 0.85rem;
+    color: #888;
+}
+
+/* ========== 设置界面 ========== */
+.settings-section {
+    width: 100%;
+    max-width: 300px;
+    margin: 20px 0;
+}
+
+.settings-section label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px;
+    margin: 5px 0;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    color: #fff;
+    cursor: pointer;
+}
+
+.settings-section input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+}
+
+/* ========== 响应式设计 ========== */
+@media (max-width: 768px) {
+    .game-title {
+        font-size: 2rem;
+    }
+    
+    .mobile-controls {
+        display: block;
+    }
+    
+    .direction-pad {
+        grid-template-columns: repeat(3, 50px);
+        grid-template-rows: repeat(3, 50px);
+    }
+    
+    #gameCanvas {
+        max-height: 50vh;
+    }
+}
+
+@media (max-width: 480px) {
+    .mode-btn, .diff-btn, .theme-btn {
+        padding: 8px 15px;
+        font-size: 0.8rem;
+    }
+    
+    .score-display {
+        padding: 8px 15px;
+    }
+    
+    .score-display span:last-child {
+        font-size: 1.2rem;
+    }
+}
