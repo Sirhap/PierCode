@@ -39,6 +39,9 @@ func (t *GrepTool) Validate(args map[string]interface{}) error {
 	if p, ok := args["pattern"].(string); !ok || p == "" {
 		return errors.New("pattern is required")
 	}
+	if inc, ok := args["include"].(string); ok && strings.ContainsAny(inc, "/\\") {
+		return errors.New("include pattern must not contain path separators")
+	}
 	return nil
 }
 
@@ -79,6 +82,9 @@ func (t *GrepTool) Execute(ctx *Context) *Result {
 func grepWithRg(rgPath, pattern, searchPath, include string) string {
 	args := []string{"-n", "--no-heading"}
 	if include != "" {
+		if strings.ContainsAny(include, "/\\") {
+			return "error: include pattern must not contain path separators"
+		}
 		args = append(args, "--glob", include)
 	}
 	args = append(args, "--", pattern, searchPath)

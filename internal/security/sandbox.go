@@ -7,11 +7,14 @@ import (
 )
 
 func SafePath(rootDir, targetPath string) (string, error) {
-	absRoot, err := filepath.Abs(rootDir)
+	absRoot, err := filepath.EvalSymlinks(rootDir)
 	if err != nil {
-		return "", err
+		absRoot, err = filepath.Abs(rootDir)
+		if err != nil {
+			return "", err
+		}
 	}
-	joined := filepath.Join(rootDir, targetPath)
+	joined := filepath.Join(absRoot, targetPath)
 	// EvalSymlinks 解析符号链接；文件不存在时（新建场景）fallback 到 Abs
 	absTarget, err := filepath.EvalSymlinks(joined)
 	if err != nil {

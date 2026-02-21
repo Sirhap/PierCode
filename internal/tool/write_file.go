@@ -3,6 +3,7 @@ package tool
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/afumu/openlink/internal/security"
@@ -55,6 +56,11 @@ func (t *WriteFileTool) Execute(ctx *Context) *Result {
 	}
 
 	if mode == "append" {
+		if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
 		f, err := os.OpenFile(safePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			result.Status = "error"
@@ -68,6 +74,11 @@ func (t *WriteFileTool) Execute(ctx *Context) *Result {
 			return result
 		}
 	} else {
+		if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
 		if err := os.WriteFile(safePath, []byte(content), 0644); err != nil {
 			result.Status = "error"
 			result.Error = err.Error()

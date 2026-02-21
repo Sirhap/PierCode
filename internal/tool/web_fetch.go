@@ -3,7 +3,9 @@ package tool
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -22,13 +24,38 @@ func (t *WebFetchTool) Parameters() interface{} {
 	}
 }
 
+func isPrivateIP(ip net.IP) bool {
+	private := []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7"}
+	for _, cidr := range private {
+		_, block, _ := net.ParseCIDR(cidr)
+		if block.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *WebFetchTool) Validate(args map[string]interface{}) error {
-	url, ok := args["url"].(string)
-	if !ok || url == "" {
+	rawURL, ok := args["url"].(string)
+	if !ok || rawURL == "" {
 		return fmt.Errorf("url is required")
 	}
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
 		return fmt.Errorf("only http/https URLs are supported")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL")
+	}
+	host := parsed.Hostname()
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Errorf("cannot resolve host: %s", host)
+	}
+	for _, ipStr := range ips {
+		if ip := net.ParseIP(ipStr); ip != nil && isPrivateIP(ip) {
+			return fmt.Errorf("requests to private/internal addresses are not allowed")
+		}
 	}
 	return nil
 }

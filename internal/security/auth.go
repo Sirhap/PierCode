@@ -21,7 +21,7 @@ func LoadOrCreateToken() (string, error) {
 	}
 
 	dir := filepath.Join(home, ".openlink")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
 

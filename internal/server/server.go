@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/afumu/openlink/internal/executor"
 	"github.com/afumu/openlink/internal/security"
+	"github.com/afumu/openlink/internal/skill"
 	"github.com/afumu/openlink/internal/types"
 	"github.com/gin-gonic/gin"
 )
@@ -93,6 +96,19 @@ func (s *Server) handlePrompt(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "init_prompt.txt not found"})
 		return
 	}
+
+	skills := skill.LoadInfos(s.config.RootDir)
+	if len(skills) > 0 {
+		var sb strings.Builder
+		sb.WriteString("\n\n## 当前可用 Skills\n\n")
+		for _, sk := range skills {
+			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", sk.Name, sk.Description))
+		}
+		content = append(content, []byte(sb.String())...)
+	}
+
+	content = append(content, []byte("\n\n初始化回复：\n你好，我是 openlink，请问有什么可以帮你？")...)
+
 	c.String(http.StatusOK, string(content))
 }
 
@@ -116,7 +132,9 @@ func (s *Server) handleExec(c *gin.Context) {
 
 	log.Printf("[OpenLink] 工具调用: name=%s, args=%+v\n", req.Name, req.Args)
 
-	resp := s.executor.Execute(context.Background(), &req)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(s.config.Timeout)*time.Second)
+	defer cancel()
+	resp := s.executor.Execute(ctx, &req)
 
 	log.Printf("[OpenLink] 执行结果: status=%s, output长度=%d\n", resp.Status, len(resp.Output))
 	if resp.Error != "" {
