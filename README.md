@@ -1,4 +1,4 @@
-# Ground-Link
+# openlink
 
 浏览器本地代理 - 让网页版 AI 访问本地文件系统
 

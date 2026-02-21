@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Ground-Link is a browser-local proxy that enables web-based AI assistants (DeepSeek/ChatGPT/Claude) to access the local filesystem through a sandboxed Go server and Chrome extension.
+openlink is a browser-local proxy that enables web-based AI assistants (DeepSeek/ChatGPT/Claude) to access the local filesystem through a sandboxed Go server and Chrome extension.
 
 **Architecture**: Two-component system:
 1. **Go Server** (`cmd/server/main.go`): HTTP server that executes filesystem operations within a sandboxed directory
@@ -125,6 +125,6 @@ The server accepts tool requests with these names:
 
 ## Module Information
 
-- **Module**: `github.com/afumu/ground-link`
+- **Module**: `github.com/afumu/openlink`
 - **Go Version**: 1.23.0+ (toolchain 1.24.10)
 - **Main Dependencies**: Gin web framework, standard library only

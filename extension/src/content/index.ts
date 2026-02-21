@@ -70,13 +70,14 @@ async function executeToolCall(toolCall: any) {
     }
 
     const result = JSON.parse(response.body);
-    fillAndSend(result.output, true);
+    const text = result.output || result.error || '[OpenLink] 空响应';
+    fillAndSend(text, true);
   } catch (error) {
     fillAndSend(`[OpenLink 错误] ${error}`, false);
   }
 }
 
-function fillAndSend(result: string, autoSend = false) {
+async function fillAndSend(result: string, autoSend = false) {
   const editor = document.querySelector('[data-slate-editor="true"]') as HTMLElement;
   if (!editor) return;
 
@@ -86,16 +87,25 @@ function fillAndSend(result: string, autoSend = false) {
   editor.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dataTransfer, bubbles: true, cancelable: true}));
 
   if (autoSend) {
-    const checkAndClick = (attempts = 0) => {
-      if (attempts > 50) return;
-      // Selectors target Qwen/Tongyi chat UI — update if app is rebuilt with new hashes
-      const sendBtn = document.querySelector('.operateBtn-JsB9e2') as HTMLElement;
-      if (sendBtn && !sendBtn.classList.contains('disabled-ZaDDJC')) {
-        sendBtn.click();
-      } else {
-        setTimeout(() => checkAndClick(attempts + 1), 100);
-      }
-    };
-    setTimeout(() => checkAndClick(), 300);
+    const cfg = await chrome.storage.local.get(['autoSend', 'delayMin', 'delayMax']);
+    if (cfg.autoSend === false) return;
+
+    const min = (cfg.delayMin ?? 1) * 1000;
+    const max = (cfg.delayMax ?? 4) * 1000;
+    const delay = Math.random() * (max - min) + min;
+
+    setTimeout(() => {
+      const checkAndClick = (attempts = 0) => {
+        if (attempts > 50) return;
+        // Selectors target Qwen/Tongyi chat UI — update if app is rebuilt with new hashes
+        const sendBtn = document.querySelector('.operateBtn-JsB9e2') as HTMLElement;
+        if (sendBtn && !sendBtn.classList.contains('disabled-ZaDDJC')) {
+          sendBtn.click();
+        } else {
+          setTimeout(() => checkAndClick(attempts + 1), 100);
+        }
+      };
+      checkAndClick();
+    }, delay);
   }
 }

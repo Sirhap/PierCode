@@ -1,8 +1,8 @@
-# Ground-Link 工具扩展实施方案 v2（含 Windows 兼容）
+# openlink 工具扩展实施方案 v2（含 Windows 兼容）
 
 ## 背景
 
-当前 ground-link 只有 4 个工具：`exec_cmd`、`read_file`、`write_file`、`list_dir`。
+当前 openlink 只有 4 个工具：`exec_cmd`、`read_file`、`write_file`、`list_dir`。
 目标：添加 `invalid`、`glob`、`grep`、`edit`、`web_fetch`、`todo_write`、`question`、`skill`，
 修复安全漏洞，统一截断逻辑，全平台兼容（macOS / Linux / Windows）。
 
@@ -12,7 +12,7 @@
 
 从 opencode 源码提炼的关键 Windows 差异：
 
-| 问题 | opencode 的处理方式 | ground-link 的对应方案 |
+| 问题 | opencode 的处理方式 | openlink 的对应方案 |
 |------|-------------------|----------------------|
 | 路径分隔符 | `path.sep`、`path.join` | `filepath.Join`（Go 自动处理） |
 | 行尾符 `\r\n` | `text.split(/\r?\n/)` | `strings.Split` 前先 `strings.ReplaceAll(s, "\r\n", "\n")` |
@@ -61,7 +61,7 @@ func SafePath(rootDir, targetPath string) (string, error) {
 ### I-2: 统一截断逻辑
 **新文件**: `internal/tool/truncate.go`
 
-截断内容写入 `~/.ground-link/tool-output/<timestamp>`，返回预览+提示。
+截断内容写入 `~/.openlink/tool-output/<timestamp>`，返回预览+提示。
 
 ```go
 package tool
