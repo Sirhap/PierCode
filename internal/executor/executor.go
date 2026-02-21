@@ -4,15 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/afumu/openlink/internal/tool"
 	"github.com/afumu/openlink/internal/types"
 )
 
 type Executor struct {
-	config   *types.Config
-	registry *tool.Registry
+	config    *types.Config
+	registry  *tool.Registry
+	callCount atomic.Int64
 }
 
 func New(config *types.Config) *Executor {
@@ -66,11 +70,26 @@ func (e *Executor) Execute(ctx context.Context, req *types.ToolRequest) *types.T
 		Config: e.config,
 	})
 
-	return &types.ToolResponse{
-		Status: result.Status,
-		Output: result.Output,
-		Error:  result.Error,
+	resp := &types.ToolResponse{
+		Status:     result.Status,
+		Output:     result.Output,
+		Error:      result.Error,
+		StopStream: result.StopStream,
 	}
+
+	// Fix 4: append identity reminder; re-inject full prompt every 20 calls
+	n := e.callCount.Add(1)
+	const reinjectEvery = 20
+	const reminder = "\n\n[系统提示] 请记住你是 openlink，严格遵循工具调用规范，不要忘记自己的身份和指令。"
+	if n%reinjectEvery == 0 {
+		if data, err := os.ReadFile(filepath.Join(e.config.RootDir, "init_prompt.txt")); err == nil {
+			resp.Output += "\n\n[系统重新注入提示词]\n" + string(data)
+		}
+	} else {
+		resp.Output += reminder
+	}
+
+	return resp
 }
 
 func (e *Executor) ListTools() []tool.ToolInfo {

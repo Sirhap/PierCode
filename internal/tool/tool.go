@@ -20,11 +20,12 @@ type Context struct {
 }
 
 type Result struct {
-	Status    string
-	Output    string
-	Error     string
-	StartTime time.Time
-	EndTime   time.Time
+	Status     string
+	Output     string
+	Error      string
+	StopStream bool
+	StartTime  time.Time
+	EndTime    time.Time
 }
 
 type ToolInfo struct {

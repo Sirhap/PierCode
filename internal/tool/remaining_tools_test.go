@@ -119,11 +119,12 @@ func TestSkillTool(t *testing.T) {
 	})
 
 	t.Run("loads existing skill", func(t *testing.T) {
-		os.MkdirAll(filepath.Join(cfg.RootDir, ".skills"), 0755)
-		os.WriteFile(filepath.Join(cfg.RootDir, ".skills", "mything.md"), []byte("skill content"), 0644)
+		sub := filepath.Join(cfg.RootDir, ".skills", "mything")
+		os.MkdirAll(sub, 0755)
+		os.WriteFile(filepath.Join(sub, "SKILL.md"), []byte("---\nname: mything\ndescription: test\n---\nskill content"), 0644)
 		tool := NewSkillTool(cfg)
 		res := tool.Execute(testCtx(cfg, map[string]interface{}{"skill": "mything"}))
-		if res.Status != "success" || res.Output != "skill content" {
+		if res.Status != "success" || !strings.Contains(res.Output, "skill content") {
 			t.Errorf("got status=%s output=%q", res.Status, res.Output)
 		}
 	})

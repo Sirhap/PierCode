@@ -88,6 +88,7 @@ func (t *WriteFileTool) Execute(ctx *Context) *Result {
 
 	result.Status = "success"
 	result.Output = "写入成功"
+	result.StopStream = true
 	result.EndTime = time.Now()
 	return result
 }

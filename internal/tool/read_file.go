@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -60,7 +61,20 @@ func (t *ReadFileTool) Execute(ctx *Context) *Result {
 		}
 	}
 
-	safePath, err := security.SafePath(ctx.Config.RootDir, path)
+	var safePath string
+	var err error
+	if filepath.IsAbs(path) {
+		home, _ := os.UserHomeDir()
+		roots := []string{
+			ctx.Config.RootDir,
+			filepath.Join(home, ".claude"),
+			filepath.Join(home, ".openlink"),
+			filepath.Join(home, ".agent"),
+		}
+		safePath, err = security.SafeAbsPath(path, roots...)
+	} else {
+		safePath, err = security.SafePath(ctx.Config.RootDir, path)
+	}
 	if err != nil {
 		result.Status = "error"
 		result.Error = err.Error()

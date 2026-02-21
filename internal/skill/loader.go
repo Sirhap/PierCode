@@ -12,9 +12,11 @@ import (
 type Info struct {
 	Name        string
 	Description string
+	Dir         string
+	Location    string // absolute path to SKILL.md
 }
 
-func skillDirs(rootDir string) []string {
+func SkillDirs(rootDir string) []string {
 	home, _ := os.UserHomeDir()
 	return []string{
 		filepath.Join(rootDir, ".skills"),
@@ -31,7 +33,7 @@ func LoadInfos(rootDir string) []Info {
 	seen := map[string]Info{}
 	var order []string
 
-	for _, dir := range skillDirs(rootDir) {
+	for _, dir := range SkillDirs(rootDir) {
 		if _, err := os.Stat(dir); err != nil {
 			continue
 		}
@@ -48,6 +50,8 @@ func LoadInfos(rootDir string) []Info {
 				return nil
 			}
 			info := parse(path, string(data))
+			info.Dir = filepath.Dir(path)
+			info.Location = path
 			log.Printf("[Skill] 加载: name=%s description=%.60s", info.Name, info.Description)
 			if _, exists := seen[info.Name]; !exists {
 				order = append(order, info.Name)
@@ -65,29 +69,43 @@ func LoadInfos(rootDir string) []Info {
 	return result
 }
 
-func FindSkill(rootDir, name string) (string, error) {
+func Get(rootDir, name string) (Info, bool) {
 	if strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
-		return "", fmt.Errorf("invalid skill name: %q", name)
+		return Info{}, false
 	}
-	for _, dir := range skillDirs(rootDir) {
+	for _, info := range LoadInfos(rootDir) {
+		if strings.EqualFold(info.Name, name) {
+			return info, true
+		}
+	}
+	return Info{}, false
+}
+
+func FindSkill(rootDir, name string) (content, dir string, err error) {
+	if strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
+		return "", "", fmt.Errorf("invalid skill name: %q", name)
+	}
+	for _, d := range SkillDirs(rootDir) {
 		// flat file: dir/<name>.md
-		if data, err := os.ReadFile(filepath.Join(dir, name+".md")); err == nil {
-			return string(data), nil
+		p := filepath.Join(d, name+".md")
+		if data, e := os.ReadFile(p); e == nil {
+			return string(data), d, nil
 		}
 		// subdir: dir/<name>/SKILL.md (case-insensitive match on dir name)
-		entries, err := os.ReadDir(dir)
-		if err != nil {
+		entries, e := os.ReadDir(d)
+		if e != nil {
 			continue
 		}
-		for _, e := range entries {
-			if e.IsDir() && strings.EqualFold(e.Name(), name) {
-				if data, err := os.ReadFile(filepath.Join(dir, e.Name(), "SKILL.md")); err == nil {
-					return string(data), nil
+		for _, entry := range entries {
+			if entry.IsDir() && strings.EqualFold(entry.Name(), name) {
+				skillPath := filepath.Join(d, entry.Name(), "SKILL.md")
+				if data, e := os.ReadFile(skillPath); e == nil {
+					return string(data), filepath.Join(d, entry.Name()), nil
 				}
 			}
 		}
 	}
-	return "", fmt.Errorf("skill %q not found", name)
+	return "", "", fmt.Errorf("skill %q not found", name)
 }
 
 func parse(path, content string) Info {

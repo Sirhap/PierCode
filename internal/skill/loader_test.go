@@ -6,40 +6,32 @@ import (
 	"testing"
 )
 
-func TestFindSkill(t *testing.T) {
+func TestGet(t *testing.T) {
 	root := t.TempDir()
 	skillDir := filepath.Join(root, ".skills")
 	os.MkdirAll(skillDir, 0755)
 
-	t.Run("finds flat skill file", func(t *testing.T) {
-		os.WriteFile(filepath.Join(skillDir, "test.md"), []byte("# test skill"), 0644)
-		content, err := FindSkill(root, "test")
-		if err != nil || content != "# test skill" {
-			t.Errorf("got %q, err %v", content, err)
-		}
-	})
-
 	t.Run("finds subdir skill", func(t *testing.T) {
 		sub := filepath.Join(skillDir, "mysub")
 		os.MkdirAll(sub, 0755)
-		os.WriteFile(filepath.Join(sub, "SKILL.md"), []byte("subskill"), 0644)
-		content, err := FindSkill(root, "mysub")
-		if err != nil || content != "subskill" {
-			t.Errorf("got %q, err %v", content, err)
+		os.WriteFile(filepath.Join(sub, "SKILL.md"), []byte("---\nname: mysub\ndescription: test\n---\n"), 0644)
+		info, ok := Get(root, "mysub")
+		if !ok || info.Name != "mysub" || info.Location == "" {
+			t.Errorf("got ok=%v info=%+v", ok, info)
 		}
 	})
 
-	t.Run("path traversal in name blocked", func(t *testing.T) {
-		_, err := FindSkill(root, "../../etc/passwd")
-		if err == nil {
-			t.Error("expected error for path traversal")
+	t.Run("path traversal blocked", func(t *testing.T) {
+		_, ok := Get(root, "../../etc/passwd")
+		if ok {
+			t.Error("expected not found for path traversal")
 		}
 	})
 
-	t.Run("unknown skill returns error", func(t *testing.T) {
-		_, err := FindSkill(root, "nonexistent")
-		if err == nil {
-			t.Error("expected error")
+	t.Run("unknown skill returns false", func(t *testing.T) {
+		_, ok := Get(root, "nonexistent")
+		if ok {
+			t.Error("expected not found")
 		}
 	})
 }

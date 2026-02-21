@@ -3,8 +3,23 @@
   const originalFetch = window.fetch;
   let buffer = '';
 
+  // Global dedup: keyed by conversation ID extracted from URL
+  const processedByConv = new Map<string, Set<string>>();
+
+  function getConvId(): string {
+    // Claude: /chat/<id>, ChatGPT: /c/<id>, DeepSeek: ?id=<id> or path
+    const m = location.pathname.match(/\/(?:chat|c)\/([^/?#]+)/) ||
+              location.search.match(/[?&]id=([^&]+)/);
+    return m ? m[1] : '__default__';
+  }
+
+  function getProcessed(): Set<string> {
+    const id = getConvId();
+    if (!processedByConv.has(id)) processedByConv.set(id, new Set());
+    return processedByConv.get(id)!;
+  }
+
   window.fetch = function(...args) {
-    const processedTools = new Set<string>();
     const decoder = new TextDecoder();
     return originalFetch.apply(this, args).then(async response => {
       const reader = response.body!.getReader();
@@ -20,8 +35,9 @@
             let match;
             while ((match = buffer.match(/<tool>([\s\S]*?)<\/tool(?:_call)?>/))) {
               const raw = match[1].trim();
-              if (!processedTools.has(raw)) {
-                processedTools.add(raw);
+              const processed = getProcessed();
+              if (!processed.has(raw)) {
+                processed.add(raw);
                 let toolCall = null;
                 const tries = [
                   () => JSON.parse(raw),
@@ -29,11 +45,9 @@
                   () => JSON.parse(raw.replace(/\\"/g, '"')),
                   () => JSON.parse(JSON.parse('"' + raw + '"'))
                 ];
-
                 for (const fn of tries) {
                   try { toolCall = fn(); break; } catch {}
                 }
-
                 if (toolCall) {
                   window.postMessage({type: 'TOOL_CALL', data: toolCall}, '*');
                 }
