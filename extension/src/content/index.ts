@@ -1,9 +1,99 @@
+function parseXmlToolCall(raw: string): any | null {
+  const nameMatch = raw.match(/^<tool\s+name="([^"]+)"(?:\s+call_id="([^"]+)")?/);
+  if (!nameMatch) return null;
+  const name = nameMatch[1];
+  const callId = nameMatch[2] || null;
+  const args: Record<string, string> = {};
+  const paramRe = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/g;
+  let m;
+  while ((m = paramRe.exec(raw)) !== null) args[m[1]] = m[2];
+  return { name, args, callId };
+}
+
+function tryParseToolJSON(raw: string): any | null {
+  try { return JSON.parse(raw); } catch {}
+  try {
+    let result = '';
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (escaped) { result += ch; escaped = false; continue; }
+      if (ch === '\\') { result += ch; escaped = true; continue; }
+      if (ch === '"') {
+        if (!inString) { inString = true; result += ch; continue; }
+        let j = i + 1;
+        while (j < raw.length && raw[j] === ' ') j++;
+        const next = raw[j];
+        if (next === ':' || next === ',' || next === '}' || next === ']') {
+          inString = false; result += ch;
+        } else {
+          result += '\\"';
+        }
+        continue;
+      }
+      result += ch;
+    }
+    return JSON.parse(result);
+  } catch {}
+  return null;
+}
+
+type FillMethod = 'paste' | 'execCommand' | 'value' | 'prosemirror';
+
+interface SiteConfig {
+  editor: string;
+  sendBtn: string;
+  stopBtn: string | null;
+  fillMethod: FillMethod;
+  useObserver: boolean;
+  responseSelector?: string;
+}
+
+function getSiteConfig(): SiteConfig {
+  const h = location.hostname;
+  if (h.includes('gemini.google.com'))
+    return { editor: 'div.ql-editor.textarea.new-input-ui p, .ql-editor p, div[contenteditable="true"]', sendBtn: 'button.mat-mdc-icon-button.send-button, button[aria-label*="Send"]', stopBtn: null, fillMethod: 'execCommand', useObserver: true, responseSelector: 'model-response, .model-response-text, message-content' };
+  if (h.includes('chatgpt.com'))
+    return { editor: '#prompt-textarea, .ProseMirror[contenteditable="true"]', sendBtn: 'button[data-testid="send-button"], button[aria-label*="Send"]', stopBtn: null, fillMethod: 'prosemirror', useObserver: false };
+  if (h.includes('x.com') || h.includes('grok.com'))
+    return { editor: 'textarea[aria-label="Ask Grok anything"], textarea[placeholder="Ask anything"], textarea', sendBtn: 'button[aria-label="Submit"], button.send-button', stopBtn: null, fillMethod: 'value', useObserver: false };
+  if (h.includes('kimi.com'))
+    return { editor: '.chat-input-editor[contenteditable="true"], div[contenteditable="true"][data-lexical-editor="true"]', sendBtn: '.send-button, button[aria-label*="Send"]', stopBtn: null, fillMethod: 'execCommand', useObserver: false };
+  if (h.includes('chat.mistral.ai'))
+    return { editor: 'div.ProseMirror[contenteditable="true"]', sendBtn: '.ms-auto .flex.gap-2 button[type="submit"], button.bg-state-primary', stopBtn: null, fillMethod: 'execCommand', useObserver: false };
+  if (h.includes('perplexity.ai'))
+    return { editor: '#ask-input[contenteditable="true"], div[contenteditable="true"][data-lexical-editor="true"]', sendBtn: 'button[aria-label="Submit"], button[aria-label="Send"]', stopBtn: null, fillMethod: 'execCommand', useObserver: false };
+  if (h.includes('openrouter.ai'))
+    return { editor: 'textarea[data-testid="composer-input"], textarea[placeholder="Start a new message..."]', sendBtn: 'button[data-testid="send-button"], button[aria-label="Send message"]', stopBtn: null, fillMethod: 'value', useObserver: false };
+  if (h.includes('qwen.ai'))
+    return { editor: 'textarea.message-input-textarea, #chat-input', sendBtn: 'button.omni-button-content-btn, div.message-input-right-button-send button', stopBtn: null, fillMethod: 'value', useObserver: false };
+  if (h.includes('t3.chat'))
+    return { editor: 'textarea#chat-input, textarea[placeholder*="Type your message"]', sendBtn: 'button[type="submit"], button[aria-label*="Send"]', stopBtn: null, fillMethod: 'value', useObserver: false };
+  if (h.includes('aistudio.google.com'))
+    return { editor: 'textarea.textarea[placeholder="Start typing a prompt"]', sendBtn: 'button[aria-label*="Run"], button[mattooltip*="Run"]', stopBtn: null, fillMethod: 'value', useObserver: false };
+  if (h.includes('github.com'))
+    return { editor: '#copilot-chat-textarea, textarea[placeholder*="How can I help"]', sendBtn: 'button[aria-labelledby*="Send"], button:has(.octicon-paper-airplane)', stopBtn: null, fillMethod: 'value', useObserver: false };
+  if (h.includes('z.ai'))
+    return { editor: '#chat-input', sendBtn: '#send-message-button', stopBtn: null, fillMethod: 'value', useObserver: false };
+  // Default: DeepSeek
+  return { editor: '[data-slate-editor="true"]', sendBtn: '.operateBtn-JsB9e2:not(.disabled-ZaDDJC)', stopBtn: '.stop-yGpvO2 img', fillMethod: 'paste', useObserver: false };
+}
+
 if (!(window as any).__OPENLINK_LOADED__) {
   (window as any).__OPENLINK_LOADED__ = true;
 
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('injected.js');
-  (document.head || document.documentElement).appendChild(script);
+  const cfg = getSiteConfig();
+
+  if (!cfg.useObserver) {
+    const script = document.createElement('script');
+    script.src = chrome.runtime.getURL('injected.js');
+    (document.head || document.documentElement).appendChild(script);
+  } else if (cfg.responseSelector) {
+    const sel = cfg.responseSelector;
+    if (document.body) startDOMObserver(sel);
+    else document.addEventListener('DOMContentLoaded', () => startDOMObserver(sel));
+  }
 
   let execQueue = Promise.resolve();
   window.addEventListener('message', (event) => {
@@ -17,6 +107,78 @@ if (!(window as any).__OPENLINK_LOADED__) {
   } else {
     document.addEventListener('DOMContentLoaded', injectInitButton);
   }
+}
+
+function hashStr(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = Math.imul(31, h) + s.charCodeAt(i) | 0;
+  return h >>> 0;
+}
+
+function isExecuted(key: string): boolean {
+  try {
+    const store = JSON.parse(localStorage.getItem('openlink_executed') || '{}');
+    return !!(store[location.href]?.[key]);
+  } catch { return false; }
+}
+
+function markExecuted(key: string): void {
+  try {
+    const store = JSON.parse(localStorage.getItem('openlink_executed') || '{}');
+    if (!store[location.href]) store[location.href] = {};
+    store[location.href][key] = 1;
+    localStorage.setItem('openlink_executed', JSON.stringify(store));
+  } catch {}
+}
+
+function startDOMObserver(_responseSelector: string) {
+  const processed = new Set<string>();
+  const TOOL_RE = /<tool(?:\s[^>]*)?>[\s\S]*?<\/tool>/g;
+
+  function scanText(text: string) {
+    if (!text.includes('<tool')) return;
+    TOOL_RE.lastIndex = 0;
+    let match;
+    while ((match = TOOL_RE.exec(text)) !== null) {
+      const full = match[0];
+      const inner = full.replace(/^<tool[^>]*>|<\/tool>$/g, '').trim();
+      const data = parseXmlToolCall(full) || tryParseToolJSON(inner);
+      if (!data) { console.warn('[OpenLink] 工具调用解析失败:', full); continue; }
+      // Use call_id as dedup key if present, otherwise fall back to content hash
+      const key = data.callId ? `${data.name}:${data.callId}` : String(hashStr(full));
+      if (processed.has(key) || isExecuted(key)) continue;
+      processed.add(key);
+      markExecuted(key);
+      console.log('[OpenLink] 提取到工具调用:', data);
+      window.postMessage({ type: 'TOOL_CALL', data }, '*');
+    }
+  }
+
+  function scanNode(node: Node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      scanText(node.textContent || '');
+      return;
+    }
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = node as Element;
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'pre' || tag === 'code') {
+        scanText(el.textContent || '');
+      } else {
+        el.querySelectorAll('pre, code').forEach(c => scanText(c.textContent || ''));
+      }
+    }
+  }
+
+  new MutationObserver(mutations => {
+    for (const mutation of mutations) {
+      if (mutation.type === 'characterData') {
+        scanText(mutation.target.textContent || '');
+      } else {
+        mutation.addedNodes.forEach(scanNode);
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true, characterData: true });
 }
 
 function injectInitButton() {
@@ -41,7 +203,6 @@ async function sendInitPrompt() {
   fillAndSend(resp.body, true);
 }
 
-// Fix 3: question tool — show popup, fill answer, no auto-submit
 function showQuestionPopup(question: string, options: string[]): Promise<string> {
   return new Promise(resolve => {
     const overlay = document.createElement('div');
@@ -67,10 +228,10 @@ function showQuestionPopup(question: string, options: string[]): Promise<string>
 }
 
 async function executeToolCall(toolCall: any) {
-  // Fix 3: intercept question tool on frontend
   if (toolCall.name === 'question') {
     const q: string = toolCall.args?.question ?? '';
-    const opts: string[] = Array.isArray(toolCall.args?.options) ? toolCall.args.options : [];
+    const rawOpts = toolCall.args?.options;
+    const opts: string[] = Array.isArray(rawOpts) ? rawOpts : (typeof rawOpts === 'string' ? (() => { try { return JSON.parse(rawOpts); } catch { return []; } })() : []);
     const answer = opts.length > 0 ? await showQuestionPopup(q, opts) : (prompt(q) ?? '');
     fillAndSend(answer, false);
     return;
@@ -109,7 +270,6 @@ async function executeToolCall(toolCall: any) {
   }
 }
 
-// Fix 2: countdown toast
 function showToast(msg: string, durationMs = 3000): void {
   const toast = document.createElement('div');
   toast.style.cssText = 'position:fixed;bottom:170px;right:20px;z-index:2147483647;background:#1e1e2e;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:10px;padding:10px 16px;font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,0.4)';
@@ -119,7 +279,9 @@ function showToast(msg: string, durationMs = 3000): void {
 }
 
 function clickStopButton(): void {
-  const btn = document.querySelector('.stop-yGpvO2 img') as HTMLElement;
+  const stopSel = getSiteConfig().stopBtn;
+  if (!stopSel) return;
+  const btn = document.querySelector(stopSel) as HTMLElement;
   if (btn) btn.click();
 }
 
@@ -145,14 +307,38 @@ function showCountdownToast(ms: number, onFire: () => void): void {
   cancelBtn.onclick = () => { cancelled = true; clearInterval(interval); toast.remove(); };
 }
 
+function querySelectorFirst(selectors: string): HTMLElement | null {
+  for (const sel of selectors.split(',').map(s => s.trim())) {
+    const el = document.querySelector(sel) as HTMLElement | null;
+    if (el) return el;
+  }
+  return null;
+}
+
 async function fillAndSend(result: string, autoSend = false) {
-  const editor = document.querySelector('[data-slate-editor="true"]') as HTMLElement;
+  const { editor: editorSel, sendBtn: sendBtnSel, fillMethod } = getSiteConfig();
+  const editor = querySelectorFirst(editorSel);
   if (!editor) return;
 
   editor.focus();
-  const dataTransfer = new DataTransfer();
-  dataTransfer.setData('text/plain', result);
-  editor.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dataTransfer, bubbles: true, cancelable: true}));
+
+  if (fillMethod === 'paste') {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/plain', result);
+    editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dataTransfer, bubbles: true, cancelable: true }));
+  } else if (fillMethod === 'execCommand') {
+    document.execCommand('insertText', false, result);
+  } else if (fillMethod === 'value') {
+    const ta = editor as HTMLTextAreaElement;
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+    if (nativeInputValueSetter) nativeInputValueSetter.call(ta, result);
+    else ta.value = result;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  } else if (fillMethod === 'prosemirror') {
+    editor.innerHTML = result;
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    editor.dispatchEvent(new Event('change', { bubbles: true }));
+  }
 
   if (autoSend) {
     const cfg = await chrome.storage.local.get(['autoSend', 'delayMin', 'delayMax']);
@@ -162,12 +348,11 @@ async function fillAndSend(result: string, autoSend = false) {
     const max = (cfg.delayMax ?? 4) * 1000;
     const delay = Math.random() * (max - min) + min;
 
-    // Fix 2: show countdown toast, user can cancel
     showCountdownToast(delay, () => {
       const checkAndClick = (attempts = 0) => {
         if (attempts > 50) return;
-        const sendBtn = document.querySelector('.operateBtn-JsB9e2') as HTMLElement;
-        if (sendBtn && !sendBtn.classList.contains('disabled-ZaDDJC')) {
+        const sendBtn = querySelectorFirst(sendBtnSel);
+        if (sendBtn) {
           sendBtn.click();
         } else {
           setTimeout(() => checkAndClick(attempts + 1), 100);

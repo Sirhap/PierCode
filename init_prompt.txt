@@ -85,6 +85,18 @@
 - skill 返回的内容即为该 skill 目录下 SKILL.md 的内容，如需读取同目录其他文件，直接用文件名作为路径（如 `{"name":"read_file","args":{"path":"config.yaml"}}`），系统会自动在 skill 目录下查找
 - 若无匹配的 skill，按通用方式处理
 
+## 工具调用格式
+
+使用 XML parameter 格式调用工具，每次调用必须带唯一递增的 `call_id`（从 1 开始，每次调用加 1）：
+
+```
+<tool name="工具名" call_id="1">
+  <parameter name="参数名">参数值</parameter>
+</tool>
+```
+
+参数值可包含引号、换行、反斜杠等任意字符，原样保留。
+
 ## 可用工具
 
 ### exec_cmd
@@ -93,7 +105,9 @@
 - command: string (必需) - 要执行的 shell 命令
 
 示例：
-<tool>{"name":"exec_cmd","args":{"command":"ls -la"}}</tool>
+<tool name="exec_cmd">
+  <parameter name="command">ls -la</parameter>
+</tool>
 
 ### list_dir
 列出目录内容
@@ -101,7 +115,9 @@
 - path: string (必需) - 目录路径
 
 示例：
-<tool>{"name":"list_dir","args":{"path":"."}}</tool>
+<tool name="list_dir">
+  <parameter name="path">.</parameter>
+</tool>
 
 ### read_file
 读取文件内容（支持分页）
@@ -111,8 +127,14 @@
 - limit: number (可选) - 最大读取行数（默认 2000）
 
 示例：
-<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>
-<tool>{"name":"read_file","args":{"path":"big.log","offset":2001,"limit":2000}}</tool>
+<tool name="read_file">
+  <parameter name="path">README.md</parameter>
+</tool>
+<tool name="read_file">
+  <parameter name="path">big.log</parameter>
+  <parameter name="offset">2001</parameter>
+  <parameter name="limit">2000</parameter>
+</tool>
 
 ### write_file
 写入文件内容
@@ -122,7 +144,17 @@
 - mode: string (可选) - "append" 或 "overwrite"（默认）
 
 示例：
-<tool>{"name":"write_file","args":{"path":"test.txt","content":"hello"}}</tool>
+<tool name="write_file">
+  <parameter name="path">main.go</parameter>
+  <parameter name="content">package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("hello")
+}
+</parameter>
+</tool>
 
 ### glob
 按文件名模式搜索文件（按修改时间排序）
@@ -131,7 +163,9 @@
 - path: string (可选) - 搜索根目录（默认工作目录）
 
 示例：
-<tool>{"name":"glob","args":{"pattern":"**/*.go"}}</tool>
+<tool name="glob">
+  <parameter name="pattern">**/*.go</parameter>
+</tool>
 
 ### grep
 正则搜索文件内容
@@ -141,7 +175,10 @@
 - include: string (可选) - 文件名过滤，如 *.go
 
 示例：
-<tool>{"name":"grep","args":{"pattern":"func main","include":"*.go"}}</tool>
+<tool name="grep">
+  <parameter name="pattern">func main</parameter>
+  <parameter name="include">*.go</parameter>
+</tool>
 
 ### edit
 精确替换文件中的字符串
@@ -152,7 +189,11 @@
 - replace_all: bool (可选) - 替换所有匹配项（默认 false）
 
 示例：
-<tool>{"name":"edit","args":{"path":"main.go","old_string":"Hello","new_string":"Hi"}}</tool>
+<tool name="edit">
+  <parameter name="path">main.go</parameter>
+  <parameter name="old_string">Hello</parameter>
+  <parameter name="new_string">Hi</parameter>
+</tool>
 
 ### web_fetch
 获取网页内容（默认去除 HTML 标签）
@@ -161,16 +202,21 @@
 - format: string (可选) - "text"（默认，纯文本）或 "html"
 
 示例：
-<tool>{"name":"web_fetch","args":{"url":"https://example.com"}}</tool>
+<tool name="web_fetch">
+  <parameter name="url">https://example.com</parameter>
+</tool>
 
 ### question
 向用户提问，等待手动输入回答
 参数：
 - question: string (必需) - 问题内容
-- options: array (可选) - 选项列表
+- options: array (可选) - 选项列表（JSON 数组格式）
 
 示例：
-<tool>{"name":"question","args":{"question":"请选择操作","options":["继续","取消"]}}</tool>
+<tool name="question">
+  <parameter name="question">请选择操作</parameter>
+  <parameter name="options">["继续","取消"]</parameter>
+</tool>
 
 ### skill
 加载 .skills/ 目录中的技能文件（.md）
@@ -178,16 +224,19 @@
 - skill: string (可选) - 技能名称（不含 .md）；省略则列出所有可用技能
 
 示例：
-<tool>{"name":"skill","args":{"skill":"deploy"}}</tool>
-<tool>{"name":"skill","args":{}}</tool>
+<tool name="skill">
+  <parameter name="skill">deploy</parameter>
+</tool>
 
 ### todo_write
 将待办事项写入 .todos.json
 参数：
-- todos: array (必需) - 待办项列表，每项包含 content(string)、status("pending"/"in_progress"/"completed")、priority("high"/"medium"/"low")
+- todos: array (必需) - 待办项列表（JSON 数组格式）
 
 示例：
-<tool>{"name":"todo_write","args":{"todos":[{"content":"修复 bug","status":"pending","priority":"high"}]}}</tool>
+<tool name="todo_write">
+  <parameter name="todos">[{"content":"修复 bug","status":"pending","priority":"high"}]</parameter>
+</tool>
 
 ## 安全限制
 
@@ -197,7 +246,7 @@
 
 ## 使用规则
 
-2. 使用 <tool>...</tool> 格式包裹 JSON
+2. 使用 `<tool name="工具名"><parameter name="参数名">值</parameter></tool>` 格式
 3. 先执行工具，后简要说明
 4. 优先使用工具而非文字描述
 5. 文件较大时用 read_file 的 offset 参数分页读取

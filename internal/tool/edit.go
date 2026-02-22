@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -65,6 +66,8 @@ func (t *EditTool) Execute(ctx *Context) *Result {
 		return result
 	}
 
+	log.Printf("[edit] old_string: %q\n", oldStr)
+	log.Printf("[edit] new_string: %q\n", newStr)
 	replaced, err := replaceInContent(string(content), oldStr, newStr, replaceAll)
 	if err != nil {
 		result.Status = "error"
@@ -109,6 +112,11 @@ func replaceInContent(content, oldStr, newStr string, replaceAll bool) (string, 
 	}
 
 	result, ok := lineTrimReplace(content, oldStr, newStr, replaceAll)
+	if ok {
+		return result, nil
+	}
+
+	result, ok = indentFlexibleReplace(content, oldStr, newStr, replaceAll)
 	if ok {
 		return result, nil
 	}
@@ -176,4 +184,102 @@ func leadingWhitespace(s string) string {
 	scanner.Scan()
 	line := scanner.Text()
 	return line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+}
+
+// indentFlexibleReplace strips common indentation before comparing lines.
+func indentFlexibleReplace(content, oldStr, newStr string, replaceAll bool) (string, bool) {
+	normalize := func(s string) string {
+		return strings.ReplaceAll(s, "\r\n", "\n")
+	}
+	contentLines := strings.Split(normalize(content), "\n")
+	searchLines := strings.Split(normalize(oldStr), "\n")
+	replaceLines := strings.Split(normalize(newStr), "\n")
+
+	if len(searchLines) == 0 {
+		return "", false
+	}
+
+	minIndent := func(lines []string) int {
+		min := -1
+		for _, l := range lines {
+			if strings.TrimSpace(l) == "" {
+				continue
+			}
+			n := len(l) - len(strings.TrimLeft(l, " \t"))
+			if min < 0 || n < min {
+				min = n
+			}
+		}
+		if min < 0 {
+			return 0
+		}
+		return min
+	}
+
+	searchIndent := minIndent(searchLines)
+	stripIndent := func(lines []string, n int) []string {
+		out := make([]string, len(lines))
+		for i, l := range lines {
+			if len(l) >= n {
+				out[i] = l[n:]
+			} else {
+				out[i] = strings.TrimLeft(l, " \t")
+			}
+		}
+		return out
+	}
+	strippedSearch := stripIndent(searchLines, searchIndent)
+
+	replaced := false
+	var result []string
+	i := 0
+	for i < len(contentLines) {
+		if !replaceAll && replaced {
+			result = append(result, contentLines[i])
+			i++
+			continue
+		}
+		if i+len(searchLines) <= len(contentLines) {
+			block := contentLines[i : i+len(searchLines)]
+			blockIndent := minIndent(block)
+			strippedBlock := stripIndent(block, blockIndent)
+			match := true
+			for j := range strippedSearch {
+				if strippedBlock[j] != strippedSearch[j] {
+					match = false
+					break
+				}
+			}
+			if match {
+				indent := strings.Repeat(" ", blockIndent)
+				replaceIndent := minIndent(replaceLines)
+				for _, rl := range replaceLines {
+					if strings.TrimSpace(rl) == "" {
+						result = append(result, "")
+					} else {
+						stripped := rl
+						if len(rl) >= replaceIndent {
+							stripped = rl[replaceIndent:]
+						}
+						result = append(result, indent+stripped)
+					}
+				}
+				i += len(searchLines)
+				replaced = true
+				continue
+			}
+		}
+		result = append(result, contentLines[i])
+		i++
+	}
+
+	if !replaced {
+		return "", false
+	}
+
+	out := strings.Join(result, "\n")
+	if strings.Contains(content, "\r\n") {
+		out = strings.ReplaceAll(out, "\n", "\r\n")
+	}
+	return out, true
 }

@@ -52,17 +52,13 @@ func (e *Executor) Execute(ctx context.Context, req *types.ToolRequest) *types.T
 			args = map[string]interface{}{}
 		}
 		args["tool"] = req.Name
-		return &types.ToolResponse{
-			Status: "error",
-			Error:  invalid.Execute(&tool.Context{Args: args, Config: e.config}).Error,
-		}
+		msg := invalid.Execute(&tool.Context{Args: args, Config: e.config}).Error
+		return &types.ToolResponse{Status: "error", Output: msg, Error: msg}
 	}
 
 	if err := t.Validate(req.Args); err != nil {
-		return &types.ToolResponse{
-			Status: "error",
-			Error:  fmt.Sprintf("validation failed: %s", err),
-		}
+		msg := fmt.Sprintf("validation failed: %s", err)
+		return &types.ToolResponse{Status: "error", Output: msg, Error: msg}
 	}
 
 	result := t.Execute(&tool.Context{
@@ -75,6 +71,9 @@ func (e *Executor) Execute(ctx context.Context, req *types.ToolRequest) *types.T
 		Output:     result.Output,
 		Error:      result.Error,
 		StopStream: result.StopStream,
+	}
+	if result.Status == "error" && result.Output == "" {
+		resp.Output = result.Error
 	}
 
 	// Fix 4: append identity reminder; re-inject full prompt every 20 calls

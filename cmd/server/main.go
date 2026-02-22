@@ -39,8 +39,10 @@ func main() {
 	fmt.Printf("\n认证 URL: http://127.0.0.1:%d/auth?token=%s\n", *port, token)
 	fmt.Printf("请在浏览器扩展中输入此 URL\n\n")
 
+	log.Printf("正在初始化服务器实例...")
 	srv := server.New(config)
+	log.Printf("服务器初始化完成，准备启动...")
 	if err := srv.Run(); err != nil {
-		log.Fatal(err)
+		log.Fatalf("服务器运行出错: %v", err)
 	}
 }
