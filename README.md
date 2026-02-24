@@ -161,6 +161,18 @@ openlink [选项]
 
 ---
 
+## 致谢
+
+本项目在开发过程中参考了以下优秀的开源项目：
+
+- [opencode](https://github.com/anomalyco/opencode)
+- [MCP-SuperAssistant](https://github.com/srbhptl39/MCP-SuperAssistant)
+- [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)
+
+感谢这些项目的作者和贡献者。
+
+---
+
 ## 免责声明
 
 本项目仅供学习和研究使用，**严禁用于任何商业用途**。
