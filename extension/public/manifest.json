@@ -14,7 +14,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*/*"],
+      "matches": ["*://*.gemini.google.com/*", "*://*.qwen.ai/*"],
       "js": ["content.js"],
       "run_at": "document_start"
     }
