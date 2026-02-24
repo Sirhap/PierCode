@@ -6,8 +6,8 @@ $INSTALL_DIR = "$env:USERPROFILE\.openlink"
 
 $ARCH = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
 
-$release = Invoke-RestMethod "https://api.github.com/repos/$REPO/releases/latest"
-$VERSION = $release.tag_name
+$response = Invoke-WebRequest -Uri "https://github.com/$REPO/releases/latest" -MaximumRedirection 0 -ErrorAction SilentlyContinue
+$VERSION = $response.Headers.Location -replace ".*/tag/", ""
 if (-not $VERSION) { Write-Error "获取版本失败"; exit 1 }
 
 $FILE = "${BIN}_windows_${ARCH}.zip"
