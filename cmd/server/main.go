@@ -18,7 +18,7 @@ func main() {
 		log.Fatal(err)
 	}
 	dir := flag.String("dir", cwd, "工作目录")
-	port := flag.Int("port", 8080, "端口")
+	port := flag.Int("port", 39527, "端口")
 	timeout := flag.Int("timeout", 60, "超时(秒)")
 	flag.Parse()
 
