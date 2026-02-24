@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -90,12 +91,20 @@ func (s *Server) handleConfig(c *gin.Context) {
 	})
 }
 
+func buildSystemInfo(rootDir string) string {
+	hostname, _ := os.Hostname()
+	return fmt.Sprintf("- 操作系统: %s/%s\n- 工作目录: %s\n- 主机名: %s\n- 当前时间: %s",
+		runtime.GOOS, runtime.GOARCH, rootDir, hostname,
+		time.Now().Format("2006-01-02 15:04:05"))
+}
+
 func (s *Server) handlePrompt(c *gin.Context) {
 	content, err := os.ReadFile(filepath.Join(s.config.RootDir, "init_prompt.txt"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "init_prompt.txt not found"})
 		return
 	}
+	content = []byte(strings.ReplaceAll(string(content), "{{SYSTEM_INFO}}", buildSystemInfo(s.config.RootDir)))
 
 	skills := skill.LoadInfos(s.config.RootDir)
 	if len(skills) > 0 {
