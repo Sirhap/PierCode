@@ -22,7 +22,7 @@
   "web_accessible_resources": [
     {
       "resources": ["injected.js"],
-      "matches": ["*://*/*"]
+      "matches": ["*://*.gemini.google.com/*", "*://*.qwen.ai/*"]
     }
   ]
 }
