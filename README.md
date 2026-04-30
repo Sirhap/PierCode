@@ -1,216 +1,230 @@
 # OpenLink
 
-> ⚠️ **学习研究项目，非生产用途**
->
-> 本项目是作者为**研究底层 Agent 工作原理**而创建的个人学习项目，代码结构和实现均以探索为目的，**不适合用于生产环境**。
->
-> **目前实测效果并不理想**：网页版 AI 对工具调用的支持参差不齐，稳定性和准确性均有较大局限，距离实用仍有差距。
->
-> OpenLink 通过浏览器扩展模拟用户操作来驱动网页 AI，**并不是一个 API 接口**，不适合作为日常 API 调用使用。请合理使用，勿滥用。
+OpenLink 是一个本地开发辅助工具：通过浏览器扩展把网页版 AI 和本机 Go 服务连接起来，让 AI 可以在受限工作目录内请求读取文件、编辑文件、执行命令、搜索内容等工具能力。
 
-让网页版 AI（Gemini、AI Studio）直接访问你的本地文件系统和执行命令。
+它不是 API 网关，也不是生产级 Agent 运行时，更不是面向不可信提示词的安全沙箱。请只在你愿意暴露给当前 AI 页面访问的工作目录中运行。
 
-## 工作原理
+## 组成
 
-```
-AI 网页 → 输出 <tool> 指令 → Chrome 扩展拦截 → 本地 Go 服务执行 → 结果返回 AI
-```
+- 本地 HTTP 服务，默认监听 `127.0.0.1:39527`
+- 可选 TUI，用于查看状态、输入指令、向浏览器 AI 页面注入文本
+- Chrome Manifest V3 浏览器扩展
+- `openlink-tool` fenced code block 工具调用解析
+- 兼容部分旧 XML / function-call 风格工具调用
+- 基于真实路径解析的工作目录沙箱
+- 扩展和本地服务之间的 token 认证
 
-## 快速安装
+## 当前支持页面
 
-### 第一步：安装本地服务
+扩展当前只会注入到这些页面：
 
-**macOS / Linux**
+- Google Gemini：`gemini.google.com`
+- Google AI Studio：`aistudio.google.com`
+- Qwen：`qwen.ai`、`qwenlm.ai`
+- Chat Z：`chat.z.ai`
+- Kimi：`kimi.com`
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/afumu/openlink/main/install.sh | sh
-```
+其他站点需要同时补充 `extension/public/manifest.json` 的匹配规则和 `extension/src/platform-adapters.ts` 的页面适配逻辑。
 
-**Windows（PowerShell）**
+## 环境要求
+
+- Go 1.24+
+- Node.js 18+
+- Chrome 或兼容 Manifest V3 的 Chromium 浏览器
+
+## 从源码启动
+
+先构建扩展：
 
 ```powershell
-irm https://raw.githubusercontent.com/afumu/openlink/main/install.ps1 | iex
+cd extension
+npm install
+npm run build
+cd ..
 ```
 
-安装完成后运行：
+启动 TUI 版本：
 
-```bash
-openlink
+```powershell
+go run ./cmd/cli -dir D:\path\to\workspace
 ```
 
-服务默认监听 `http://127.0.0.1:39527`，启动后会输出认证 URL。
+或者启动无 TUI 的普通服务：
 
-### 第二步：安装 Chrome 扩展
+```powershell
+go run ./cmd/server -dir D:\path\to\workspace
+```
 
-> Chrome Web Store 版本即将上线，目前请手动安装。
+启动后会显示认证 URL，格式类似：
 
-1. 下载最新 [Release](https://github.com/afumu/openlink/releases/latest) 中的 `extension.zip` 并解压
-2. 打开 Chrome，访问 `chrome://extensions/`
-3. 开启右上角「开发者模式」
-4. 点击「加载已解压的扩展程序」，选择解压后的目录
+```text
+http://127.0.0.1:39527/auth?token=<token>
+```
 
-### 第三步：连接扩展与服务
+安装浏览器扩展：
 
-1. 点击浏览器工具栏中的 OpenLink 图标
-2. 将终端输出的认证 URL 粘贴到「API 地址」输入框
-3. 点击保存
+1. 打开 `chrome://extensions/`。
+2. 开启开发者模式。
+3. 点击“加载已解压的扩展程序”。
+4. 选择 `extension/dist`。
+5. 打开扩展弹窗，粘贴服务端输出的认证 URL。
 
-### 第四步：开始使用
+如果 AI 页面在扩展安装前已经打开，安装后需要刷新页面。
 
-访问 [Gemini](https://gemini.google.com) 或 [AI Studio](https://aistudio.google.com)，点击页面右下角的「🔗 初始化」按钮，AI 即可开始使用本地工具。
+## TUI 使用
 
----
+推荐日常使用 TUI 入口：
 
-## 推荐平台
+```powershell
+go run ./cmd/cli -dir .
+```
 
-> **目前测试效果最佳的平台是 [Google AI Studio](https://aistudio.google.com)**
->
-> AI Studio 原生支持配置系统提示词（System Instructions），点击「🔗 初始化」后会自动将工具说明写入系统提示词，无需占用对话上下文，工具调用更稳定、更准确。
->
-> 其他平台通过对话消息注入提示词，效果因模型而异。
+常用操作：
 
-## 支持的 AI 平台
+- 直接输入文本：发送到当前已连接的 AI 页面输入框
+- `/`：进入指令输入
+- `Tab`：补全 slash 指令或 `/cd` 目录
+- `Ctrl+J` 或 `Alt+Enter`：在输入框内换行
+- `Ctrl+T`：切换完整输出视图
+- `q` 或 `Ctrl+C`：退出
 
-| 平台 | 状态 | 备注 |
-|------|------|------|
-| Google AI Studio | ✅ | 推荐，原生支持系统提示词 |
-| Google Gemini | ✅ | |
+支持的 slash 指令：
 
----
+```text
+/cd <path>     切换 AI 工具执行目录，限制在启动目录内
+/cwd           显示当前执行目录
+/url           显示认证 URL
+/send <text>   把文本发送到已连接的 AI 页面
+/clear         清空 TUI 活动区
+/help          显示指令帮助
+```
 
-## 可用工具
+`/cd` 不允许跳出程序启动时指定的根目录，即使路径经过符号链接或 junction 也会按真实路径校验。
+
+## 构建二进制
+
+构建 TUI 版本：
+
+```powershell
+go build -o openlink-cli.exe ./cmd/cli
+```
+
+构建普通服务版本：
+
+```powershell
+go build -o openlink.exe ./cmd/server
+```
+
+这些构建产物不需要提交：
+
+- `openlink.exe`
+- `openlink-cli.exe`
+- `extension/dist/`
+- `release/`
+- `release-packages/`
+
+## AI 可用工具
 
 | 工具 | 说明 |
-|------|------|
-| `exec_cmd` | 执行 Shell 命令 |
+| --- | --- |
+| `exec_cmd` | 在当前沙箱目录执行 shell 命令 |
 | `list_dir` | 列出目录内容 |
-| `read_file` | 读取文件内容（支持分页） |
-| `write_file` | 写入文件内容（支持追加/覆盖） |
-| `glob` | 按文件名模式搜索文件 |
-| `grep` | 正则搜索文件内容 |
-| `edit` | 精确替换文件中的字符串 |
-| `web_fetch` | 获取网页内容 |
-| `question` | 向用户提问并等待回答 |
-| `skill` | 加载自定义 Skill |
-| `todo_write` | 写入待办事项 |
+| `read_file` | 读取文件内容 |
+| `write_file` | 创建、覆盖或追加文件 |
+| `edit` | 对文件做精确字符串替换 |
+| `glob` | 按 glob 模式搜索文件 |
+| `grep` | 用正则搜索文件内容 |
+| `web_fetch` | 获取 HTTP 页面内容 |
+| `skill` | 加载本地 skill 文档 |
+| `question` | 向用户提问 |
+| `todo_write` | 写入 `.todos.json` 任务状态 |
 
-## 输入框快捷补全
+`/prompt` 会根据当前工作目录和已注册工具动态渲染初始化提示词。
 
-在任意支持的 AI 平台输入框中，OpenLink 提供两种快捷触发：
+## 本地服务端点
 
-| 触发方式 | 效果 |
-|----------|------|
-| 输入 `/` | 弹出当前项目所有 Skills 列表，选择后自动插入工具调用 XML |
-| 输入 `@` | 弹出工作目录文件路径补全列表，选择后插入文件路径 |
+所有端点都只在本机访问，并需要生成的 token。
 
-**操作方式：**
-- ↑ / ↓ 键盘导航
-- Enter 确认选择
-- Escape 或点击外部关闭
+| 端点 | 说明 |
+| --- | --- |
+| `GET /auth?token=...` | 校验扩展 token |
+| `GET /health` | 服务健康检查 |
+| `GET /config` | 查看当前目录和超时配置 |
+| `POST /cwd` | 切换当前工作目录 |
+| `GET /tools` | 查看工具定义 |
+| `POST /exec` | 执行工具调用 |
+| `POST /inject` | 将 TUI 输入发送给浏览器扩展 |
+| `GET /ws` | 扩展注入通道 WebSocket |
+| `GET /prompt` | 获取渲染后的初始化提示词 |
+| `GET /skills` | 列出本地 skills |
+| `GET /files?q=...` | 搜索当前目录下的文件 |
 
----
+## 安全边界
 
-## Skills 扩展
+OpenLink 做了基础防护，但不能替代人工确认。
 
-Skills 是放在本地的 Markdown 文件，AI 可以按需加载，用于扩展特定领域的能力（如部署流程、代码规范、项目约定等）。
+已有保护：
 
-### Skills 目录（按优先级）
+- 服务只绑定 `127.0.0.1`
+- 请求需要 token
+- 文件路径会解析真实路径后再做沙箱校验
+- `/cwd` 不能离开初始启动目录
+- 已知危险命令和下载执行模式会被拦截
+- 命令执行有超时限制
 
-OpenLink 会依次扫描以下目录，同名 Skill 以先找到的为准：
+仍然存在的风险：
 
-```
-<工作目录>/.skills/
-<工作目录>/.openlink/skills/
-<工作目录>/.agent/skills/
-<工作目录>/.claude/skills/
-~/.openlink/skills/
-~/.agent/skills/
-~/.claude/skills/
-```
+- AI 仍可请求修改启动目录内的文件
+- AI 仍可请求执行未被拦截的普通命令
+- 不同网页 AI 的 DOM 结构经常变化，工具调用解析可能失效
+- 不建议开启任何未经人工确认的自动执行流程
 
-### 创建 Skill
+## 开发和验证
 
-在任意 Skills 目录下创建子目录，并在其中放置 `SKILL.md`：
+Go 测试：
 
-```
-.skills/
-└── deploy/
-    └── SKILL.md
-```
-
-`SKILL.md` 格式：
-
-```markdown
----
-name: deploy
-description: 项目部署流程
----
-
-## 部署步骤
-...
+```powershell
+go test ./...
 ```
 
-AI 通过 `skill` 工具加载：
+扩展测试和构建：
 
-```
-<tool name="skill">
-  <parameter name="skill">deploy</parameter>
-</tool>
-```
-
----
-
-## 安全机制
-
-- **沙箱隔离**：所有文件操作限制在指定工作目录内
-- **危险命令拦截**：`rm -rf`、`sudo`、`curl` 等命令被屏蔽
-- **超时控制**：命令执行默认 60 秒超时
-
----
-
-## 命令行参数
-
-```bash
-openlink [选项]
-
-选项：
-  -dir string    工作目录（默认：当前目录）
-  -port int      监听端口（默认：39527）
-  -timeout int   命令超时秒数（默认：60）
+```powershell
+cd extension
+npm test
+npm run build
+npx tsc --noEmit
 ```
 
----
+主要目录：
 
-## 从源码构建
+- `cmd/cli`：TUI 启动入口
+- `cmd/server`：普通服务启动入口
+- `internal/server`：HTTP 路由和 WebSocket 桥接
+- `internal/tool`：本地工具实现
+- `internal/security`：token 和沙箱校验
+- `internal/tui`：终端 UI 和日志模型
+- `extension/src/content`：页面注入和工具调用检测
+- `extension/src/platform-adapters.ts`：站点适配逻辑
+- `extension/src/popup`：扩展弹窗和认证 UI
+- `prompts/init_prompt.txt`：默认初始化提示词
 
-详见 [docs/development.md](docs/development.md)
+## 提交约定
 
----
+需要提交：
 
-## 问题反馈
+- 源码
+- 测试
+- `go.mod` / `go.sum`
+- `extension/package.json` / `extension/package-lock.json`
+- `extension/public/manifest.json`
+- 提示词和文档
 
-[提交 Issue](https://github.com/afumu/openlink/issues)
+不要提交：
 
----
-
-## 群交流
-加微信：afumudev
-
-备注：openlink
-
-
-## 致谢
-
-本项目在开发过程中参考了以下优秀的开源项目：
-
-- [opencode](https://github.com/anomalyco/opencode)
-- [MCP-SuperAssistant](https://github.com/srbhptl39/MCP-SuperAssistant)
-- [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)
-
-感谢这些项目的作者和贡献者。
-
----
-
-## 免责声明
-
-本项目仅供学习和研究使用，**严禁用于任何商业用途**。
+- 编译出来的 `.exe`
+- `extension/dist/`
+- `node_modules/`
+- `release/`、`release-packages/`
+- `.omx/`、`.claude/`、`.playwright-mcp/`
+- 临时分析报告和本机工具状态文件
