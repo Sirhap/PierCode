@@ -123,7 +123,23 @@ func (e *Executor) ListTools() []tool.ToolInfo {
 }
 
 func summarizeToolLog(req *types.ToolRequest, resp *types.ToolResponse) string {
+	const toolPreviewLines = 50
 	if resp.Status == "error" {
+		if strings.EqualFold(req.Name, "exec_cmd") && strings.TrimSpace(resp.Output) != "" {
+			args := req.Args
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			command := argString(args, "command")
+			if command == "" {
+				command = argString(args, "cmd")
+			}
+			summary := "Ran " + command
+			if msg := strings.TrimSpace(resp.Error); msg != "" {
+				summary += " (" + truncateRunes(msg, 80) + ")"
+			}
+			return summary + outputPreview(resp.Output, toolPreviewLines)
+		}
 		msg := strings.TrimSpace(resp.Error)
 		if msg == "" {
 			msg = strings.TrimSpace(resp.Output)
@@ -142,7 +158,7 @@ func summarizeToolLog(req *types.ToolRequest, resp *types.ToolResponse) string {
 		if command == "" {
 			command = argString(args, "cmd")
 		}
-		return "Ran " + command + outputPreview(resp.Output, 3)
+		return "Ran " + command + outputPreview(resp.Output, toolPreviewLines)
 	case "edit":
 		path := argString(args, "path")
 		oldText := argString(args, "old_string")
@@ -154,23 +170,23 @@ func summarizeToolLog(req *types.ToolRequest, resp *types.ToolResponse) string {
 		content := argString(args, "content")
 		return fmt.Sprintf("Wrote %s (%d lines, %d bytes)", path, countLogicalLines(content), len([]byte(content)))
 	case "read_file":
-		return "Read " + argString(args, "path") + outputPreview(resp.Output, 4)
+		return "Read " + argString(args, "path") + outputPreview(resp.Output, toolPreviewLines)
 	case "list_dir":
-		return "Listed " + argString(args, "path") + outputPreview(resp.Output, 4)
+		return "Listed " + argString(args, "path") + outputPreview(resp.Output, toolPreviewLines)
 	case "grep":
 		label := argString(args, "pattern")
 		if path := argString(args, "path"); path != "" {
 			label += " in " + path
 		}
-		return "Searched " + label + outputPreview(resp.Output, 4)
+		return "Searched " + label + outputPreview(resp.Output, toolPreviewLines)
 	case "glob":
 		label := argString(args, "pattern")
 		if path := argString(args, "path"); path != "" {
 			label += " in " + path
 		}
-		return "Matched " + label + outputPreview(resp.Output, 4)
+		return "Matched " + label + outputPreview(resp.Output, toolPreviewLines)
 	default:
-		return strings.TrimSpace(req.Name) + outputPreview(resp.Output, 3)
+		return strings.TrimSpace(req.Name) + outputPreview(resp.Output, toolPreviewLines)
 	}
 }
 

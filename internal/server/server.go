@@ -301,14 +301,49 @@ func (s *Server) handleWS(c *gin.Context) {
 
 	// 保持连接，处理可能的客户端消息（目前仅广播，不处理客户端发送）
 	for {
-		_, _, err := conn.ReadMessage()
+		_, payload, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("[OpenLink] ⚠️ WebSocket 连接异常: %v\n", err)
 			}
 			break
 		}
+		s.handleWSClientMessage(payload)
 	}
+}
+
+func (s *Server) handleWSClientMessage(payload []byte) {
+	var msg struct {
+		Type string `json:"type"`
+		Key  string `json:"key"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return
+	}
+	switch msg.Type {
+	case "ai_log":
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			return
+		}
+		if s.logger != nil {
+			key := strings.TrimSpace(msg.Key)
+			if key == "" {
+				key = "browser-ai-response"
+			}
+			s.logger.LogAIResponse(key, summarizeBrowserAIText(text), text)
+		}
+	}
+}
+
+func summarizeBrowserAIText(text string) string {
+	const maxLines = 50
+	lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(text), "\r\n", "\n"), "\n")
+	if len(lines) <= maxLines {
+		return strings.TrimSpace(text)
+	}
+	return strings.Join(lines[:maxLines], "\n") + fmt.Sprintf("\n… +%d lines (Ctrl+T 查看完整)", len(lines)-maxLines)
 }
 
 func (s *Server) Run() error {

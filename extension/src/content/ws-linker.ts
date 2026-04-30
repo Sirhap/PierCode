@@ -6,6 +6,12 @@ let configuredApiUrl = '';
 let configuredToken = '';
 let connectionSeq = 0;
 
+type InjectConfig = {
+  editor: string;
+  sendBtn: string;
+  fillMethod: "value" | "execCommand" | "contentEditable";
+};
+
 async function getAuthInfo(): Promise<{ apiUrl: string; token: string } | null> {
   return new Promise((resolve) => {
     chrome.storage.local.get(["apiUrl", "authToken", "authPort"], (result) => {
@@ -30,6 +36,86 @@ function toWebSocketUrl(apiUrl: string, token: string): string | null {
   } catch {
     return null;
   }
+}
+
+function getInjectConfig(): InjectConfig {
+  const h = location.hostname;
+  if (h.includes("qwen.ai") || h.includes("qwenlm.ai")) {
+    return {
+      editor: [
+        "textarea.message-input-textarea",
+        "textarea[placeholder*='Send']",
+        "textarea[placeholder*='输入']",
+        "[contenteditable='true']"
+      ].join(","),
+      sendBtn: [
+        "button.send-button:not([disabled])",
+        "button[aria-label*='发送']:not([disabled])",
+        "button[aria-label*='Send']:not([disabled])"
+      ].join(","),
+      fillMethod: "value"
+    };
+  }
+  if (h.includes("kimi.com")) {
+    return {
+      editor: "div.chat-input-editor[contenteditable='true'], [contenteditable='true']",
+      sendBtn: "div.send-button-container, button[aria-label*='发送']:not([disabled]), button[aria-label*='Send']:not([disabled])",
+      fillMethod: "execCommand"
+    };
+  }
+  if (h.includes("chat.z.ai")) {
+    return {
+      editor: "textarea#chat-input, textarea",
+      sendBtn: "button#send-message-button:not([disabled]), button[aria-label*='发送']:not([disabled]), button[aria-label*='Send']:not([disabled])",
+      fillMethod: "value"
+    };
+  }
+  if (h.includes("gemini.google.com")) {
+    return {
+      editor: "div.ql-editor[contenteditable='true'], [contenteditable='true']",
+      sendBtn: "button.send-button[aria-label*='发送']:not([disabled]), button.send-button[aria-label*='Send']:not([disabled])",
+      fillMethod: "execCommand"
+    };
+  }
+  return {
+    editor: [
+      "textarea.prompt-textarea",
+      "textarea#prompt-textarea",
+      "#prompt-textarea",
+      "textarea[placeholder*='Start typing a prompt']",
+      "textarea[placeholder*='Message']",
+      "textarea[placeholder*='输入']",
+      "textarea[placeholder*='Send']",
+      "[contenteditable='true']"
+    ].join(","),
+    sendBtn: [
+      "button[type='submit']:not([disabled])",
+      "button[aria-label*='Run']:not([disabled])",
+      "button[aria-label*='发送']:not([disabled])",
+      "button[aria-label*='Send']:not([disabled])",
+      "button.send-button:not([disabled])"
+    ].join(","),
+    fillMethod: "value"
+  };
+}
+
+function querySelectorFirst(selectors: string): HTMLElement | null {
+  for (const selector of selectors.split(",").map(s => s.trim()).filter(Boolean)) {
+    const el = document.querySelector(selector) as HTMLElement | null;
+    if (el && isVisibleInput(el)) return el;
+  }
+  return null;
+}
+
+function isVisibleInput(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  const style = window.getComputedStyle(el);
+  return rect.width > 0 &&
+    rect.height > 0 &&
+    style.display !== "none" &&
+    style.visibility !== "hidden" &&
+    style.opacity !== "0" &&
+    el.getAttribute("aria-hidden") !== "true";
 }
 
 function connectWebSocket(apiUrl: string, token: string) {
@@ -100,10 +186,19 @@ function setTextInputValue(targetInput: HTMLTextAreaElement | HTMLInputElement, 
   targetInput.dispatchEvent(new Event("input", { bubbles: true }));
   targetInput.dispatchEvent(new Event("change", { bubbles: true }));
   targetInput.focus();
+  if (targetInput instanceof HTMLTextAreaElement || targetInput instanceof HTMLInputElement) {
+    const end = targetInput.value.length;
+    targetInput.setSelectionRange?.(end, end);
+  }
+}
+
+function sanitizeInjectedText(text: string): string {
+  return text.replace(/^[\s\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060\uFEFF\uFFFC\uFFFD\u25A1]+/u, "");
 }
 
 function setContentEditableValue(targetInput: HTMLElement, text: string) {
   targetInput.focus();
+  targetInput.textContent = "";
   const selection = window.getSelection();
   const range = document.createRange();
   range.selectNodeContents(targetInput);
@@ -114,58 +209,68 @@ function setContentEditableValue(targetInput: HTMLElement, text: string) {
   targetInput.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+function fillTargetInput(targetInput: HTMLTextAreaElement | HTMLInputElement | HTMLElement, text: string, fillMethod: InjectConfig["fillMethod"]) {
+  if (targetInput instanceof HTMLTextAreaElement || targetInput instanceof HTMLInputElement) {
+    setTextInputValue(targetInput, text);
+    return;
+  }
+  if (fillMethod === "execCommand") {
+    setContentEditableValue(targetInput, text);
+    return;
+  }
+  setContentEditableValue(targetInput, text);
+}
+
+function clickSendButton(config: InjectConfig, targetInput: HTMLElement, attempts = 0) {
+  const sendBtn = querySelectorFirst(config.sendBtn);
+  if (sendBtn) {
+    sendBtn.click();
+    return;
+  }
+  if (attempts >= 50) {
+    targetInput.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Enter",
+      code: "Enter",
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true
+    }));
+    return;
+  }
+  window.setTimeout(() => clickSendButton(config, targetInput, attempts + 1), 100);
+}
+
 // 处理注入消息：查找聊天输入框并填入内容
 function handleInjectMessage(text: string) {
   console.log("[OpenLink] 收到注入消息:", text);
-
-  // 定义不同 AI 平台的输入框选择器
-  const selectors = [
-    // Claude
-    "textarea.prompt-textarea",
-    // ChatGPT
-    "textarea#prompt-textarea",
-    "#prompt-textarea",
-    // Qwen
-    "textarea.message-input-textarea",
-    // Kimi
-    "div.chat-input-editor[contenteditable='true']",
-    // Chat Z
-    "textarea#chat-input",
-    // Gemini
-    "div.ql-editor[contenteditable='true']",
-    // AI Studio
-    "textarea[placeholder*='Start typing a prompt']",
-    // 通用
-    "textarea[placeholder*='Message']",
-    "textarea[placeholder*='输入']",
-    "textarea[placeholder*='Send']",
-    "[contenteditable='true']"
-  ];
-
-  let targetInput: HTMLTextAreaElement | HTMLElement | null = null;
-
-  // 尝试查找
-  for (const selector of selectors) {
-    const el = document.querySelector(selector);
-    if (el) {
-      targetInput = el as HTMLTextAreaElement | HTMLElement;
-      break;
-    }
+  const cleanText = sanitizeInjectedText(text);
+  if (!cleanText) {
+    console.warn("[OpenLink] 注入内容为空，已跳过");
+    return;
   }
+  const config = getInjectConfig();
+  const targetInput = querySelectorFirst(config.editor);
 
   if (!targetInput) {
     console.warn("[OpenLink] 未找到当前页面的聊天输入框");
     return;
   }
 
-  // 填入内容并触发事件（模拟用户输入）
-  if (targetInput instanceof HTMLTextAreaElement || targetInput instanceof HTMLInputElement) {
-    setTextInputValue(targetInput, text);
-  } else {
-    setContentEditableValue(targetInput, text);
-  }
+  fillTargetInput(targetInput, cleanText, config.fillMethod);
+  window.setTimeout(() => clickSendButton(config, targetInput), 100);
 
-  console.log("[OpenLink] ✅ 内容已注入到输入框");
+  console.log("[OpenLink] ✅ 内容已注入并提交到输入框");
+}
+
+export function sendAIResponseLog(key: string, text: string): void {
+  const trimmed = text.trim();
+  if (!trimmed || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try {
+    ws.send(JSON.stringify({ type: "ai_log", key, text: trimmed }));
+  } catch (error) {
+    console.warn("[OpenLink] AI 响应日志回传失败:", error);
+  }
 }
 
 // 初始化

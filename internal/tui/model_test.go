@@ -55,6 +55,26 @@ func TestViewRendersLogoAndStatus(t *testing.T) {
 	if !strings.Contains(view, "RUNNING") {
 		t.Fatalf("expected running status in view")
 	}
+	if !strings.Contains(view, "PAGE") || !strings.Contains(view, "0") {
+		t.Fatalf("expected browser page count in status strip")
+	}
+}
+
+func TestBrowserConnectionCountUpdatesStatusStrip(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 100
+	model.height = 30
+
+	next, _ := model.Update(LogMsg{
+		Source:   "system",
+		ToolName: "BROWSER",
+		Status:   "success",
+		Message:  "浏览器扩展已连接 (2)",
+	})
+	view := next.(Model).View()
+	if !strings.Contains(view, "PAGE") || !strings.Contains(view, "2") {
+		t.Fatalf("expected connected browser page count in status strip, got %q", view)
+	}
 }
 
 func TestAuthURLIsRenderedCompletely(t *testing.T) {
@@ -113,6 +133,43 @@ func TestLogEntryRendersMessageWithoutMetadata(t *testing.T) {
 	}
 }
 
+func TestNormalAIResponseRendersInTUI(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 100
+	model.height = 24
+
+	next, _ := model.Update(LogMsg{
+		Source:  "ai",
+		Status:  "info",
+		Message: "这是 AI 的普通回复，不是工具调用。",
+	})
+	view := next.(Model).View()
+	if !strings.Contains(view, "这是 AI 的普通回复") {
+		t.Fatalf("expected normal AI response in view, got %q", view)
+	}
+	if strings.Contains(view, "MESSAGE") {
+		t.Fatalf("normal AI response should not render as a tool card, got %q", view)
+	}
+}
+
+func TestStreamingAIResponseUpdatesSameLogEntry(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 100
+	model.height = 24
+
+	next, _ := model.Update(LogMsg{Key: "ai-1", Source: "ai", Status: "info", Message: "第一段"})
+	model = next.(Model)
+	next, _ = model.Update(LogMsg{Key: "ai-1", Source: "ai", Status: "info", Message: "第一段\n第二段"})
+	model = next.(Model)
+
+	if len(model.logs) != 1 {
+		t.Fatalf("expected streaming response to update one log entry, got %d", len(model.logs))
+	}
+	if !strings.Contains(model.View(), "第二段") {
+		t.Fatalf("expected updated streaming text in view")
+	}
+}
+
 func TestSlashCommandSuggestionsAndTabCompletion(t *testing.T) {
 	model := NewModel(39527, "D:\\workspace", "qwen")
 	model.width = 100
@@ -165,11 +222,14 @@ func TestSlashClearCommandClearsActivity(t *testing.T) {
 		t.Fatalf("expected /clear to be local")
 	}
 	updated := next.(Model)
-	if updated.inputMode {
-		t.Fatalf("expected input mode to close")
+	if !updated.inputMode {
+		t.Fatalf("expected CLI prompt to remain active")
 	}
 	if len(updated.logs) != 0 {
 		t.Fatalf("expected logs to be cleared, got %d", len(updated.logs))
+	}
+	if len(updated.turns) != 0 {
+		t.Fatalf("expected transcript to be cleared, got %d turns", len(updated.turns))
 	}
 }
 
@@ -270,8 +330,35 @@ func TestCommandHelpTextIsMultiline(t *testing.T) {
 	if !strings.Contains(help, "\n") {
 		t.Fatalf("expected help text to be multiline, got %q", help)
 	}
+	if !strings.Contains(help, "/init - 发送初始化提示词到浏览器 AI 页面") {
+		t.Fatalf("expected init command in help, got %q", help)
+	}
+	if !strings.Contains(help, "Ctrl+D - 切换工具详情视图") {
+		t.Fatalf("expected detail-mode shortcut in help, got %q", help)
+	}
 	if strings.Contains(help, " · ") {
 		t.Fatalf("help text should not be joined with bullets, got %q", help)
+	}
+}
+
+func TestSlashInitCommandStartsInitPromptSend(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.inputMode = true
+	model.input = "/init"
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("expected /init to return a command")
+	}
+	updated := next.(Model)
+	if len(updated.logs) != 1 {
+		t.Fatalf("expected one pending log, got %d", len(updated.logs))
+	}
+	if updated.logs[0].ToolName != "INIT" || updated.logs[0].Status != "pending" {
+		t.Fatalf("expected pending INIT log, got %#v", updated.logs[0])
+	}
+	if !strings.Contains(updated.logs[0].Message, "初始化提示词") {
+		t.Fatalf("expected init prompt message, got %q", updated.logs[0].Message)
 	}
 }
 
@@ -289,8 +376,8 @@ func TestInputHintDoesNotRenderShortcutHelp(t *testing.T) {
 	if strings.Contains(view, "i//") {
 		t.Fatalf("focus hint should not render malformed i// text, got %q", view)
 	}
-	if !strings.Contains(view, "发到浏览器") {
-		t.Fatalf("expected concise Chinese input label, got %q", view)
+	if !strings.Contains(view, "openlink> hello") {
+		t.Fatalf("expected shell-like input label, got %q", view)
 	}
 }
 
@@ -346,6 +433,21 @@ func TestMultilineInputSubmitsAsSingleLogEntry(t *testing.T) {
 	}
 }
 
+func TestInjectInputDropsLeadingInvisiblePrefix(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.inputMode = true
+	model.input = "\u200b\uFFFC\u25A1你好"
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("expected sanitized input to submit")
+	}
+	updated := next.(Model)
+	if updated.logs[0].Message != "你好" {
+		t.Fatalf("expected invisible prefix to be removed, got %q", updated.logs[0].Message)
+	}
+}
+
 func TestPastedMultilineRunesStayInOneInputBuffer(t *testing.T) {
 	model := NewModel(39527, "D:\\workspace", "qwen")
 	model.inputMode = true
@@ -363,22 +465,18 @@ func TestPastedMultilineRunesStayInOneInputBuffer(t *testing.T) {
 	}
 }
 
-func TestUserLogWrapsLongMessageWithoutEllipsis(t *testing.T) {
+func TestUserTurnWrapsLongMessageWithoutEllipsis(t *testing.T) {
 	model := NewModel(39527, "D:\\workspace", "qwen")
 	model.width = 72
 	model.height = 36
+	model.recordUserPrompt("用户发送了一段很长很长的文本，日志里也不能省略这段用户文本 USER_TAIL")
 
-	next, _ := model.Update(LogMsg{
-		Source:  "user",
-		Status:  "pending",
-		Message: "用户发送了一段很长很长的文本，日志里也不能省略这段用户文本 USER_TAIL",
-	})
-	view := next.(Model).View()
+	view := model.View()
 	if !strings.Contains(view, "USER_TAIL") {
-		t.Fatalf("expected user log tail to remain visible, got %q", view)
+		t.Fatalf("expected user turn tail to remain visible, got %q", view)
 	}
 	if strings.Contains(view, "用户发送了一段很长很长的文本...") {
-		t.Fatalf("user log should wrap instead of ellipsizing, got %q", view)
+		t.Fatalf("user turn should wrap instead of ellipsizing, got %q", view)
 	}
 }
 
@@ -409,6 +507,128 @@ func TestCtrlTShowsFullAITranscript(t *testing.T) {
 	}
 }
 
+func TestFullAITranscriptCanScroll(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 80
+	model.height = 18
+
+	next, _ := model.Update(LogMsg{
+		Source:   "ai",
+		ToolName: "exec_cmd",
+		Status:   "success",
+		Message:  "Ran command\n   … +10 lines (Ctrl+T 查看完整)",
+		FullMessage: strings.Join([]string{
+			"line-01", "line-02", "line-03", "line-04", "line-05",
+			"line-06", "line-07", "line-08", "line-09", "FULL_SCROLL_TAIL",
+		}, "\n"),
+	})
+	model = next.(Model)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	model = next.(Model)
+	if strings.Contains(model.renderLogs(80, 4), "FULL_SCROLL_TAIL") {
+		t.Fatalf("tail should not be visible before scrolling")
+	}
+
+	for i := 0; i < 8; i++ {
+		next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+		model = next.(Model)
+	}
+	if !strings.Contains(model.renderLogs(80, 4), "FULL_SCROLL_TAIL") {
+		t.Fatalf("expected full transcript tail after scrolling")
+	}
+}
+
+func TestMouseWheelScrollsFullTranscript(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 80
+	model.height = 18
+
+	next, _ := model.Update(LogMsg{
+		Source:   "ai",
+		ToolName: "exec_cmd",
+		Status:   "success",
+		Message:  "Ran command\n   … +10 lines (Ctrl+T 查看完整)",
+		FullMessage: strings.Join([]string{
+			"line-01", "line-02", "line-03", "line-04", "line-05",
+			"line-06", "line-07", "line-08", "line-09", "FULL_MOUSE_TAIL",
+		}, "\n"),
+	})
+	model = next.(Model)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	model = next.(Model)
+	next, _ = model.Update(tea.MouseMsg{Type: tea.MouseWheelDown})
+	model = next.(Model)
+
+	if model.fullOffset == 0 {
+		t.Fatalf("expected mouse wheel to move full transcript offset")
+	}
+}
+
+func TestMouseWheelScrollsLogSelection(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.logsMode = true
+	for i := 0; i < 5; i++ {
+		next, _ := model.Update(LogMsg{Source: "ai", Status: "info", Message: "line"})
+		model = next.(Model)
+	}
+	if model.logOffset != 4 {
+		t.Fatalf("expected latest log selected")
+	}
+	next, _ := model.Update(tea.MouseMsg{Type: tea.MouseWheelUp})
+	model = next.(Model)
+	if model.logOffset >= 4 {
+		t.Fatalf("expected mouse wheel up to move log selection, got %d", model.logOffset)
+	}
+}
+
+func TestLogsAutoScrollByRenderedLines(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 80
+	model.height = 18
+
+	large := strings.Join([]string{
+		"line-01", "line-02", "line-03", "line-04", "line-05",
+		"line-06", "line-07", "line-08", "line-09", "line-10",
+	}, "\n")
+	next, _ := model.Update(LogMsg{Source: "ai", Status: "info", Message: large})
+	model = next.(Model)
+	next, _ = model.Update(LogMsg{Source: "ai", Status: "info", Message: "LATEST_VISIBLE_LINE"})
+	model = next.(Model)
+
+	view := model.renderLogs(80, 4)
+	if !strings.Contains(view, "LATEST_VISIBLE_LINE") {
+		t.Fatalf("expected newest log to remain visible after a tall previous log, got %q", view)
+	}
+}
+
+func TestLogLineClassificationForCommandSummary(t *testing.T) {
+	entry := LogEntry{Source: "ai", ToolName: "exec_cmd", Message: "Ran command\n   … +3 lines"}
+	if !isCommandLog(entry) {
+		t.Fatalf("expected exec_cmd AI entry to be command-like")
+	}
+	if !isFoldedSummaryLine("   … +3 lines") {
+		t.Fatalf("expected folded summary line")
+	}
+	if !isOutputDetailLine(" └ output") {
+		t.Fatalf("expected output detail line")
+	}
+	if !isCommandLine("> go test ./...") {
+		t.Fatalf("expected command line")
+	}
+	if !isDiffAddLine("+ added") || isDiffAddLine("+++ new") {
+		t.Fatalf("expected diff add classification to skip diff header")
+	}
+	if !isDiffDeleteLine("- removed") || isDiffDeleteLine("--- old") {
+		t.Fatalf("expected diff delete classification to skip diff header")
+	}
+	if !isDiffHunkLine("@@ context") {
+		t.Fatalf("expected diff hunk classification")
+	}
+	if !isCodeFenceLine("```go") {
+		t.Fatalf("expected code fence classification")
+	}
+}
+
 func TestLogEntryRendersMultilineSummary(t *testing.T) {
 	model := NewModel(39527, "D:\\workspace", "qwen")
 	model.width = 100
@@ -422,13 +642,44 @@ func TestLogEntryRendersMultilineSummary(t *testing.T) {
 	})
 	view := next.(Model).View()
 
-	if !strings.Contains(view, "Ran Get-Content internal\\tool\\grep.go -Encoding UTF8") {
-		t.Fatalf("expected command summary in view")
-	}
 	if !strings.Contains(view, "… +3 lines") {
 		t.Fatalf("expected folded line count in view")
 	}
-	if strings.Contains(view, "exec_cmd") {
-		t.Fatalf("tool metadata column should not be rendered")
+	if !strings.Contains(view, "exec_cmd") {
+		t.Fatalf("tool card header should include tool name")
+	}
+	if !strings.Contains(view, "> Get-Content internal\\tool\\grep.go -Encoding UTF8") {
+		t.Fatalf("tool card should render command line, got %q", view)
+	}
+}
+
+func TestCtrlDTogglesToolDetailMode(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 100
+	model.height = 24
+
+	next, _ := model.Update(LogMsg{
+		Source:      "ai",
+		ToolName:    "exec_cmd",
+		Status:      "success",
+		Message:     "Ran command\n └ preview",
+		FullMessage: "Ran command\nfull output",
+	})
+	model = next.(Model)
+	if strings.Contains(model.View(), "VIEW DETAIL") {
+		t.Fatalf("detail mode should be off by default")
+	}
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	if cmd != nil {
+		t.Fatalf("expected Ctrl+D to be local")
+	}
+	model = next.(Model)
+	view := model.View()
+	if !strings.Contains(view, "VIEW DETAIL") {
+		t.Fatalf("expected status strip to show detail mode, got %q", view)
+	}
+	if !strings.Contains(view, "detail  Ctrl+T 查看完整输出") {
+		t.Fatalf("expected selected tool to show detail hint, got %q", view)
 	}
 }

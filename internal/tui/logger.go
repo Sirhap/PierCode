@@ -40,6 +40,18 @@ func (l *Logger) LogToolCallWithSourceFull(source, toolName, status, message, fu
 	}
 }
 
+func (l *Logger) LogAIResponse(key, message, fullMessage string) {
+	if l.program != nil {
+		l.program.Send(LogMsg{
+			Key:         key,
+			Source:      "ai",
+			Status:      "info",
+			Message:     message,
+			FullMessage: fullMessage,
+		})
+	}
+}
+
 // LogStatus 更新服务状态
 func (l *Logger) LogStatus(status string) {
 	if l.program != nil {

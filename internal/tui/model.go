@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,6 +16,7 @@ import (
 
 // LogEntry 代表一条日志记录
 type LogEntry struct {
+	Key         string
 	Time        time.Time
 	Source      string // "user", "ai", "system"
 	ToolName    string
@@ -27,21 +27,30 @@ type LogEntry struct {
 
 // Model 是 TUI 的核心状态
 type Model struct {
-	logs       []LogEntry
-	status     string
-	port       int
-	rootDir    string
-	aiProvider string
-	token      string
-	width      int
-	height     int
-	logOffset  int
-	stats      map[string]int
-	input      string
-	inputMode  bool
-	authURL    string
-	commandIdx int
-	fullView   bool
+	logs             []LogEntry
+	turns            []Turn
+	status           string
+	port             int
+	rootDir          string
+	aiProvider       string
+	token            string
+	width            int
+	height           int
+	logOffset        int
+	stats            map[string]int
+	input            string
+	inputMode        bool
+	authURL          string
+	commandIdx       int
+	fullView         bool
+	fullOffset       int
+	detailMode       bool
+	browserClients   int
+	logsMode         bool
+	turnSeq          int
+	transcriptOffset int
+	inputHistory     []string
+	historyIdx       int
 }
 
 // 样式定义
@@ -80,14 +89,18 @@ func NewModel(port int, rootDir, aiProvider string, token ...string) Model {
 		authToken = token[0]
 	}
 	return Model{
-		logs:       make([]LogEntry, 0),
-		status:     "starting",
-		port:       port,
-		rootDir:    rootDir,
-		aiProvider: aiProvider,
-		token:      authToken,
-		authURL:    authURLForToken(port, authToken),
-		stats:      map[string]int{"success": 0, "error": 0, "pending": 0, "info": 0},
+		logs:             make([]LogEntry, 0),
+		turns:            make([]Turn, 0),
+		status:           "starting",
+		port:             port,
+		rootDir:          rootDir,
+		aiProvider:       aiProvider,
+		token:            authToken,
+		authURL:          authURLForToken(port, authToken),
+		stats:            map[string]int{"success": 0, "error": 0, "pending": 0, "info": 0},
+		inputMode:        true,
+		transcriptOffset: -1,
+		historyIdx:       -1,
 	}
 }
 
@@ -116,23 +129,9 @@ type cwdChangedMsg struct {
 	RootDir string
 }
 
-type slashCommand struct {
-	Name        string
-	Usage       string
-	Description string
-}
-
-var slashCommandList = []slashCommand{
-	{Name: "cd", Usage: "<path>", Description: "切换 AI 工具执行目录"},
-	{Name: "cwd", Usage: "", Description: "显示当前执行目录"},
-	{Name: "url", Usage: "", Description: "显示认证 URL"},
-	{Name: "send", Usage: "<text>", Description: "把文本发送到浏览器 AI 输入框"},
-	{Name: "clear", Usage: "", Description: "清空活动区"},
-	{Name: "help", Usage: "", Description: "显示 TUI 指令"},
-}
-
 func injectInputCmd(text string, port int, token string) tea.Cmd {
 	return func() tea.Msg {
+		text = sanitizeInjectText(text)
 		payload, err := json.Marshal(map[string]string{"text": text})
 		if err != nil {
 			return LogMsg{Source: "system", ToolName: "INJECT", Status: "error", Message: fmt.Sprintf("编码失败: %v", err)}
@@ -167,6 +166,69 @@ func injectInputCmd(text string, port int, token string) tea.Cmd {
 			return LogMsg{Source: "system", ToolName: "INJECT", Status: "error", Message: "未连接浏览器扩展，请刷新 AI 页面或重新配置插件"}
 		}
 		return LogMsg{Source: "system", ToolName: "INJECT", Status: "success", Message: fmt.Sprintf("已发送到 %d 个浏览器页面", decoded.Clients)}
+	}
+}
+
+func initPromptCmd(port int, token string) tea.Cmd {
+	return func() tea.Msg {
+		client := &http.Client{Timeout: 10 * time.Second}
+		promptURL := fmt.Sprintf("http://127.0.0.1:%d/prompt", port)
+		req, err := http.NewRequest(http.MethodGet, promptURL, nil)
+		if err != nil {
+			return LogMsg{Source: "system", ToolName: "INIT", Status: "error", Message: fmt.Sprintf("初始化请求创建失败: %v", err)}
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return LogMsg{Source: "system", ToolName: "INIT", Status: "error", Message: fmt.Sprintf("获取初始化提示词失败: %v", err)}
+		}
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return LogMsg{Source: "system", ToolName: "INIT", Status: "error", Message: fmt.Sprintf("获取初始化提示词失败 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
+		}
+
+		promptText := strings.TrimSpace(string(body))
+		if promptText == "" {
+			return LogMsg{Source: "system", ToolName: "INIT", Status: "error", Message: "初始化提示词为空"}
+		}
+
+		payload, err := json.Marshal(map[string]string{"text": promptText})
+		if err != nil {
+			return LogMsg{Source: "system", ToolName: "INIT", Status: "error", Message: fmt.Sprintf("初始化提示词编码失败: %v", err)}
+		}
+
+		injectURL := fmt.Sprintf("http://127.0.0.1:%d/inject", port)
+		injectReq, err := http.NewRequest(http.MethodPost, injectURL, bytes.NewReader(payload))
+		if err != nil {
+			return LogMsg{Source: "system", ToolName: "INIT", Status: "error", Message: fmt.Sprintf("发送初始化请求创建失败: %v", err)}
+		}
+		injectReq.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			injectReq.Header.Set("Authorization", "Bearer "+token)
+		}
+		injectResp, err := client.Do(injectReq)
+		if err != nil {
+			return LogMsg{Source: "system", ToolName: "INIT", Status: "error", Message: fmt.Sprintf("发送初始化提示词失败: %v", err)}
+		}
+		defer injectResp.Body.Close()
+
+		injectBody, _ := io.ReadAll(injectResp.Body)
+		if injectResp.StatusCode < 200 || injectResp.StatusCode >= 300 {
+			return LogMsg{Source: "system", ToolName: "INIT", Status: "error", Message: fmt.Sprintf("发送初始化提示词失败 HTTP %d: %s", injectResp.StatusCode, strings.TrimSpace(string(injectBody)))}
+		}
+
+		var decoded injectResponse
+		if err := json.Unmarshal(injectBody, &decoded); err != nil {
+			return LogMsg{Source: "system", ToolName: "INIT", Status: "error", Message: fmt.Sprintf("初始化发送响应解析失败: %v", err)}
+		}
+		if decoded.Clients == 0 {
+			return LogMsg{Source: "system", ToolName: "INIT", Status: "error", Message: "未连接浏览器扩展，请刷新 AI 页面或重新配置插件"}
+		}
+		return LogMsg{Source: "system", ToolName: "INIT", Status: "success", Message: fmt.Sprintf("初始化提示词已发送到 %d 个浏览器页面", decoded.Clients)}
 	}
 }
 
@@ -227,26 +289,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.clampCommandSelection()
 					return m, nil
 				}
-				text := strings.TrimSpace(m.input)
+				text := sanitizeInjectText(m.input)
 				if text != "" {
 					if strings.HasPrefix(text, "/") {
 						return m.executeSlashCommand(text)
 					}
-					m.logs = append(m.logs, LogEntry{
-						Time: time.Now(), Source: "user", ToolName: "INJECT", Status: "pending", Message: text,
-					})
-					m.stats["pending"]++
+					m.recordUserPrompt(text)
 					m.input = ""
-					m.inputMode = false
-					m.logOffset = len(m.logs) - 1
+					m.inputMode = true
+					m.historyIdx = -1
 					return m, injectInputCmd(text, m.port, m.token)
 				}
 				m.input = ""
-				m.inputMode = false
+				m.inputMode = true
 				return m, nil
+			case tea.KeyCtrlC:
+				return m, tea.Quit
 			case tea.KeyEscape:
 				m.input = ""
 				m.inputMode = false
+				m.historyIdx = -1
 				return m, nil
 			case tea.KeyCtrlJ:
 				m.input += "\n"
@@ -254,18 +316,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case tea.KeyCtrlT:
 				m.fullView = !m.fullView
+				m.fullOffset = 0
+				return m, nil
+			case tea.KeyCtrlD:
+				m.detailMode = !m.detailMode
 				return m, nil
 			case tea.KeyTab:
 				m.completeSlashInput()
 				return m, nil
 			case tea.KeyUp:
-				if m.isSlashInput() {
+				if m.fullView && m.hasActiveFullLog() {
+					if m.fullOffset > 0 {
+						m.fullOffset--
+					}
+				} else if m.isSlashInput() {
 					m.moveCommandSelection(-1)
+				} else if !strings.Contains(m.input, "\n") {
+					m.recallInputHistory(-1)
 				}
 				return m, nil
 			case tea.KeyDown:
-				if m.isSlashInput() {
+				if m.fullView && m.hasActiveFullLog() {
+					m.fullOffset++
+				} else if m.isSlashInput() {
 					m.moveCommandSelection(1)
+				} else if !strings.Contains(m.input, "\n") {
+					m.recallInputHistory(1)
 				}
 				return m, nil
 			case tea.KeyCtrlU:
@@ -285,10 +361,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case tea.KeyRunes:
 				m.input += slashRunesToAppend(m.input, string(msg.Runes))
+				m.historyIdx = -1
 				m.clampCommandSelection()
 				return m, nil
 			case tea.KeySpace:
 				m.input += " "
+				m.historyIdx = -1
 				return m, nil
 			}
 			return m, nil
@@ -299,6 +377,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "ctrl+t":
 			m.fullView = !m.fullView
+			m.fullOffset = 0
+			return m, nil
+		case "ctrl+d":
+			m.detailMode = !m.detailMode
 			return m, nil
 		case "i":
 			m.inputMode = true
@@ -311,22 +393,63 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.commandIdx = 0
 			return m, nil
 		case "up", "k":
+			if m.fullView && m.hasActiveFullLog() {
+				if m.fullOffset > 0 {
+					m.fullOffset--
+				}
+				return m, nil
+			}
+			if !m.logsMode {
+				if m.transcriptOffset < 0 {
+					m.transcriptOffset = 0
+				}
+				m.transcriptOffset--
+				return m, nil
+			}
 			if m.logOffset > 0 {
 				m.logOffset--
+				m.fullOffset = 0
 			}
 			return m, nil
 		case "down", "j":
+			if m.fullView && m.hasActiveFullLog() {
+				m.fullOffset++
+				return m, nil
+			}
+			if !m.logsMode {
+				m.transcriptOffset++
+				return m, nil
+			}
 			if m.logOffset < len(m.logs)-1 {
 				m.logOffset++
+				m.fullOffset = 0
 			}
 			return m, nil
 		case "home", "g":
+			if m.fullView && m.hasActiveFullLog() {
+				m.fullOffset = 0
+				return m, nil
+			}
+			if !m.logsMode {
+				m.transcriptOffset = 0
+				return m, nil
+			}
 			m.logOffset = 0
+			m.fullOffset = 0
 			return m, nil
 		case "end", "G":
+			if m.fullView && m.hasActiveFullLog() {
+				m.fullOffset = maxInt(0, len(logDisplayLines(m.logs[m.logOffset], maxInt(8, m.width-6), true, m.detailMode))-1)
+				return m, nil
+			}
+			if !m.logsMode {
+				m.transcriptOffset = -1
+				return m, nil
+			}
 			if len(m.logs) > 0 {
 				m.logOffset = len(m.logs) - 1
 			}
+			m.fullOffset = 0
 			return m, nil
 		}
 		if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
@@ -336,25 +459,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case tea.MouseMsg:
+		switch msg.Type {
+		case tea.MouseWheelUp:
+			return m.handleScroll(-3), nil
+		case tea.MouseWheelDown:
+			return m.handleScroll(3), nil
+		}
+		return m, nil
+
 	case LogMsg:
 		if authURL := extractAuthURL(msg.Message); authURL != "" {
 			m.authURL = authURL
 			return m, nil
 		}
-		m.logs = append(m.logs, LogEntry{
-			Time: time.Now(), Source: msg.Source, ToolName: msg.ToolName, Status: msg.Status, Message: msg.Message, FullMessage: msg.FullMessage,
-		})
+		if strings.EqualFold(msg.ToolName, "BROWSER") {
+			m.browserClients = extractTrailingCount(msg.Message)
+		}
+		if msg.Key != "" {
+			for i := len(m.logs) - 1; i >= 0; i-- {
+				if m.logs[i].Key == msg.Key {
+					m.logs[i].Time = time.Now()
+					m.logs[i].Source = msg.Source
+					m.logs[i].ToolName = msg.ToolName
+					m.logs[i].Status = msg.Status
+					m.logs[i].Message = msg.Message
+					m.logs[i].FullMessage = msg.FullMessage
+					m.logOffset = i
+					m.applyLogToTranscript(m.logs[i])
+					return m, nil
+				}
+			}
+		}
+		entry := LogEntry{
+			Key: msg.Key, Time: time.Now(), Source: msg.Source, ToolName: msg.ToolName, Status: msg.Status, Message: msg.Message, FullMessage: msg.FullMessage,
+		}
+		m.logs = append(m.logs, entry)
 		m.stats[msg.Status]++
 		m.logOffset = len(m.logs) - 1
+		m.applyLogToTranscript(entry)
 		return m, nil
 
 	case cwdChangedMsg:
 		m.rootDir = msg.RootDir
-		m.logs = append(m.logs, LogEntry{
+		entry := LogEntry{
 			Time: time.Now(), Source: "system", ToolName: "CWD", Status: "success", Message: "工作目录已切换: " + msg.RootDir,
-		})
+		}
+		m.logs = append(m.logs, entry)
 		m.stats["success"]++
 		m.logOffset = len(m.logs) - 1
+		m.appendSystemNotice(entry.Status, entry.Message)
 		return m, nil
 
 	case StatusMsg:
@@ -389,7 +543,7 @@ func (m Model) View() string {
 		m.renderRule(width),
 		status,
 		auth,
-		m.renderLogs(width, logHeight),
+		m.renderActivity(width, logHeight),
 		m.renderRule(width),
 		composer,
 	)
@@ -405,7 +559,7 @@ func (m Model) renderLogEntry(isActive bool, entry LogEntry) string {
 		prefix = lipgloss.NewStyle().Foreground(messageColor).Render("▌")
 	}
 
-	lines := logDisplayLines(entry, msgWidth, m.fullView)
+	lines := logDisplayLines(entry, msgWidth, m.fullView && isActive, m.detailMode && isActive)
 	if len(lines) == 0 {
 		lines = []string{""}
 	}
@@ -415,7 +569,7 @@ func (m Model) renderLogEntry(isActive bool, entry LogEntry) string {
 		if i == 0 {
 			linePrefix = prefix + " "
 		}
-		rendered = append(rendered, linePrefix+logMsgStyle.Foreground(messageColor).Render(line))
+		rendered = append(rendered, linePrefix+logLineStyle(entry, line, i, messageColor).Render(line))
 	}
 	row := strings.Join(rendered, "\n")
 
@@ -423,6 +577,36 @@ func (m Model) renderLogEntry(isActive bool, entry LogEntry) string {
 		return lipgloss.NewStyle().Background(colorSurface).Render(row)
 	}
 	return row
+}
+
+func (m Model) hasActiveFullLog() bool {
+	return m.logOffset >= 0 && m.logOffset < len(m.logs) && m.logs[m.logOffset].FullMessage != ""
+}
+
+func (m Model) handleScroll(delta int) Model {
+	if delta == 0 {
+		return m
+	}
+	if m.fullView && m.hasActiveFullLog() {
+		m.fullOffset = maxInt(0, m.fullOffset+delta)
+		return m
+	}
+	if !m.logsMode {
+		if m.transcriptOffset < 0 {
+			m.transcriptOffset = 0
+		}
+		m.transcriptOffset += delta
+		return m
+	}
+	if len(m.logs) == 0 {
+		return m
+	}
+	if m.logOffset < 0 || m.logOffset >= len(m.logs) {
+		m.logOffset = len(m.logs) - 1
+	}
+	m.logOffset = clampInt(m.logOffset+delta, 0, len(m.logs)-1)
+	m.fullOffset = 0
+	return m
 }
 
 func (m Model) renderHero(width int) string {
@@ -462,9 +646,16 @@ func (m Model) renderStatusStrip(width int) string {
 	items := []string{
 		m.metric("STATE", statusLabel, statusColor),
 		m.metric("PORT", fmt.Sprintf("%d", m.port), colorCyan),
+		m.metric("PAGE", fmt.Sprintf("%d", m.browserClients), browserClientsColor(m.browserClients)),
 		m.metric("OK", fmt.Sprintf("%d", m.stats["success"]), colorSuccess),
 		m.metric("ERR", fmt.Sprintf("%d", m.stats["error"]), colorError),
 		m.metric("SENT", fmt.Sprintf("%d", m.stats["pending"]), colorWarning),
+	}
+	if m.detailMode {
+		items = append(items, m.metric("VIEW", "DETAIL", colorAccent))
+	}
+	if m.logsMode {
+		items = append(items, m.metric("MODE", "LOGS", colorWarning))
 	}
 	if width >= 82 {
 		items = append(items, m.metric("DIR", truncateString(m.rootDir, dirWidth), colorMuted))
@@ -483,6 +674,13 @@ func (m Model) metric(label, value string, valueColor lipgloss.Color) string {
 			" " +
 			lipgloss.NewStyle().Foreground(valueColor).Bold(true).Render(value),
 	)
+}
+
+func browserClientsColor(count int) lipgloss.Color {
+	if count > 0 {
+		return colorSuccess
+	}
+	return colorMuted
 }
 
 func (m Model) renderAuthURL(width int) string {
@@ -505,18 +703,30 @@ func (m Model) renderAuthURL(width int) string {
 }
 
 func (m Model) renderLogs(width, height int) string {
-	startIdx := len(m.logs) - height
-	if startIdx < 0 {
-		startIdx = 0
-	}
-	if m.logOffset >= 0 && m.logOffset < len(m.logs) {
-		targetStart := m.logOffset - height + 1
-		if targetStart < 0 {
-			targetStart = 0
+	if m.fullView && m.hasActiveFullLog() {
+		entry := m.logs[m.logOffset]
+		msgWidth := maxInt(8, m.width-6)
+		all := logDisplayLines(entry, msgWidth, true, m.detailMode)
+		maxOffset := maxInt(0, len(all)-height)
+		offset := clampInt(m.fullOffset, 0, maxOffset)
+		lines := make([]string, 0, height)
+		for i := offset; i < len(all) && len(lines) < height; i++ {
+			prefix := "  "
+			if i == 0 {
+				prefix = lipgloss.NewStyle().Foreground(logColor(entry)).Render("▌") + " "
+			}
+			lines = append(lines, prefix+logLineStyle(entry, all[i], i, logColor(entry)).Render(all[i]))
 		}
-		if targetStart < startIdx {
-			startIdx = targetStart
+		if len(all) > height {
+			hint := fmt.Sprintf("  %d-%d/%d  j/k 滚动  Ctrl+T 返回摘要", offset+1, minInt(offset+len(lines), len(all)), len(all))
+			if len(lines) < height {
+				lines = append(lines, subtitleStyle.Render(truncateString(hint, maxInt(8, width-4))))
+			}
 		}
+		for len(lines) < height {
+			lines = append(lines, "")
+		}
+		return lipgloss.NewStyle().Width(width).Height(height).Padding(0, 1).Render(strings.Join(lines, "\n"))
 	}
 
 	lines := make([]string, 0, height)
@@ -524,13 +734,17 @@ func (m Model) renderLogs(width, height int) string {
 		empty := "No activity yet. Paste the auth URL in the extension, then type here to send text to the browser."
 		lines = append(lines, lipgloss.NewStyle().PaddingLeft(1).Render(subtitleStyle.Render(truncateString(empty, maxInt(10, width-4)))))
 	} else {
-		for i := startIdx; i < len(m.logs) && len(lines) < height; i++ {
+		endIdx := len(m.logs) - 1
+		if m.logOffset >= 0 && m.logOffset < len(m.logs) {
+			endIdx = m.logOffset
+		}
+		for i := 0; i <= endIdx; i++ {
 			for _, line := range strings.Split(m.renderLogEntry(i == m.logOffset, m.logs[i]), "\n") {
-				if len(lines) >= height {
-					break
-				}
 				lines = append(lines, line)
 			}
+		}
+		if len(lines) > height {
+			lines = lines[len(lines)-height:]
 		}
 	}
 	for len(lines) < height {
@@ -540,14 +754,21 @@ func (m Model) renderLogs(width, height int) string {
 	return lipgloss.NewStyle().Width(width).Height(height).Padding(0, 1).Render(strings.Join(lines, "\n"))
 }
 
+func (m Model) renderActivity(width, height int) string {
+	if m.logsMode {
+		return m.renderLogs(width, height)
+	}
+	return m.renderTranscript(width, height)
+}
+
 func (m Model) renderComposer(width int) string {
 	innerWidth := maxInt(12, width-4)
 	if m.inputMode {
 		cursor := cursorStyle.Render(" ")
 		label := lipgloss.NewStyle().Foreground(colorAccent).Render("▌") + " " +
-			lipgloss.NewStyle().Foreground(colorText).Bold(true).Render("发到浏览器") + " "
-		continuation := strings.Repeat(" ", len([]rune("▌ 发到浏览器 ")))
-		inputLines := wrapTextLines(m.input, maxInt(8, innerWidth-len([]rune("▌ 发到浏览器 "))))
+			lipgloss.NewStyle().Foreground(colorText).Bold(true).Render("openlink>") + " "
+		continuation := strings.Repeat(" ", len([]rune("▌ openlink> ")))
+		inputLines := wrapTextLines(m.input, maxInt(8, innerWidth-len([]rune("▌ openlink> "))))
 		if len(inputLines) == 0 {
 			inputLines = []string{""}
 		}
@@ -573,50 +794,9 @@ func (m Model) renderComposer(width int) string {
 	line := lipgloss.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().Foreground(colorAccent).Render("▌"),
 		" ",
-		subtitleStyle.Render("输入消息发送到浏览器 · / 指令"),
+		subtitleStyle.Render("Esc 浏览转录 · / 指令 · i 返回输入 · Ctrl+D 详情"),
 	)
 	return inputStyle.Width(width).Render(line)
-}
-
-func (m Model) renderCommandSuggestions(width int) string {
-	if m.hasExactSlashCommand() {
-		return ""
-	}
-	candidates := m.commandCandidates()
-	if len(candidates) == 0 {
-		return lipgloss.NewStyle().Foreground(colorError).Render("  no command matches")
-	}
-	limit := minInt(5, len(candidates))
-	lines := make([]string, 0, limit)
-	for i := 0; i < limit; i++ {
-		cmd := candidates[i]
-		pointer := "  "
-		style := subtitleStyle
-		if i == m.commandIdx {
-			pointer = "▸ "
-			style = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-		}
-		usage := ""
-		if cmd.Usage != "" {
-			usage = " " + cmd.Usage
-		}
-		text := fmt.Sprintf("%s/%s%s  %s", pointer, cmd.Name, usage, cmd.Description)
-		lines = append(lines, style.Render(truncateString(text, maxInt(8, width-4))))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m Model) hasExactSlashCommand() bool {
-	text := strings.TrimSpace(m.input)
-	if !strings.HasPrefix(text, "/") {
-		return false
-	}
-	name, args := parseSlashCommand(text)
-	if name == "" || args != "" {
-		return false
-	}
-	cmd, ok := findSlashCommand(name)
-	return ok && cmd.Usage == ""
 }
 
 func (m Model) renderRule(width int) string {
@@ -654,244 +834,66 @@ func logColor(entry LogEntry) lipgloss.Color {
 	}
 }
 
-func (m Model) isSlashInput() bool {
-	return strings.HasPrefix(strings.TrimSpace(m.input), "/")
+func logLineStyle(entry LogEntry, line string, lineIndex int, fallback lipgloss.Color) lipgloss.Style {
+	style := logMsgStyle.Foreground(fallback)
+	if isFoldedSummaryLine(line) {
+		return logMsgStyle.Foreground(colorMuted)
+	}
+	if entry.Source == "ai" && isCommandLog(entry) && lineIndex == 0 {
+		return logMsgStyle.Foreground(logColor(entry)).Bold(true)
+	}
+	if entry.Source == "ai" && isCommandLine(line) {
+		return logMsgStyle.Foreground(colorCyan).Bold(true)
+	}
+	if isDiffAddLine(line) {
+		return logMsgStyle.Foreground(colorSuccess)
+	}
+	if isDiffDeleteLine(line) {
+		return logMsgStyle.Foreground(colorError)
+	}
+	if isDiffHunkLine(line) || isCodeFenceLine(line) {
+		return logMsgStyle.Foreground(colorMuted)
+	}
+	if entry.Source == "ai" && isOutputDetailLine(line) {
+		return logMsgStyle.Foreground(colorText)
+	}
+	return style
 }
 
-func (m Model) commandQuery() string {
-	text := strings.TrimSpace(m.input)
-	if !strings.HasPrefix(text, "/") {
-		return ""
-	}
-	text = strings.TrimLeft(text, "/")
-	if idx := strings.IndexAny(text, " \t"); idx >= 0 {
-		return text[:idx]
-	}
-	return text
+func isCommandLog(entry LogEntry) bool {
+	name := strings.ToLower(entry.ToolName)
+	return strings.Contains(name, "exec") || strings.Contains(name, "cmd") || strings.Contains(entry.Message, "Ran ")
 }
 
-func (m Model) commandCandidates() []slashCommand {
-	query := strings.ToLower(m.commandQuery())
-	if query == "" {
-		return slashCommandList
-	}
-	var candidates []slashCommand
-	for _, cmd := range slashCommandList {
-		if fuzzyMatch(query, cmd.Name) || fuzzyMatch(query, cmd.Description) {
-			candidates = append(candidates, cmd)
-		}
-	}
-	return candidates
+func isFoldedSummaryLine(line string) bool {
+	return strings.Contains(line, "…") || strings.Contains(strings.ToLower(line), "omitted") || strings.Contains(line, "...")
 }
 
-func (m *Model) clampCommandSelection() {
-	candidates := m.commandCandidates()
-	if len(candidates) == 0 {
-		m.commandIdx = 0
-		return
-	}
-	if m.commandIdx >= len(candidates) {
-		m.commandIdx = len(candidates) - 1
-	}
-	if m.commandIdx < 0 {
-		m.commandIdx = 0
-	}
+func isOutputDetailLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "└") || strings.HasPrefix(trimmed, "|") || strings.HasPrefix(trimmed, ">")
 }
 
-func (m *Model) moveCommandSelection(delta int) {
-	candidates := m.commandCandidates()
-	if len(candidates) == 0 {
-		m.commandIdx = 0
-		return
-	}
-	m.commandIdx = (m.commandIdx + delta + len(candidates)) % len(candidates)
+func isCommandLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "> ")
 }
 
-func (m *Model) completeSlashInput() {
-	if !m.isSlashInput() {
-		return
-	}
-	if strings.HasPrefix(strings.TrimSpace(m.input), "/cd ") {
-		if completed, ok := completeDirPath(m.rootDir, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(m.input), "/cd "))); ok {
-			m.input = "/cd " + completed
-		}
-		return
-	}
-	candidates := m.commandCandidates()
-	if len(candidates) == 0 {
-		return
-	}
-	m.clampCommandSelection()
-	cmd := candidates[m.commandIdx]
-	m.input = "/" + cmd.Name
-	if cmd.Usage != "" {
-		m.input += " "
-	}
+func isDiffAddLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "+") && !strings.HasPrefix(trimmed, "+++")
 }
 
-func (m Model) executeSlashCommand(text string) (tea.Model, tea.Cmd) {
-	name, args := parseSlashCommand(text)
-	if name == "" {
-		m.input = ""
-		m.inputMode = false
-		m.commandIdx = 0
-		return m, nil
-	}
-	cmd, ok := findSlashCommand(name)
-	if !ok {
-		candidates := m.commandCandidates()
-		if len(candidates) > 0 {
-			cmd = candidates[0]
-			name = cmd.Name
-			ok = true
-		}
-	}
-	if !ok {
-		m.logs = append(m.logs, LogEntry{Time: time.Now(), Source: "system", ToolName: "COMMAND", Status: "error", Message: "未知指令: " + text})
-		m.stats["error"]++
-		m.input = ""
-		m.inputMode = false
-		m.commandIdx = 0
-		m.logOffset = len(m.logs) - 1
-		return m, nil
-	}
-
-	m.input = ""
-	m.inputMode = false
-	m.commandIdx = 0
-
-	switch name {
-	case "clear":
-		m.logs = nil
-		m.logOffset = 0
-		return m, nil
-	case "cwd":
-		m.logs = append(m.logs, LogEntry{Time: time.Now(), Source: "system", ToolName: "CWD", Status: "info", Message: "当前工作目录: " + m.rootDir})
-	case "url":
-		msg := "认证 URL 尚未生成"
-		if m.authURL != "" {
-			msg = "认证 URL: " + m.authURL
-		}
-		m.logs = append(m.logs, LogEntry{Time: time.Now(), Source: "system", ToolName: "AUTH", Status: "info", Message: msg})
-	case "help":
-		m.logs = append(m.logs, LogEntry{Time: time.Now(), Source: "system", ToolName: "HELP", Status: "info", Message: commandHelpText()})
-	case "send":
-		if strings.TrimSpace(args) == "" {
-			m.logs = append(m.logs, LogEntry{Time: time.Now(), Source: "system", ToolName: "SEND", Status: "error", Message: "/send 需要文本"})
-			m.stats["error"]++
-			m.logOffset = len(m.logs) - 1
-			return m, nil
-		}
-		m.logs = append(m.logs, LogEntry{Time: time.Now(), Source: "user", ToolName: "INJECT", Status: "pending", Message: args})
-		m.stats["pending"]++
-		m.logOffset = len(m.logs) - 1
-		return m, injectInputCmd(args, m.port, m.token)
-	case "cd":
-		path := strings.TrimSpace(args)
-		if path == "" {
-			m.logs = append(m.logs, LogEntry{Time: time.Now(), Source: "system", ToolName: "CWD", Status: "error", Message: "/cd 需要目录，例如 /cd extension/dist"})
-			m.stats["error"]++
-			m.logOffset = len(m.logs) - 1
-			return m, nil
-		}
-		m.logs = append(m.logs, LogEntry{Time: time.Now(), Source: "system", ToolName: "CWD", Status: "pending", Message: "正在切换目录: " + path})
-		m.stats["pending"]++
-		m.logOffset = len(m.logs) - 1
-		return m, changeCwdCmd(path, m.port, m.token)
-	}
-
-	m.stats["info"]++
-	m.logOffset = len(m.logs) - 1
-	return m, nil
+func isDiffDeleteLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "-") && !strings.HasPrefix(trimmed, "---")
 }
 
-func parseSlashCommand(text string) (string, string) {
-	text = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(text), "/"))
-	if text == "" {
-		return "", ""
-	}
-	parts := strings.Fields(text)
-	name := strings.ToLower(parts[0])
-	args := strings.TrimSpace(strings.TrimPrefix(text, parts[0]))
-	return name, args
+func isDiffHunkLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "@@")
 }
 
-func findSlashCommand(name string) (slashCommand, bool) {
-	for _, cmd := range slashCommandList {
-		if cmd.Name == name {
-			return cmd, true
-		}
-	}
-	return slashCommand{}, false
-}
-
-func commandHelpText() string {
-	var lines []string
-	for _, cmd := range slashCommandList {
-		usage := ""
-		if cmd.Usage != "" {
-			usage = " " + cmd.Usage
-		}
-		lines = append(lines, fmt.Sprintf("/%s%s - %s", cmd.Name, usage, cmd.Description))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func fuzzyMatch(query, value string) bool {
-	query = strings.ToLower(strings.TrimSpace(query))
-	value = strings.ToLower(value)
-	if query == "" {
-		return true
-	}
-	if strings.Contains(value, query) {
-		return true
-	}
-	idx := 0
-	for _, r := range value {
-		if idx < len(query) && byte(r) == query[idx] {
-			idx++
-		}
-	}
-	return idx == len(query)
-}
-
-func completeDirPath(rootDir, raw string) (string, bool) {
-	if raw == "" {
-		raw = "."
-	}
-	raw = strings.Trim(raw, `"`)
-	baseDir := rootDir
-	prefix := raw
-	if filepath.IsAbs(raw) {
-		baseDir = filepath.Dir(raw)
-		prefix = filepath.Base(raw)
-	} else if dir := filepath.Dir(raw); dir != "." {
-		baseDir = filepath.Join(rootDir, dir)
-		prefix = filepath.Base(raw)
-	}
-
-	entries, err := os.ReadDir(baseDir)
-	if err != nil {
-		return "", false
-	}
-	prefixLower := strings.ToLower(prefix)
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		if !strings.HasPrefix(strings.ToLower(entry.Name()), prefixLower) {
-			continue
-		}
-		if filepath.IsAbs(raw) {
-			return filepath.Join(baseDir, entry.Name()), true
-		}
-		dir := filepath.Dir(raw)
-		if dir == "." {
-			return entry.Name(), true
-		}
-		return filepath.Join(dir, entry.Name()), true
-	}
-	return "", false
+func isCodeFenceLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "```")
 }
 
 func singleLine(s string) string {
@@ -905,6 +907,19 @@ func extractAuthURL(message string) string {
 		return ""
 	}
 	return strings.TrimSpace(message[idx+len(marker):])
+}
+
+func extractTrailingCount(message string) int {
+	start := strings.LastIndex(message, "(")
+	end := strings.LastIndex(message, ")")
+	if start < 0 || end <= start+1 {
+		return 0
+	}
+	var count int
+	if _, err := fmt.Sscanf(message[start+1:end], "%d", &count); err != nil {
+		return 0
+	}
+	return count
 }
 
 func slashRunesToAppend(current, typed string) string {
@@ -921,12 +936,30 @@ func normalizeSlashInput(input string) string {
 	return input
 }
 
-func logDisplayLines(entry LogEntry, width int, fullView bool) []string {
+func sanitizeInjectText(input string) string {
+	return strings.TrimLeftFunc(input, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r) || isInvisiblePrefixRune(r)
+	})
+}
+
+func isInvisiblePrefixRune(r rune) bool {
+	switch r {
+	case '\u200B', '\u200C', '\u200D', '\u200E', '\u200F', '\u202A', '\u202B', '\u202C', '\u202D', '\u202E', '\u2060', '\uFEFF', '\uFFFC', '\uFFFD', '\u25A1':
+		return true
+	default:
+		return false
+	}
+}
+
+func logDisplayLines(entry LogEntry, width int, fullView bool, detailMode bool) []string {
 	message := entry.Message
 	wrap := entry.Source != "ai"
 	if fullView && entry.FullMessage != "" {
 		message = entry.FullMessage
 		wrap = true
+	}
+	if entry.Source == "ai" && isToolLog(entry) {
+		return toolLogDisplayLines(entry, message, width, fullView, detailMode)
 	}
 	if wrap {
 		return wrapTextLines(message, width)
@@ -938,6 +971,56 @@ func logDisplayLines(entry LogEntry, width int, fullView bool) []string {
 		lines = append(lines, truncateString(line, width))
 	}
 	return lines
+}
+
+func isToolLog(entry LogEntry) bool {
+	return strings.TrimSpace(entry.ToolName) != ""
+}
+
+func toolLogDisplayLines(entry LogEntry, message string, width int, fullView bool, detailMode bool) []string {
+	tool := strings.TrimSpace(entry.ToolName)
+	if tool == "" {
+		tool = "tool"
+	}
+
+	header := strings.TrimSpace(fmt.Sprintf("%s  %s", tool, strings.ToUpper(entry.Status)))
+	lines := []string{truncateString(header, width)}
+	if detailMode {
+		lines = append(lines, truncateString("status  "+entry.Status, width))
+		if entry.FullMessage != "" && !fullView {
+			lines = append(lines, truncateString("detail  Ctrl+T 查看完整输出", width))
+		}
+	}
+
+	raw := strings.Split(strings.ReplaceAll(message, "\r\n", "\n"), "\n")
+	if len(raw) == 0 {
+		return lines
+	}
+	first := strings.TrimSpace(raw[0])
+	bodyStart := 0
+	if command, ok := commandFromSummary(first); ok {
+		lines = append(lines, truncateString("> "+command, width))
+		bodyStart = 1
+	}
+
+	for _, line := range raw[bodyStart:] {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		for _, wrapped := range wrapString(strings.TrimRight(line, "\r"), width) {
+			lines = append(lines, wrapped)
+		}
+	}
+	return lines
+}
+
+func commandFromSummary(line string) (string, bool) {
+	const ran = "Ran "
+	if !strings.HasPrefix(line, ran) {
+		return "", false
+	}
+	command := strings.TrimSpace(strings.TrimPrefix(line, ran))
+	return command, command != ""
 }
 
 func wrapTextLines(s string, width int) []string {
@@ -1014,6 +1097,7 @@ func minInt(a, b int) int {
 }
 
 type LogMsg struct {
+	Key         string
 	Source      string
 	ToolName    string
 	Status      string

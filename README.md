@@ -103,6 +103,25 @@ go run ./cmd/cli -dir .
 
 ## 构建二进制
 
+一键验证、构建并打包 Windows 产物：
+
+```powershell
+.\scripts\build.ps1
+```
+
+默认输出到 `release-packages\<timestamp>\`，包含：
+
+- `bin\openlink-cli.exe`
+- `bin\openlink.exe`
+- `openlink_windows_amd64.zip`
+- `extension.zip`
+
+只想快速构建、不跑测试：
+
+```powershell
+.\scripts\build.ps1 -SkipTests
+```
+
 构建 TUI 版本：
 
 ```powershell

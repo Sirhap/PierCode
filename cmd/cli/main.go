@@ -66,7 +66,7 @@ func main() {
 	// TODO: 后续可从配置或环境变量读取实际的 AI 服务商
 	aiProvider := "OpenAI / Claude / Local"
 	model := tui.NewModel(*port, *dir, aiProvider, token)
-	program := tea.NewProgram(model, tea.WithAltScreen())
+	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	// 创建 TUI Logger
 	tuiLogger := tui.NewLogger(program)

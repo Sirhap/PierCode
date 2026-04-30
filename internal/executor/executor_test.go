@@ -66,31 +66,57 @@ func TestExecutor(t *testing.T) {
 
 func TestSummarizeToolLog(t *testing.T) {
 	t.Run("exec command folds long output", func(t *testing.T) {
+		var output strings.Builder
+		output.WriteString("command: Get-Content internal\\tool\\grep.go -Encoding UTF8\n\n")
+		for i := 1; i <= 52; i++ {
+			output.WriteString("line ")
+			output.WriteString(strings.Repeat("x", i%3))
+			output.WriteString("\n")
+		}
 		req := &types.ToolRequest{
 			Name: "exec_cmd",
 			Args: map[string]interface{}{"command": "Get-Content internal\\tool\\grep.go -Encoding UTF8"},
 		}
 		resp := &types.ToolResponse{
 			Status: "success",
-			Output: "command: Get-Content internal\\tool\\grep.go -Encoding UTF8\n\n" +
-				"Name               Length LastWriteTime\n" +
-				"----               ------ -------------\n" +
-				"grep.go            1000   now\n" +
-				"extra              1      now\n",
+			Output: output.String(),
 		}
 
 		summary := summarizeToolLog(req, resp)
 		if !strings.Contains(summary, "Ran Get-Content internal\\tool\\grep.go -Encoding UTF8") {
 			t.Fatalf("expected command header, got %q", summary)
 		}
-		if !strings.Contains(summary, "└ Name") {
+		if !strings.Contains(summary, "└ line") {
 			t.Fatalf("expected first output line, got %q", summary)
 		}
-		if !strings.Contains(summary, "… +1 lines") {
+		if !strings.Contains(summary, "… +2 lines") {
 			t.Fatalf("expected folded line count, got %q", summary)
 		}
 		if !strings.Contains(summary, "Ctrl+T 查看完整") {
 			t.Fatalf("expected transcript shortcut hint, got %q", summary)
+		}
+	})
+
+	t.Run("exec command error keeps useful output visible", func(t *testing.T) {
+		req := &types.ToolRequest{
+			Name: "exec_cmd",
+			Args: map[string]interface{}{"command": "some-command"},
+		}
+		resp := &types.ToolResponse{
+			Status: "error",
+			Output: "operation completed\nwarning emitted\n",
+			Error:  "exit status 1",
+		}
+
+		summary := summarizeToolLog(req, resp)
+		if strings.Contains(summary, "Failed exec_cmd") {
+			t.Fatalf("expected command summary instead of generic failure, got %q", summary)
+		}
+		if !strings.Contains(summary, "Ran some-command (exit status 1)") {
+			t.Fatalf("expected command and exit status, got %q", summary)
+		}
+		if !strings.Contains(summary, "operation completed") {
+			t.Fatalf("expected output preview, got %q", summary)
 		}
 	})
 

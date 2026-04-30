@@ -7,8 +7,8 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["activeTab", "storage", "tabs"],
-  "host_permissions": ["http://127.0.0.1:*/*"],
+  "permissions": ["activeTab", "storage", "tabs", "scripting"],
+  "host_permissions": ["http://127.0.0.1:*/*", "*://*.gemini.google.com/*", "*://aistudio.google.com/*", "*://*.qwen.ai/*", "*://*.qwenlm.ai/*", "*://chat.z.ai/*", "*://*.kimi.com/*"],
   "action": {
     "default_popup": "popup.html"
   },

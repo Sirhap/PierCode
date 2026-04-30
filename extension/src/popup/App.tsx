@@ -30,6 +30,12 @@ function formatAuthFailure(res: Response, data: any): string {
   return 'Token 不匹配，请确认使用的是当前 TUI 显示的认证 URL'
 }
 
+type EnsureContentResult = {
+  tabs?: number
+  injected?: number
+  failed?: number
+}
+
 export default function App() {
   const [status, setStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking')
   const [token, setToken] = useState('')
@@ -66,13 +72,37 @@ export default function App() {
     })
   }, [])
 
+  const ensureContentScripts = (): Promise<EnsureContentResult> => {
+    return new Promise(resolve => {
+      chrome.runtime.sendMessage({ type: 'ENSURE_CONTENT_SCRIPTS' }, (result: EnsureContentResult) => {
+        if (chrome.runtime.lastError) {
+          console.warn('[OpenLink] ensure content scripts failed:', chrome.runtime.lastError.message)
+          resolve({})
+          return
+        }
+        resolve(result || {})
+      })
+    })
+  }
+
   const checkConnection = (url: string) => {
     fetch(`${url}/health`)
       .then(res => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json()
       })
-      .then(data => { setStatus('connected'); setInfo(`工作目录: ${data.dir || 'unknown'}`) })
+      .then(async data => {
+        setStatus('connected')
+        const result = await ensureContentScripts()
+        const injected = Number(result.injected || 0)
+        const failed = Number(result.failed || 0)
+        const suffix = injected > 0
+          ? `；已唤醒 ${injected} 个 AI 页面`
+          : failed > 0
+            ? '；AI 页面注入失败，请刷新页面'
+            : '；未发现已打开的 AI 页面'
+        setInfo(`工作目录: ${data.dir || 'unknown'}${suffix}`)
+      })
       .catch(() => { setStatus('disconnected'); setInfo('服务未运行') })
   }
 
@@ -96,9 +126,11 @@ export default function App() {
         data = {}
       }
       if (res.ok && isValidAuthResponse(data)) {
-        chrome.storage.local.set({ authToken: tokenValue, apiUrl: baseUrl, authPort: port })
+        await new Promise<void>(resolve => {
+          chrome.storage.local.set({ authToken: tokenValue, apiUrl: baseUrl, authPort: port }, () => resolve())
+        })
         setReconfig(false)
-        setToast({ msg: '✅ 授权成功！已连接本地服务', type: 'success' })
+        setToast({ msg: '✅ 授权成功，正在唤醒 AI 页面', type: 'success' })
         checkConnection(baseUrl)
       } else {
         const reason = formatAuthFailure(res, data)
@@ -131,7 +163,7 @@ export default function App() {
   }
 
   const statusColor = status === 'connected' ? 'bg-emerald-400' : status === 'checking' ? 'bg-yellow-400' : 'bg-red-400'
-  const statusText = status === 'checking' ? '检查中...' : status === 'connected' ? '已连接' : '未连接'
+  const statusText = status === 'checking' ? '检查中...' : status === 'connected' ? '本地服务已连接' : '未连接'
 
   return (
     <div className="w-72 bg-gray-950 text-gray-100 p-4 font-sans">

@@ -3,10 +3,12 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/afumu/openlink/internal/types"
@@ -292,6 +294,23 @@ func TestHandleInjectReportsConnectedClients(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp["clients"] != float64(0) {
 		t.Errorf("expected clients=0, got %v", resp["clients"])
+	}
+}
+
+func TestSummarizeBrowserAITextFoldsAfterFiftyLines(t *testing.T) {
+	lines := make([]string, 0, 52)
+	for i := 1; i <= 52; i++ {
+		lines = append(lines, fmt.Sprintf("line-%02d", i))
+	}
+	summary := summarizeBrowserAIText(strings.Join(lines, "\n"))
+	if !strings.Contains(summary, "line-50") {
+		t.Fatalf("expected line 50 in summary, got %q", summary)
+	}
+	if strings.Contains(summary, "line-51") {
+		t.Fatalf("expected line 51 to be folded, got %q", summary)
+	}
+	if !strings.Contains(summary, "… +2 lines") {
+		t.Fatalf("expected folded line count, got %q", summary)
 	}
 }
 

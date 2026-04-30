@@ -1,7 +1,6 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
 import { extractMonacoText, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
-import { resolveAutoExecute } from '../settings';
-import { initWsLinker } from './ws-linker';
+import { initWsLinker, sendAIResponseLog } from './ws-linker';
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
@@ -13,6 +12,8 @@ const MONACO_RESPONSE = 'OPENLINK_MONACO_TEXT_RESPONSE';
 let pageBridgeInjected = false;
 let monacoIdSeq = 0;
 let monacoRequestSeq = 0;
+const CONTEXT_INVALID_MESSAGE = '扩展已失效，请刷新页面';
+let lastContextInvalidNoticeAt = 0;
 
 function injectPageScript(fileName: string): void {
   if (!checkContext()) return;
@@ -85,7 +86,14 @@ function isContextValid(): boolean {
   try { return !!chrome.runtime?.id; } catch { return false; }
 }
 
-function checkContext(): boolean {
+function notifyContextInvalid(): void {
+  const now = Date.now();
+  if (now - lastContextInvalidNoticeAt < 3000) return;
+  lastContextInvalidNoticeAt = now;
+  showToast(CONTEXT_INVALID_MESSAGE, 5000);
+}
+
+function checkContext(showNotice = false): boolean {
   if (isContextValid()) return true;
   document.querySelectorAll('[data-openlink-key]').forEach(el => el.remove());
   const btn = document.querySelector('button[style*="z-index:99999"]');
@@ -94,6 +102,7 @@ function checkContext(): boolean {
     (btn as HTMLButtonElement).textContent = '🔗 请刷新页面';
     (btn as HTMLButtonElement).style.background = '#666';
   }
+  if (showNotice) notifyContextInvalid();
   return false;
 }
 
@@ -105,6 +114,11 @@ function parseOptions(raw: unknown): string[] {
 
 function getNativeSetter() {
   return Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+}
+
+function resolveAutoExecute(value: unknown): boolean {
+  // Keep this local so the content script stays a classic, single-file bundle.
+  return typeof value === 'boolean' ? value : false;
 }
 
 function decodeHTMLEntities(s: string): string {
@@ -122,6 +136,12 @@ interface SiteConfig {
   fillMethod: FillMethod;
   useObserver: boolean;
   responseSelector?: string;
+}
+
+interface ToolExecutionResult {
+  output: string;
+  stopStream: boolean;
+  sendable: boolean;
 }
 
 function getSiteConfig(): SiteConfig {
@@ -210,8 +230,8 @@ function markExecuted(key: string): void {
   } catch {}
 }
 
-async function executeToolCallRaw(toolCall: any): Promise<string> {
-  if (!checkContext()) return '扩展已失效，请刷新页面';
+async function executeToolCallRaw(toolCall: any): Promise<string | null> {
+  if (!checkContext(true)) return null;
   const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
   if (!apiUrl) return '请先在插件中配置 API 地址';
   const headers: any = { 'Content-Type': 'application/json' };
@@ -226,22 +246,22 @@ async function executeToolCallRaw(toolCall: any): Promise<string> {
   return name ? `### ${name} #${callId}\n${output}` : output;
 }
 
-async function executeToolCallReturn(toolCall: any): Promise<{ output: string; stopStream: boolean }> {
-  if (!checkContext()) return { output: '扩展已失效，请刷新页面', stopStream: false };
+async function executeToolCallReturn(toolCall: any): Promise<ToolExecutionResult> {
+  if (!checkContext(true)) return { output: '', stopStream: false, sendable: false };
   if (toolCall.name === 'question') {
     const q: string = toolCall.args?.question ?? '';
     const rawOpts = toolCall.args?.options;
     const opts: string[] = parseOptions(rawOpts);
     const answer = opts.length > 0 ? await showQuestionPopup(q, opts) : (prompt(q) ?? '');
-    return { output: answer, stopStream: false };
+    return { output: answer, stopStream: false, sendable: true };
   }
 
   try {
-    if (!checkContext()) return { output: '扩展已失效，请刷新页面', stopStream: false };
+    if (!checkContext(true)) return { output: '', stopStream: false, sendable: false };
     const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
     const headers: any = { 'Content-Type': 'application/json' };
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    if (!apiUrl) return { output: '请先在插件中配置 API 地址', stopStream: false };
+    if (!apiUrl) return { output: '请先在插件中配置 API 地址', stopStream: false, sendable: true };
 
     const response = await bgFetch(`${apiUrl}/exec`, {
       method: 'POST',
@@ -249,16 +269,17 @@ async function executeToolCallReturn(toolCall: any): Promise<{ output: string; s
       body: JSON.stringify(toolCall)
     });
 
-    if (response.status === 401) return { output: '认证失败，请在插件中重新输入 Token', stopStream: false };
-    if (!response.ok) return { output: `[OpenLink 错误] HTTP ${response.status}`, stopStream: false };
+    if (response.status === 401) return { output: '认证失败，请在插件中重新输入 Token', stopStream: false, sendable: true };
+    if (!response.ok) return { output: `[OpenLink 错误] HTTP ${response.status}`, stopStream: false, sendable: true };
 
     const result = JSON.parse(response.body);
     return {
       output: result.output || result.error || '[OpenLink] 空响应',
-      stopStream: !!result.stopStream
+      stopStream: !!result.stopStream,
+      sendable: true
     };
   } catch (error) {
-    return { output: `[OpenLink 错误] ${error}`, stopStream: false };
+    return { output: `[OpenLink 错误] ${error}`, stopStream: false, sendable: true };
   }
 }
 
@@ -317,9 +338,13 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   execBtn.onclick = async () => {
     execBtn.disabled = true;
     execBtn.textContent = '执行中...';
-    markExecuted(key);
     try {
       const text = await executeToolCallRaw(data);
+      if (text === null) {
+        execBtn.textContent = '请刷新页面';
+        return;
+      }
+      markExecuted(key);
       const resultBox = document.createElement('div');
       resultBox.style.cssText = 'margin-top:10px;background:#181825;border-radius:6px;padding:8px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:12px;color:#cdd6f4;white-space:pre-wrap';
       resultBox.textContent = text;
@@ -362,16 +387,23 @@ function startDOMObserver(_responseSelector: string) {
   // ── 批量自动执行 ──────────────────────────────────────────────────────────
   let pendingBatch: any[] = [];
   let batchTimer: ReturnType<typeof setTimeout> | null = null;
+  let submitTimer: ReturnType<typeof setTimeout> | null = null;
   let batchExecuting = false;
+  const batchOutputs: string[] = [];
   let batchWaitMs = 1500;
   chrome.storage.local.get(['batchWaitMs']).then(r => { if (r.batchWaitMs) batchWaitMs = r.batchWaitMs; }).catch(() => {});
   chrome.storage.onChanged.addListener((changes) => {
     if ('batchWaitMs' in changes) batchWaitMs = changes.batchWaitMs!.newValue ?? 1500;
   });
 
-  function scheduleToBatch(toolCall: any, key: string) {
-    pendingBatch.push({ data: toolCall, key });
-    // 如果有批次正在执行中，不启动新计时器，等当前批次完成后统一处理
+  function clearSubmitTimer() {
+    if (submitTimer) {
+      clearTimeout(submitTimer);
+      submitTimer = null;
+    }
+  }
+
+  function scheduleBatchExecution() {
     if (batchExecuting) return;
     if (batchTimer) clearTimeout(batchTimer);
     batchTimer = setTimeout(() => {
@@ -379,51 +411,76 @@ function startDOMObserver(_responseSelector: string) {
     }, batchWaitMs);
   }
 
+  function scheduleToBatch(toolCall: any, key: string) {
+    clearSubmitTimer();
+    pendingBatch.push({ data: toolCall, key });
+    scheduleBatchExecution();
+  }
+
+  function scheduleFinalSubmit() {
+    if (batchOutputs.length === 0) return;
+    clearSubmitTimer();
+    submitTimer = setTimeout(() => {
+      submitTimer = null;
+      if (batchExecuting) return;
+      if (pendingBatch.length > 0) {
+        scheduleBatchExecution();
+        return;
+      }
+      const combinedOutput = batchOutputs.join('\n\n');
+      batchOutputs.length = 0;
+      if (combinedOutput) {
+        fillAndSend(combinedOutput, true);
+      }
+    }, batchWaitMs);
+  }
+
   async function executeBatch() {
+    if (batchExecuting) return;
     batchTimer = null;
     batchExecuting = true;
-    const batch = pendingBatch;
-    pendingBatch = [];
-    if (batch.length === 0) { batchExecuting = false; return; }
+    try {
+      while (pendingBatch.length > 0) {
+        const batch = pendingBatch;
+        pendingBatch = [];
 
-    let combinedOutput = '';
+        for (const item of batch) {
+          const { data: toolCall, key } = item;
+          if (isExecuted(key)) continue;
 
-    for (const item of batch) {
-      const { data: toolCall, key } = item;
-      if (isExecuted(key)) continue;
-      markExecuted(key);
+          // 更新卡片状态为"执行中..."
+          const cardEl = document.querySelector(`[data-openlink-key="${CSS.escape(key)}"]`);
+          const btnEl = cardEl?.querySelector('button') as HTMLButtonElement | null;
+          if (btnEl) { btnEl.disabled = true; btnEl.textContent = '执行中...'; }
 
-      // 更新卡片状态为"执行中..."
-      const cardEl = document.querySelector(`[data-openlink-key="${CSS.escape(key)}"]`);
-      const btnEl = cardEl?.querySelector('button') as HTMLButtonElement | null;
-      if (btnEl) { btnEl.disabled = true; btnEl.textContent = '执行中...'; }
+          const { output, stopStream, sendable } = await executeToolCallReturn(toolCall);
+          if (sendable) {
+            markExecuted(key);
+          }
+          if (sendable && output.trim()) {
+            const callId = toolCall.callId || toolCall.call_id || '';
+            batchOutputs.push(`### ${toolCall.name} #${callId}\n${output}`);
+          }
 
-      const { output, stopStream } = await executeToolCallReturn(toolCall);
-      if (combinedOutput) combinedOutput += '\n\n';
-      const callId = toolCall.callId || toolCall.call_id || '';
-      combinedOutput += `### ${toolCall.name} #${callId}\n${output}`;
+          // 更新卡片状态为"已执行"
+          if (btnEl) btnEl.textContent = sendable ? '✅ 已执行' : '请刷新页面';
 
-      // 更新卡片状态为"已执行"
-      if (btnEl) btnEl.textContent = '✅ 已执行';
-
-      if (stopStream) {
-        clickStopButton();
-        showToast('✅ 文件已写入成功，已停止生成');
-        await new Promise(r => setTimeout(r, 600));
+          if (stopStream) {
+            clickStopButton();
+            showToast('✅ 文件已写入成功，已停止生成');
+            await new Promise(r => setTimeout(r, 600));
+          }
+        }
       }
+    } finally {
+      batchExecuting = false;
     }
 
-    if (combinedOutput) {
-      fillAndSend(combinedOutput, true);
-    }
-
-    // 当前批次执行完毕，如果期间有新工具调用累积，继续执行
-    batchExecuting = false;
     if (pendingBatch.length > 0) {
-      batchTimer = setTimeout(() => {
-        executeBatch();
-      }, batchWaitMs);
+      scheduleBatchExecution();
+      return;
     }
+    scheduleFinalSubmit();
   }
 
   function maybeScheduleAutoExecute(toolCall: any, key: string) {
@@ -449,6 +506,10 @@ function startDOMObserver(_responseSelector: string) {
   // ─────────────────────────────────────────────────────────────────────────
 
   const qwenOverflowNotified = new Set<string>();
+  const aiLogTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
+  const aiLastLoggedText = new WeakMap<Element, string>();
+  const aiLogKeys = new WeakMap<Element, string>();
+  const aiLastSentAt = new WeakMap<Element, number>();
 
   function notifyQwenOverflowOnce(codeText: string): void {
     const key = String(hashStr(codeText.slice(0, 500)));
@@ -510,6 +571,7 @@ function startDOMObserver(_responseSelector: string) {
           maybeScheduleAutoExecute(data, key);
         }
       }
+      scheduleAIResponseLog(sourceEl, text);
       // Qwen 已通过 DOM 直接提取，不再走文本解析
       return;
     }
@@ -549,6 +611,7 @@ function startDOMObserver(_responseSelector: string) {
           maybeScheduleAutoExecute(data, key);
         }
       }
+      scheduleAIResponseLog(sourceEl, text);
       // Chat Z 已通过 DOM 直接提取，不再走文本解析
       return;
     }
@@ -617,6 +680,51 @@ function startDOMObserver(_responseSelector: string) {
         }
       }
     }
+
+    scheduleAIResponseLog(sourceEl, text);
+  }
+
+  function scheduleAIResponseLog(sourceEl: Element | undefined, text: string): void {
+    if (!sourceEl) return;
+    const clean = cleanAIResponseLogText(text);
+    if (!clean) return;
+    if (aiLastLoggedText.get(sourceEl) === clean) return;
+
+    const oldTimer = aiLogTimers.get(sourceEl);
+    if (oldTimer) clearTimeout(oldTimer);
+    const elapsed = Date.now() - (aiLastSentAt.get(sourceEl) || 0);
+    const delay = Math.max(0, 350 - elapsed);
+    const send = () => {
+      if (aiLastLoggedText.get(sourceEl) === clean) return;
+      aiLastLoggedText.set(sourceEl, clean);
+      aiLastSentAt.set(sourceEl, Date.now());
+      sendAIResponseLog(aiResponseLogKey(sourceEl), clean);
+    };
+    if (delay === 0) {
+      send();
+    } else {
+      aiLogTimers.set(sourceEl, setTimeout(send, delay));
+    }
+  }
+
+  function aiResponseLogKey(sourceEl: Element): string {
+    let key = aiLogKeys.get(sourceEl);
+    if (!key) {
+      key = `ai:${getConversationId()}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+      aiLogKeys.set(sourceEl, key);
+    }
+    return key;
+  }
+
+  function cleanAIResponseLogText(text: string): string {
+    const clean = text
+      .replace(/```(?:openlink-tool|tool)\s*[\s\S]*?```/gi, '')
+      .replace(/<tool[\s\S]*?<\/(?:tool|function)(?:_call)?>/gi, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    if (!clean) return '';
+    if (tryParseToolJSON(clean)) return '';
+    return clean;
   }
 
   function scanNode(node: Node) {
@@ -705,7 +813,7 @@ function startDOMObserver(_responseSelector: string) {
         requestAnimationFrame(() => {
           for (const el of els) scanText(getCleanText(el), el);
         });
-      }, 3000);
+      }, 700);
     }
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
@@ -716,7 +824,7 @@ function startDOMObserver(_responseSelector: string) {
       requestAnimationFrame(() => {
         for (const el of els) scanText(getCleanText(el), el);
       });
-    }, 800);
+    }, 250);
   }
 
   new MutationObserver(mutations => {
@@ -814,6 +922,7 @@ function showQuestionPopup(question: string, options: string[]): Promise<string>
 }
 
 function showToast(msg: string, durationMs = 3000): void {
+  if (!document.body) return;
   const toast = document.createElement('div');
   toast.style.cssText = 'position:fixed;bottom:170px;right:20px;z-index:2147483647;background:#1e1e2e;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:10px;padding:10px 16px;font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,0.4)';
   toast.textContent = msg;
