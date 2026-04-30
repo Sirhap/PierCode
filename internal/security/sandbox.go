@@ -7,26 +7,54 @@ import (
 	"strings"
 )
 
+func realPathForSandbox(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if realPath, err := filepath.EvalSymlinks(absPath); err == nil {
+		return realPath, nil
+	}
+
+	var missing []string
+	for cur := absPath; ; cur = filepath.Dir(cur) {
+		realBase, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				realBase = filepath.Join(realBase, missing[i])
+			}
+			return filepath.Abs(realBase)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(cur))
+	}
+}
+
+func isWithinRoot(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
 // SafePath joins rootDir+targetPath and validates the result stays within rootDir.
 // targetPath must be relative.
 func SafePath(rootDir, targetPath string) (string, error) {
-	absRoot, err := filepath.EvalSymlinks(rootDir)
+	if filepath.IsAbs(targetPath) {
+		return "", errors.New("target path must be relative")
+	}
+	absRoot, err := realPathForSandbox(rootDir)
 	if err != nil {
-		absRoot, err = filepath.Abs(rootDir)
-		if err != nil {
-			return "", err
-		}
+		return "", err
 	}
 	joined := filepath.Join(absRoot, targetPath)
-	// EvalSymlinks 解析符号链接；文件不存在时（新建场景）fallback 到 Abs
-	absTarget, err := filepath.EvalSymlinks(joined)
+	// Resolve existing parents too, so creating a new file under a symlinked
+	// directory cannot escape the sandbox.
+	absTarget, err := realPathForSandbox(joined)
 	if err != nil {
-		absTarget, err = filepath.Abs(joined)
-		if err != nil {
-			return "", err
-		}
+		return "", err
 	}
-	if !strings.HasPrefix(absTarget, absRoot+string(filepath.Separator)) && absTarget != absRoot {
+	if !isWithinRoot(absTarget, absRoot) {
 		return "", errors.New("path outside sandbox")
 	}
 	return absTarget, nil
@@ -44,22 +72,16 @@ func SafeAbsPath(targetPath string, allowedRoots ...string) (string, error) {
 	if !filepath.IsAbs(targetPath) {
 		return "", errors.New("not an absolute path")
 	}
-	absTarget, err := filepath.EvalSymlinks(targetPath)
+	absTarget, err := realPathForSandbox(targetPath)
 	if err != nil {
-		absTarget, err = filepath.Abs(targetPath)
-		if err != nil {
-			return "", err
-		}
+		return "", err
 	}
 	for _, rootDir := range allowedRoots {
-		absRoot, err := filepath.EvalSymlinks(rootDir)
+		absRoot, err := realPathForSandbox(rootDir)
 		if err != nil {
-			absRoot, err = filepath.Abs(rootDir)
-			if err != nil {
-				continue
-			}
+			continue
 		}
-		if strings.HasPrefix(absTarget, absRoot+string(filepath.Separator)) || absTarget == absRoot {
+		if isWithinRoot(absTarget, absRoot) {
 			return absTarget, nil
 		}
 	}
@@ -69,13 +91,24 @@ func SafeAbsPath(targetPath string, allowedRoots ...string) (string, error) {
 // dangerousPatterns 需要子串匹配的多词危险模式（含空格或特殊字符，不会误匹配普通路径）
 var dangerousPatterns = []string{
 	"rm -rf", "rm -fr", "> /dev/", "chmod 777", "kill -9",
+	"del /f", "del /q", "rmdir /s", "rd /s",
+	"remove-item", "invoke-webrequest", "invoke-restmethod", "start-bitstransfer",
+	"powershell -e ", "powershell.exe -e ",
+	"powershell -en ", "powershell.exe -en ",
+	"powershell -enc", "powershell.exe -enc",
+	"powershell -encoded", "powershell.exe -encoded",
+	"executionpolicy bypass", "executionpolicy unrestricted",
+	"certutil -urlcache", "certutil -decode", "certutil -f",
+	"iex(", "iex (", "invoke-expression",
+	"downloadstring", "downloadfile",
+	"curl.exe", "wget.exe", "certutil", "bitsadmin",
 }
 
-// dangerousCommands 需要单词边界匹配的单词命令（避免误匹配路径中的子串）
-// 注意：curl/wget 属于正常网络工具，不在拦截范围内
 var dangerousCommands = []string{
 	"mkfs", "format", "nc", "netcat",
 	"sudo", "reboot", "shutdown",
+	"curl", "wget", "iwr", "irm",
+	"mshta", "rundll32", "regsvr32",
 }
 
 // isCmdSeparator 判断字符是否为 shell 命令分隔符或空白

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -10,8 +11,10 @@ import (
 	"github.com/afumu/openlink/internal/portutil"
 	"github.com/afumu/openlink/internal/security"
 	"github.com/afumu/openlink/internal/server"
+	"github.com/afumu/openlink/internal/tui"
 	"github.com/afumu/openlink/internal/types"
 	"github.com/afumu/openlink/prompts"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {
@@ -57,13 +60,33 @@ func main() {
 		Token:          token,
 		DefaultPrompt:  prompts.DefaultPrompt,
 	}
+	log.SetOutput(io.Discard)
 
-	fmt.Printf("\n认证 URL: http://127.0.0.1:%d/auth?token=%s\n", *port, token)
-	fmt.Printf("请在浏览器扩展中输入此 URL\n\n")
+	// 创建 TUI 模型
+	// TODO: 后续可从配置或环境变量读取实际的 AI 服务商
+	aiProvider := "OpenAI / Claude / Local"
+	model := tui.NewModel(*port, *dir, aiProvider, token)
+	program := tea.NewProgram(model, tea.WithAltScreen())
 
-	srv := server.New(config)
+	// 创建 TUI Logger
+	tuiLogger := tui.NewLogger(program)
 
-	if err := srv.Run(); err != nil {
-		log.Fatalf("服务器运行出错: %v", err)
+	// 启动后端服务（在后台 goroutine 中）
+	go func() {
+		srv := server.New(config)
+		srv.SetTUILogger(tuiLogger)
+		tuiLogger.LogStatus("running")
+		tuiLogger.Printf("认证 URL: http://127.0.0.1:%d/auth?token=%s", *port, token)
+
+		if err := srv.Run(); err != nil {
+			tuiLogger.Printf("服务器运行出错: %v", err)
+			program.Quit()
+		}
+	}()
+
+	// 运行 TUI（阻塞直到退出）
+	if _, err := program.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
+		os.Exit(1)
 	}
 }

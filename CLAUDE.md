@@ -139,18 +139,9 @@ Local Filesystem
 |----------|-----------|-------------|-------|
 | Google AI Studio | value | true | Recommended; writes to System Instructions |
 | Google Gemini | execCommand | true | |
-| ChatGPT | prosemirror | true | |
 | 通义千问 (Qwen) | value | true | |
-| DeepSeek | paste | false | Uses injected.js |
-| Kimi | execCommand | false | |
-| Mistral | execCommand | false | |
-| Perplexity | execCommand | false | |
-| Arena.ai | value | true | |
-| OpenRouter | value | false | |
-| Grok | value | false | |
-| GitHub Copilot | value | false | |
-| t3.chat | value | false | |
-| z.ai | value | false | |
+
+> **Note**: Only the above 3 platforms are currently implemented in the content script and manifest. Other platforms (ChatGPT, DeepSeek, Kimi, etc.) are planned but not yet supported — the extension will not inject on those sites.
 
 ### Security Model
 

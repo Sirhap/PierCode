@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"time"
@@ -18,8 +19,9 @@ type Tool interface {
 }
 
 type Context struct {
-	Args   map[string]interface{}
-	Config *types.Config
+	Context context.Context
+	Args    map[string]interface{}
+	Config  *types.Config
 }
 
 type Result struct {

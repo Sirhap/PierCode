@@ -1,10 +1,15 @@
 package tool
 
 import (
+	"bytes"
+	"io"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/afumu/openlink/internal/types"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 func TestExecCmdValidate(t *testing.T) {
@@ -19,6 +24,27 @@ func TestExecCmdValidate(t *testing.T) {
 	}
 	if err := tool.Validate(map[string]interface{}{"command": "sudo rm -rf /"}); err == nil {
 		t.Error("expected error for dangerous command")
+	}
+}
+
+func TestDecodeCommandOutputPreservesUTF8(t *testing.T) {
+	want := "中文输出🙂"
+	if got := decodeCommandOutput([]byte(want)); got != want {
+		t.Fatalf("expected UTF-8 output preserved, got %q", got)
+	}
+}
+
+func TestDecodeCommandOutputFallsBackToGBKOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("GBK fallback is Windows-only")
+	}
+	reader := transform.NewReader(bytes.NewReader([]byte("中文输出")), simplifiedchinese.GBK.NewEncoder())
+	gbk, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeCommandOutput(gbk); got != "中文输出" {
+		t.Fatalf("expected GBK fallback on Windows, got %q", got)
 	}
 }
 

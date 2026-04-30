@@ -1,16 +1,21 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
 	"time"
+	"unicode/utf8"
 
 	"github.com/afumu/openlink/internal/security"
 	"github.com/afumu/openlink/internal/types"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 type ExecCmdTool struct {
@@ -60,6 +65,27 @@ func getShell() (string, string) {
 	return "sh", "-c"
 }
 
+// decodeGBK 将 GBK 编码的字节转换为 UTF-8 字符串
+func decodeGBK(data []byte) string {
+	reader := transform.NewReader(bytes.NewReader(data), simplifiedchinese.GBK.NewDecoder())
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		// 解码失败时回退到原始字符串
+		return string(data)
+	}
+	return string(decoded)
+}
+
+func decodeCommandOutput(data []byte) string {
+	if utf8.Valid(data) {
+		return string(data)
+	}
+	if runtime.GOOS == "windows" {
+		return decodeGBK(data)
+	}
+	return string(data)
+}
+
 func (t *ExecCmdTool) Execute(ctx *Context) *Result {
 	result := &Result{StartTime: time.Now()}
 
@@ -68,15 +94,16 @@ func (t *ExecCmdTool) Execute(ctx *Context) *Result {
 		cmd, _ = ctx.Args["cmd"].(string)
 	}
 
-	execCtx, cancel := context.WithTimeout(
-		context.Background(),
-		time.Duration(t.config.Timeout)*time.Second,
-	)
+	parentCtx := ctx.Context
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	execCtx, cancel := context.WithTimeout(parentCtx, time.Duration(t.config.Timeout)*time.Second)
 	defer cancel()
 
 	shell, flag := getShell()
 	proc := exec.CommandContext(execCtx, shell, flag, cmd)
-	proc.Dir = t.config.RootDir
+	proc.Dir = t.config.GetRootDir()
 	output, err := proc.CombinedOutput()
 	result.EndTime = time.Now()
 
@@ -86,7 +113,7 @@ func (t *ExecCmdTool) Execute(ctx *Context) *Result {
 		return result
 	}
 
-	outputStr, _ := Truncate(string(output))
+	outputStr, _ := Truncate(decodeCommandOutput(output))
 
 	if err != nil {
 		result.Status = "error"

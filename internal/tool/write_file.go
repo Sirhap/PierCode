@@ -50,10 +50,11 @@ func (t *WriteFileTool) Execute(ctx *Context) *Result {
 
 	var safePath string
 	var err error
+	rootDir := ctx.Config.GetRootDir()
 	if filepath.IsAbs(path) {
-		safePath, err = resolveAbsPath(path, ctx.Config.RootDir)
+		safePath, err = resolveAbsPath(path, rootDir)
 	} else {
-		safePath, err = security.SafePath(ctx.Config.RootDir, path)
+		safePath, err = security.SafePath(rootDir, path)
 	}
 	if err != nil {
 		result.Status = "error"

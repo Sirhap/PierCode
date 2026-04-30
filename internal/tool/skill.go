@@ -21,7 +21,7 @@ func NewSkillTool(config *types.Config) *SkillTool {
 
 func (t *SkillTool) Name() string { return "skill" }
 func (t *SkillTool) Description() string {
-	infos := skill.LoadInfos(t.config.RootDir)
+	infos := skill.LoadInfos(t.config.GetRootDir())
 	if len(infos) == 0 {
 		return "Load a specialized skill from skills directories"
 	}
@@ -46,7 +46,7 @@ func (t *SkillTool) Execute(ctx *Context) *Result {
 	skillName, _ := ctx.Args["skill"].(string)
 
 	if skillName == "" {
-		infos := skill.LoadInfos(ctx.Config.RootDir)
+		infos := skill.LoadInfos(ctx.Config.GetRootDir())
 		if len(infos) == 0 {
 			result.Status = "success"
 			result.Output = "没有找到可用的 skills"
@@ -63,7 +63,7 @@ func (t *SkillTool) Execute(ctx *Context) *Result {
 		return result
 	}
 
-	info, ok := skill.Get(ctx.Config.RootDir, skillName)
+	info, ok := skill.Get(ctx.Config.GetRootDir(), skillName)
 	if !ok {
 		result.Status = "error"
 		result.Error = fmt.Sprintf("skill %q not found", skillName)

@@ -1,65 +1,114 @@
 import { useEffect, useState } from 'react'
+import { DEFAULT_AUTO_EXECUTE, resolveAutoExecute } from '../settings'
+
+function normalizeAuthUrl(raw: string): { authUrl: URL; baseUrl: string; token: string; port: number } {
+  const authUrl = new URL(raw.trim())
+  const token = (authUrl.searchParams.get('token') || '').trim()
+  const baseUrl = `${authUrl.protocol}//${authUrl.host}`
+  const port = Number(authUrl.port || (authUrl.protocol === 'https:' ? 443 : 80))
+  return { authUrl, baseUrl, token, port }
+}
+
+function isValidAuthResponse(data: any): boolean {
+  return data?.valid === true || data?.valid === 'true' || data?.status === 'ok'
+}
+
+function formatAuthFailure(res: Response, data: any): string {
+  if (!res.ok) return `HTTP ${res.status}`
+  if (data?.reason === 'missing_token') return 'URL 中没有 token 参数'
+  const actualLength = Number(data?.actual_length)
+  const expectedLength = Number(data?.expected_length)
+  if (Number.isFinite(actualLength) && Number.isFinite(expectedLength) && expectedLength > 0) {
+    if (actualLength < expectedLength) {
+      return `Token 复制不完整（当前 ${actualLength}/${expectedLength} 位）`
+    }
+    if (actualLength !== expectedLength) {
+      return `Token 长度不匹配（当前 ${actualLength}/${expectedLength} 位）`
+    }
+    return 'Token 内容不匹配'
+  }
+  return 'Token 不匹配，请确认使用的是当前 TUI 显示的认证 URL'
+}
 
 export default function App() {
   const [status, setStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking')
   const [token, setToken] = useState('')
-  const [savedToken, setSavedToken] = useState('')
-  const [apiUrl, setApiUrl] = useState('')
   const [reconfig, setReconfig] = useState(false)
   const [info, setInfo] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
   const [autoSend, setAutoSend] = useState(true)
-  const [autoExecute, setAutoExecute] = useState(false)
+  const [autoExecute, setAutoExecute] = useState(DEFAULT_AUTO_EXECUTE)
   const [delayMin, setDelayMin] = useState(1)
   const [delayMax, setDelayMax] = useState(4)
 
   useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 3000)
+      return () => clearTimeout(timer)
+    }
+  }, [toast])
+
+  useEffect(() => {
     chrome.storage.local.get(['authToken', 'apiUrl', 'autoSend', 'autoExecute', 'delayMin', 'delayMax'], (result) => {
       if (result.authToken && result.apiUrl) {
-        setSavedToken(result.authToken)
-        setApiUrl(result.apiUrl)
-        checkConnection(result.authToken, result.apiUrl)
+        checkConnection(result.apiUrl)
       } else {
         setStatus('disconnected')
         setInfo('请输入认证 Token URL')
       }
       if (result.autoSend !== undefined) setAutoSend(result.autoSend)
-      if (result.autoExecute !== undefined) setAutoExecute(result.autoExecute)
+      const nextAutoExecute = resolveAutoExecute(result.autoExecute)
+      setAutoExecute(nextAutoExecute)
+      if (result.autoExecute === undefined) chrome.storage.local.set({ autoExecute: nextAutoExecute })
       if (result.delayMin !== undefined) setDelayMin(result.delayMin)
       if (result.delayMax !== undefined) setDelayMax(result.delayMax)
     })
   }, [])
 
-  const checkConnection = (authToken: string, url: string) => {
+  const checkConnection = (url: string) => {
     fetch(`${url}/health`)
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json()
+      })
       .then(data => { setStatus('connected'); setInfo(`工作目录: ${data.dir || 'unknown'}`) })
       .catch(() => { setStatus('disconnected'); setInfo('服务未运行') })
   }
 
   const handleConnect = async () => {
     if (!token) return
+    setLoading(true)
+    setToast(null)
     try {
-      const url = new URL(token)
-      const tokenValue = url.searchParams.get('token')
-      const baseUrl = `${url.protocol}//${url.host}`
-      if (!tokenValue) { setInfo('URL 格式错误'); return }
-      const res = await fetch(`${baseUrl}/auth`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: tokenValue })
-      })
-      const data = await res.json()
-      if (data.valid) {
-        chrome.storage.local.set({ authToken: tokenValue, apiUrl: baseUrl })
-        setSavedToken(tokenValue)
-        setApiUrl(baseUrl)
-        setReconfig(false)
-        checkConnection(tokenValue, baseUrl)
-      } else {
-        setInfo('Token 无效')
+      const { authUrl, baseUrl, token: tokenValue, port } = normalizeAuthUrl(token)
+      if (!tokenValue) {
+        setToast({ msg: 'URL 格式错误', type: 'error' })
+        setLoading(false)
+        return
       }
-    } catch {
-      setInfo('URL 格式错误或连接失败')
+      const res = await fetch(authUrl.toString(), { method: 'GET' })
+      const text = await res.text()
+      let data: any = {}
+      try {
+        data = text ? JSON.parse(text) : {}
+      } catch {
+        data = {}
+      }
+      if (res.ok && isValidAuthResponse(data)) {
+        chrome.storage.local.set({ authToken: tokenValue, apiUrl: baseUrl, authPort: port })
+        setReconfig(false)
+        setToast({ msg: '✅ 授权成功！已连接本地服务', type: 'success' })
+        checkConnection(baseUrl)
+      } else {
+        const reason = formatAuthFailure(res, data)
+        setToast({ msg: `❌ Token 验证失败：${reason}`, type: 'error' })
+      }
+    } catch (error) {
+      console.error('[OpenLink] auth failed:', error)
+      setToast({ msg: '❌ 连接失败，请检查服务是否运行', type: 'error' })
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -114,14 +163,24 @@ export default function App() {
             placeholder="粘贴 Token URL"
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleConnect()}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 outline-none focus:border-blue-500 transition-colors"
+            onKeyDown={(e) => e.key === 'Enter' && !loading && handleConnect()}
+            disabled={loading}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 outline-none focus:border-blue-500 transition-colors disabled:opacity-50"
           />
           <button
             onClick={handleConnect}
-            className="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-sm font-medium rounded-lg py-2 transition-colors cursor-pointer"
+            disabled={loading}
+            className="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-sm font-medium rounded-lg py-2 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
-            连接
+            {loading ? (
+              <>
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                连接中...
+              </>
+            ) : '连接'}
           </button>
         </div>
       )}
@@ -177,6 +236,15 @@ export default function App() {
 
       {/* Info */}
       {info && <div className="mt-3 text-xs text-gray-500 truncate">{info}</div>}
+
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg shadow-lg text-sm font-medium z-50 transition-all duration-300 animate-fade-in-down ${
+          toast.type === 'success' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'
+        }`}>
+          {toast.msg}
+        </div>
+      )}
     </div>
   )
 }

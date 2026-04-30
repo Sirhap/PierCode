@@ -43,7 +43,7 @@ func (t *TodoWriteTool) Execute(ctx *Context) *Result {
 		result.Error = err.Error()
 		return result
 	}
-	p := filepath.Join(ctx.Config.RootDir, ".todos.json")
+	p := filepath.Join(ctx.Config.GetRootDir(), ".todos.json")
 	if err := os.WriteFile(p, data, 0644); err != nil {
 		result.Status = "error"
 		result.Error = err.Error()

@@ -34,3 +34,10 @@ Thumbs.db
 extension/*.crx
 extension/*.pem
 extension/dist/
+
+# OpenLink/omx build and dev tools
+.omx/
+.claude/
+.playwright-mcp/
+release-packages/
+release/

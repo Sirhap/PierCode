@@ -1,9 +1,13 @@
 package types
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"sync"
+)
 
 type ToolRequest struct {
 	Name   string                 `json:"name"`
+	CallID string                 `json:"call_id,omitempty"`
 	Args   map[string]interface{} `json:"args"`
 	Reason string                 `json:"reason,omitempty"`
 }
@@ -11,6 +15,8 @@ type ToolRequest struct {
 func (r *ToolRequest) UnmarshalJSON(data []byte) error {
 	type raw struct {
 		Name      string                 `json:"name"`
+		CallID    string                 `json:"call_id"`
+		CallIDAlt string                 `json:"callId"`
 		Args      map[string]interface{} `json:"args"`
 		Arguments map[string]interface{} `json:"arguments"`
 		Reason    string                 `json:"reason,omitempty"`
@@ -20,6 +26,11 @@ func (r *ToolRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	r.Name = v.Name
+	if v.CallID != "" {
+		r.CallID = v.CallID
+	} else {
+		r.CallID = v.CallIDAlt
+	}
 	r.Reason = v.Reason
 	if v.Args != nil {
 		r.Args = v.Args
@@ -30,6 +41,8 @@ func (r *ToolRequest) UnmarshalJSON(data []byte) error {
 }
 
 type ToolResponse struct {
+	Name       string `json:"name,omitempty"`
+	CallID     string `json:"call_id,omitempty"`
 	Status     string `json:"status"`
 	Output     string `json:"output"`
 	Error      string `json:"error,omitempty"`
@@ -37,11 +50,25 @@ type ToolResponse struct {
 }
 
 type Config struct {
-	RootDir       string
-	Port          int
-	Timeout       int
-	Token         string
-	DefaultPrompt []byte
+	mu             sync.RWMutex
+	RootDir        string
+	InitialRootDir string
+	Port           int
+	Timeout        int
+	Token          string
+	DefaultPrompt  []byte
+}
+
+func (c *Config) GetRootDir() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.RootDir
+}
+
+func (c *Config) SetRootDir(rootDir string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.RootDir = rootDir
 }
 
 type Settings struct {

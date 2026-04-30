@@ -13,6 +13,7 @@ import (
 func TestLoadOrCreateToken(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 
 	// First call creates token
 	token1, err := LoadOrCreateToken()
@@ -36,6 +37,7 @@ func TestLoadOrCreateToken(t *testing.T) {
 func TestLoadOrCreateTokenExisting(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 
 	settingsDir := filepath.Join(dir, ".openlink")
 	os.MkdirAll(settingsDir, 0700)
@@ -59,6 +61,7 @@ func TestAuthMiddleware(t *testing.T) {
 	router.GET("/health", func(c *gin.Context) { c.Status(200) })
 	router.GET("/auth", func(c *gin.Context) { c.Status(200) })
 	router.GET("/protected", func(c *gin.Context) { c.Status(200) })
+	router.GET("/ws", func(c *gin.Context) { c.Status(200) })
 
 	t.Run("health bypasses auth", func(t *testing.T) {
 		w := httptest.NewRecorder()
@@ -101,6 +104,33 @@ func TestAuthMiddleware(t *testing.T) {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/protected", nil)
 		req.Header.Set("Authorization", "Bearer wrong")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("websocket accepts query token", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/ws?token=secret", nil)
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d", w.Code)
+		}
+	})
+
+	t.Run("websocket rejects wrong query token", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/ws?token=wrong", nil)
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("protected route does not accept query token", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/protected?token=secret", nil)
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("expected 401, got %d", w.Code)

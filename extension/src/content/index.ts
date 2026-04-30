@@ -1,3 +1,102 @@
+import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
+import { extractMonacoText, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
+import { resolveAutoExecute } from '../settings';
+import { initWsLinker } from './ws-linker';
+
+// 获取当前平台适配器
+const platformAdapter: PlatformAdapter = getPlatformAdapter();
+
+const MONACO_ID_ATTR = 'data-openlink-monaco-id';
+const MONACO_REQUEST = 'OPENLINK_MONACO_TEXT_REQUEST';
+const MONACO_RESPONSE = 'OPENLINK_MONACO_TEXT_RESPONSE';
+
+let pageBridgeInjected = false;
+let monacoIdSeq = 0;
+let monacoRequestSeq = 0;
+
+function injectPageScript(fileName: string): void {
+  if (!checkContext()) return;
+  const script = document.createElement('script');
+  script.src = chrome.runtime.getURL(fileName);
+  script.onload = () => script.remove();
+  (document.head || document.documentElement).appendChild(script);
+}
+
+function injectPageBridge(): void {
+  if (pageBridgeInjected) return;
+  pageBridgeInjected = true;
+  injectPageScript('page-bridge.js');
+}
+
+function normalizeCodeText(text: string): string {
+  return text.replace(/\u00A0/g, ' ').trim();
+}
+
+function requestMonacoModelText(container: Element, visibleText: string): Promise<string | null> {
+  const monacoEl = container.querySelector<HTMLElement>('.monaco-editor');
+  if (!monacoEl) return Promise.resolve(null);
+
+  let domId = monacoEl.getAttribute(MONACO_ID_ATTR);
+  if (!domId) {
+    domId = `openlink-monaco-${Date.now()}-${++monacoIdSeq}`;
+    monacoEl.setAttribute(MONACO_ID_ATTR, domId);
+  }
+
+  injectPageBridge();
+  const requestId = `openlink-monaco-request-${Date.now()}-${++monacoRequestSeq}`;
+
+  return new Promise(resolve => {
+    const timeout = setTimeout(() => {
+      window.removeEventListener('message', onMessage);
+      resolve(null);
+    }, 500);
+
+    function onMessage(event: MessageEvent) {
+      if (event.source !== window) return;
+      const data = event.data;
+      if (!data || data.type !== MONACO_RESPONSE || data.requestId !== requestId) return;
+      clearTimeout(timeout);
+      window.removeEventListener('message', onMessage);
+      resolve(typeof data.text === 'string' ? normalizeCodeText(data.text) : null);
+    }
+
+    window.addEventListener('message', onMessage);
+    window.postMessage({
+      type: MONACO_REQUEST,
+      requestId,
+      domId,
+      visibleText
+    }, '*');
+  });
+}
+
+function clickQwenOverflowPlaceholders(container: Element): boolean {
+  let clicked = false;
+  container.querySelectorAll<HTMLElement>('.mtkoverflow').forEach(el => {
+    if (el.dataset.openlinkClicked === '1') return;
+    el.dataset.openlinkClicked = '1';
+    el.click();
+    clicked = true;
+  });
+  return clicked;
+}
+
+function isContextValid(): boolean {
+  try { return !!chrome.runtime?.id; } catch { return false; }
+}
+
+function checkContext(): boolean {
+  if (isContextValid()) return true;
+  document.querySelectorAll('[data-openlink-key]').forEach(el => el.remove());
+  const btn = document.querySelector('button[style*="z-index:99999"]');
+  if (btn) {
+    (btn as HTMLButtonElement).disabled = true;
+    (btn as HTMLButtonElement).textContent = '🔗 请刷新页面';
+    (btn as HTMLButtonElement).style.background = '#666';
+  }
+  return false;
+}
+
 function parseOptions(raw: unknown): string[] {
   if (Array.isArray(raw)) return raw;
   if (typeof raw === 'string') { try { return JSON.parse(raw); } catch { return []; } }
@@ -8,45 +107,10 @@ function getNativeSetter() {
   return Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
 }
 
-function parseXmlToolCall(raw: string): any | null {
-  const nameMatch = raw.match(/^<tool\s+name="([^"]+)"(?:\s+call_id="([^"]+)")?/);
-  if (!nameMatch) return null;
-  const name = nameMatch[1];
-  const callId = nameMatch[2] || null;
-  const args: Record<string, string> = {};
-  const paramRe = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/g;
-  let m;
-  while ((m = paramRe.exec(raw)) !== null) args[m[1]] = m[2];
-  return { name, args, callId };
-}
-
-function tryParseToolJSON(raw: string): any | null {
-  try { return JSON.parse(raw); } catch {}
-  try {
-    let result = '';
-    let inString = false;
-    let escaped = false;
-    for (let i = 0; i < raw.length; i++) {
-      const ch = raw[i];
-      if (escaped) { result += ch; escaped = false; continue; }
-      if (ch === '\\') { result += ch; escaped = true; continue; }
-      if (ch === '"') {
-        if (!inString) { inString = true; result += ch; continue; }
-        let j = i + 1;
-        while (j < raw.length && raw[j] === ' ') j++;
-        const next = raw[j];
-        if (next === ':' || next === ',' || next === '}' || next === ']') {
-          inString = false; result += ch;
-        } else {
-          result += '\\"';
-        }
-        continue;
-      }
-      result += ch;
-    }
-    return JSON.parse(result);
-  } catch {}
-  return null;
+function decodeHTMLEntities(s: string): string {
+  const el = document.createElement('textarea');
+  el.innerHTML = s;
+  return el.value;
 }
 
 type FillMethod = 'paste' | 'execCommand' | 'value' | 'prosemirror';
@@ -62,10 +126,19 @@ interface SiteConfig {
 
 function getSiteConfig(): SiteConfig {
   const h = location.hostname;
+  // 优先使用平台适配器的 responseSelector
+  const adapterSelector = platformAdapter.responseSelector;
+
+  if (h.includes('kimi.com'))
+    return { editor: 'div.chat-input-editor[contenteditable="true"]', sendBtn: 'div.send-button-container', stopBtn: null, fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || '.segment-assistant' };
+  if (h.includes('chat.z.ai'))
+    return { editor: 'textarea#chat-input', sendBtn: 'button#send-message-button', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || '#response-content-container' };
   if (h.includes('gemini.google.com'))
-    return { editor: 'div.ql-editor[contenteditable="true"]', sendBtn: 'button.send-button[aria-label*="发送"], button.send-button[aria-label*="Send"]', stopBtn: null, fillMethod: 'execCommand', useObserver: true, responseSelector: 'model-response, .model-response-text, message-content' };
+    return { editor: 'div.ql-editor[contenteditable="true"]', sendBtn: 'button.send-button[aria-label*="发送"], button.send-button[aria-label*="Send"]', stopBtn: null, fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || 'model-response, .model-response-text, message-content' };
+  if (h.includes('qwen.ai') || h.includes('qwenlm.ai'))
+    return { editor: 'textarea.message-input-textarea', sendBtn: 'button.send-button', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || '.qwen-chat-message-assistant' };
   // Default: AI Studio
-  return { editor: 'textarea[placeholder*="Start typing a prompt"]', sendBtn: 'button.ctrl-enter-submits.ms-button-primary[type="submit"], button[aria-label*="Run"]', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: 'ms-chat-turn' };
+  return { editor: 'textarea[placeholder*="Start typing a prompt"]', sendBtn: 'button.ctrl-enter-submits.ms-button-primary[type="submit"], button[aria-label*="Run"]', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || 'ms-chat-turn' };
 }
 
 if (!(window as any).__OPENLINK_LOADED__) {
@@ -73,22 +146,18 @@ if (!(window as any).__OPENLINK_LOADED__) {
 
   const cfg = getSiteConfig();
 
+  if (platformAdapter.name === 'qwen') {
+    injectPageBridge();
+  }
+  initWsLinker();
+
   if (!cfg.useObserver) {
-    const script = document.createElement('script');
-    script.src = chrome.runtime.getURL('injected.js');
-    (document.head || document.documentElement).appendChild(script);
+    injectPageScript('injected.js');
   } else if (cfg.responseSelector) {
     const sel = cfg.responseSelector;
     if (document.body) startDOMObserver(sel);
     else document.addEventListener('DOMContentLoaded', () => startDOMObserver(sel));
   }
-
-  let execQueue = Promise.resolve();
-  window.addEventListener('message', (event) => {
-    if (event.data.type === 'TOOL_CALL') {
-      execQueue = execQueue.then(() => executeToolCall(event.data.data));
-    }
-  });
 
   if (document.body) injectInitButton();
   else document.addEventListener('DOMContentLoaded', injectInitButton);
@@ -142,6 +211,7 @@ function markExecuted(key: string): void {
 }
 
 async function executeToolCallRaw(toolCall: any): Promise<string> {
+  if (!checkContext()) return '扩展已失效，请刷新页面';
   const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
   if (!apiUrl) return '请先在插件中配置 API 地址';
   const headers: any = { 'Content-Type': 'application/json' };
@@ -150,7 +220,46 @@ async function executeToolCallRaw(toolCall: any): Promise<string> {
   if (response.status === 401) return '认证失败，请在插件中重新输入 Token';
   if (!response.ok) return `[OpenLink 错误] HTTP ${response.status}`;
   const result = JSON.parse(response.body);
-  return result.output || result.error || '[OpenLink] 空响应';
+  const output = result.output || result.error || '[OpenLink] 空响应';
+  const name = result.name || toolCall.name || '';
+  const callId = result.callId || result.call_id || toolCall.callId || toolCall.call_id || '';
+  return name ? `### ${name} #${callId}\n${output}` : output;
+}
+
+async function executeToolCallReturn(toolCall: any): Promise<{ output: string; stopStream: boolean }> {
+  if (!checkContext()) return { output: '扩展已失效，请刷新页面', stopStream: false };
+  if (toolCall.name === 'question') {
+    const q: string = toolCall.args?.question ?? '';
+    const rawOpts = toolCall.args?.options;
+    const opts: string[] = parseOptions(rawOpts);
+    const answer = opts.length > 0 ? await showQuestionPopup(q, opts) : (prompt(q) ?? '');
+    return { output: answer, stopStream: false };
+  }
+
+  try {
+    if (!checkContext()) return { output: '扩展已失效，请刷新页面', stopStream: false };
+    const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
+    const headers: any = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    if (!apiUrl) return { output: '请先在插件中配置 API 地址', stopStream: false };
+
+    const response = await bgFetch(`${apiUrl}/exec`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(toolCall)
+    });
+
+    if (response.status === 401) return { output: '认证失败，请在插件中重新输入 Token', stopStream: false };
+    if (!response.ok) return { output: `[OpenLink 错误] HTTP ${response.status}`, stopStream: false };
+
+    const result = JSON.parse(response.body);
+    return {
+      output: result.output || result.error || '[OpenLink] 空响应',
+      stopStream: !!result.stopStream
+    };
+  } catch (error) {
+    return { output: `[OpenLink 错误] ${error}`, stopStream: false };
+  }
 }
 
 function renderToolCard(data: any, _full: string, sourceEl: Element, key: string, processed: Set<string>) {
@@ -160,7 +269,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   if (!anchor) return;
 
   // Prevent duplicate cards
-  if (anchor.querySelector(`[data-openlink-key="${key}"]`)) return;
+  if (anchor.querySelector(`[data-openlink-key="${CSS.escape(key)}"]`)) return;
 
   const args = data.args || {};
   const card = document.createElement('div');
@@ -169,7 +278,11 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
 
   const header = document.createElement('div');
   header.style.cssText = 'font-weight:bold;margin-bottom:8px';
-  header.innerHTML = `🔧 ${data.name} <span style="color:#888;font-size:11px">#${data.callId || ''}</span>`;
+  header.append(document.createTextNode(`🔧 ${data.name} `));
+  const callId = document.createElement('span');
+  callId.style.cssText = 'color:#888;font-size:11px';
+  callId.textContent = `#${data.callId || ''}`;
+  header.appendChild(callId);
   card.appendChild(header);
 
   const argsBox = document.createElement('div');
@@ -177,7 +290,10 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   for (const [k, v] of Object.entries(args)) {
     const row = document.createElement('div');
     row.style.cssText = 'margin-bottom:4px';
-    row.innerHTML = `<span style="color:#89b4fa;font-size:11px">${k}</span>`;
+    const keyLabel = document.createElement('span');
+    keyLabel.style.cssText = 'color:#89b4fa;font-size:11px';
+    keyLabel.textContent = k;
+    row.appendChild(keyLabel);
     const val = document.createElement('div');
     val.style.cssText = 'color:#cdd6f4;font-size:12px;font-family:monospace;white-space:pre-wrap;max-height:80px;overflow-y:auto';
     val.textContent = typeof v === 'string' ? v : JSON.stringify(v);
@@ -220,46 +336,285 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
     }
   };
 
-  skipBtn.onclick = () => { card.remove(); processed.delete(key); };
+  skipBtn.onclick = () => { card.remove(); processed.delete(key); markExecuted(key); };
 
   anchor.insertBefore(card, messageContent);
 }
 
 function startDOMObserver(_responseSelector: string) {
   const processed = new Set<string>();
-  const TOOL_RE = /<tool(?:\s[^>]*)?>[\s\S]*?<\/tool>/g;
-  let autoExecute = false;
-  chrome.storage.local.get(['autoExecute']).then(r => { autoExecute = !!r.autoExecute; });
+  let autoExecute: boolean | null = null;
+  const pendingAutoExecute = new Map<string, { data: any; key: string }>();
+  chrome.storage.local.get(['autoExecute']).then(r => {
+    autoExecute = resolveAutoExecute(r.autoExecute);
+    flushPendingAutoExecute();
+  }).catch(() => {
+    autoExecute = false;
+    pendingAutoExecute.clear();
+  });
   chrome.storage.onChanged.addListener((changes) => {
-    if ('autoExecute' in changes) autoExecute = !!changes.autoExecute.newValue;
+    if ('autoExecute' in changes) {
+      autoExecute = resolveAutoExecute(changes.autoExecute.newValue);
+      flushPendingAutoExecute();
+    }
   });
 
-  function scanText(text: string, sourceEl?: Element) {
-    if (!text.includes('<tool')) return;
-    TOOL_RE.lastIndex = 0;
-    let match;
-    while ((match = TOOL_RE.exec(text)) !== null) {
-      const full = match[0];
-      const inner = full.replace(/^<tool[^>]*>|<\/tool>$/g, '').trim();
-      const data = parseXmlToolCall(full) || tryParseToolJSON(inner);
-      if (!data) { console.warn('[OpenLink] 工具调用解析失败:', full); continue; }
-      const convId = getConversationId();
-      const key = data.callId ? `${convId}:${data.name}:${data.callId}` : String(hashStr(full));
-      if (processed.has(key)) continue;
-      console.log('[OpenLink] 提取到工具调用:', data);
+  // ── 批量自动执行 ──────────────────────────────────────────────────────────
+  let pendingBatch: any[] = [];
+  let batchTimer: ReturnType<typeof setTimeout> | null = null;
+  let batchExecuting = false;
+  let batchWaitMs = 1500;
+  chrome.storage.local.get(['batchWaitMs']).then(r => { if (r.batchWaitMs) batchWaitMs = r.batchWaitMs; }).catch(() => {});
+  chrome.storage.onChanged.addListener((changes) => {
+    if ('batchWaitMs' in changes) batchWaitMs = changes.batchWaitMs!.newValue ?? 1500;
+  });
 
-      if (sourceEl) {
-        processed.add(key);
-        renderToolCard(data, full, sourceEl, key, processed);
-        if (autoExecute && !isExecuted(key)) {
-          markExecuted(key);
-          window.postMessage({ type: 'TOOL_CALL', data }, '*');
+  function scheduleToBatch(toolCall: any, key: string) {
+    pendingBatch.push({ data: toolCall, key });
+    // 如果有批次正在执行中，不启动新计时器，等当前批次完成后统一处理
+    if (batchExecuting) return;
+    if (batchTimer) clearTimeout(batchTimer);
+    batchTimer = setTimeout(() => {
+      executeBatch();
+    }, batchWaitMs);
+  }
+
+  async function executeBatch() {
+    batchTimer = null;
+    batchExecuting = true;
+    const batch = pendingBatch;
+    pendingBatch = [];
+    if (batch.length === 0) { batchExecuting = false; return; }
+
+    let combinedOutput = '';
+
+    for (const item of batch) {
+      const { data: toolCall, key } = item;
+      if (isExecuted(key)) continue;
+      markExecuted(key);
+
+      // 更新卡片状态为"执行中..."
+      const cardEl = document.querySelector(`[data-openlink-key="${CSS.escape(key)}"]`);
+      const btnEl = cardEl?.querySelector('button') as HTMLButtonElement | null;
+      if (btnEl) { btnEl.disabled = true; btnEl.textContent = '执行中...'; }
+
+      const { output, stopStream } = await executeToolCallReturn(toolCall);
+      if (combinedOutput) combinedOutput += '\n\n';
+      const callId = toolCall.callId || toolCall.call_id || '';
+      combinedOutput += `### ${toolCall.name} #${callId}\n${output}`;
+
+      // 更新卡片状态为"已执行"
+      if (btnEl) btnEl.textContent = '✅ 已执行';
+
+      if (stopStream) {
+        clickStopButton();
+        showToast('✅ 文件已写入成功，已停止生成');
+        await new Promise(r => setTimeout(r, 600));
+      }
+    }
+
+    if (combinedOutput) {
+      fillAndSend(combinedOutput, true);
+    }
+
+    // 当前批次执行完毕，如果期间有新工具调用累积，继续执行
+    batchExecuting = false;
+    if (pendingBatch.length > 0) {
+      batchTimer = setTimeout(() => {
+        executeBatch();
+      }, batchWaitMs);
+    }
+  }
+
+  function maybeScheduleAutoExecute(toolCall: any, key: string) {
+    if (isExecuted(key)) return;
+    if (autoExecute === true) {
+      scheduleToBatch(toolCall, key);
+    } else if (autoExecute === null) {
+      pendingAutoExecute.set(key, { data: toolCall, key });
+    }
+  }
+
+  function flushPendingAutoExecute() {
+    if (autoExecute !== true) {
+      if (autoExecute === false) pendingAutoExecute.clear();
+      return;
+    }
+    const pending = [...pendingAutoExecute.values()];
+    pendingAutoExecute.clear();
+    for (const item of pending) {
+      if (!isExecuted(item.key)) scheduleToBatch(item.data, item.key);
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const qwenOverflowNotified = new Set<string>();
+
+  function notifyQwenOverflowOnce(codeText: string): void {
+    const key = String(hashStr(codeText.slice(0, 500)));
+    if (qwenOverflowNotified.has(key)) return;
+    qwenOverflowNotified.add(key);
+    showToast('Qwen 工具代码块被 Show more 省略，正在等待完整内容', 5000);
+  }
+
+  async function scanText(text: string, sourceEl?: Element) {
+    const lower = text.toLowerCase();
+
+    // ── Phase 0: 直接从 DOM 提取 tool 代码块（Qwen Monaco Editor 专用） ──
+    if (sourceEl && platformAdapter.name === 'qwen') {
+      const toolPres = sourceEl.querySelectorAll('pre.qwen-markdown-code');
+      for (const pre of toolPres) {
+        const toolBody = pre.querySelector('.qwen-markdown-code-body.tool, .qwen-markdown-code-body.openlink-tool');
+        if (!toolBody) continue;
+
+        let extraction = extractMonacoText(toolBody);
+        let codeText = extraction.text;
+
+        if (extraction.hasOverflow) {
+          const modelText = await requestMonacoModelText(toolBody, codeText);
+          if (modelText) {
+            codeText = modelText;
+            extraction = { text: modelText, hasOverflow: false };
+          } else {
+            const clicked = clickQwenOverflowPlaceholders(toolBody);
+            if (clicked) {
+              setTimeout(() => scheduleScan(sourceEl), 300);
+            }
+            notifyQwenOverflowOnce(codeText);
+            continue;
+          }
         }
-      } else {
-        if (isExecuted(key)) continue;
-        processed.add(key);
-        markExecuted(key);
-        window.postMessage({ type: 'TOOL_CALL', data }, '*');
+
+        // 流式渲染中：内容可能不完整，静默跳过等下次 Observer 触发再解析
+        if (!codeText.trim().endsWith('}')) {
+          continue;
+        }
+        const data = parseJsonFenceToolCall(codeText) || tryParseToolJSON(codeText);
+        if (!data) {
+          if (extraction.hasOverflow) {
+            notifyQwenOverflowOnce(codeText);
+            continue;
+          }
+          console.warn('[OpenLink] Qwen DOM提取解析失败:', codeText);
+          showToast('工具调用格式错误，请检查 AI 输出是否正确', 5000);
+          continue;
+        }
+        const convId = getConversationId();
+        const key = data.callId ? `${convId}:${data.name}:${data.callId}` : String(hashStr(codeText));
+        if (processed.has(key)) continue;
+        console.log('[OpenLink] 提取到工具调用(Qwen DOM):', data);
+
+        if (sourceEl) {
+          processed.add(key);
+          renderToolCard(data, codeText, sourceEl, key, processed);
+          maybeScheduleAutoExecute(data, key);
+        }
+      }
+      // Qwen 已通过 DOM 直接提取，不再走文本解析
+      return;
+    }
+
+    // ── Phase 0b: 直接从 DOM 提取 tool 代码块（Chat Z CodeMirror6 专用） ──
+    if (sourceEl && platformAdapter.name === 'chatz') {
+      const toolContainers = sourceEl.querySelectorAll('.language-openlink-tool, .language-tool');
+      for (const container of toolContainers) {
+        // 从 CodeMirror6 提取文本
+        const cmContent = container.querySelector('.cm-content');
+        if (!cmContent) continue;
+
+        const lines: string[] = [];
+        for (const line of cmContent.querySelectorAll('.cm-line')) {
+          lines.push(line.textContent || '');
+        }
+        const codeText = lines.join('\n').replace(/\u00A0/g, ' ').trim();
+
+        // 流式渲染中：内容可能不完整，静默跳过等下次 Observer 触发再解析
+        if (!codeText.trim().endsWith('}')) {
+          continue;
+        }
+        const data = parseJsonFenceToolCall(codeText) || tryParseToolJSON(codeText);
+        if (!data) {
+          console.warn('[OpenLink] Chat Z DOM提取解析失败:', codeText);
+          showToast('工具调用格式错误，请检查 AI 输出是否正确', 5000);
+          continue;
+        }
+        const convId = getConversationId();
+        const key = data.callId ? `${convId}:${data.name}:${data.callId}` : String(hashStr(codeText));
+        if (processed.has(key)) continue;
+        console.log('[OpenLink] 提取到工具调用(Chat Z DOM):', data);
+
+        if (sourceEl) {
+          processed.add(key);
+          renderToolCard(data, codeText, sourceEl, key, processed);
+          maybeScheduleAutoExecute(data, key);
+        }
+      }
+      // Chat Z 已通过 DOM 直接提取，不再走文本解析
+      return;
+    }
+
+    // ── Phase 1: JSON 围栏格式（优先） ──
+    if (lower.includes('```openlink-tool') || lower.includes('```tool')) {
+      FENCE_RE.lastIndex = 0;
+      let fenceMatch;
+      while ((fenceMatch = FENCE_RE.exec(text)) !== null) {
+        const jsonStr = fenceMatch[1];
+        // 清理 fence 内容：去除不可见字符和非断空格，去除首尾空白
+        const cleanedJsonStr = jsonStr.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, ' ').trim();
+        // 流式渲染中：内容可能不完整，静默跳过
+        if (!cleanedJsonStr.endsWith('}')) {
+          continue;
+        }
+        const data = parseJsonFenceToolCall(cleanedJsonStr) || tryParseToolJSON(cleanedJsonStr);
+        if (!data) {
+          console.warn('[OpenLink] JSON 围栏解析失败:', cleanedJsonStr);
+          showToast('工具调用格式错误，请检查 AI 输出是否正确', 5000);
+          continue;
+        }
+        const convId = getConversationId();
+        const key = data.callId ? `${convId}:${data.name}:${data.callId}` : String(hashStr(fenceMatch[0]));
+        if (processed.has(key)) continue;
+        console.log('[OpenLink] 提取到工具调用(JSON):', data);
+
+        if (sourceEl) {
+          processed.add(key);
+          renderToolCard(data, fenceMatch[0], sourceEl, key, processed);
+          maybeScheduleAutoExecute(data, key);
+        } else {
+          if (isExecuted(key)) continue;
+          processed.add(key);
+          scheduleToBatch(data, key);
+        }
+      }
+    }
+
+    // ── Phase 2: XML 格式（兼容回退） ──
+    if (lower.includes('<tool')) {
+      TOOL_RE.lastIndex = 0;
+      let match;
+      while ((match = TOOL_RE.exec(text)) !== null) {
+        const full = match[0];
+        const inner = full.replace(/^<tool[^>]*>|<\/(?:tool|function)(?:_call)?>$/g, '').trim();
+        const data = parseXmlToolCall(full, decodeHTMLEntities) || tryParseToolJSON(inner);
+        if (!data) {
+          console.warn('[OpenLink] 工具调用解析失败:', full);
+          showToast('工具调用格式错误，请检查 AI 输出是否正确', 5000);
+          continue;
+        }
+        const convId = getConversationId();
+        const key = data.callId ? `${convId}:${data.name}:${data.callId}` : String(hashStr(full));
+        if (processed.has(key)) continue;
+        console.log('[OpenLink] 提取到工具调用(XML):', data);
+
+        if (sourceEl) {
+          processed.add(key);
+          renderToolCard(data, full, sourceEl, key, processed);
+          maybeScheduleAutoExecute(data, key);
+        } else {
+          if (isExecuted(key)) continue;
+          processed.add(key);
+          scheduleToBatch(data, key);
+        }
       }
     }
   }
@@ -283,6 +638,10 @@ function startDOMObserver(_responseSelector: string) {
       const tag = el.tagName.toLowerCase();
       if (tag === 'message-content') return el;
       if (tag === 'ms-chat-turn') return el;
+      if (el.matches?.('.qwen-chat-message-assistant')) return el;
+      if (el.matches?.('#response-content-container')) return el;
+      if (el.matches?.('.segment-assistant')) return el;
+      if (el.id === 'response-content-container') return el;
       el = el.parentElement;
     }
     return null;
@@ -296,7 +655,7 @@ function startDOMObserver(_responseSelector: string) {
   const BLOCK_TAGS = new Set(['P', 'DIV', 'BR', 'LI', 'TR', 'PRE', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
 
   // 跳过这些元素及其子树（UI 噪声）
-  const SKIP_TAGS = new Set(['MS-THOUGHT-CHUNK', 'MAT-ICON', 'SCRIPT', 'STYLE', 'BUTTON', 'MAT-EXPANSION-PANEL-HEADER']);
+  const SKIP_TAGS = new Set(['MS-THOUGHT-CHUNK', 'MAT-ICON', 'SCRIPT', 'STYLE', 'BUTTON', 'MAT-EXPANSION-PANEL-HEADER', 'SVG']);
 
   function extractText(node: Node, buf: string[]): void {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -309,6 +668,17 @@ function startDOMObserver(_responseSelector: string) {
     // 跳过 aria-hidden 元素（Material Icons 图标文字）和噪声标签
     if (el.getAttribute('aria-hidden') === 'true') return;
     if (SKIP_TAGS.has(el.tagName)) return;
+
+    // 如果 <tool> 被渲染为 HTML 元素，将其序列化回文本以便正则匹配
+    if (el.tagName.toLowerCase() === 'tool') {
+      buf.push(el.outerHTML);
+      return;
+    }
+
+    // 使用平台适配器处理特定平台的代码块渲染
+    if (platformAdapter.extractText(el, buf)) {
+      return;
+    }
 
     // 块级元素前插换行，保证多行结构
     if (BLOCK_TAGS.has(el.tagName)) buf.push('\n');
@@ -362,7 +732,7 @@ function startDOMObserver(_responseSelector: string) {
 
   // Initial scan for already-rendered tool calls (e.g. after page refresh)
   requestAnimationFrame(() => {
-    document.querySelectorAll('message-content, ms-chat-turn').forEach(el => {
+    document.querySelectorAll('message-content, ms-chat-turn, .qwen-chat-message-assistant, #response-content-container, .segment-assistant').forEach(el => {
       scanText(getCleanText(el), el);
     });
   });
@@ -377,10 +747,12 @@ function injectInitButton() {
 }
 
 async function bgFetch(url: string, options?: any): Promise<{ ok: boolean; status: number; body: string }> {
+  if (!checkContext()) return { ok: false, status: 0, body: 'Extension context invalidated, please refresh the page' };
   return chrome.runtime.sendMessage({ type: 'FETCH', url, options });
 }
 
 async function sendInitPrompt() {
+  if (!checkContext()) return;
   const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
   if (!apiUrl) { alert('请先在插件中配置 API 地址'); return; }
   const headers: any = { 'Content-Type': 'application/json' };
@@ -439,49 +811,6 @@ function showQuestionPopup(question: string, options: string[]): Promise<string>
     overlay.appendChild(box);
     document.body.appendChild(overlay);
   });
-}
-
-async function executeToolCall(toolCall: any) {
-  if (toolCall.name === 'question') {
-    const q: string = toolCall.args?.question ?? '';
-    const rawOpts = toolCall.args?.options;
-    const opts: string[] = parseOptions(rawOpts);
-    const answer = opts.length > 0 ? await showQuestionPopup(q, opts) : (prompt(q) ?? '');
-    fillAndSend(answer, false);
-    return;
-  }
-
-  try {
-    const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
-    const headers: any = { 'Content-Type': 'application/json' };
-    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-
-    if (!apiUrl) { fillAndSend('请先在插件中配置 API 地址', false); return; }
-
-    const response = await bgFetch(`${apiUrl}/exec`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(toolCall)
-    });
-
-    if (response.status === 401) { fillAndSend('认证失败，请在插件中重新输入 Token', false); return; }
-    if (!response.ok) { fillAndSend(`[OpenLink 错误] HTTP ${response.status}`, false); return; }
-
-    const result = JSON.parse(response.body);
-    const text = result.output || result.error || '[OpenLink] 空响应';
-
-    if (result.stopStream) {
-      clickStopButton();
-      showToast('✅ 文件已写入成功，已停止生成');
-      await new Promise(r => setTimeout(r, 600));
-      fillAndSend(text, true);
-      return;
-    }
-
-    fillAndSend(text, true);
-  } catch (error) {
-    fillAndSend(`[OpenLink 错误] ${error}`, false);
-  }
 }
 
 function showToast(msg: string, durationMs = 3000): void {
@@ -552,12 +881,13 @@ async function fillAndSend(result: string, autoSend = false) {
     ta.dispatchEvent(new Event('input', { bubbles: true }));
   } else if (fillMethod === 'prosemirror') {
     const current = editor.innerText.trim();
-    editor.innerHTML = current ? current + '\n' + result : result;
+    editor.textContent = current ? current + '\n' + result : result;
     editor.dispatchEvent(new Event('input', { bubbles: true }));
     editor.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
   if (autoSend) {
+    if (!checkContext()) return;
     const cfg = await chrome.storage.local.get(['autoSend', 'delayMin', 'delayMax']);
     if (cfg.autoSend === false) return;
 
@@ -592,6 +922,7 @@ const filesCache = new Map<string, { ts: number; files: string[] }>();
 const FILES_TTL = 5000;
 
 async function fetchSkills(): Promise<Array<{ name: string; description: string }>> {
+  if (!checkContext()) return [];
   if (skillsCache && Date.now() - skillsCacheTime < 30000) return skillsCache;
   const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
   if (!apiUrl) return [];
@@ -608,6 +939,7 @@ async function fetchSkills(): Promise<Array<{ name: string; description: string 
 }
 
 async function fetchFiles(q: string): Promise<string[]> {
+  if (!checkContext()) return [];
   const cached = filesCache.get(q);
   if (cached && Date.now() - cached.ts < FILES_TTL) return cached.files;
   const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
@@ -841,7 +1173,7 @@ function attachInputListener(editorEl: HTMLElement) {
         filtered.map(s => ({
           label: s.name,
           sub: s.description,
-          value: `<tool name="skill">\n  <parameter name="skill">${s.name}</parameter>\n</tool>`,
+          value: `\`\`\`openlink-tool\n{"name":"skill","call_id":"${Math.random().toString(36).slice(2,8)}","args":{"skill":"${s.name}"}}\n\`\`\``,
         })),
         (xml) => { replaceTokenInEditor(editorEl, token, xml, fillMethod); dismiss(); },
         dismiss
@@ -869,4 +1201,3 @@ function attachInputListener(editorEl: HTMLElement) {
     dismiss();
   });
 }
-
