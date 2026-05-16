@@ -247,6 +247,12 @@ Skill workflow:
 
 Available skills are injected dynamically by the runtime.
 
+User-side helpers:
+
+- In the OpenLink TUI, `/skills` lists skills visible from the current workspace.
+- In the OpenLink TUI, `/skill <name>` sends one skill's instructions into the active browser AI page.
+- In supported browser editors, typing `/` opens a skill picker when the extension can reach the OpenLink backend.
+
 ---
 
 ## 12. OpenLink Tool Protocol

@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -82,6 +83,23 @@ func TestReplace(t *testing.T) {
 		_, err := replace(content, find, "replaced", false)
 		if err != nil {
 			t.Errorf("TrimmedBoundaryReplacer should match, got %v", err)
+		}
+	})
+
+	t.Run("block anchor rejects unrelated single candidate", func(t *testing.T) {
+		content := strings.Join([]string{
+			"func target() {",
+			"return safeValue",
+			"}",
+		}, "\n")
+		find := strings.Join([]string{
+			"func target() {",
+			"deleteEverything()",
+			"}",
+		}, "\n")
+		_, err := replace(content, find, "replaced", false)
+		if err == nil {
+			t.Fatal("expected unrelated block anchor candidate to be rejected")
 		}
 	})
 }

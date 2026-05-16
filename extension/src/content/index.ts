@@ -1,6 +1,6 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
 import { extractMonacoText, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
-import { initWsLinker, sendAIResponseLog } from './ws-linker';
+import { initWsLinker, sendAIResponseLog, sendUserPromptLog } from './ws-linker';
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
@@ -153,6 +153,24 @@ function getSiteConfig(): SiteConfig {
     return { editor: 'div.chat-input-editor[contenteditable="true"]', sendBtn: 'div.send-button-container', stopBtn: null, fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || '.segment-assistant' };
   if (h.includes('chat.z.ai'))
     return { editor: 'textarea#chat-input', sendBtn: 'button#send-message-button', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || '#response-content-container' };
+  if (h.includes('claude.ai'))
+    return {
+      editor: 'div[contenteditable="true"][data-testid="chat-input"], div.ProseMirror[contenteditable="true"][aria-label*="Claude"], div.ProseMirror[contenteditable="true"]',
+      sendBtn: 'button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled])',
+      stopBtn: null,
+      fillMethod: 'execCommand',
+      useObserver: true,
+      responseSelector: adapterSelector || '.font-claude-response'
+    };
+  if (h.includes('chatgpt.com') || h.includes('chat.openai.com'))
+    return {
+      editor: 'div#prompt-textarea.ProseMirror[contenteditable="true"], div#prompt-textarea[contenteditable="true"], div.ProseMirror[contenteditable="true"][aria-label*="ChatGPT"], textarea[name="prompt-textarea"]',
+      sendBtn: 'button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled]), button[aria-label*="提交"]:not([disabled])',
+      stopBtn: null,
+      fillMethod: 'execCommand',
+      useObserver: true,
+      responseSelector: adapterSelector || '[data-message-author-role="assistant"] .markdown, [data-message-author-role="assistant"]'
+    };
   if (h.includes('gemini.google.com'))
     return { editor: 'div.ql-editor[contenteditable="true"]', sendBtn: 'button.send-button[aria-label*="发送"], button.send-button[aria-label*="Send"]', stopBtn: null, fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || 'model-response, .model-response-text, message-content' };
   if (h.includes('qwen.ai') || h.includes('qwenlm.ai'))
@@ -510,6 +528,7 @@ function startDOMObserver(_responseSelector: string) {
   const aiLastLoggedText = new WeakMap<Element, string>();
   const aiLogKeys = new WeakMap<Element, string>();
   const aiLastSentAt = new WeakMap<Element, number>();
+  let loadingLastSentAt = 0;
 
   function notifyQwenOverflowOnce(codeText: string): void {
     const key = String(hashStr(codeText.slice(0, 500)));
@@ -737,8 +756,36 @@ function startDOMObserver(_responseSelector: string) {
       return;
     }
     if (!el) return;
+    notifyResponseLoading(el);
     const mc = findResponseContainer(el);
     if (mc) scheduleScan(mc);
+    if (el.nodeType === Node.ELEMENT_NODE) {
+      el.querySelectorAll?.(responseContainerSelector()).forEach(container => scheduleScan(container));
+    }
+  }
+
+  function notifyResponseLoading(el: Element): void {
+    const loading = el.matches?.('.response-loading') ? el : el.querySelector?.('.response-loading');
+    if (!loading) return;
+    const now = Date.now();
+    if (now - loadingLastSentAt < 1200) return;
+    loadingLastSentAt = now;
+    sendAIResponseLog(`ai:${getConversationId()}:loading`, '思考中...');
+  }
+
+  function responseContainerSelector(): string {
+    return [
+      platformAdapter.responseSelector,
+      'message-content',
+      'ms-chat-turn',
+      '.model-response-text',
+      '.qwen-chat-message-assistant',
+      '#response-content-container',
+      '.segment-assistant',
+      '.font-claude-response',
+      '[data-message-author-role="assistant"] .markdown',
+      '[data-message-author-role="assistant"]'
+    ].filter(Boolean).join(',');
   }
 
   function findResponseContainer(el: Element | null): Element | null {
@@ -749,6 +796,9 @@ function startDOMObserver(_responseSelector: string) {
       if (el.matches?.('.qwen-chat-message-assistant')) return el;
       if (el.matches?.('#response-content-container')) return el;
       if (el.matches?.('.segment-assistant')) return el;
+      if (el.matches?.('.font-claude-response')) return el;
+      if (el.matches?.('[data-message-author-role="assistant"] .markdown')) return el;
+      if (el.matches?.('[data-message-author-role="assistant"]')) return el;
       if (el.id === 'response-content-container') return el;
       el = el.parentElement;
     }
@@ -840,7 +890,7 @@ function startDOMObserver(_responseSelector: string) {
 
   // Initial scan for already-rendered tool calls (e.g. after page refresh)
   requestAnimationFrame(() => {
-    document.querySelectorAll('message-content, ms-chat-turn, .qwen-chat-message-assistant, #response-content-container, .segment-assistant').forEach(el => {
+    document.querySelectorAll(responseContainerSelector()).forEach(el => {
       scanText(getCleanText(el), el);
     });
   });
@@ -1255,10 +1305,34 @@ function attachInputListener(editorEl: HTMLElement) {
   const { fillMethod } = getSiteConfig();
   let destroyPicker: (() => void) | null = null;
   let inputVersion = 0;
+  let lastPromptText = '';
+  let lastPromptAt = 0;
 
   function dismiss() {
     if (destroyPicker) { destroyPicker(); destroyPicker = null; }
   }
+
+  function logSubmittedPrompt(): void {
+    const text = getEditorText(editorEl).trim();
+    if (!text) return;
+    const now = Date.now();
+    if (text === lastPromptText && now - lastPromptAt < 1500) return;
+    lastPromptText = text;
+    lastPromptAt = now;
+    sendUserPromptLog(`user:${getConversationId()}:${now}`, text);
+  }
+
+  editorEl.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) return;
+    logSubmittedPrompt();
+  }, true);
+
+  document.addEventListener('click', event => {
+    const target = event.target as Element | null;
+    if (!target) return;
+    const sendSelector = getSiteConfig().sendBtn;
+    if (target.closest(sendSelector)) logSubmittedPrompt();
+  }, true);
 
   editorEl.addEventListener('input', async () => {
     const currentVersion = ++inputVersion;

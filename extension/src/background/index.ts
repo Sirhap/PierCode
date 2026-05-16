@@ -4,7 +4,12 @@ const AI_PAGE_URLS = [
   '*://*.qwen.ai/*',
   '*://*.qwenlm.ai/*',
   '*://chat.z.ai/*',
-  '*://*.kimi.com/*'
+  '*://*.kimi.com/*',
+  '*://claude.ai/*',
+  '*://*.claude.ai/*',
+  '*://chatgpt.com/*',
+  '*://*.chatgpt.com/*',
+  '*://chat.openai.com/*'
 ];
 
 async function ensureContentScripts(): Promise<{ tabs: number; injected: number; failed: number }> {

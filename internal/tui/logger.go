@@ -2,16 +2,21 @@ package tui
 
 import (
 	"fmt"
+	"strings"
+	"sync"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Logger 用于将后端事件发送到 TUI
 type Logger struct {
-	program *tea.Program
+	program      *tea.Program
+	mu           sync.Mutex
+	printedByKey map[string]string
 }
 
 func NewLogger(program *tea.Program) *Logger {
-	return &Logger{program: program}
+	return &Logger{program: program, printedByKey: make(map[string]string)}
 }
 
 // LogToolCall 记录工具调用 (默认为 AI 来源)
@@ -37,6 +42,9 @@ func (l *Logger) LogToolCallWithSourceFull(source, toolName, status, message, fu
 			Message:     message,
 			FullMessage: fullMessage,
 		})
+		if source == "ai" && strings.TrimSpace(toolName) != "" {
+			l.program.Println(formatTranscriptToolLine(toolName, status, message))
+		}
 	}
 }
 
@@ -49,7 +57,76 @@ func (l *Logger) LogAIResponse(key, message, fullMessage string) {
 			Message:     message,
 			FullMessage: fullMessage,
 		})
+		l.printAssistantDelta(key, firstNonEmpty(fullMessage, message))
 	}
+}
+
+func (l *Logger) LogUserPrompt(key, message string) {
+	if l.program != nil {
+		l.program.Send(LogMsg{
+			Key:     key,
+			Source:  "user",
+			Status:  "pending",
+			Message: message,
+		})
+		l.program.Println("openlink> " + strings.TrimSpace(message))
+	}
+}
+
+func (l *Logger) printAssistantDelta(key, text string) {
+	text = strings.TrimRight(text, "\n")
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	if key == "" {
+		key = "assistant"
+	}
+
+	l.mu.Lock()
+	last := l.printedByKey[key]
+	if last == text {
+		l.mu.Unlock()
+		return
+	}
+	l.printedByKey[key] = text
+	l.mu.Unlock()
+
+	delta := assistantPrintDelta(last, text)
+	if strings.TrimSpace(delta) == "" {
+		return
+	}
+	prefix := "assistant> "
+	if last != "" && strings.HasPrefix(text, last) {
+		prefix = ""
+	}
+	l.program.Println(prefix + delta)
+}
+
+func assistantPrintDelta(last, text string) string {
+	if strings.HasPrefix(text, last) {
+		return strings.TrimLeft(text[len(last):], "\n")
+	}
+	if last != "" {
+		return "[updated]\n" + text
+	}
+	return text
+}
+
+func formatTranscriptToolLine(toolName, status, message string) string {
+	line := singleLine(message)
+	if line == "" {
+		line = status
+	}
+	return fmt.Sprintf("tool[%s] %s: %s", toolName, status, line)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // LogStatus 更新服务状态

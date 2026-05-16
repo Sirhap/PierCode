@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	skillpkg "github.com/afumu/openlink/internal/skill"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -19,6 +20,8 @@ type slashCommand struct {
 
 var slashCommandList = []slashCommand{
 	{Name: "init", Usage: "", Description: "发送初始化提示词到浏览器 AI 页面"},
+	{Name: "skills", Usage: "", Description: "列出当前可用 skills"},
+	{Name: "skill", Usage: "<name>", Description: "加载并发送指定 skill 到浏览器 AI 页面"},
 	{Name: "cd", Usage: "<path>", Description: "切换 AI 工具执行目录"},
 	{Name: "cwd", Usage: "", Description: "显示当前执行目录"},
 	{Name: "url", Usage: "", Description: "显示认证 URL"},
@@ -129,6 +132,7 @@ func (m *Model) completeSlashInput() {
 	if strings.HasPrefix(strings.TrimSpace(m.input), "/cd ") {
 		if completed, ok := completeDirPath(m.rootDir, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(m.input), "/cd "))); ok {
 			m.input = "/cd " + completed
+			m.inputCursor = len([]rune(m.input))
 		}
 		return
 	}
@@ -142,6 +146,7 @@ func (m *Model) completeSlashInput() {
 	if cmd.Usage != "" {
 		m.input += " "
 	}
+	m.inputCursor = len([]rune(m.input))
 }
 
 func (m Model) executeSlashCommand(text string) (tea.Model, tea.Cmd) {
@@ -184,6 +189,35 @@ func (m Model) executeSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.logOffset = len(m.logs) - 1
 		m.appendSystemNotice(entry.Status, entry.Message)
 		return m, initPromptCmd(m.port, m.token)
+	case "skills":
+		msg := formatSkillsList(m.rootDir)
+		entry := LogEntry{Time: time.Now(), Source: "system", ToolName: "SKILLS", Status: "info", Message: msg}
+		m.logs = append(m.logs, entry)
+		m.appendSystemNotice(entry.Status, entry.Message)
+	case "skill":
+		skillName := strings.TrimSpace(args)
+		if skillName == "" {
+			msg := formatSkillsList(m.rootDir)
+			entry := LogEntry{Time: time.Now(), Source: "system", ToolName: "SKILLS", Status: "info", Message: msg}
+			m.logs = append(m.logs, entry)
+			m.appendSystemNotice(entry.Status, entry.Message)
+			break
+		}
+		skillName = strings.Fields(skillName)[0]
+		if _, ok := skillpkg.Get(m.rootDir, skillName); !ok {
+			entry := LogEntry{Time: time.Now(), Source: "system", ToolName: "SKILL", Status: "error", Message: fmt.Sprintf("skill %q 不存在", skillName)}
+			m.logs = append(m.logs, entry)
+			m.stats["error"]++
+			m.logOffset = len(m.logs) - 1
+			m.appendSystemNotice(entry.Status, entry.Message)
+			return m, nil
+		}
+		entry := LogEntry{Time: time.Now(), Source: "system", ToolName: "SKILL", Status: "pending", Message: "正在发送 skill: " + skillName}
+		m.logs = append(m.logs, entry)
+		m.stats["pending"]++
+		m.logOffset = len(m.logs) - 1
+		m.appendSystemNotice(entry.Status, entry.Message)
+		return m, skillPromptCmd(m.rootDir, skillName, m.port, m.token)
 	case "clear":
 		m.logs = nil
 		m.turns = nil
@@ -247,6 +281,23 @@ func (m Model) executeSlashCommand(text string) (tea.Model, tea.Cmd) {
 	m.stats["info"]++
 	m.logOffset = len(m.logs) - 1
 	return m, nil
+}
+
+func formatSkillsList(rootDir string) string {
+	infos := skillpkg.LoadInfos(rootDir)
+	if len(infos) == 0 {
+		return "没有找到可用 skills。可在 .skills/<name>/SKILL.md 中添加。"
+	}
+	lines := make([]string, 0, len(infos)+1)
+	lines = append(lines, "可用 skills:")
+	for _, info := range infos {
+		desc := strings.TrimSpace(info.Description)
+		if desc == "" {
+			desc = "无描述"
+		}
+		lines = append(lines, fmt.Sprintf("- %s: %s", info.Name, desc))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func parseSlashCommand(text string) (string, string) {

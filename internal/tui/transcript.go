@@ -102,9 +102,7 @@ func (m Model) renderTurnLines(turn Turn, width int) []string {
 
 	if strings.TrimSpace(turn.AssistantText) != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(colorAI).Bold(true).Render("assistant"))
-		for _, line := range wrapTextLines(turn.AssistantText, width-2) {
-			lines = append(lines, "  "+lipgloss.NewStyle().Foreground(colorText).Render(line))
-		}
+		lines = append(lines, renderMarkdownLines(turn.AssistantText, width-2, "  ")...)
 	}
 
 	for _, tool := range turn.Tools {
@@ -172,6 +170,7 @@ func (m *Model) recallInputHistory(delta int) {
 		m.historyIdx = clampInt(m.historyIdx+delta, 0, len(m.inputHistory)-1)
 	}
 	m.input = m.inputHistory[m.historyIdx]
+	m.inputCursor = len([]rune(m.input))
 }
 
 func (m *Model) latestTurn() *Turn {
@@ -209,6 +208,23 @@ func (m *Model) appendSystemNotice(status, message string) {
 
 func (m *Model) applyLogToTranscript(entry LogEntry) {
 	if entry.Source == "user" {
+		text := strings.TrimSpace(entry.Message)
+		if text == "" {
+			return
+		}
+		if latest := m.latestTurn(); latest != nil && strings.TrimSpace(latest.UserText) == text {
+			return
+		}
+		now := time.Now()
+		m.turnSeq++
+		m.turns = append(m.turns, Turn{
+			ID:        fmt.Sprintf("turn-%d", m.turnSeq),
+			StartedAt: now,
+			UpdatedAt: now,
+			UserText:  text,
+			Status:    turnPending,
+		})
+		m.transcriptOffset = -1
 		return
 	}
 	if entry.Source == "ai" && strings.TrimSpace(entry.ToolName) == "" {

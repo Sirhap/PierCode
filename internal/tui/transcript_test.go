@@ -54,6 +54,26 @@ func TestAIStreamUpdatesAssistantBlockInLatestTurn(t *testing.T) {
 	}
 }
 
+func TestAssistantMarkdownRendersReadableBlocks(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.recordUserPrompt("给个示例")
+
+	next, _ := model.Update(LogMsg{
+		Key:     "ai-md",
+		Source:  "ai",
+		Status:  "info",
+		Message: "# 标题\n\n- 第一项\n> 引用\n```go\nfmt.Println(\"hi\")\n```",
+	})
+	model = next.(Model)
+
+	view := model.renderTranscript(100, 20)
+	for _, want := range []string{"标题", "• 第一项", "│ 引用", "``` code go", "│ fmt.Println"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected markdown render to contain %q, got %q", want, view)
+		}
+	}
+}
+
 func TestToolLogNestsUnderLatestTurn(t *testing.T) {
 	model := NewModel(39527, "D:\\workspace", "qwen")
 	model.recordUserPrompt("跑测试")
@@ -95,5 +115,82 @@ func TestSlashLogsTogglesRawLogMode(t *testing.T) {
 	}
 	if !strings.Contains(updated.View(), "MODE LOGS") {
 		t.Fatalf("expected status strip to show log mode")
+	}
+}
+
+func TestInputModePageKeysScrollTranscript(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 80
+	model.height = 16
+	model.inputMode = true
+	model.recordUserPrompt("解释滚动")
+
+	next, _ := model.Update(LogMsg{
+		Key:    "ai-long",
+		Source: "ai",
+		Status: "info",
+		Message: strings.Join([]string{
+			"line-01", "line-02", "line-03", "line-04", "line-05",
+			"line-06", "line-07", "line-08", "line-09", "line-10",
+			"line-11", "line-12", "line-13", "line-14", "line-15",
+		}, "\n"),
+	})
+	model = next.(Model)
+	maxOffset := model.transcriptMaxOffset()
+	if maxOffset == 0 {
+		t.Fatalf("expected transcript to overflow")
+	}
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	model = next.(Model)
+	if model.transcriptOffset < 0 || model.transcriptOffset >= maxOffset {
+		t.Fatalf("expected pgup to scroll up from bottom, got offset %d max %d", model.transcriptOffset, maxOffset)
+	}
+	if !model.inputMode {
+		t.Fatalf("expected input mode to remain active")
+	}
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	model = next.(Model)
+	if model.transcriptOffset != -1 {
+		t.Fatalf("expected pgdown to return to bottom, got %d", model.transcriptOffset)
+	}
+}
+
+func TestTranscriptScrollsFromBottomWithWheelAndArrow(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 80
+	model.height = 16
+	model.recordUserPrompt("解释滚轮")
+
+	next, _ := model.Update(LogMsg{
+		Key:    "ai-long",
+		Source: "ai",
+		Status: "info",
+		Message: strings.Join([]string{
+			"line-01", "line-02", "line-03", "line-04", "line-05",
+			"line-06", "line-07", "line-08", "line-09", "line-10",
+			"line-11", "line-12", "line-13", "line-14", "line-15",
+		}, "\n"),
+	})
+	model = next.(Model)
+	maxOffset := model.transcriptMaxOffset()
+	if maxOffset == 0 {
+		t.Fatalf("expected transcript to overflow")
+	}
+
+	next, _ = model.Update(tea.MouseMsg{Type: tea.MouseWheelUp})
+	model = next.(Model)
+	if model.transcriptOffset < 0 || model.transcriptOffset >= maxOffset {
+		t.Fatalf("expected wheel up to scroll up from bottom, got offset %d max %d", model.transcriptOffset, maxOffset)
+	}
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	model = next.(Model)
+	model.transcriptOffset = -1
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	model = next.(Model)
+	if model.transcriptOffset < 0 || model.transcriptOffset >= maxOffset {
+		t.Fatalf("expected arrow up outside input to scroll up from bottom, got offset %d max %d", model.transcriptOffset, maxOffset)
 	}
 }

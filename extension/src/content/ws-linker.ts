@@ -70,6 +70,38 @@ function getInjectConfig(): InjectConfig {
       fillMethod: "value"
     };
   }
+  if (h.includes("claude.ai")) {
+    return {
+      editor: [
+        "div[contenteditable='true'][data-testid='chat-input']",
+        "div.ProseMirror[contenteditable='true'][aria-label*='Claude']",
+        "div.ProseMirror[contenteditable='true']"
+      ].join(","),
+      sendBtn: [
+        "button[data-testid='send-button']:not([disabled])",
+        "button[aria-label*='Send']:not([disabled])",
+        "button[aria-label*='发送']:not([disabled])"
+      ].join(","),
+      fillMethod: "execCommand"
+    };
+  }
+  if (h.includes("chatgpt.com") || h.includes("chat.openai.com")) {
+    return {
+      editor: [
+        "div#prompt-textarea.ProseMirror[contenteditable='true']",
+        "div#prompt-textarea[contenteditable='true']",
+        "div.ProseMirror[contenteditable='true'][aria-label*='ChatGPT']",
+        "textarea[name='prompt-textarea']"
+      ].join(","),
+      sendBtn: [
+        "button[data-testid='send-button']:not([disabled])",
+        "button[aria-label*='Send']:not([disabled])",
+        "button[aria-label*='发送']:not([disabled])",
+        "button[aria-label*='提交']:not([disabled])"
+      ].join(","),
+      fillMethod: "execCommand"
+    };
+  }
   if (h.includes("gemini.google.com")) {
     return {
       editor: "div.ql-editor[contenteditable='true'], [contenteditable='true']",
@@ -270,6 +302,16 @@ export function sendAIResponseLog(key: string, text: string): void {
     ws.send(JSON.stringify({ type: "ai_log", key, text: trimmed }));
   } catch (error) {
     console.warn("[OpenLink] AI 响应日志回传失败:", error);
+  }
+}
+
+export function sendUserPromptLog(key: string, text: string): void {
+  const trimmed = text.trim();
+  if (!trimmed || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try {
+    ws.send(JSON.stringify({ type: "user_log", key, text: trimmed }));
+  } catch (error) {
+    console.warn("[OpenLink] 用户输入日志回传失败:", error);
   }
 }
 

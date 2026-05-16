@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/afumu/openlink/internal/prompt"
@@ -19,6 +20,7 @@ type Executor struct {
 	config    *types.Config
 	registry  *tool.Registry
 	callCount atomic.Int64
+	toolMu    sync.RWMutex
 	logger    *tui.Logger // Optional TUI logger
 }
 
@@ -75,11 +77,13 @@ func (e *Executor) Execute(ctx context.Context, req *types.ToolRequest) *types.T
 		return &types.ToolResponse{Name: req.Name, CallID: req.CallID, Status: "error", Output: msg, Error: msg}
 	}
 
+	unlock := e.lockForTool(req.Name)
 	result := t.Execute(&tool.Context{
 		Context: ctx,
 		Args:    req.Args,
 		Config:  e.config,
 	})
+	unlock()
 
 	resp := &types.ToolResponse{
 		Name:       req.Name,
@@ -120,6 +124,24 @@ func (e *Executor) Execute(ctx context.Context, req *types.ToolRequest) *types.T
 
 func (e *Executor) ListTools() []tool.ToolInfo {
 	return e.registry.List()
+}
+
+func (e *Executor) lockForTool(name string) func() {
+	if isReadOnlyTool(name) {
+		e.toolMu.RLock()
+		return e.toolMu.RUnlock
+	}
+	e.toolMu.Lock()
+	return e.toolMu.Unlock
+}
+
+func isReadOnlyTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question":
+		return true
+	default:
+		return false
+	}
 }
 
 func summarizeToolLog(req *types.ToolRequest, resp *types.ToolResponse) string {

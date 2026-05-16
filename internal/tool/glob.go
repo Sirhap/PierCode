@@ -79,9 +79,6 @@ func (t *GlobTool) Execute(ctx *Context) *Result {
 		} else {
 			rel, _ := filepath.Rel(safePath, p)
 			matched, _ = filepath.Match(pattern, rel)
-			if !matched {
-				matched, _ = filepath.Match(basePat, name)
-			}
 		}
 		if matched {
 			info, _ := d.Info()

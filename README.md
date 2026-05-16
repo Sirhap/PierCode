@@ -23,6 +23,8 @@ OpenLink 是一个本地开发辅助工具：通过浏览器扩展把网页版 A
 - Qwen：`qwen.ai`、`qwenlm.ai`
 - Chat Z：`chat.z.ai`
 - Kimi：`kimi.com`
+- Claude：`claude.ai`
+- ChatGPT：`chatgpt.com`、`chat.openai.com`
 
 其他站点需要同时补充 `extension/public/manifest.json` 的匹配规则和 `extension/src/platform-adapters.ts` 的页面适配逻辑。
 

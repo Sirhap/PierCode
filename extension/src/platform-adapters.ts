@@ -42,7 +42,7 @@ export const kimiAdapter: PlatformAdapter = {
 
     // Kimi 也可能用标准 Markdown 代码块
     if ((el.tagName.toLowerCase() === 'pre' || el.tagName.toLowerCase() === 'code') &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
       buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
       return true;
@@ -121,20 +121,47 @@ export function extractMonacoText(container: Element): ExtractedCodeText {
   return { text: normalizeCodeText(lines.join('\n')), hasOverflow };
 }
 
-// CodeMirror6 文本提取辅助函数
+// CodeMirror6 文本提取辅助函数 - 增强兼容性
 function extractCodeMirror6Text(container: Element): string {
-  // 优先：尝试从 CodeMirror6 的 cm-content 逐行提取
+  // 情况1: container 本身就是 .cm-content (ChatGPT 新前端)
+  if (container.classList?.contains('cm-content')) {
+    const lines: string[] = [];
+    for (const line of container.querySelectorAll('.cm-line')) {
+      const clone = line.cloneNode(true) as Element;
+      clone.querySelectorAll('.mtkoverflow, .view-cursor').forEach(el => el.remove());
+      const text = clone.textContent || '';
+      if (text.trim()) lines.push(text);
+    }
+    if (lines.length > 0) {
+      return lines.join('\n').replace(/\u00A0/g, ' ').trim();
+    }
+    // 兜底: 直接提取 code 内容
+    const code = container.querySelector('code');
+    if (code) return normalizeCodeText(code.textContent || '');
+  }
+
+  // 情况2: container 包含 .cm-content (旧逻辑)
   const cmContent = container.querySelector('.cm-content');
   if (cmContent) {
     const lines: string[] = [];
     for (const line of cmContent.querySelectorAll('.cm-line')) {
-      lines.push(line.textContent || '');
+      const clone = line.cloneNode(true) as Element;
+      clone.querySelectorAll('.mtkoverflow, .view-cursor').forEach(el => el.remove());
+      const text = clone.textContent || '';
+      if (text.trim()) lines.push(text);
     }
-    return lines.join('\n').replace(/\u00A0/g, ' ').trim();
+    // 修复: 如果 lines 为空，不要直接返回空字符串，继续执行后续兜底逻辑
+    if (lines.length > 0) {
+      return lines.join('\n').replace(/\u00A0/g, ' ').trim();
+    }
   }
 
-  // 回退：直接从容器 textContent 提取
-  return (container.textContent || '').replace(/\u00A0/g, ' ').trim();
+  // 情况3: 直接提取 code 标签内容 (最简结构 / 兼容 ChatGPT 新 DOM)
+  const code = container.querySelector('code');
+  if (code) return normalizeCodeText(code.textContent || '');
+
+  // 回退: 直接从容器 textContent 提取 (过滤空白)
+  return normalizeCodeText(container.textContent || '');
 }
 
 // Chat Z (chat.z.ai) 适配器
@@ -164,10 +191,128 @@ export const chatZAdapter: PlatformAdapter = {
 
     // 标准代码块
     if ((tag === 'pre' || tag === 'code') &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
       buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
       return true;
+    }
+
+    return false;
+  }
+};
+
+// Claude (claude.ai) 适配器
+export const claudeAdapter: PlatformAdapter = {
+  name: 'claude',
+  match: () => location.hostname.includes('claude.ai'),
+  responseSelector: '.font-claude-response, .standard-markdown',
+  extractText: (el: Element, buf: string[]): boolean => {
+    const classAttr = el.getAttribute('class') || '';
+    const tag = el.tagName.toLowerCase();
+
+    if (tag === 'pre') {
+      const code = el.querySelector('code[class*="language-openlink-tool"], code[class*="language-openlink"], code[class*="language-tool"]');
+      if (!code) return false;
+      const innerText = code.textContent || '';
+      buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
+      return true;
+    }
+
+    if (tag === 'code' &&
+        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
+      const innerText = el.textContent || '';
+      buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
+      return true;
+    }
+
+    return false;
+  }
+};
+
+// 辅助函数: 提取文本中所有的 openlink-tool JSON 调用
+function extractAllToolCalls(text: string, buf: string[]): number {
+  let count = 0;
+  let i = 0;
+  while (i < text.length) {
+    const start = text.indexOf('{', i);
+    if (start === -1) break;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let end = -1;
+
+    for (let j = start; j < text.length; j++) {
+      const c = text[j];
+      if (escape) { escape = false; continue; }
+      if (c === '\\') { escape = true; continue; }
+      if (c === '"') { inString = !inString; continue; }
+      if (!inString) {
+        if (c === '{') depth++;
+        if (c === '}') {
+          depth--;
+          if (depth === 0) { end = j; break; }
+        }
+      }
+    }
+
+    if (end !== -1) {
+      let jsonStr = text.substring(start, end + 1).trim();
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (parsed.name && parsed.call_id && parsed.args) {
+          buf.push('\n```openlink-tool\n' + jsonStr + '\n```\n');
+          count++;
+        }
+      } catch {
+        // 容错: 尝试补全末尾缺失的 }
+        if (!jsonStr.endsWith('}')) {
+          const fixed = jsonStr + '}';
+          try {
+            const parsedFixed = JSON.parse(fixed);
+            if (parsedFixed.name && parsedFixed.call_id && parsedFixed.args) {
+              buf.push('\n```openlink-tool\n' + fixed + '\n```\n');
+              count++;
+              jsonStr = fixed;
+            }
+          } catch {}
+        }
+      }
+      i = start + jsonStr.length;
+    } else {
+      i = start + 1;
+    }
+  }
+  return count;
+}
+
+// ChatGPT (chatgpt.com / chat.openai.com) 适配器 - 支持多工具调用提取
+export const chatGPTAdapter: PlatformAdapter = {
+  name: 'chatgpt',
+  match: () => location.hostname.includes('chatgpt.com') || location.hostname.includes('chat.openai.com'),
+  responseSelector: '[data-message-author-role="assistant"] .markdown, [data-message-author-role="assistant"]',
+  extractText: (el: Element, buf: string[]): boolean => {
+    const classAttr = el.getAttribute('class') || '';
+    const tag = el.tagName.toLowerCase();
+
+    // 策略1: 扫描所有可能包含 JSON 的节点 (包括外层容器 div/section)
+    // 当外层容器被匹配时，extractAllToolCalls 会一次性提取内部所有工具调用
+    if (tag === 'pre' || tag === 'code' || tag === 'span' || tag === 'div' || tag === 'section') {
+      const text = el.textContent || '';
+      if (text.includes('"name"') && text.includes('"args"')) {
+        const count = extractAllToolCalls(text, buf);
+        if (count > 0) return true; // 成功提取，拦截子节点遍历防止重复
+      }
+    }
+
+    // 策略2: 传统类名匹配 (旧前端兜底)
+    if ((tag === 'pre' || tag === 'code') &&
+        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
+      const innerText = el.textContent || '';
+      if (innerText.trim()) {
+        buf.push('\n```openlink-tool\n' + innerText.trim() + '\n```\n');
+        return true;
+      }
     }
 
     return false;
@@ -184,7 +329,7 @@ export const geminiAdapter: PlatformAdapter = {
 
     // Gemini 通常使用标准 Markdown 渲染
     if ((el.tagName.toLowerCase() === 'pre' || el.tagName.toLowerCase() === 'code') &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
       buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
       return true;
@@ -215,7 +360,7 @@ export const aiStudioAdapter: PlatformAdapter = {
 
     // 标准代码块
     if ((el.tagName.toLowerCase() === 'pre' || el.tagName.toLowerCase() === 'code') &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
       buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
       return true;
@@ -235,7 +380,7 @@ export const defaultAdapter: PlatformAdapter = {
 
     // 通用检测：任何包含 language-tool 的 pre/code 元素
     if ((el.tagName.toLowerCase() === 'pre' || el.tagName.toLowerCase() === 'code') &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
       buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
       return true;
@@ -259,6 +404,8 @@ export const platformAdapters: PlatformAdapter[] = [
   kimiAdapter,
   qwenAdapter,
   chatZAdapter,
+  claudeAdapter,
+  chatGPTAdapter,
   geminiAdapter,
   aiStudioAdapter,
   defaultAdapter

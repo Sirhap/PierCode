@@ -322,6 +322,18 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 		return
 	}
 	switch msg.Type {
+	case "user_log":
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			return
+		}
+		if s.logger != nil {
+			key := strings.TrimSpace(msg.Key)
+			if key == "" {
+				key = "browser-user-prompt"
+			}
+			s.logger.LogUserPrompt(key, text)
+		}
 	case "ai_log":
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {

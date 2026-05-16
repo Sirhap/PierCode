@@ -97,7 +97,7 @@ func (t *EditTool) Execute(ctx *Context) *Result {
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
 
-const singleCandidateSimilarityThreshold = 0.0
+const singleCandidateSimilarityThreshold = 0.5
 const multipleCandidatesSimilarityThreshold = 0.3
 
 // ── 辅助函数 ──────────────────────────────────────────────────────────────────
@@ -608,7 +608,6 @@ func replace(content, oldString, newString string, replaceAll bool) (string, err
 		TrimmedBoundaryReplacer,
 		TabNewlineReplacer,
 		ContextAwareReplacer,
-		MultiOccurrenceReplacer,
 	} {
 		for _, search := range replacer(content, oldString) {
 			index := strings.Index(content, search)

@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 	"unicode"
 
+	skillpkg "github.com/afumu/openlink/internal/skill"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -39,6 +41,7 @@ type Model struct {
 	logOffset        int
 	stats            map[string]int
 	input            string
+	inputCursor      int
 	inputMode        bool
 	authURL          string
 	commandIdx       int
@@ -55,31 +58,32 @@ type Model struct {
 
 // 样式定义
 var (
-	colorCanvas  = lipgloss.Color("#07111F")
-	colorSurface = lipgloss.Color("#0E1726")
-	colorLine    = lipgloss.Color("#25324A")
-	colorAccent  = lipgloss.Color("#B38CFF")
-	colorCyan    = lipgloss.Color("#6EE7F9")
-	colorSuccess = lipgloss.Color("#7DD3A7")
-	colorError   = lipgloss.Color("#F87171")
-	colorWarning = lipgloss.Color("#FBBF77")
-	colorMuted   = lipgloss.Color("#7B879C")
-	colorText    = lipgloss.Color("#E7EEF9")
+	colorCanvas  = lipgloss.Color("#FFFFFF")
+	colorSurface = lipgloss.Color("#FFFFFF")
+	colorLine    = lipgloss.Color("#CBD5E1")
+	colorAccent  = lipgloss.Color("#6D28D9")
+	colorCyan    = lipgloss.Color("#0369A1")
+	colorSuccess = lipgloss.Color("#166534")
+	colorError   = lipgloss.Color("#B91C1C")
+	colorWarning = lipgloss.Color("#9A3412")
+	colorMuted   = lipgloss.Color("#475569")
+	colorText    = lipgloss.Color("#111827")
 
 	// 角色区分颜色
-	colorUser = lipgloss.Color("#FBBF77")
-	colorAI   = lipgloss.Color("#7DD3FC")
-	colorSys  = lipgloss.Color("#B38CFF")
+	colorUser = lipgloss.Color("#92400E")
+	colorAI   = lipgloss.Color("#075985")
+	colorSys  = lipgloss.Color("#6D28D9")
 
-	pageStyle     = lipgloss.NewStyle().Background(colorCanvas).Foreground(colorText)
+	pageStyle     = lipgloss.NewStyle().Foreground(colorText)
+	canvasStyle   = lipgloss.NewStyle().Background(colorCanvas).Foreground(colorText)
 	logoStyle     = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	subtitleStyle = lipgloss.NewStyle().Foreground(colorMuted)
 	ruleStyle     = lipgloss.NewStyle().Foreground(colorLine)
-	metricStyle   = lipgloss.NewStyle().Foreground(colorText).Background(colorSurface).Padding(0, 1)
+	metricStyle   = lipgloss.NewStyle().Foreground(colorText).Padding(0, 1)
 	logMsgStyle   = lipgloss.NewStyle().Foreground(colorText)
 
-	inputStyle  = lipgloss.NewStyle().Background(colorSurface).Padding(0, 1)
-	cursorStyle = lipgloss.NewStyle().Background(colorAccent).Foreground(lipgloss.Color("#07111F"))
+	inputStyle  = lipgloss.NewStyle().Padding(0, 1)
+	cursorStyle = lipgloss.NewStyle().Background(colorAccent).Foreground(lipgloss.Color("#FFFFFF"))
 	keyStyle    = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 )
 
@@ -98,6 +102,7 @@ func NewModel(port int, rootDir, aiProvider string, token ...string) Model {
 		token:            authToken,
 		authURL:          authURLForToken(port, authToken),
 		stats:            map[string]int{"success": 0, "error": 0, "pending": 0, "info": 0},
+		inputCursor:      -1,
 		inputMode:        true,
 		transcriptOffset: -1,
 		historyIdx:       -1,
@@ -232,6 +237,61 @@ func initPromptCmd(port int, token string) tea.Cmd {
 	}
 }
 
+func skillPromptCmd(rootDir, skillName string, port int, token string) tea.Cmd {
+	return func() tea.Msg {
+		info, ok := skillpkg.Get(rootDir, skillName)
+		if !ok {
+			return LogMsg{Source: "system", ToolName: "SKILL", Status: "error", Message: fmt.Sprintf("skill %q 不存在", skillName)}
+		}
+		data, err := os.ReadFile(info.Location)
+		if err != nil {
+			return LogMsg{Source: "system", ToolName: "SKILL", Status: "error", Message: fmt.Sprintf("读取 skill 失败: %v", err)}
+		}
+		text := formatSkillPrompt(info, string(data))
+		payload, err := json.Marshal(map[string]string{"text": text})
+		if err != nil {
+			return LogMsg{Source: "system", ToolName: "SKILL", Status: "error", Message: fmt.Sprintf("skill 编码失败: %v", err)}
+		}
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		injectURL := fmt.Sprintf("http://127.0.0.1:%d/inject", port)
+		req, err := http.NewRequest(http.MethodPost, injectURL, bytes.NewReader(payload))
+		if err != nil {
+			return LogMsg{Source: "system", ToolName: "SKILL", Status: "error", Message: fmt.Sprintf("发送 skill 请求创建失败: %v", err)}
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return LogMsg{Source: "system", ToolName: "SKILL", Status: "error", Message: fmt.Sprintf("发送 skill 失败: %v", err)}
+		}
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return LogMsg{Source: "system", ToolName: "SKILL", Status: "error", Message: fmt.Sprintf("发送 skill 失败 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
+		}
+		var decoded injectResponse
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			return LogMsg{Source: "system", ToolName: "SKILL", Status: "error", Message: fmt.Sprintf("skill 发送响应解析失败: %v", err)}
+		}
+		if decoded.Clients == 0 {
+			return LogMsg{Source: "system", ToolName: "SKILL", Status: "error", Message: "未连接浏览器扩展，请刷新 AI 页面或重新配置插件"}
+		}
+		return LogMsg{Source: "system", ToolName: "SKILL", Status: "success", Message: fmt.Sprintf("skill %q 已发送到 %d 个浏览器页面", info.Name, decoded.Clients)}
+	}
+}
+
+func formatSkillPrompt(info skillpkg.Info, content string) string {
+	return fmt.Sprintf("请加载并遵循这个 OpenLink skill。\n\n<skill_content name=%q>\nIMPORTANT: All file paths referenced in this skill must use absolute paths. The skill directory is: %s\n\n%s\n</skill_content>",
+		info.Name,
+		info.Dir,
+		strings.TrimSpace(content),
+	)
+}
+
 func changeCwdCmd(path string, port int, token string) tea.Cmd {
 	return func() tea.Msg {
 		payload, err := json.Marshal(map[string]string{"path": path})
@@ -285,7 +345,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.Type {
 			case tea.KeyEnter:
 				if msg.Alt {
-					m.input += "\n"
+					m.insertInput("\n")
 					m.clampCommandSelection()
 					return m, nil
 				}
@@ -296,22 +356,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.recordUserPrompt(text)
 					m.input = ""
+					m.inputCursor = 0
 					m.inputMode = true
 					m.historyIdx = -1
-					return m, injectInputCmd(text, m.port, m.token)
+					return m, tea.Batch(tea.Println("openlink> "+text), injectInputCmd(text, m.port, m.token))
 				}
 				m.input = ""
+				m.inputCursor = 0
 				m.inputMode = true
 				return m, nil
 			case tea.KeyCtrlC:
-				return m, tea.Quit
+				if strings.TrimSpace(m.input) == "" {
+					return m, tea.Quit
+				}
+				m.input = ""
+				m.inputCursor = 0
+				m.commandIdx = 0
+				m.historyIdx = -1
+				return m, nil
 			case tea.KeyEscape:
 				m.input = ""
+				m.inputCursor = 0
 				m.inputMode = false
 				m.historyIdx = -1
 				return m, nil
 			case tea.KeyCtrlJ:
-				m.input += "\n"
+				m.insertInput("\n")
 				m.clampCommandSelection()
 				return m, nil
 			case tea.KeyCtrlT:
@@ -323,6 +393,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case tea.KeyTab:
 				m.completeSlashInput()
+				return m, nil
+			case tea.KeyLeft:
+				cursor := m.normalizedInputCursor()
+				if cursor > 0 {
+					m.inputCursor = cursor - 1
+				}
+				return m, nil
+			case tea.KeyRight:
+				cursor := m.normalizedInputCursor()
+				if cursor < len([]rune(m.input)) {
+					m.inputCursor = cursor + 1
+				}
+				return m, nil
+			case tea.KeyHome:
+				m.inputCursor = 0
+				return m, nil
+			case tea.KeyEnd:
+				m.inputCursor = len([]rune(m.input))
 				return m, nil
 			case tea.KeyUp:
 				if m.fullView && m.hasActiveFullLog() {
@@ -344,28 +432,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.recallInputHistory(1)
 				}
 				return m, nil
+			case tea.KeyPgUp, tea.KeyCtrlUp:
+				return m.handleScroll(-3), nil
+			case tea.KeyPgDown, tea.KeyCtrlDown:
+				return m.handleScroll(3), nil
 			case tea.KeyCtrlU:
 				m.input = ""
+				m.inputCursor = 0
 				m.commandIdx = 0
 				return m, nil
 			case tea.KeyCtrlW:
 				m.input = trimLastWord(m.input)
+				m.inputCursor = len([]rune(m.input))
 				m.clampCommandSelection()
 				return m, nil
 			case tea.KeyBackspace:
-				if len(m.input) > 0 {
-					runes := []rune(m.input)
-					m.input = string(runes[:len(runes)-1])
-				}
+				m.deleteInputBeforeCursor()
 				m.clampCommandSelection()
 				return m, nil
 			case tea.KeyRunes:
-				m.input += slashRunesToAppend(m.input, string(msg.Runes))
+				m.insertInput(slashRunesToAppend(m.input, string(msg.Runes)))
 				m.historyIdx = -1
 				m.clampCommandSelection()
 				return m, nil
 			case tea.KeySpace:
-				m.input += " "
+				m.insertInput(" ")
 				m.historyIdx = -1
 				return m, nil
 			}
@@ -385,11 +476,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "i":
 			m.inputMode = true
 			m.input = ""
+			m.inputCursor = 0
 			m.commandIdx = 0
 			return m, nil
 		case "/":
 			m.inputMode = true
 			m.input = "/"
+			m.inputCursor = len([]rune(m.input))
 			m.commandIdx = 0
 			return m, nil
 		case "up", "k":
@@ -400,11 +493,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if !m.logsMode {
-				if m.transcriptOffset < 0 {
-					m.transcriptOffset = 0
-				}
-				m.transcriptOffset--
-				return m, nil
+				return m.scrollTranscript(-1), nil
 			}
 			if m.logOffset > 0 {
 				m.logOffset--
@@ -417,8 +506,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if !m.logsMode {
-				m.transcriptOffset++
-				return m, nil
+				return m.scrollTranscript(1), nil
 			}
 			if m.logOffset < len(m.logs)-1 {
 				m.logOffset++
@@ -455,6 +543,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
 			m.inputMode = true
 			m.input = normalizeSlashInput(string(msg.Runes))
+			m.inputCursor = len([]rune(m.input))
 			m.commandIdx = 0
 		}
 		return m, nil
@@ -524,19 +613,11 @@ func (m Model) View() string {
 	}
 
 	width := maxInt(m.width, 20)
-	hero := m.renderHero(width)
+	hero := m.renderCompactHero(width)
 	status := m.renderStatusStrip(width)
 	auth := m.renderAuthURL(width)
 	composer := m.renderComposer(width)
-
-	reservedHeight := lipgloss.Height(hero) + lipgloss.Height(status) + lipgloss.Height(auth) + lipgloss.Height(composer) + 4
-	logHeight := m.height - reservedHeight
-	if logHeight < 4 {
-		hero = m.renderCompactHero(width)
-		reservedHeight = lipgloss.Height(hero) + lipgloss.Height(status) + lipgloss.Height(auth) + lipgloss.Height(composer) + 4
-		logHeight = m.height - reservedHeight
-	}
-	logHeight = clampInt(logHeight, 3, maxInt(3, m.height-6))
+	logHeight := m.activityHeight(width)
 
 	view := lipgloss.JoinVertical(lipgloss.Left,
 		hero,
@@ -548,7 +629,39 @@ func (m Model) View() string {
 		composer,
 	)
 
-	return pageStyle.Width(width).Height(m.height).Render(view)
+	return renderCanvas(view, width, m.height)
+}
+
+func (m Model) activityHeight(width int) int {
+	if m.height == 0 {
+		return 10
+	}
+	hero := m.renderCompactHero(width)
+	status := m.renderStatusStrip(width)
+	auth := m.renderAuthURL(width)
+	composer := m.renderComposer(width)
+	reservedHeight := lipgloss.Height(hero) + lipgloss.Height(status) + lipgloss.Height(auth) + lipgloss.Height(composer) + 4
+	logHeight := m.height - reservedHeight
+	if logHeight < 4 {
+		hero = m.renderCompactHero(width)
+		reservedHeight = lipgloss.Height(hero) + lipgloss.Height(status) + lipgloss.Height(auth) + lipgloss.Height(composer) + 4
+		logHeight = m.height - reservedHeight
+	}
+	return clampInt(logHeight, 3, maxInt(3, m.height-6))
+}
+
+func renderCanvas(view string, width, height int) string {
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	for i, line := range lines {
+		lines[i] = canvasStyle.Width(width).Render(pageStyle.Render(line))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderLogEntry(isActive bool, entry LogEntry) string {
@@ -574,7 +687,7 @@ func (m Model) renderLogEntry(isActive bool, entry LogEntry) string {
 	row := strings.Join(rendered, "\n")
 
 	if isActive {
-		return lipgloss.NewStyle().Background(colorSurface).Render(row)
+		return row
 	}
 	return row
 }
@@ -592,11 +705,7 @@ func (m Model) handleScroll(delta int) Model {
 		return m
 	}
 	if !m.logsMode {
-		if m.transcriptOffset < 0 {
-			m.transcriptOffset = 0
-		}
-		m.transcriptOffset += delta
-		return m
+		return m.scrollTranscript(delta)
 	}
 	if len(m.logs) == 0 {
 		return m
@@ -607,6 +716,35 @@ func (m Model) handleScroll(delta int) Model {
 	m.logOffset = clampInt(m.logOffset+delta, 0, len(m.logs)-1)
 	m.fullOffset = 0
 	return m
+}
+
+func (m Model) scrollTranscript(delta int) Model {
+	maxOffset := m.transcriptMaxOffset()
+	current := maxOffset
+	if m.transcriptOffset >= 0 {
+		current = clampInt(m.transcriptOffset, 0, maxOffset)
+	}
+	next := clampInt(current+delta, 0, maxOffset)
+	if next >= maxOffset {
+		m.transcriptOffset = -1
+	} else {
+		m.transcriptOffset = next
+	}
+	return m
+}
+
+func (m Model) transcriptMaxOffset() int {
+	width := maxInt(m.width, 20)
+	height := m.activityHeight(width)
+	contentWidth := maxInt(8, width-4)
+	lineCount := 1
+	if len(m.turns) > 0 {
+		lineCount = 0
+		for _, turn := range m.turns {
+			lineCount += len(m.renderTurnLines(turn, contentWidth))
+		}
+	}
+	return maxInt(0, lineCount-height)
 }
 
 func (m Model) renderHero(width int) string {
@@ -635,9 +773,9 @@ func (m Model) renderHero(width int) string {
 }
 
 func (m Model) renderCompactHero(width int) string {
-	title := logoStyle.Render("OPENLINK")
-	meta := subtitleStyle.Render(" local AI bridge")
-	return lipgloss.NewStyle().Width(width).Padding(1, 1).Render(title + meta)
+	title := logoStyle.Render("OpenLink")
+	meta := subtitleStyle.Render(fmt.Sprintf("  local AI bridge  port %d", m.port))
+	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(title + meta)
 }
 
 func (m Model) renderStatusStrip(width int) string {
@@ -691,7 +829,7 @@ func (m Model) renderAuthURL(width int) string {
 			lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Join(wrapString(instruction, boxWidth), "\n")),
 			subtitleStyle.Render("认证 URL 生成中..."),
 		)
-		return lipgloss.NewStyle().Width(width).Background(colorSurface).Padding(0, 1).Render(content)
+		return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(content)
 	}
 
 	body := strings.Join(wrapString(m.authURL, boxWidth), "\n")
@@ -699,7 +837,7 @@ func (m Model) renderAuthURL(width int) string {
 		lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Join(wrapString(instruction, boxWidth), "\n")),
 		lipgloss.NewStyle().Foreground(colorAccent).Render(body),
 	)
-	return lipgloss.NewStyle().Width(width).Background(colorSurface).Padding(0, 1).Render(content)
+	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(content)
 }
 
 func (m Model) renderLogs(width, height int) string {
@@ -764,22 +902,15 @@ func (m Model) renderActivity(width, height int) string {
 func (m Model) renderComposer(width int) string {
 	innerWidth := maxInt(12, width-4)
 	if m.inputMode {
-		cursor := cursorStyle.Render(" ")
 		label := lipgloss.NewStyle().Foreground(colorAccent).Render("▌") + " " +
 			lipgloss.NewStyle().Foreground(colorText).Bold(true).Render("openlink>") + " "
 		continuation := strings.Repeat(" ", len([]rune("▌ openlink> ")))
-		inputLines := wrapTextLines(m.input, maxInt(8, innerWidth-len([]rune("▌ openlink> "))))
-		if len(inputLines) == 0 {
-			inputLines = []string{""}
-		}
+		inputLines := renderInputLinesWithCursor(m.input, m.normalizedInputCursor(), maxInt(8, innerWidth-len([]rune("▌ openlink> "))))
 		parts := make([]string, 0, len(inputLines)+1)
 		for i, line := range inputLines {
 			prefix := continuation
 			if i == 0 {
 				prefix = label
-			}
-			if i == len(inputLines)-1 {
-				line += cursor
 			}
 			parts = append(parts, prefix+line)
 		}
@@ -797,6 +928,57 @@ func (m Model) renderComposer(width int) string {
 		subtitleStyle.Render("Esc 浏览转录 · / 指令 · i 返回输入 · Ctrl+D 详情"),
 	)
 	return inputStyle.Width(width).Render(line)
+}
+
+func (m *Model) insertInput(text string) {
+	if text == "" {
+		return
+	}
+	runes := []rune(m.input)
+	cursor := m.normalizedInputCursor()
+	insert := []rune(text)
+	next := make([]rune, 0, len(runes)+len(insert))
+	next = append(next, runes[:cursor]...)
+	next = append(next, insert...)
+	next = append(next, runes[cursor:]...)
+	m.input = string(next)
+	m.inputCursor = cursor + len(insert)
+}
+
+func (m *Model) deleteInputBeforeCursor() {
+	runes := []rune(m.input)
+	cursor := m.normalizedInputCursor()
+	if cursor == 0 {
+		return
+	}
+	next := make([]rune, 0, len(runes)-1)
+	next = append(next, runes[:cursor-1]...)
+	next = append(next, runes[cursor:]...)
+	m.input = string(next)
+	m.inputCursor = cursor - 1
+}
+
+func (m Model) normalizedInputCursor() int {
+	runes := []rune(m.input)
+	if m.inputCursor < 0 {
+		return len(runes)
+	}
+	return clampInt(m.inputCursor, 0, len(runes))
+}
+
+func renderInputLinesWithCursor(input string, cursor int, width int) []string {
+	const marker = "\x00"
+	runes := []rune(input)
+	cursor = clampInt(cursor, 0, len(runes))
+	display := string(runes[:cursor]) + marker + string(runes[cursor:])
+	lines := wrapTextLines(display, width)
+	if len(lines) == 0 {
+		lines = []string{marker}
+	}
+	for i, line := range lines {
+		lines[i] = strings.ReplaceAll(line, marker, cursorStyle.Render(" "))
+	}
+	return lines
 }
 
 func (m Model) renderRule(width int) string {

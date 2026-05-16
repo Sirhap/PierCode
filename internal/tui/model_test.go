@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -23,6 +25,64 @@ func TestDirectTypingEntersInputMode(t *testing.T) {
 	}
 	if updated.input != "你" {
 		t.Fatalf("expected typed rune to seed input, got %q", updated.input)
+	}
+}
+
+func TestCtrlCClearsInputInInputMode(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.inputMode = true
+	model.input = "待清空文本"
+	model.commandIdx = 2
+	model.historyIdx = 1
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatalf("expected ctrl+c to clear input without quitting")
+	}
+	updated := next.(Model)
+	if updated.input != "" {
+		t.Fatalf("expected input to be cleared, got %q", updated.input)
+	}
+	if updated.commandIdx != 0 {
+		t.Fatalf("expected command index reset, got %d", updated.commandIdx)
+	}
+	if updated.historyIdx != -1 {
+		t.Fatalf("expected history index reset, got %d", updated.historyIdx)
+	}
+}
+
+func TestCtrlCQuitsWhenInputIsEmpty(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.inputMode = true
+	model.input = ""
+
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatalf("expected ctrl+c with empty input to quit")
+	}
+}
+
+func TestInputCursorMovesAndInsertsText(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.inputMode = true
+	model.input = "ac"
+	model.inputCursor = 1
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	updated := next.(Model)
+	if updated.input != "abc" {
+		t.Fatalf("expected insert at cursor, got %q", updated.input)
+	}
+	if updated.inputCursor != 2 {
+		t.Fatalf("expected cursor after inserted rune, got %d", updated.inputCursor)
+	}
+
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	updated = next.(Model)
+	next, _ = updated.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	updated = next.(Model)
+	if updated.input != "bc" {
+		t.Fatalf("expected backspace before cursor, got %q", updated.input)
 	}
 }
 
@@ -333,6 +393,12 @@ func TestCommandHelpTextIsMultiline(t *testing.T) {
 	if !strings.Contains(help, "/init - 发送初始化提示词到浏览器 AI 页面") {
 		t.Fatalf("expected init command in help, got %q", help)
 	}
+	if !strings.Contains(help, "/skills - 列出当前可用 skills") {
+		t.Fatalf("expected skills command in help, got %q", help)
+	}
+	if !strings.Contains(help, "/skill <name> - 加载并发送指定 skill 到浏览器 AI 页面") {
+		t.Fatalf("expected skill command in help, got %q", help)
+	}
 	if !strings.Contains(help, "Ctrl+D - 切换工具详情视图") {
 		t.Fatalf("expected detail-mode shortcut in help, got %q", help)
 	}
@@ -359,6 +425,60 @@ func TestSlashInitCommandStartsInitPromptSend(t *testing.T) {
 	}
 	if !strings.Contains(updated.logs[0].Message, "初始化提示词") {
 		t.Fatalf("expected init prompt message, got %q", updated.logs[0].Message)
+	}
+}
+
+func TestSlashSkillsCommandListsLocalSkills(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, ".skills", "demo")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: demo\ndescription: demo skill\n---\ncontent"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(39527, root, "qwen")
+	model.inputMode = true
+	model.input = "/skills"
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatalf("expected /skills to stay local")
+	}
+	updated := next.(Model)
+	if len(updated.logs) != 1 {
+		t.Fatalf("expected one skills log, got %d", len(updated.logs))
+	}
+	if updated.logs[0].ToolName != "SKILLS" || !strings.Contains(updated.logs[0].Message, "demo: demo skill") {
+		t.Fatalf("expected skills listing, got %#v", updated.logs[0])
+	}
+}
+
+func TestSlashSkillCommandStartsSkillSend(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, ".skills", "demo")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: demo\ndescription: demo skill\n---\ncontent"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(39527, root, "qwen")
+	model.inputMode = true
+	model.input = "/skill demo"
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("expected /skill to return a command")
+	}
+	updated := next.(Model)
+	if len(updated.logs) != 1 {
+		t.Fatalf("expected one pending skill log, got %d", len(updated.logs))
+	}
+	if updated.logs[0].ToolName != "SKILL" || updated.logs[0].Status != "pending" {
+		t.Fatalf("expected pending SKILL log, got %#v", updated.logs[0])
 	}
 }
 

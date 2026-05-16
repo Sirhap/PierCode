@@ -50,6 +50,14 @@ func TestWriteReadFile(t *testing.T) {
 		}
 	})
 
+	t.Run("write_file does not stop stream", func(t *testing.T) {
+		w := NewWriteFileTool(cfg)
+		res := w.Execute(testCtx(cfg, map[string]interface{}{"path": "nostop.txt", "content": "ok"}))
+		if res.StopStream {
+			t.Fatal("write_file should not force StopStream")
+		}
+	})
+
 	t.Run("write append mode", func(t *testing.T) {
 		w := NewWriteFileTool(cfg)
 		w.Execute(testCtx(cfg, map[string]interface{}{"path": "append.txt", "content": "line1\n"}))
@@ -76,6 +84,10 @@ func TestGlobTool(t *testing.T) {
 	os.WriteFile(filepath.Join(cfg.RootDir, "a.go"), []byte(""), 0644)
 	os.WriteFile(filepath.Join(cfg.RootDir, "b.go"), []byte(""), 0644)
 	os.WriteFile(filepath.Join(cfg.RootDir, "c.txt"), []byte(""), 0644)
+	if err := os.MkdirAll(filepath.Join(cfg.RootDir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(cfg.RootDir, "sub", "nested.go"), []byte(""), 0644)
 
 	g := NewGlobTool(cfg)
 
@@ -89,6 +101,9 @@ func TestGlobTool(t *testing.T) {
 		}
 		if strings.Contains(res.Output, "c.txt") {
 			t.Error("should not match txt file")
+		}
+		if strings.Contains(res.Output, "nested.go") {
+			t.Error("non-recursive glob should not match nested go files")
 		}
 	})
 
