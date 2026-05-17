@@ -23,7 +23,8 @@ func main() {
 	dir := flag.String("dir", cwd, "工作目录")
 	port := flag.Int("port", 39527, "端口")
 	timeout := flag.Int("timeout", 60, "超时(秒)")
-	allowShell := flag.Bool("allow-shell", false, "启用 exec_cmd 工具（等同 shell 完整访问，谨慎使用）")
+	allowShell := flag.Bool("allow-shell", true, "启用 exec_cmd 工具。默认开启；用 --allow-shell=false 或 --no-shell 关闭")
+	noShell := flag.Bool("no-shell", false, "禁用 exec_cmd（等价于 --allow-shell=false）")
 	showToken := flag.Bool("show-token", true, "在终端打印认证 URL（含 token）。设 --show-token=false 可隐藏，避免泄露到 scrollback / tmux history")
 	allowedOrigins := flag.String("allowed-origins", "", "允许的 CORS/WS Origin 白名单（逗号分隔），默认仅放行 chrome-extension:// 与 127.0.0.1")
 	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 openlink 进程占用，强制结束该进程")
@@ -63,6 +64,10 @@ func main() {
 		}
 	}
 
+	// --no-shell 是反向便捷开关，与 --allow-shell=false 等价。两者同时给时
+	// --no-shell 优先，避免歧义。
+	shellEnabled := *allowShell && !*noShell
+
 	config := &types.Config{
 		RootDir:        *dir,
 		InitialRootDir: *dir,
@@ -70,14 +75,15 @@ func main() {
 		Timeout:        *timeout,
 		Token:          token,
 		DefaultPrompt:  prompts.DefaultPrompt,
-		AllowShell:     *allowShell,
+		AllowShell:     shellEnabled,
 		AllowedOrigins: origins,
 	}
 
-	if *allowShell {
-		fmt.Println("⚠️  exec_cmd 已启用：AI 可执行任意 shell 命令。命令黑名单只是基础防护，不能视为沙箱。")
+	if shellEnabled {
+		fmt.Println("⚠️  exec_cmd 已启用（默认）：AI 可执行任意 shell 命令。")
+		fmt.Println("    命令黑名单只是基础防护，不能视为沙箱。需关闭加 --no-shell。")
 	} else {
-		fmt.Println("ℹ️  exec_cmd 默认禁用。需启用请加 --allow-shell（请知悉风险）。")
+		fmt.Println("ℹ️  exec_cmd 已禁用：AI 不能执行 shell 命令。")
 	}
 
 	if *showToken {

@@ -209,3 +209,38 @@ func TestSummarizeToolLog(t *testing.T) {
 		}
 	})
 }
+
+// TestListToolsHidesExecCmdWhenShellDisabled pins the prompt-rendering behavior:
+// when AllowShell=false the AI must not see exec_cmd in the rendered tools doc
+// — otherwise it tries the call, gets "exec_cmd is disabled", and burns a turn
+// every time. The security gate in exec_cmd.Validate is the second line of
+// defense, but the prompt-side hide is the cheap fast path.
+func TestListToolsHidesExecCmdWhenShellDisabled(t *testing.T) {
+	t.Run("AllowShell true exposes exec_cmd", func(t *testing.T) {
+		cfg := &types.Config{RootDir: t.TempDir(), Timeout: 10, AllowShell: true}
+		ex := New(cfg)
+		if !containsTool(ex.ListTools(), "exec_cmd") {
+			t.Error("expected exec_cmd to be listed when AllowShell=true")
+		}
+	})
+	t.Run("AllowShell false hides exec_cmd", func(t *testing.T) {
+		cfg := &types.Config{RootDir: t.TempDir(), Timeout: 10, AllowShell: false}
+		ex := New(cfg)
+		if containsTool(ex.ListTools(), "exec_cmd") {
+			t.Error("expected exec_cmd to be hidden when AllowShell=false")
+		}
+		// Other tools must still be present — we're not nuking the registry.
+		if !containsTool(ex.ListTools(), "read_file") {
+			t.Error("expected read_file to still be listed")
+		}
+	})
+}
+
+func containsTool(tools []tool.ToolInfo, name string) bool {
+	for _, t := range tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}

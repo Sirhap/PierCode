@@ -175,7 +175,7 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	if n%reinjectEvery == 0 {
 		rootDir := e.config.GetRootDir()
 		if len(e.config.DefaultPrompt) > 0 {
-			rendered := prompt.Render(e.config.DefaultPrompt, rootDir, e.registry.List())
+			rendered := prompt.Render(e.config.DefaultPrompt, rootDir, e.ListTools())
 			resp.Output += "\n\n[系统重新注入提示词]\n" + string(rendered)
 		}
 	} else {
@@ -186,7 +186,24 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 }
 
 func (e *Executor) ListTools() []tool.ToolInfo {
-	return e.registry.List()
+	all := e.registry.List()
+	// When the operator hasn't opted in to shell access, hide exec_cmd from
+	// the rendered prompt and /tools listing entirely. Otherwise the AI sees
+	// it documented, tries it, gets a "exec_cmd is disabled" error, and
+	// burns a turn — and the same prompt will trick it again on the next
+	// task. Treat absent ≡ unavailable so the AI plans around it from the
+	// start (e.g. asks the user to run a command, or uses other tools).
+	if e.config != nil && !e.config.AllowShell {
+		filtered := all[:0]
+		for _, t := range all {
+			if strings.EqualFold(t.Name, "exec_cmd") {
+				continue
+			}
+			filtered = append(filtered, t)
+		}
+		return filtered
+	}
+	return all
 }
 
 func (e *Executor) lockForTool(name string) func() {

@@ -270,9 +270,11 @@ Strict rules:
 - Use only operation names listed in the "OpenLink Bridge Operations" section.
 - Use exact tool names. Do not translate, alias, pluralize, or invent names.
 - Use `openlink-tool` as the fence language. Do not use generic `tool` code fences, XML tool tags, function-call syntax, plugin syntax, or the host model's native tool format.
+  Rationale: the OpenLink browser extension reads the rendered DOM, not the host's native function-call channel. A native call is invisible to the bridge and silently does nothing — it is not a fallback path.
 - `call_id` is required.
 - `call_id` must be a unique random string with at least 5 characters.
 - Do not use sequential IDs such as `call1`, `call2`, `1`, `2`, or `tool_001`.
+  Rationale: the bridge uses `call_id` as the routing key for tool results. Reused or guessable IDs let one tool's reply land on another tool's slot.
 - `args` is required and must be a JSON object. Use `{}` when the tool needs no arguments.
 - Escape newlines inside JSON strings as `\n`.
 - Do not put comments, Markdown, or extra prose inside the JSON fence.
@@ -309,6 +311,8 @@ If a tool result reports an error:
 3. retry with a corrected call when reasonable;
 4. ask the user only if the error requires missing information or permission.
 
+If the same call fails twice with the same error, stop retrying. The third attempt is almost never going to work without a different approach. Re-read the error message, the tool's documented arguments in §14, and the surrounding context. If you still don't see the cause, surface a short diagnosis to the user and ask, instead of looping. This applies to `exec_cmd` failures too — repeated identical commands will not change the outcome.
+
 ---
 
 ## 14. OpenLink Bridge Operations
@@ -327,7 +331,7 @@ To search file contents, emit an `openlink-tool` fence with `"name":"grep"`.
 To inspect exact files, emit an `openlink-tool` fence with `"name":"read_file"`. The output is prefixed with right-aligned line numbers followed by a tab, like `cat -n` (for example `     1\tpackage main`). The number before the tab is the absolute line number in the file — use it directly when you cite code as `path:line` or when you build `old_string` for `edit`. Do not include those line-number prefixes inside `old_string`; reproduce only the original file content.
 To make precise replacements, emit an `openlink-tool` fence with `"name":"edit"`.
 To create files or intentionally replace whole files, emit an `openlink-tool` fence with `"name":"write_file"`.
-To run tests, builds, and shell commands, emit an `openlink-tool` fence with `"name":"exec_cmd"`.
+To run tests, builds, and shell commands, emit an `openlink-tool` fence with `"name":"exec_cmd"` — but only if `exec_cmd` is listed in §14. If §14 does not include `exec_cmd`, shell access is disabled by the operator (the server was started without `--allow-shell`). In that case, plan around it: read code with `read_file`, search with `grep`, ask the user to run the command and paste the output, or use `question` to confirm next steps. Do not attempt `exec_cmd` to "see what happens".
 To fetch allowed URLs, emit an `openlink-tool` fence with `"name":"web_fetch"`.
 To ask for required user input, emit an `openlink-tool` fence with `"name":"question"`.
 To track useful multi-step work, emit an `openlink-tool` fence with `"name":"todo_write"`.
