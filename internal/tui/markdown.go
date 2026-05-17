@@ -8,6 +8,11 @@ import (
 
 func renderMarkdownLines(markdown string, width int, prefix string) []string {
 	width = maxInt(8, width)
+	// SECURITY: AI output is untrusted. Strip ANSI/OSC escapes before any
+	// rendering so a malicious or buggy model can't clear our screen, retitle
+	// the host terminal, or inject fake hyperlinks. We do this once, at the
+	// boundary, rather than relying on lipgloss to sanitize.
+	markdown = stripANSI(markdown)
 	var lines []string
 	inCode := false
 	codeLang := ""

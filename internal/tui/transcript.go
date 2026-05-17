@@ -78,7 +78,33 @@ func (m Model) renderTranscript(width, height int) string {
 	return lipgloss.NewStyle().Width(width).Height(height).Padding(0, 1).Render(strings.Join(lines, "\n"))
 }
 
-func (m Model) renderTurnLines(turn Turn, width int) []string {
+func (m *Model) renderTurnLines(turn Turn, width int) []string {
+	// Cache key: (turnID, UpdatedAt unix nanos, width, detailMode). Any time
+	// content / layout / view-options change we recompute; otherwise we serve
+	// from the cache. Without this, transcriptMaxOffset / scrollTranscript /
+	// View all walk every turn through markdown + wrap on every keypress,
+	// which made PgUp/PgDn visibly stutter once a session had ~50 turns.
+	if m.transcriptLineCache != nil {
+		if cached, ok := m.transcriptLineCache[turn.ID]; ok &&
+			cached.width == width &&
+			cached.detailMode == m.detailMode &&
+			cached.updatedAt.Equal(turn.UpdatedAt) {
+			return cached.lines
+		}
+	}
+	lines := m.computeTurnLines(turn, width)
+	if m.transcriptLineCache != nil {
+		m.transcriptLineCache[turn.ID] = turnLinesCacheEntry{
+			updatedAt:  turn.UpdatedAt,
+			width:      width,
+			detailMode: m.detailMode,
+			lines:      lines,
+		}
+	}
+	return lines
+}
+
+func (m *Model) computeTurnLines(turn Turn, width int) []string {
 	lines := make([]string, 0, 4+len(turn.Tools)*4)
 	if strings.TrimSpace(turn.UserText) != "" {
 		prefix := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("piercode>")
@@ -173,9 +199,13 @@ func (m *Model) recallInputHistory(delta int) {
 	} else {
 		next := m.historyIdx + delta
 		if next >= len(m.inputHistory) {
+			// Returning past the most recent history item: restore the
+			// original draft the user was composing before they pressed ↑.
+			// Keep historyDraft populated so a subsequent ↑ can re-enter
+			// history without losing the draft again — bash/zsh behavior.
 			m.input = m.historyDraft
 			m.inputCursor = clampInt(m.historyDraftPos, 0, len([]rune(m.input)))
-			m.resetHistoryRecall()
+			m.historyIdx = -1
 			return
 		}
 		m.historyIdx = clampInt(next, 0, len(m.inputHistory)-1)
@@ -185,6 +215,15 @@ func (m *Model) recallInputHistory(delta int) {
 }
 
 func (m *Model) resetHistoryRecall() {
+	// Don't drop the draft on every keystroke — only when the user actively
+	// abandons history navigation (Ctrl+C / Ctrl+U / submit). Editing the
+	// recalled item is fine; the draft we want to keep is the *original*
+	// content typed before history navigation started.
+	m.historyIdx = -1
+}
+
+// clearHistoryDraft drops the saved draft. Called on submit / explicit clear.
+func (m *Model) clearHistoryDraft() {
 	m.historyIdx = -1
 	m.historyDraft = ""
 	m.historyDraftPos = 0

@@ -384,10 +384,18 @@ func (s *Server) handleWS(c *gin.Context) {
 	log.Println("[PierCode] ✅ 扩展已连接 WebSocket")
 
 	s.ws.Register(conn)
-	s.logTUI("system", "BROWSER", "success", fmt.Sprintf("浏览器扩展已连接 (%d)", s.ws.ClientCount()))
+	count := s.ws.ClientCount()
+	s.logTUI("system", "BROWSER", "success", fmt.Sprintf("浏览器扩展已连接 (%d)", count))
+	if s.logger != nil {
+		s.logger.LogBrowserCount(count)
+	}
 	defer func() {
 		s.ws.Unregister(conn)
-		s.logTUI("system", "BROWSER", "info", fmt.Sprintf("浏览器扩展已断开 (%d)", s.ws.ClientCount()))
+		count := s.ws.ClientCount()
+		s.logTUI("system", "BROWSER", "info", fmt.Sprintf("浏览器扩展已断开 (%d)", count))
+		if s.logger != nil {
+			s.logger.LogBrowserCount(count)
+		}
 	}()
 
 	// 保持连接，处理可能的客户端消息（目前仅广播，不处理客户端发送）

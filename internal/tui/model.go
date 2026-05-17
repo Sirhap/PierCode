@@ -56,6 +56,30 @@ type Model struct {
 	historyIdx       int
 	historyDraft     string
 	historyDraftPos  int
+
+	// mouseCapture 控制是否在 bubbletea 层吃掉鼠标事件用来滚动。
+	// 默认关闭，因为开启后用户用鼠标选中复制时会被 TUI 拦截，不知道按 Option
+	// 才能 escape 是常见踩坑。需要鼠标滚动滚 transcript 时，用 /mouse 切换。
+	mouseCapture bool
+
+	// lastEnter records the timestamp of the previous Enter press for IME
+	// confirmation: when CJK input is detected, an Enter that lands within
+	// 80ms of a real character keypress is treated as candidate-word
+	// confirmation and silently absorbed. The next Enter (or any Enter > 80ms
+	// after the last char) submits normally.
+	lastEnter   time.Time
+	lastKeyRune time.Time
+
+	// transcriptLineCache 缓存 renderTurnLines 的结果，按 (turnID,UpdatedAt,width)
+	// 失效。避免 PgUp/PgDn 每按一次都全量重渲染所有 turn × markdown。
+	transcriptLineCache map[string]turnLinesCacheEntry
+}
+
+type turnLinesCacheEntry struct {
+	updatedAt  time.Time
+	width      int
+	detailMode bool
+	lines      []string
 }
 
 // 样式定义
@@ -95,19 +119,21 @@ func NewModel(port int, rootDir, aiProvider string, token ...string) Model {
 		authToken = token[0]
 	}
 	return Model{
-		logs:             make([]LogEntry, 0),
-		turns:            make([]Turn, 0),
-		status:           "starting",
-		port:             port,
-		rootDir:          rootDir,
-		aiProvider:       aiProvider,
-		token:            authToken,
-		authURL:          authURLForToken(port, authToken),
-		stats:            map[string]int{"success": 0, "error": 0, "pending": 0, "info": 0},
-		inputCursor:      -1,
-		inputMode:        true,
-		transcriptOffset: -1,
-		historyIdx:       -1,
+		logs:                make([]LogEntry, 0),
+		turns:               make([]Turn, 0),
+		status:              "starting",
+		port:                port,
+		rootDir:             rootDir,
+		aiProvider:          aiProvider,
+		token:               authToken,
+		authURL:             authURLForToken(port, authToken),
+		stats:               map[string]int{"success": 0, "error": 0, "pending": 0, "info": 0},
+		inputCursor:         -1,
+		inputMode:           true,
+		transcriptOffset:    -1,
+		historyIdx:          -1,
+		mouseCapture:        false, // 默认关掉，让鼠标选中复制走系统层
+		transcriptLineCache: make(map[string]turnLinesCacheEntry),
 	}
 }
 
@@ -344,12 +370,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.inputMode {
+			// Bracketed-paste safety: when the terminal sends a paste, bubbletea
+			// flags KeyMsg.Paste=true. Treat the whole paste as literal text
+			// regardless of its byte type — newlines inside should NOT trigger
+			// submit, an embedded "/" should NOT open the slash picker. Without
+			// this, pasting "ls\necho hi\n" runs as 3 separate submits.
+			if msg.Paste {
+				m.clearHistoryDraft()
+				m.insertInput(string(msg.Runes))
+				m.clampCommandSelection()
+				return m, nil
+			}
 			switch msg.Type {
 			case tea.KeyEnter:
 				if msg.Alt {
 					m.resetHistoryRecall()
 					m.insertInput("\n")
 					m.clampCommandSelection()
+					return m, nil
+				}
+				// IME safety: only treat Enter as candidate-confirmation when
+				// it arrives RIGHT AFTER a CJK character keypress (within
+				// 80ms). A "cold" Enter pressed by an idle user always
+				// submits, so this is invisible to non-IME workflows and
+				// auto-tests that fire Enter directly. The 80ms window
+				// matches typical IME confirm-then-Enter rhythm.
+				if containsCJK(m.input) && !m.lastKeyRune.IsZero() &&
+					time.Since(m.lastKeyRune) < 80*time.Millisecond {
+					m.lastKeyRune = time.Time{}
 					return m, nil
 				}
 				text := sanitizeInjectText(m.input)
@@ -361,7 +409,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.input = ""
 					m.inputCursor = 0
 					m.inputMode = true
-					m.resetHistoryRecall()
+					m.clearHistoryDraft()
 					return m, tea.Batch(tea.Println("piercode> "+text), injectInputCmd(text, m.port, m.token))
 				}
 				m.input = ""
@@ -375,11 +423,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input = ""
 				m.inputCursor = 0
 				m.commandIdx = 0
-				m.resetHistoryRecall()
+				m.clearHistoryDraft()
 				return m, nil
 			case tea.KeyEscape:
-				m.input = ""
-				m.inputCursor = 0
+				// Layered escape — close the topmost overlay first instead of
+				// nuking everything. Old behavior cleared the entire input on
+				// every Esc, which destroyed long prompts with no undo.
+				// Order: full view → slash suggestions → switch to browse mode
+				// → finally clear input on a second press.
+				if m.fullView {
+					m.fullView = false
+					m.fullOffset = 0
+					return m, nil
+				}
+				if m.isSlashInput() {
+					// Drop the leading "/" so the suggestion popup goes away,
+					// but keep whatever else the user typed.
+					trimmed := strings.TrimSpace(m.input)
+					if strings.HasPrefix(trimmed, "/") {
+						m.input = strings.TrimPrefix(m.input, "/")
+						m.inputCursor = clampInt(m.inputCursor-1, 0, len([]rune(m.input)))
+						m.commandIdx = 0
+						return m, nil
+					}
+				}
+				if strings.TrimSpace(m.input) != "" {
+					// Has content but no overlay: switch to browse mode while
+					// preserving the draft. A second Esc from browse mode
+					// cycles back to input.
+					m.inputMode = false
+					return m, nil
+				}
 				m.inputMode = false
 				m.resetHistoryRecall()
 				return m, nil
@@ -421,27 +495,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.fullOffset > 0 {
 						m.fullOffset--
 					}
-				} else if m.isSlashInput() {
-					m.moveCommandSelection(-1)
-				} else if !strings.Contains(m.input, "\n") {
-					m.recallInputHistory(-1)
+					return m, nil
 				}
+				if m.isSlashInput() {
+					m.moveCommandSelection(-1)
+					return m, nil
+				}
+				// Multi-line input: ↑ moves cursor up one visual line within
+				// the input. Single-line: walks back through history. Earlier
+				// code silently swallowed ↑ in multi-line, leaving no way to
+				// reach earlier lines without Home/Backspace.
+				if strings.Contains(m.input, "\n") {
+					m.moveCursorByLine(-1)
+					return m, nil
+				}
+				m.recallInputHistory(-1)
 				return m, nil
 			case tea.KeyDown:
 				if m.fullView && m.hasActiveFullLog() {
 					m.fullOffset++
-				} else if m.isSlashInput() {
-					m.moveCommandSelection(1)
-				} else if !strings.Contains(m.input, "\n") {
-					m.recallInputHistory(1)
+					return m, nil
 				}
+				if m.isSlashInput() {
+					m.moveCommandSelection(1)
+					return m, nil
+				}
+				if strings.Contains(m.input, "\n") {
+					m.moveCursorByLine(1)
+					return m, nil
+				}
+				m.recallInputHistory(1)
 				return m, nil
 			case tea.KeyPgUp, tea.KeyCtrlUp:
 				return m.handleScroll(-3), nil
 			case tea.KeyPgDown, tea.KeyCtrlDown:
 				return m.handleScroll(3), nil
 			case tea.KeyCtrlU:
-				m.resetHistoryRecall()
+				m.clearHistoryDraft()
 				m.input = ""
 				m.inputCursor = 0
 				m.commandIdx = 0
@@ -461,6 +551,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.resetHistoryRecall()
 				m.insertInput(slashRunesToAppend(m.input, string(msg.Runes)))
 				m.clampCommandSelection()
+				// Track last char keypress for IME timing heuristic.
+				m.lastKeyRune = time.Now()
 				return m, nil
 			case tea.KeySpace:
 				m.resetHistoryRecall()
@@ -502,6 +594,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.logsMode {
 				return m.scrollTranscript(-1), nil
 			}
+			// logsMode: ↑ shows OLDER content. Earlier code did logOffset--
+			// which actually trimmed displayed entries from the bottom — the
+			// opposite of what the arrow direction implies. Now: scroll the
+			// active marker up one entry and the renderer will show the
+			// older entries naturally.
 			if m.logOffset > 0 {
 				m.logOffset--
 				m.fullOffset = 0
@@ -529,6 +626,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.transcriptOffset = 0
 				return m, nil
 			}
+			// logsMode home: jump to oldest entry. Setting logOffset=0 was
+			// fine here — the bug was on ↑ direction, not on Home.
 			m.logOffset = 0
 			m.fullOffset = 0
 			return m, nil
@@ -569,9 +668,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.authURL = authURL
 			return m, nil
 		}
-		if strings.EqualFold(msg.ToolName, "BROWSER") {
-			m.browserClients = extractTrailingCount(msg.Message)
-		}
+		// Note: BROWSER count is now delivered through BrowserCountMsg below;
+		// any legacy LogMsg with ToolName=="BROWSER" still flows into the
+		// transcript as a plain notice but no longer drives the PAGE metric.
 	if msg.Key != "" {
 		for i := len(m.logs) - 1; i >= 0; i-- {
 			if m.logs[i].Key == msg.Key {
@@ -614,6 +713,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StatusMsg:
 		m.status = msg.Status
+		return m, nil
+	case BrowserCountMsg:
+		m.browserClients = msg.Count
 		return m, nil
 	}
 	return m, nil
@@ -973,6 +1075,60 @@ func (m Model) normalizedInputCursor() int {
 	return clampInt(m.inputCursor, 0, len(runes))
 }
 
+// moveCursorByLine shifts the input cursor up (-1) or down (+1) one logical
+// line within m.input, preserving the column when possible. Used by ↑/↓ when
+// the input contains newlines so multi-line composition is editable.
+func (m *Model) moveCursorByLine(delta int) {
+	runes := []rune(m.input)
+	cursor := m.normalizedInputCursor()
+	// Find current line bounds + column.
+	lineStart := cursor
+	for lineStart > 0 && runes[lineStart-1] != '\n' {
+		lineStart--
+	}
+	col := cursor - lineStart
+
+	if delta < 0 {
+		// Move to previous line: scan back past the \n at lineStart-1, find
+		// that line's start, and clamp col to its length.
+		if lineStart == 0 {
+			return // already on first line; let caller decide history fallback
+		}
+		prevEnd := lineStart - 1 // the \n char
+		prevStart := prevEnd
+		for prevStart > 0 && runes[prevStart-1] != '\n' {
+			prevStart--
+		}
+		prevLen := prevEnd - prevStart
+		newCol := col
+		if newCol > prevLen {
+			newCol = prevLen
+		}
+		m.inputCursor = prevStart + newCol
+		return
+	}
+
+	// delta > 0: move to next line.
+	lineEnd := cursor
+	for lineEnd < len(runes) && runes[lineEnd] != '\n' {
+		lineEnd++
+	}
+	if lineEnd >= len(runes) {
+		return // already on last line
+	}
+	nextStart := lineEnd + 1
+	nextEnd := nextStart
+	for nextEnd < len(runes) && runes[nextEnd] != '\n' {
+		nextEnd++
+	}
+	nextLen := nextEnd - nextStart
+	newCol := col
+	if newCol > nextLen {
+		newCol = nextLen
+	}
+	m.inputCursor = nextStart + newCol
+}
+
 func renderInputLinesWithCursor(input string, cursor int, width int) []string {
 	const marker = "\x00"
 	runes := []rune(input)
@@ -1147,6 +1303,10 @@ func logDisplayLines(entry LogEntry, width int, fullView bool, detailMode bool) 
 		message = entry.FullMessage
 		wrap = true
 	}
+	// SECURITY: command output / AI text is untrusted; strip terminal escape
+	// sequences before any wrapping or styling. Without this an `exec_cmd`
+	// running e.g. `printf '\e[2J'` would clear the entire TUI from under us.
+	message = stripANSI(message)
 	if entry.Source == "ai" && isToolLog(entry) {
 		return toolLogDisplayLines(entry, message, width, fullView, detailMode)
 	}
@@ -1222,20 +1382,11 @@ func wrapTextLines(s string, width int) []string {
 }
 
 func wrapString(s string, width int) []string {
-	if width <= 0 {
-		return []string{s}
-	}
-	runes := []rune(s)
-	if len(runes) == 0 {
-		return []string{""}
-	}
-	lines := make([]string, 0, (len(runes)/width)+1)
-	for len(runes) > width {
-		lines = append(lines, string(runes[:width]))
-		runes = runes[width:]
-	}
-	lines = append(lines, string(runes))
-	return lines
+	// Display-width aware: a CJK char counts as 2 columns. The earlier rune-
+	// count implementation overflowed lines (50 中 = 100 cols passed through
+	// when width=80 because 50 < 80) and pushed the status strip / dividers
+	// into ragged alignment. See helpers.go.
+	return wrapByDisplayWidth(s, width)
 }
 
 func trimLastWord(s string) string {
@@ -1251,14 +1402,9 @@ func trimLastWord(s string) string {
 }
 
 func truncateString(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	if maxLen <= 3 {
-		return string(runes[:maxLen])
-	}
-	return string(runes[:maxLen-3]) + "..."
+	// Display-width aware truncation. maxLen is interpreted as terminal
+	// columns, not rune count, so CJK strings don't overflow the budget.
+	return truncateToDisplayWidth(s, maxLen)
 }
 
 func clampInt(value, min, max int) int {
@@ -1296,4 +1442,13 @@ type LogMsg struct {
 
 type StatusMsg struct {
 	Status string
+}
+
+// BrowserCountMsg is the typed channel server uses to report how many
+// extensions are currently connected. Earlier versions stuffed the count
+// into a free-text BROWSER log message and re-parsed it on the TUI side
+// with a regex of "(N)" — which silently turned "(retrying)" into 0.
+// Use this instead.
+type BrowserCountMsg struct {
+	Count int
 }

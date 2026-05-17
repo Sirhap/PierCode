@@ -84,7 +84,12 @@ func main() {
 	// TODO: 后续可从配置或环境变量读取实际的 AI 服务商
 	aiProvider := "OpenAI / Claude / Local"
 	model := tui.NewModel(*port, *dir, aiProvider, token)
-	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// Mouse capture is OFF by default: enabling it would let bubbletea eat
+	// click/drag events, breaking native mouse-select-to-copy in iTerm /
+	// macOS Terminal / Windows Terminal. Users who explicitly want
+	// wheel-scrolling can run /mouse inside the TUI to toggle it on at
+	// runtime. PgUp/PgDn and Ctrl+↑/↓ scroll without mouse capture.
+	program := tea.NewProgram(model, tea.WithAltScreen())
 
 	// 创建 TUI Logger
 	tuiLogger := tui.NewLogger(program)

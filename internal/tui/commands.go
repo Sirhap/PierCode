@@ -27,6 +27,7 @@ var slashCommandList = []slashCommand{
 	{Name: "url", Usage: "", Description: "显示认证 URL"},
 	{Name: "send", Usage: "<text>", Description: "把文本发送到浏览器 AI 输入框"},
 	{Name: "logs", Usage: "", Description: "切换原始诊断日志视图"},
+	{Name: "mouse", Usage: "", Description: "切换鼠标滚轮捕获（关闭后可用鼠标选中复制）"},
 	{Name: "clear", Usage: "", Description: "清空活动区"},
 	{Name: "help", Usage: "", Description: "显示 TUI 指令"},
 }
@@ -223,7 +224,33 @@ func (m Model) executeSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.turns = nil
 		m.logOffset = 0
 		m.transcriptOffset = -1
+		// Reset counters too — leaving "OK 12 ERR 3" pinned to a now-empty
+		// activity area was a constant source of "did clear actually run?"
+		// confusion.
+		for k := range m.stats {
+			m.stats[k] = 0
+		}
+		// Drop cached layout lines so re-renders don't show stale state.
+		m.transcriptLineCache = make(map[string]turnLinesCacheEntry)
 		return m, nil
+	case "mouse":
+		// Toggle mouse-wheel capture at runtime. Off (default) lets the user
+		// mouse-select to copy text the way every native terminal does. On
+		// makes the wheel scroll the transcript inside the TUI.
+		m.mouseCapture = !m.mouseCapture
+		state := "OFF"
+		var cmd tea.Cmd
+		if m.mouseCapture {
+			state = "ON"
+			cmd = tea.EnableMouseCellMotion
+		} else {
+			cmd = tea.DisableMouse
+		}
+		entry := LogEntry{Time: time.Now(), Source: "system", ToolName: "MOUSE", Status: "info",
+			Message: fmt.Sprintf("鼠标捕获: %s（关闭时可用鼠标选中复制）", state)}
+		m.logs = append(m.logs, entry)
+		m.appendSystemNotice(entry.Status, entry.Message)
+		return m, cmd
 	case "cwd":
 		entry := LogEntry{Time: time.Now(), Source: "system", ToolName: "CWD", Status: "info", Message: "当前工作目录: " + m.rootDir}
 		m.logs = append(m.logs, entry)
@@ -322,20 +349,44 @@ func findSlashCommand(name string) (slashCommand, bool) {
 
 func commandHelpText() string {
 	lines := []string{
-		"快捷键:",
-		"Ctrl+T - 展开/收起当前工具完整输出",
-		"Ctrl+D - 切换工具详情视图",
-		"j/k 或 ↑/↓ - 滚动日志或完整输出",
+		"输入模式（光标在 piercode> 后）：",
+		"  Enter           提交（中文输入法用户：连按两次确认）",
+		"  Alt+Enter / Ctrl+J  插入换行",
+		"  Tab             slash 指令补全 / 路径补全",
+		"  ↑ / ↓           历史命令；slash 模式下选指令；fullView 内滚动",
+		"  ←/→ Home/End    光标移动 / 跳行首行尾",
+		"  Ctrl+U          清空当前输入",
+		"  Ctrl+W          删除前一个词",
+		"  Ctrl+C          首次清空输入；输入为空时退出",
+		"  Esc             分层关闭：fullView → slash 提示 → 切到浏览模式",
 		"",
-		"指令:",
+		"浏览模式（Esc 后）：",
+		"  i 或 字符       回到输入模式",
+		"  /               回到输入并起始一条 slash 指令",
+		"  q / Ctrl+C      退出",
+		"  ↑ ↓ / k j       滚动转录或日志",
+		"  PgUp / PgDn     翻页",
+		"  Ctrl+↑ / Ctrl+↓ 翻页（兼容部分终端）",
+		"  Home / g        回到顶部",
+		"  End / G         跟随到底部",
+		"",
+		"通用：",
+		"  Ctrl+T - 展开/收起当前条目完整输出",
+		"  Ctrl+D - 切换工具详情视图",
+		"",
+		"指令：",
 	}
 	for _, cmd := range slashCommandList {
 		usage := ""
 		if cmd.Usage != "" {
 			usage = " " + cmd.Usage
 		}
-		lines = append(lines, fmt.Sprintf("/%s%s - %s", cmd.Name, usage, cmd.Description))
+		lines = append(lines, fmt.Sprintf("  /%s%s - %s", cmd.Name, usage, cmd.Description))
 	}
+	lines = append(lines,
+		"",
+		"提示：默认鼠标滚轮 不 捕获，方便鼠标选中复制；用 /mouse 打开滚轮滚动。",
+	)
 	return strings.Join(lines, "\n")
 }
 

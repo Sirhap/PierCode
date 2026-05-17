@@ -4,9 +4,21 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// Cap on accumulated bytes for one background task's stdout/stderr buffer.
+// Past this point we keep the head + drop the middle + always retain a tail
+// window so the user still sees the most recent output. 256KB matches the
+// executor-side cap so the TUI doesn't fall out of sync with /tasks output.
+const taskBufCap = 256 * 1024
+
+// taskBufStaleAfter is the safety net for tasks that never send a Done event
+// (executor crash, panic, kill -9). The reaper drops their buffers so a long
+// running server doesn't leak megabytes of stdout indefinitely.
+const taskBufStaleAfter = 30 * time.Minute
 
 // Logger 用于将后端事件发送到 TUI
 type Logger struct {
@@ -14,15 +26,59 @@ type Logger struct {
 	mu           sync.Mutex
 	printedByKey map[string]string
 
-	taskMu  sync.Mutex
-	taskBuf map[string]*strings.Builder
+	taskMu     sync.Mutex
+	taskBuf    map[string]*taskBuffer
+	reaperOnce sync.Once
+	reaperStop chan struct{}
+}
+
+// taskBuffer wraps a builder + last-touch timestamp so the reaper can decide
+// when a task buffer is stale.
+type taskBuffer struct {
+	buf       strings.Builder
+	updatedAt time.Time
 }
 
 func NewLogger(program *tea.Program) *Logger {
 	return &Logger{
 		program:      program,
 		printedByKey: make(map[string]string),
-		taskBuf:      make(map[string]*strings.Builder),
+		taskBuf:      make(map[string]*taskBuffer),
+		reaperStop:   make(chan struct{}),
+	}
+}
+
+// Close stops the background reaper goroutine. Safe to call multiple times.
+// Optional — for tests or graceful shutdown; the reaper will also exit when
+// the process does.
+func (l *Logger) Close() {
+	l.reaperOnce.Do(func() {
+		close(l.reaperStop)
+	})
+}
+
+func (l *Logger) startReaperOnce() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-l.reaperStop:
+				return
+			case <-ticker.C:
+				l.reapStaleTaskBuffers(time.Now())
+			}
+		}
+	}()
+}
+
+func (l *Logger) reapStaleTaskBuffers(now time.Time) {
+	l.taskMu.Lock()
+	defer l.taskMu.Unlock()
+	for id, b := range l.taskBuf {
+		if now.Sub(b.updatedAt) >= taskBufStaleAfter {
+			delete(l.taskBuf, id)
+		}
 	}
 }
 
@@ -42,6 +98,11 @@ func (l *Logger) LogToolCallWithSource(source, toolName, status, message string)
 
 func (l *Logger) LogToolCallWithSourceFull(source, toolName, status, message, fullMessage string) {
 	if l.program != nil {
+		// SECURITY/UX: route everything through the model's transcript via
+		// LogMsg. We used to also `program.Println(...)` for ai-tool calls,
+		// which doubled every event on screen (once as a tool card in the
+		// transcript and once as a raw line above it). The transcript path
+		// is the canonical view; the model decides how to render it.
 		l.program.Send(LogMsg{
 			Source:      source,
 			ToolName:    toolName,
@@ -49,9 +110,6 @@ func (l *Logger) LogToolCallWithSourceFull(source, toolName, status, message, fu
 			Message:     message,
 			FullMessage: fullMessage,
 		})
-		if source == "ai" && strings.TrimSpace(toolName) != "" {
-			l.program.Println(formatTranscriptToolLine(toolName, status, message))
-		}
 	}
 }
 
@@ -143,6 +201,16 @@ func (l *Logger) LogStatus(status string) {
 	}
 }
 
+// LogBrowserCount reports how many browser extensions are currently connected.
+// Replaces the older pattern of stuffing the count into a free-text "BROWSER"
+// log message that the TUI re-parsed with a `(N)` regex. The structured form
+// avoids parsing-induced bugs such as treating `(retrying)` as 0.
+func (l *Logger) LogBrowserCount(count int) {
+	if l.program != nil {
+		l.program.Send(BrowserCountMsg{Count: count})
+	}
+}
+
 // LogTaskStream forwards a stdout/stderr chunk from a background exec_cmd
 // task into the TUI transcript. Chunks are accumulated per task_id and the
 // LogMsg uses that accumulated text so the model's findTurnByToolKey can
@@ -151,20 +219,38 @@ func (l *Logger) LogStatus(status string) {
 // Send is performed under taskMu together with the append so two concurrent
 // streams (stdout + stderr from the same task) can't deliver LogMsgs whose
 // FullMessage values cross over and leave the UI showing a stale prefix.
+//
+// Buffer size is capped at taskBufCap; once exceeded we keep the most recent
+// tail to avoid unbounded growth from `tail -f` style commands. Without this
+// a long-running task would keep extending the buffer + ship the entire
+// blob through every LogMsg, freezing the UI on each render.
 func (l *Logger) LogTaskStream(taskID, callID, stream, text string) {
 	if l.program == nil || strings.TrimSpace(text) == "" {
 		return
 	}
+	l.reaperOnce.Do(l.startReaperOnce)
+
 	l.taskMu.Lock()
 	defer l.taskMu.Unlock()
 
-	buf, ok := l.taskBuf[taskID]
+	tb, ok := l.taskBuf[taskID]
 	if !ok {
-		buf = &strings.Builder{}
-		l.taskBuf[taskID] = buf
+		tb = &taskBuffer{}
+		l.taskBuf[taskID] = tb
 	}
-	buf.WriteString(text)
-	full := buf.String()
+	tb.updatedAt = time.Now()
+	tb.buf.WriteString(text)
+
+	// Trim once we cross the cap. We slice on bytes; UTF-8 boundary is fine
+	// because we drop a chunk that's well past the visible window.
+	full := tb.buf.String()
+	if len(full) > taskBufCap {
+		// Keep the last taskBufCap bytes; prepend a marker so the user knows.
+		const marker = "…[earlier output truncated]\n"
+		full = marker + full[len(full)-taskBufCap+len(marker):]
+		tb.buf.Reset()
+		tb.buf.WriteString(full)
+	}
 
 	short := singleLine(full)
 	if short == "" {
@@ -197,8 +283,8 @@ func (l *Logger) LogTaskDone(taskID, callID string, exitCode int, status string,
 	defer l.taskMu.Unlock()
 
 	full := ""
-	if buf, ok := l.taskBuf[taskID]; ok {
-		full = buf.String()
+	if tb, ok := l.taskBuf[taskID]; ok {
+		full = tb.buf.String()
 		delete(l.taskBuf, taskID)
 	}
 
