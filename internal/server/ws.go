@@ -1,39 +1,53 @@
 package server
 
 import (
+	"log"
 	"net/http"
+	"net/url"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-// clientConn 包装单个 WebSocket 连接，带写锁
+const (
+	wsClientQueueSize = 64
+	wsWriteTimeout    = 5 * time.Second
+)
+
+// clientConn wraps one WebSocket connection. Its writePump is the only
+// goroutine that writes to conn.
 type clientConn struct {
-	conn *websocket.Conn
-	mu   sync.Mutex
+	conn      *websocket.Conn
+	send      chan []byte
+	closeOnce sync.Once
 }
 
 // WSManager 管理所有 WebSocket 连接
 type WSManager struct {
-	clients   map[*clientConn]bool
-	clientsMu sync.RWMutex
-	upgrader  websocket.Upgrader
-	broadcast chan []byte
-	done      chan struct{}
-	closeOnce sync.Once
+	clients        map[*clientConn]bool
+	clientsMu      sync.RWMutex
+	upgrader       websocket.Upgrader
+	broadcast      chan []byte
+	done           chan struct{}
+	closeOnce      sync.Once
+	allowedOrigins []string
 }
 
-// NewWSManager 创建新的 WebSocket 管理器
-func NewWSManager() *WSManager {
+// NewWSManager 创建新的 WebSocket 管理器。allowedOrigins 是用户显式配置的
+// Origin 白名单（除自动放行的 chrome-extension:// 与 127.0.0.1/localhost 之外）。
+func NewWSManager(allowedOrigins []string) *WSManager {
 	return &WSManager{
-		clients:   make(map[*clientConn]bool),
-		broadcast: make(chan []byte, 100),
-		done:      make(chan struct{}),
+		clients:        make(map[*clientConn]bool),
+		broadcast:      make(chan []byte, 100),
+		done:           make(chan struct{}),
+		allowedOrigins: append([]string(nil), allowedOrigins...),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
-			// 允许所有来源连接（开发环境），生产环境应校验 Origin
-			CheckOrigin: func(r *http.Request) bool { return true },
+			CheckOrigin: func(r *http.Request) bool {
+				return IsAllowedOrigin(r.Header.Get("Origin"), allowedOrigins)
+			},
 		},
 	}
 }
@@ -45,10 +59,14 @@ func (m *WSManager) Upgrade(w http.ResponseWriter, r *http.Request) (*websocket.
 
 // Register 注册新的客户端连接
 func (m *WSManager) Register(conn *websocket.Conn) {
-	cc := &clientConn{conn: conn}
+	cc := &clientConn{
+		conn: conn,
+		send: make(chan []byte, wsClientQueueSize),
+	}
 	m.clientsMu.Lock()
 	m.clients[cc] = true
 	m.clientsMu.Unlock()
+	go m.writePump(cc)
 }
 
 // ClientCount returns the number of currently connected browser extensions.
@@ -64,38 +82,31 @@ func (m *WSManager) Unregister(conn *websocket.Conn) {
 	for cc := range m.clients {
 		if cc.conn == conn {
 			delete(m.clients, cc)
-			cc.conn.Close()
+			cc.close()
 			break
 		}
 	}
 	m.clientsMu.Unlock()
 }
 
-// Broadcast 广播消息给所有连接的客户端（串行写入每个连接）
+// Broadcast queues a message for all connected clients. Slow clients are
+// disconnected instead of being allowed to stall every other receiver.
 func (m *WSManager) Broadcast(message []byte) {
-	m.clientsMu.RLock()
-	clients := make([]*clientConn, 0, len(m.clients))
-	for cc := range m.clients {
-		clients = append(clients, cc)
-	}
-	m.clientsMu.RUnlock()
-
 	var failed []*clientConn
-	for _, cc := range clients {
-		cc.mu.Lock()
-		err := cc.conn.WriteMessage(websocket.TextMessage, message)
-		cc.mu.Unlock()
-		if err != nil {
+	m.clientsMu.RLock()
+	for cc := range m.clients {
+		select {
+		case cc.send <- message:
+		default:
 			failed = append(failed, cc)
 		}
 	}
+	m.clientsMu.RUnlock()
+
 	if len(failed) > 0 {
-		m.clientsMu.Lock()
 		for _, cc := range failed {
-			delete(m.clients, cc)
-			cc.conn.Close()
+			m.unregisterClient(cc)
 		}
-		m.clientsMu.Unlock()
 	}
 }
 
@@ -122,8 +133,8 @@ func (m *WSManager) Close() {
 		close(m.done)
 		m.clientsMu.Lock()
 		for cc := range m.clients {
-			cc.conn.Close()
 			delete(m.clients, cc)
+			cc.close()
 		}
 		m.clientsMu.Unlock()
 	})
@@ -134,6 +145,66 @@ func (m *WSManager) Send(message []byte) {
 	select {
 	case m.broadcast <- message:
 	default:
-		// 队列满时丢弃，避免阻塞主流程
+		// 队列满时丢弃，避免阻塞主流程，但记录日志便于诊断丢失。
+		log.Printf("[OpenLink][WS] ⚠️ 广播队列已满，丢弃 %d 字节消息", len(message))
 	}
+}
+
+// IsAllowedOrigin 判断 Origin header 是否允许。空 Origin（同源 / 非浏览器
+// 工具）放行；chrome-extension:// 自动放行；127.0.0.1 / localhost 任意端口
+// 放行；其它必须出现在 allowed 列表里精确匹配。
+func IsAllowedOrigin(origin string, allowed []string) bool {
+	if origin == "" {
+		// 同源请求或 curl/native client（未携带 Origin），不构成跨站风险。
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	switch u.Scheme {
+	case "chrome-extension", "moz-extension", "safari-web-extension":
+		return true
+	case "http", "https":
+		host := u.Hostname()
+		if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+			return true
+		}
+	}
+	for _, a := range allowed {
+		if a == origin {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *WSManager) writePump(cc *clientConn) {
+	for msg := range cc.send {
+		if cc.conn != nil {
+			_ = cc.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+			if err := cc.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				m.unregisterClient(cc)
+				return
+			}
+		}
+	}
+}
+
+func (m *WSManager) unregisterClient(cc *clientConn) {
+	m.clientsMu.Lock()
+	if _, ok := m.clients[cc]; ok {
+		delete(m.clients, cc)
+		cc.close()
+	}
+	m.clientsMu.Unlock()
+}
+
+func (cc *clientConn) close() {
+	cc.closeOnce.Do(func() {
+		close(cc.send)
+		if cc.conn != nil {
+			_ = cc.conn.Close()
+		}
+	})
 }

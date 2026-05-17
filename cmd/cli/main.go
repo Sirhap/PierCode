@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/afumu/openlink/internal/portutil"
 	"github.com/afumu/openlink/internal/security"
@@ -25,15 +26,19 @@ func main() {
 	dir := flag.String("dir", cwd, "工作目录")
 	port := flag.Int("port", 39527, "端口")
 	timeout := flag.Int("timeout", 60, "超时(秒)")
+	allowShell := flag.Bool("allow-shell", false, "启用 exec_cmd 工具（等同 shell 完整访问，谨慎使用）")
+	allowedOrigins := flag.String("allowed-origins", "", "允许的 CORS/WS Origin 白名单（逗号分隔），默认仅放行 chrome-extension:// 与 127.0.0.1")
+	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 openlink 进程占用，强制结束该进程")
 	flag.Parse()
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
-	// 检测端口是否已被占用，若占用则自动杀掉旧进程
+	// 检测端口是否已被占用，若占用则只杀掉 openlink 旧进程；其它进程默认
+	// 不动以避免误杀用户的 dev server，--force-kill-port 才一律杀。
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		fmt.Printf("端口 %d 已被占用，正在尝试终止占用进程...\n", *port)
-		if killed := portutil.KillPortProcess(*port); killed {
+		fmt.Printf("端口 %d 已被占用，正在尝试终止 openlink 旧进程...\n", *port)
+		if killed := portutil.KillPortProcess(*port, *forceKillPort); killed {
 			fmt.Printf("✅ 已终止旧进程，重新检测端口...\n")
 			ln, err = net.Listen("tcp", addr)
 			if err != nil {
@@ -41,7 +46,7 @@ func main() {
 				os.Exit(1)
 			}
 		} else {
-			fmt.Printf("❌ 无法终止占用进程，请手动处理或使用 -port 指定其他端口\n")
+			fmt.Printf("❌ 端口被非 openlink 进程占用。请使用 -port 指定其他端口，或加 --force-kill-port 强制结束该进程。\n")
 			os.Exit(1)
 		}
 	}
@@ -52,6 +57,14 @@ func main() {
 		log.Fatal(err)
 	}
 
+	var origins []string
+	for _, o := range strings.Split(*allowedOrigins, ",") {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			origins = append(origins, o)
+		}
+	}
+
 	config := &types.Config{
 		RootDir:        *dir,
 		InitialRootDir: *dir,
@@ -59,6 +72,8 @@ func main() {
 		Timeout:        *timeout,
 		Token:          token,
 		DefaultPrompt:  prompts.DefaultPrompt,
+		AllowShell:     *allowShell,
+		AllowedOrigins: origins,
 	}
 	log.SetOutput(io.Discard)
 
@@ -77,6 +92,11 @@ func main() {
 		srv.SetTUILogger(tuiLogger)
 		tuiLogger.LogStatus("running")
 		tuiLogger.Printf("认证 URL: http://127.0.0.1:%d/auth?token=%s", *port, token)
+		if *allowShell {
+			tuiLogger.Printf("⚠️  exec_cmd 已启用：AI 可执行任意 shell 命令。命令黑名单仅基础防护，不是沙箱。")
+		} else {
+			tuiLogger.Printf("ℹ️  exec_cmd 默认禁用。需启用请加 --allow-shell（请知悉风险）。")
+		}
 
 		if err := srv.Run(); err != nil {
 			tuiLogger.Printf("服务器运行出错: %v", err)

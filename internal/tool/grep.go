@@ -56,7 +56,7 @@ func (t *GrepTool) Execute(ctx *Context) *Result {
 
 	var safePath string
 	var err error
-	rootDir := ctx.Config.GetRootDir()
+	rootDir := ctx.EffectiveRootDir()
 	if filepath.IsAbs(searchPath) {
 		safePath, err = resolveAbsPath(searchPath, rootDir)
 	} else {

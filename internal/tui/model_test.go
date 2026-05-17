@@ -51,6 +51,32 @@ func TestCtrlCClearsInputInInputMode(t *testing.T) {
 	}
 }
 
+func TestInputHistoryRestoresDraftAfterBrowsing(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.addInputHistory("first")
+	model.addInputHistory("second")
+	model.input = "draft"
+	model.inputCursor = 2
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	model = next.(Model)
+	if model.input != "second" {
+		t.Fatalf("expected latest history item, got %q", model.input)
+	}
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = next.(Model)
+	if model.input != "draft" {
+		t.Fatalf("expected draft to be restored, got %q", model.input)
+	}
+	if model.inputCursor != 2 {
+		t.Fatalf("expected draft cursor to be restored, got %d", model.inputCursor)
+	}
+	if model.historyIdx != -1 {
+		t.Fatalf("expected history index reset after returning to draft, got %d", model.historyIdx)
+	}
+}
+
 func TestCtrlCQuitsWhenInputIsEmpty(t *testing.T) {
 	model := NewModel(39527, "D:\\workspace", "qwen")
 	model.inputMode = true

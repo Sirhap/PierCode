@@ -12,6 +12,6 @@ func (t *InvalidTool) Execute(ctx *Context) *Result {
 	toolName, _ := ctx.Args["tool"].(string)
 	return &Result{
 		Status: "error",
-		Error:  fmt.Sprintf("工具 '%s' 不存在。可用工具: exec_cmd, read_file, write_file, list_dir, glob, grep, edit, web_fetch, todo_write, question, skill", toolName),
+		Error:  fmt.Sprintf("工具 '%s' 不存在。可用工具: exec_cmd, read_file, write_file, list_dir, glob, grep, edit, web_fetch, todo_write, todo_read, question, skill, task_list, task_output, task_stop, send_stdin", toolName),
 	}
 }

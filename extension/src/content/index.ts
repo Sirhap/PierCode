@@ -1,6 +1,6 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
 import { extractMonacoText, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
-import { initWsLinker, sendAIResponseLog, sendUserPromptLog } from './ws-linker';
+import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel } from './ws-linker';
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
@@ -144,6 +144,217 @@ interface ToolExecutionResult {
   sendable: boolean;
 }
 
+// ─── 流式工具输出分发 ─────────────────────────────────────────────────────────
+// 同一个 call_id 的 ToolCard 注册自己的 stream/done 回调。WebSocket 收到事件后
+// 通过 dispatch 路由。多 tab 都会收到广播，但只有对应卡片所在的 tab 命中。
+type StreamChunkHandler = (stream: 'stdout' | 'stderr', text: string) => void;
+type StreamDoneHandler = (exitCode: number, status: string, errMsg: string, durationMs: number) => void;
+
+const streamChunkSubs = new Map<string, StreamChunkHandler>();
+const streamDoneSubs = new Map<string, StreamDoneHandler>();
+let streamDispatchersRegistered = false;
+
+function ensureStreamDispatchers() {
+  if (streamDispatchersRegistered) return;
+  streamDispatchersRegistered = true;
+  onToolStream(msg => {
+    const id = msg.call_id || msg.task_id;
+    if (!id) return;
+    const handler = streamChunkSubs.get(id);
+    if (handler) handler(msg.stream, msg.text);
+  });
+  onToolDone(msg => {
+    const id = msg.call_id || msg.task_id;
+    if (!id) return;
+    const handler = streamDoneSubs.get(id);
+    if (handler) handler(msg.exit_code, msg.status, msg.error || '', msg.duration_ms);
+  });
+  onQuestionAsk(msg => {
+    showRemoteQuestionPopup(msg.call_id, msg.question, Array.isArray(msg.options) ? msg.options : []);
+  });
+  onQuestionCancel(msg => {
+    dismissRemoteQuestionPopup(msg.call_id);
+  });
+}
+
+const activeQuestionPopups = new Map<string, HTMLDivElement>();
+
+function showRemoteQuestionPopup(callID: string, question: string, options: unknown[]) {
+  dismissRemoteQuestionPopup(callID);
+
+  const overlay = document.createElement('div');
+  overlay.dataset.openlinkQuestionId = callID;
+  overlay.style.cssText = [
+    'position:fixed', 'right:20px', 'bottom:20px', 'z-index:2147483646',
+    'max-width:420px', 'min-width:300px', 'padding:14px 16px',
+    'background:#1e293b', 'color:#f1f5f9',
+    'border:1px solid #475569', 'border-radius:10px',
+    'box-shadow:0 10px 30px rgba(0,0,0,0.4)',
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+    'font-size:13px', 'line-height:1.5',
+  ].join(';');
+
+  const header = document.createElement('div');
+  header.textContent = '🙋 openlink 需要您的回答';
+  header.style.cssText = 'font-weight:600;margin-bottom:8px;color:#fbbf24';
+  overlay.appendChild(header);
+
+  const body = document.createElement('div');
+  body.textContent = question;
+  body.style.cssText = 'white-space:pre-wrap;margin-bottom:10px';
+  overlay.appendChild(body);
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = options.length > 0 ? `回车提交，可输入选项 1-${options.length}` : '回车提交回答';
+  input.style.cssText = [
+    'width:100%', 'padding:8px 10px', 'box-sizing:border-box',
+    'border:1px solid #475569', 'border-radius:6px',
+    'background:#0f172a', 'color:#f1f5f9', 'font-size:13px',
+    'outline:none',
+  ].join(';');
+  overlay.appendChild(input);
+
+  if (options.length > 0) {
+    const optWrap = document.createElement('div');
+    optWrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:8px';
+    options.forEach((opt, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = `${i + 1}. ${String(opt)}`;
+      btn.style.cssText = [
+        'padding:4px 10px', 'border:1px solid #64748b', 'border-radius:4px',
+        'background:#334155', 'color:#f1f5f9', 'cursor:pointer', 'font-size:12px',
+      ].join(';');
+      btn.onclick = () => {
+        sendQuestionAnswer(callID, String(opt));
+        dismissRemoteQuestionPopup(callID);
+      };
+      optWrap.appendChild(btn);
+    });
+    overlay.appendChild(optWrap);
+  }
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:10px';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.textContent = '取消';
+  cancelBtn.style.cssText = 'padding:5px 10px;border:1px solid #64748b;border-radius:4px;background:transparent;color:#cbd5e1;cursor:pointer';
+  cancelBtn.onclick = () => {
+    sendQuestionCancel(callID);
+    dismissRemoteQuestionPopup(callID);
+  };
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'button';
+  submitBtn.textContent = '提交';
+  submitBtn.style.cssText = 'padding:5px 14px;border:1px solid #2563eb;border-radius:4px;background:#2563eb;color:white;cursor:pointer;font-weight:600';
+  const submit = () => {
+    let answer = input.value.trim();
+    if (!answer) return;
+    if (options.length > 0) {
+      const idx = parseInt(answer, 10);
+      if (!Number.isNaN(idx) && idx >= 1 && idx <= options.length) {
+        answer = String(options[idx - 1]);
+      }
+    }
+    sendQuestionAnswer(callID, answer);
+    dismissRemoteQuestionPopup(callID);
+  };
+  submitBtn.onclick = submit;
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      sendQuestionCancel(callID);
+      dismissRemoteQuestionPopup(callID);
+    }
+  });
+  actions.append(cancelBtn, submitBtn);
+  overlay.appendChild(actions);
+
+  document.body.appendChild(overlay);
+  activeQuestionPopups.set(callID, overlay);
+  // Focus after the element is attached so the editor's existing autofocus
+  // doesn't steal it back.
+  setTimeout(() => input.focus(), 50);
+}
+
+function dismissRemoteQuestionPopup(callID: string) {
+  const el = activeQuestionPopups.get(callID);
+  if (!el) return;
+  el.remove();
+  activeQuestionPopups.delete(callID);
+}
+
+// renderTodoChecklist renders the todo array (from todo_write args) as a
+// styled checklist in the given container. Mirrors the Go-side
+// formatTodoChecklist so the user sees the same picture regardless of which
+// tool ran. Accepts strings or {text/content/title, status} objects.
+function renderTodoChecklist(container: HTMLElement, todos: unknown[]) {
+  if (!todos.length) {
+    const empty = document.createElement('div');
+    empty.textContent = '(任务列表为空)';
+    empty.style.cssText = 'color:#888;font-size:12px';
+    container.appendChild(empty);
+    return;
+  }
+  const ul = document.createElement('ul');
+  ul.style.cssText = 'list-style:none;margin:0;padding:0;font-size:12px';
+  todos.forEach((raw, i) => {
+    const li = document.createElement('li');
+    li.style.cssText = 'padding:2px 0;color:#cdd6f4';
+    const { text, status } = todoFieldsTS(raw);
+    let marker = '☐';
+    let color = '#cdd6f4';
+    switch (status.toLowerCase()) {
+      case 'completed':
+      case 'done':
+        marker = '☑'; color = '#a6e3a1'; break;
+      case 'in_progress':
+      case 'in-progress':
+      case 'running':
+        marker = '◐'; color = '#fab387'; break;
+      case 'blocked':
+        marker = '⚠'; color = '#f38ba8'; break;
+    }
+    li.style.color = color;
+    li.textContent = `${i + 1}. ${marker} ${text}`;
+    if (status.toLowerCase() === 'completed' || status.toLowerCase() === 'done') {
+      li.style.textDecoration = 'line-through';
+    }
+    ul.appendChild(li);
+  });
+  container.appendChild(ul);
+}
+
+function todoFieldsTS(raw: unknown): { text: string; status: string } {
+  if (typeof raw === 'string') return { text: raw, status: '' };
+  if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    for (const k of ['text', 'content', 'title', 'description', 'name', 'task']) {
+      const v = obj[k];
+      if (typeof v === 'string' && v) {
+        return { text: v, status: typeof obj.status === 'string' ? obj.status : '' };
+      }
+    }
+    return { text: JSON.stringify(obj), status: typeof obj.status === 'string' ? obj.status : '' };
+  }
+  return { text: String(raw), status: '' };
+}
+
+function getToolCallId(data: any): string {
+  return String(data?.callId || data?.call_id || '');
+}
+
+function ensureToolCallId(data: any, key: string): any {
+  const existing = getToolCallId(data);
+  if (existing) {
+    return data.callId ? data : { ...data, callId: existing };
+  }
+  return { ...data, callId: `ol_${Math.abs(hashStr(key)).toString(36)}` };
+}
+
 function getSiteConfig(): SiteConfig {
   const h = location.hostname;
   // 优先使用平台适配器的 responseSelector
@@ -188,6 +399,9 @@ if (!(window as any).__OPENLINK_LOADED__) {
     injectPageBridge();
   }
   initWsLinker();
+  // Register WS dispatchers (tool_stream/done + question_ask/cancel) up
+  // front so question popups can appear even before any ToolCard renders.
+  ensureStreamDispatchers();
 
   if (!cfg.useObserver) {
     injectPageScript('injected.js');
@@ -302,6 +516,7 @@ async function executeToolCallReturn(toolCall: any): Promise<ToolExecutionResult
 }
 
 function renderToolCard(data: any, _full: string, sourceEl: Element, key: string, processed: Set<string>) {
+  data = ensureToolCallId(data, key);
   // Find stable anchor: message-content's parent, which Angular doesn't rebuild
   const messageContent = sourceEl.closest('message-content') ?? sourceEl.closest('.prose') ?? sourceEl;
   const anchor = messageContent.parentElement ?? sourceEl.parentElement;
@@ -309,6 +524,8 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
 
   // Prevent duplicate cards
   if (anchor.querySelector(`[data-openlink-key="${CSS.escape(key)}"]`)) return;
+
+  ensureStreamDispatchers();
 
   const args = data.args || {};
   const card = document.createElement('div');
@@ -320,29 +537,52 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   header.append(document.createTextNode(`🔧 ${data.name} `));
   const callId = document.createElement('span');
   callId.style.cssText = 'color:#888;font-size:11px';
-  callId.textContent = `#${data.callId || ''}`;
+  callId.textContent = `#${getToolCallId(data)}`;
   header.appendChild(callId);
   card.appendChild(header);
 
   const argsBox = document.createElement('div');
   argsBox.style.cssText = 'margin:8px 0;background:#181825;border-radius:6px;padding:8px';
-  for (const [k, v] of Object.entries(args)) {
-    const row = document.createElement('div');
-    row.style.cssText = 'margin-bottom:4px';
-    const keyLabel = document.createElement('span');
-    keyLabel.style.cssText = 'color:#89b4fa;font-size:11px';
-    keyLabel.textContent = k;
-    row.appendChild(keyLabel);
-    const val = document.createElement('div');
-    val.style.cssText = 'color:#cdd6f4;font-size:12px;font-family:monospace;white-space:pre-wrap;max-height:80px;overflow-y:auto';
-    val.textContent = typeof v === 'string' ? v : JSON.stringify(v);
-    row.appendChild(val);
-    argsBox.appendChild(row);
+  if (String(data.name).toLowerCase() === 'todo_write' && Array.isArray(args.todos)) {
+    renderTodoChecklist(argsBox, args.todos);
+  } else {
+    for (const [k, v] of Object.entries(args)) {
+      const row = document.createElement('div');
+      row.style.cssText = 'margin-bottom:4px';
+      const keyLabel = document.createElement('span');
+      keyLabel.style.cssText = 'color:#89b4fa;font-size:11px';
+      keyLabel.textContent = k;
+      row.appendChild(keyLabel);
+      const val = document.createElement('div');
+      val.style.cssText = 'color:#cdd6f4;font-size:12px;font-family:monospace;white-space:pre-wrap;max-height:80px;overflow-y:auto';
+      val.textContent = typeof v === 'string' ? v : JSON.stringify(v);
+      row.appendChild(val);
+      argsBox.appendChild(row);
+    }
   }
   card.appendChild(argsBox);
 
+  // streamBox: only shown once we actually start receiving live chunks.
+  // exec_cmd uses this for both foreground streaming and background tasks.
+  let streamBox: HTMLDivElement | null = null;
+  function ensureStreamBox(): HTMLDivElement {
+    if (streamBox) return streamBox;
+    streamBox = document.createElement('div');
+    streamBox.style.cssText = 'margin-top:10px;background:#11111b;border:1px solid #313244;border-radius:6px;padding:8px;max-height:240px;overflow-y:auto;font-family:monospace;font-size:12px;color:#cdd6f4;white-space:pre-wrap';
+    card.insertBefore(streamBox, btnRow);
+    return streamBox;
+  }
+  function appendStreamChunk(stream: 'stdout' | 'stderr', text: string) {
+    const box = ensureStreamBox();
+    const span = document.createElement('span');
+    if (stream === 'stderr') span.style.color = '#f38ba8';
+    span.textContent = text;
+    box.appendChild(span);
+    box.scrollTop = box.scrollHeight;
+  }
+
   const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;gap:8px';
+  btnRow.style.cssText = 'display:flex;gap:8px;margin-top:8px';
   const execBtn = document.createElement('button');
   execBtn.textContent = '执行';
   execBtn.style.cssText = 'padding:4px 12px;background:#1677ff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px';
@@ -350,36 +590,133 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   skipBtn.textContent = '忽略';
   skipBtn.style.cssText = 'padding:4px 12px;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px';
   btnRow.appendChild(execBtn);
+  let bgBtn: HTMLButtonElement | null = null;
+  if (String(data.name).toLowerCase() === 'exec_cmd') {
+    bgBtn = document.createElement('button');
+    bgBtn.textContent = '后台执行';
+    bgBtn.style.cssText = 'padding:4px 12px;background:#313244;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:6px;cursor:pointer;font-size:12px';
+    btnRow.appendChild(bgBtn);
+  }
   btnRow.appendChild(skipBtn);
   card.appendChild(btnRow);
+
+  const callIdForStream = getToolCallId(data);
+  const isExecCmd = String(data.name).toLowerCase() === 'exec_cmd';
+  let sawStreamChunk = false;
+
+  function unsubscribeStream() {
+    if (!callIdForStream) return;
+    streamChunkSubs.delete(callIdForStream);
+    streamDoneSubs.delete(callIdForStream);
+  }
+
+  function subscribe() {
+    if (!callIdForStream) return;
+    streamChunkSubs.set(callIdForStream, (stream, text) => {
+      sawStreamChunk = true;
+      appendStreamChunk(stream, text);
+    });
+    streamDoneSubs.set(callIdForStream, (exitCode, status, errMsg, durationMs) => {
+      unsubscribeStream();
+      const ok = status === 'done' && exitCode === 0;
+      execBtn.textContent = ok
+        ? `✅ 完成 (exit=${exitCode}, ${(durationMs / 1000).toFixed(1)}s)`
+        : `❌ ${status} (exit=${exitCode}${errMsg ? `, ${errMsg}` : ''})`;
+      execBtn.disabled = true;
+      if (bgBtn) bgBtn.disabled = true;
+    });
+  }
 
   execBtn.onclick = async () => {
     execBtn.disabled = true;
     execBtn.textContent = '执行中...';
+    subscribe();
     try {
       const text = await executeToolCallRaw(data);
       if (text === null) {
         execBtn.textContent = '请刷新页面';
+        unsubscribeStream();
         return;
       }
       markExecuted(key);
-      const resultBox = document.createElement('div');
-      resultBox.style.cssText = 'margin-top:10px;background:#181825;border-radius:6px;padding:8px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:12px;color:#cdd6f4;white-space:pre-wrap';
-      resultBox.textContent = text;
-      const insertBtn = document.createElement('button');
-      insertBtn.textContent = '插入到对话';
-      insertBtn.style.cssText = 'margin-top:6px;padding:4px 12px;background:#313244;color:#89b4fa;border:1px solid #89b4fa;border-radius:6px;cursor:pointer;font-size:12px';
-      insertBtn.onclick = () => fillAndSend(text, true);
-      card.appendChild(resultBox);
-      card.appendChild(insertBtn);
-      execBtn.textContent = '✅ 已执行';
+      // For exec_cmd whose live stream already populated streamBox, don't
+      // duplicate the full output in a second box — just append a small
+      // separator and the insert-to-chat button. Non-stream tools (and
+      // exec_cmd runs that produced no chunks at all) get the original
+      // resultBox so the user can copy/insert.
+      if (isExecCmd && sawStreamChunk) {
+        const insertBtn = document.createElement('button');
+        insertBtn.textContent = '插入到对话';
+        insertBtn.style.cssText = 'margin-top:6px;padding:4px 12px;background:#313244;color:#89b4fa;border:1px solid #89b4fa;border-radius:6px;cursor:pointer;font-size:12px';
+        insertBtn.onclick = () => fillAndSend(text, true);
+        card.appendChild(insertBtn);
+      } else {
+        const resultBox = document.createElement('div');
+        resultBox.style.cssText = 'margin-top:10px;background:#181825;border-radius:6px;padding:8px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:12px;color:#cdd6f4;white-space:pre-wrap';
+        resultBox.textContent = text;
+        const insertBtn = document.createElement('button');
+        insertBtn.textContent = '插入到对话';
+        insertBtn.style.cssText = 'margin-top:6px;padding:4px 12px;background:#313244;color:#89b4fa;border:1px solid #89b4fa;border-radius:6px;cursor:pointer;font-size:12px';
+        insertBtn.onclick = () => fillAndSend(text, true);
+        card.appendChild(resultBox);
+        card.appendChild(insertBtn);
+      }
+      if (execBtn.textContent === '执行中...') execBtn.textContent = '✅ 已执行';
+      // For foreground exec_cmd, the HTTP response already carries the final
+      // output and the server will not send any tool_done for this call_id.
+      // Drop the subscription so the map doesn't leak.
+      if (!isExecCmd || (isExecCmd && !data.args?.background)) {
+        unsubscribeStream();
+      }
     } catch {
       execBtn.textContent = '❌ 执行失败';
       execBtn.disabled = false;
+      unsubscribeStream();
     }
   };
 
-  skipBtn.onclick = () => { card.remove(); processed.delete(key); markExecuted(key); };
+  if (bgBtn) {
+    bgBtn.onclick = async () => {
+      bgBtn!.disabled = true;
+      execBtn.disabled = true;
+      execBtn.textContent = '后台执行中...';
+      subscribe();
+      // Make a shallow copy with background:true so we don't mutate the
+      // original parsed tool call (the AI's text on the page is still the
+      // original foreground request).
+      const bgData = {
+        ...data,
+        args: { ...(data.args || {}), background: true },
+      };
+      try {
+        const text = await executeToolCallRaw(bgData);
+        if (text === null) {
+          execBtn.textContent = '请刷新页面';
+          unsubscribeStream();
+          return;
+        }
+        markExecuted(key);
+        // text contains "[backgrounded as task ...]" — show it under the args
+        // so the user can correlate the task_id with the live stream below.
+        const info = document.createElement('div');
+        info.style.cssText = 'margin-top:6px;color:#a6e3a1;font-size:11px;font-family:monospace;white-space:pre-wrap';
+        info.textContent = text;
+        card.insertBefore(info, btnRow);
+      } catch {
+        execBtn.textContent = '❌ 后台启动失败';
+        execBtn.disabled = false;
+        bgBtn!.disabled = false;
+        unsubscribeStream();
+      }
+    };
+  }
+
+  skipBtn.onclick = () => {
+    unsubscribeStream();
+    card.remove();
+    processed.delete(key);
+    markExecuted(key);
+  };
 
   anchor.insertBefore(card, messageContent);
 }
@@ -431,7 +768,7 @@ function startDOMObserver(_responseSelector: string) {
 
   function scheduleToBatch(toolCall: any, key: string) {
     clearSubmitTimer();
-    pendingBatch.push({ data: toolCall, key });
+    pendingBatch.push({ data: ensureToolCallId(toolCall, key), key });
     scheduleBatchExecution();
   }
 
@@ -476,7 +813,7 @@ function startDOMObserver(_responseSelector: string) {
             markExecuted(key);
           }
           if (sendable && output.trim()) {
-            const callId = toolCall.callId || toolCall.call_id || '';
+            const callId = getToolCallId(toolCall);
             batchOutputs.push(`### ${toolCall.name} #${callId}\n${output}`);
           }
 
@@ -580,7 +917,8 @@ function startDOMObserver(_responseSelector: string) {
           continue;
         }
         const convId = getConversationId();
-        const key = data.callId ? `${convId}:${data.name}:${data.callId}` : String(hashStr(codeText));
+        const callId = getToolCallId(data);
+        const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(codeText));
         if (processed.has(key)) continue;
         console.log('[OpenLink] 提取到工具调用(Qwen DOM):', data);
 
@@ -620,7 +958,8 @@ function startDOMObserver(_responseSelector: string) {
           continue;
         }
         const convId = getConversationId();
-        const key = data.callId ? `${convId}:${data.name}:${data.callId}` : String(hashStr(codeText));
+        const callId = getToolCallId(data);
+        const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(codeText));
         if (processed.has(key)) continue;
         console.log('[OpenLink] 提取到工具调用(Chat Z DOM):', data);
 
@@ -654,7 +993,8 @@ function startDOMObserver(_responseSelector: string) {
           continue;
         }
         const convId = getConversationId();
-        const key = data.callId ? `${convId}:${data.name}:${data.callId}` : String(hashStr(fenceMatch[0]));
+        const callId = getToolCallId(data);
+        const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(fenceMatch[0]));
         if (processed.has(key)) continue;
         console.log('[OpenLink] 提取到工具调用(JSON):', data);
 
@@ -684,7 +1024,8 @@ function startDOMObserver(_responseSelector: string) {
           continue;
         }
         const convId = getConversationId();
-        const key = data.callId ? `${convId}:${data.name}:${data.callId}` : String(hashStr(full));
+        const callId = getToolCallId(data);
+        const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(full));
         if (processed.has(key)) continue;
         console.log('[OpenLink] 提取到工具调用(XML):', data);
 

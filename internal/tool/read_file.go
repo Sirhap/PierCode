@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/afumu/openlink/internal/security"
 	"github.com/afumu/openlink/internal/types"
@@ -31,9 +32,10 @@ func (t *ReadFileTool) Description() string {
 
 func (t *ReadFileTool) Parameters() interface{} {
 	return map[string]string{
-		"path":   "string (required) - file path to read",
-		"offset": "number (optional) - start line number, 1-based (default: 1)",
-		"limit":  "number (optional) - max lines to read (default: 2000)",
+		"path":         "string (required) - file path to read",
+		"offset":       "number (optional) - start line number, 1-based (default: 1)",
+		"limit":        "number (optional) - max lines to read (default: 2000)",
+		"line_numbers": "boolean (optional) - prefix each line with `<lineno>\\t` like cat -n (default: true)",
 	}
 }
 
@@ -60,10 +62,14 @@ func (t *ReadFileTool) Execute(ctx *Context) *Result {
 			limit = MaxLines
 		}
 	}
+	showLineNumbers := true
+	if v, ok := ctx.Args["line_numbers"].(bool); ok {
+		showLineNumbers = v
+	}
 
 	var safePath string
 	var err error
-	rootDir := ctx.Config.GetRootDir()
+	rootDir := ctx.EffectiveRootDir()
 	if filepath.IsAbs(path) {
 		safePath, err = resolveAbsPath(path, rootDir)
 	} else {
@@ -89,6 +95,13 @@ func (t *ReadFileTool) Execute(ctx *Context) *Result {
 	truncated := false
 
 	scanner := bufio.NewScanner(f)
+	// Bump scanner's max-token buffer from the default 64KB to 1MB so that
+	// files containing a single very long line (minified JS, JSON-on-one-line,
+	// dist bundles, large prompts) don't fail with bufio.ErrTooLong before
+	// returning anything. Lines longer than 1MB are still rejected, which is
+	// a sane upper bound for "a single line of source" in any project we'd
+	// be working in.
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		totalLines++
 		if totalLines < offset {
@@ -106,6 +119,23 @@ func (t *ReadFileTool) Execute(ctx *Context) *Result {
 		byteCount += len(line) + 1
 		if byteCount > MaxBytes {
 			truncated = true
+			// Include as much of this line as still fits in the output budget,
+			// so a file consisting of a single very long line (minified JS,
+			// 200KB JSON on one line, etc.) isn't returned as "empty" — the
+			// user can at least see the start of the content.
+			over := byteCount - MaxBytes
+			keep := len(line) - over
+			if keep > 0 {
+				// Back off keep until it lands on a UTF-8 rune boundary so
+				// multi-byte characters (CJK, emoji) at the cut point aren't
+				// rendered as '�' or invalid bytes downstream.
+				for keep > 0 && !utf8.RuneStart(line[keep]) {
+					keep--
+				}
+				if keep > 0 {
+					lines = append(lines, line[:keep])
+				}
+			}
 			for scanner.Scan() {
 				totalLines++
 			}
@@ -120,9 +150,13 @@ func (t *ReadFileTool) Execute(ctx *Context) *Result {
 		return result
 	}
 
-	output := strings.Join(lines, "\n")
-	if output == "" {
+	var output string
+	if len(lines) == 0 {
 		output = "empty"
+	} else if showLineNumbers {
+		output = formatWithLineNumbers(lines, offset)
+	} else {
+		output = strings.Join(lines, "\n")
 	}
 	if truncated {
 		nextOffset := offset + len(lines)
@@ -133,4 +167,28 @@ func (t *ReadFileTool) Execute(ctx *Context) *Result {
 	result.Output = output
 	result.EndTime = time.Now()
 	return result
+}
+
+// formatWithLineNumbers 把每行加上右对齐的 cat -n 风格行号 + Tab + 内容。
+// startLine 是 lines[0] 在原文件中的行号(1-based)。
+func formatWithLineNumbers(lines []string, startLine int) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	maxLine := startLine + len(lines) - 1
+	width := len(fmt.Sprintf("%d", maxLine))
+	if width < 6 {
+		width = 6
+	}
+	var sb strings.Builder
+	sb.Grow(len(lines) * (width + 2))
+	for i, line := range lines {
+		sb.WriteString(fmt.Sprintf("%*d", width, startLine+i))
+		sb.WriteByte('\t')
+		sb.WriteString(line)
+		if i < len(lines)-1 {
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
 }

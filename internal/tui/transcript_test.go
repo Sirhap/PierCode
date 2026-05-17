@@ -54,6 +54,69 @@ func TestAIStreamUpdatesAssistantBlockInLatestTurn(t *testing.T) {
 	}
 }
 
+func TestLateAIStreamUpdateStaysOnOriginalTurn(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.applyLogToTranscript(LogEntry{Key: "user-1", Source: "user", Message: "第一个问题"})
+	model.applyLogToTranscript(LogEntry{Key: "ai-1", Source: "ai", Message: "第一段"})
+	model.applyLogToTranscript(LogEntry{Key: "user-2", Source: "user", Message: "第二个问题"})
+	model.applyLogToTranscript(LogEntry{Key: "ai-2", Source: "ai", Message: "第二个回答"})
+
+	model.applyLogToTranscript(LogEntry{Key: "ai-1", Source: "ai", Message: "第一段\n补充"})
+
+	if len(model.turns) != 2 {
+		t.Fatalf("expected two turns, got %d", len(model.turns))
+	}
+	if !strings.Contains(model.turns[0].AssistantText, "补充") {
+		t.Fatalf("expected late chunk to update first turn, got %#v", model.turns)
+	}
+	if model.turns[1].AssistantText != "第二个回答" {
+		t.Fatalf("expected second turn to stay unchanged, got %q", model.turns[1].AssistantText)
+	}
+}
+
+func TestLateToolUpdateStaysOnOriginalTurn(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.applyLogToTranscript(LogEntry{Key: "user-1", Source: "user", Message: "第一个问题"})
+	model.applyLogToTranscript(LogEntry{Key: "tool-1", Source: "ai", ToolName: "exec_cmd", Status: "pending", Message: "running"})
+	model.applyLogToTranscript(LogEntry{Key: "user-2", Source: "user", Message: "第二个问题"})
+
+	model.applyLogToTranscript(LogEntry{Key: "tool-1", Source: "ai", ToolName: "exec_cmd", Status: "success", Message: "done"})
+
+	if len(model.turns) != 2 {
+		t.Fatalf("expected two turns, got %d", len(model.turns))
+	}
+	if len(model.turns[0].Tools) != 1 || model.turns[0].Tools[0].Message != "done" {
+		t.Fatalf("expected late tool update on first turn, got %#v", model.turns)
+	}
+	if len(model.turns[1].Tools) != 0 {
+		t.Fatalf("expected second turn to stay tool-free, got %#v", model.turns[1].Tools)
+	}
+}
+
+func TestRepeatedBrowserPromptsWithDifferentKeysCreateSeparateTurns(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.applyLogToTranscript(LogEntry{Key: "user-1", Source: "user", Message: "continue"})
+	model.applyLogToTranscript(LogEntry{Key: "user-2", Source: "user", Message: "continue"})
+
+	if len(model.turns) != 2 {
+		t.Fatalf("expected duplicate text with different keys to create two turns, got %d", len(model.turns))
+	}
+}
+
+func TestBrowserEchoAdoptsLocalTurnWithoutDuplicatingIt(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.recordUserPrompt("continue")
+
+	model.applyLogToTranscript(LogEntry{Key: "user-1", Source: "user", Message: "continue"})
+
+	if len(model.turns) != 1 {
+		t.Fatalf("expected browser echo to reuse local turn, got %d", len(model.turns))
+	}
+	if model.turns[0].UserKey != "user-1" {
+		t.Fatalf("expected browser key to bind local turn, got %q", model.turns[0].UserKey)
+	}
+}
+
 func TestAssistantMarkdownRendersReadableBlocks(t *testing.T) {
 	model := NewModel(39527, "D:\\workspace", "qwen")
 	model.recordUserPrompt("给个示例")
@@ -192,5 +255,42 @@ func TestTranscriptScrollsFromBottomWithWheelAndArrow(t *testing.T) {
 	model = next.(Model)
 	if model.transcriptOffset < 0 || model.transcriptOffset >= maxOffset {
 		t.Fatalf("expected arrow up outside input to scroll up from bottom, got offset %d max %d", model.transcriptOffset, maxOffset)
+	}
+}
+
+func TestStreamingKeepsManualTranscriptScrollPosition(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 80
+	model.height = 16
+	model.recordUserPrompt("解释滚动")
+
+	next, _ := model.Update(LogMsg{
+		Key:    "ai-long",
+		Source: "ai",
+		Status: "info",
+		Message: strings.Join([]string{
+			"line-01", "line-02", "line-03", "line-04", "line-05",
+			"line-06", "line-07", "line-08", "line-09", "line-10",
+			"line-11", "line-12", "line-13", "line-14", "line-15",
+		}, "\n"),
+	})
+	model = next.(Model)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	model = next.(Model)
+	offset := model.transcriptOffset
+	if offset < 0 {
+		t.Fatalf("expected manual scroll position before streaming update")
+	}
+
+	next, _ = model.Update(LogMsg{
+		Key:     "ai-long",
+		Source:  "ai",
+		Status:  "info",
+		Message: strings.Join([]string{"line-01", "line-02", "line-03", "line-04", "line-05", "line-06", "line-07", "line-08", "line-09", "line-10", "line-11", "line-12", "line-13", "line-14", "line-15", "line-16"}, "\n"),
+	})
+	model = next.(Model)
+
+	if model.transcriptOffset != offset {
+		t.Fatalf("expected manual offset %d to be preserved, got %d", offset, model.transcriptOffset)
 	}
 }

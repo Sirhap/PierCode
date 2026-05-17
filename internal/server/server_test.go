@@ -23,6 +23,14 @@ func testServer(t *testing.T) *Server {
 		Port:           8080,
 		Timeout:        10,
 		Token:          "testtoken",
+		// Tests exercise exec_cmd via /exec; production default is to keep
+		// the shell gated off behind --allow-shell.
+		AllowShell: true,
+		// Provide a non-empty default prompt so /prompt-related tests don't
+		// fail on the new "embedded prompt only" handler. Real binary supplies
+		// this via go:embed; tests don't import the prompts package to keep
+		// fixtures small.
+		DefaultPrompt: []byte("system:\n{{SYSTEM_INFO}}\n\ntools:\n{{TOOLS}}"),
 	}
 	s := New(cfg)
 	t.Cleanup(s.Close)
@@ -178,17 +186,14 @@ func TestHandleAuth(t *testing.T) {
 		}
 	})
 
-	t.Run("query token trims copied whitespace", func(t *testing.T) {
+	t.Run("GET /auth no longer accepts token query", func(t *testing.T) {
+		// Removed in security hardening: GET ?token=... let long-lived tokens
+		// land in browser history / proxy logs. Use POST instead.
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/auth?token=%20testtoken%0A", nil)
 		s.router.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Errorf("expected 200, got %d", w.Code)
-		}
-		var resp map[string]interface{}
-		json.NewDecoder(w.Body).Decode(&resp)
-		if resp["valid"] != true {
-			t.Errorf("expected valid=true, got %v", resp["valid"])
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected 404 for removed GET handler, got %d", w.Code)
 		}
 	})
 
@@ -315,9 +320,18 @@ func TestSummarizeBrowserAITextFoldsAfterFiftyLines(t *testing.T) {
 }
 
 func TestHandlePrompt(t *testing.T) {
-	s := testServer(t)
-
-	t.Run("missing init_prompt.txt returns 404", func(t *testing.T) {
+	t.Run("missing default prompt returns 404", func(t *testing.T) {
+		// Build a server with no DefaultPrompt to verify the no-fallback path.
+		rootDir := t.TempDir()
+		cfg := &types.Config{
+			RootDir:        rootDir,
+			InitialRootDir: rootDir,
+			Port:           8080,
+			Timeout:        10,
+			Token:          "testtoken",
+		}
+		s := New(cfg)
+		t.Cleanup(s.Close)
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/prompt", nil)
 		req.Header.Set("Authorization", "Bearer testtoken")
@@ -327,10 +341,14 @@ func TestHandlePrompt(t *testing.T) {
 		}
 	})
 
-	t.Run("existing init_prompt.txt returns content", func(t *testing.T) {
+	t.Run("embedded default prompt is ignored when sandbox-internal copy exists", func(t *testing.T) {
+		// SECURITY: even if a prompts/init_prompt.txt exists inside the
+		// workspace (which AI can write to), the server must NOT load it —
+		// only the embedded DefaultPrompt is trusted. This test guards that.
+		s := testServer(t)
 		promptDir := filepath.Join(s.config.RootDir, "prompts")
 		os.MkdirAll(promptDir, 0755)
-		os.WriteFile(filepath.Join(promptDir, "init_prompt.txt"), []byte("hello prompt"), 0644)
+		os.WriteFile(filepath.Join(promptDir, "init_prompt.txt"), []byte("INJECTED FROM SANDBOX"), 0644)
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/prompt", nil)
 		req.Header.Set("Authorization", "Bearer testtoken")
@@ -338,15 +356,14 @@ func TestHandlePrompt(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Errorf("expected 200, got %d", w.Code)
 		}
-		if !bytes.Contains(w.Body.Bytes(), []byte("hello prompt")) {
-			t.Errorf("expected prompt content in response")
+		body := w.Body.Bytes()
+		if bytes.Contains(body, []byte("INJECTED FROM SANDBOX")) {
+			t.Errorf("server loaded prompt from sandbox path; AI could hijack itself: %s", body)
 		}
 	})
 
-	t.Run("existing init_prompt.txt renders placeholders", func(t *testing.T) {
-		promptDir := filepath.Join(s.config.RootDir, "prompts")
-		os.MkdirAll(promptDir, 0755)
-		os.WriteFile(filepath.Join(promptDir, "init_prompt.txt"), []byte("system:\n{{SYSTEM_INFO}}\n\ntools:\n{{TOOLS}}"), 0644)
+	t.Run("default prompt renders placeholders", func(t *testing.T) {
+		s := testServer(t)
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/prompt", nil)
 		req.Header.Set("Authorization", "Bearer testtoken")

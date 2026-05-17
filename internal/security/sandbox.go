@@ -104,17 +104,26 @@ var dangerousPatterns = []string{
 	"curl.exe", "wget.exe", "certutil", "bitsadmin",
 }
 
+// dangerousCommands 是匹配单词的命令名黑名单。匹配时会先剥离前导路径
+// （/usr/bin/curl → curl），并要求左右是分隔符或字符串边界，避免误伤
+// 文件名里包含这些子串的合法路径。
 var dangerousCommands = []string{
-	"mkfs", "format", "nc", "netcat",
-	"sudo", "reboot", "shutdown",
-	"curl", "wget", "iwr", "irm",
+	"mkfs", "format", "nc", "netcat", "ncat", "socat",
+	"sudo", "doas", "su",
+	"reboot", "shutdown", "halt", "poweroff",
+	"curl", "wget", "iwr", "irm", "lwp-request",
 	"mshta", "rundll32", "regsvr32",
+	"ssh", "scp", "sftp", "rsync",
 }
 
-// isCmdSeparator 判断字符是否为 shell 命令分隔符或空白
+// isCmdSeparator 判断字符是否为 shell 命令分隔符或空白。任何不能合法出现
+// 在裸命令名中的字符都视为分隔符——这样 `/usr/bin/curl`、`\\curl`、
+// `cu=rl` 这类前缀也能正确分词。
 func isCmdSeparator(b byte) bool {
 	switch b {
-	case ' ', '\t', '\n', ';', '|', '&', '(', ')', '`', '\'', '"', '<', '>':
+	case ' ', '\t', '\n', '\r',
+		';', '|', '&', '(', ')', '`', '\'', '"', '<', '>',
+		'/', '\\', '=', '{', '}', '[', ']', ',', ':', '!', '?', '$', '*':
 		return true
 	}
 	return false
@@ -130,7 +139,8 @@ func IsDangerousCommand(cmd string) bool {
 		}
 	}
 
-	// 单词命令：要求前后是分隔符或字符串边界
+	// 单词命令：要求前后是分隔符或字符串边界。注意 isCmdSeparator 已包含
+	// `/` 和 `\`，所以 `/usr/bin/curl` 中的 `curl` 仍然命中。
 	for _, word := range dangerousCommands {
 		idx := 0
 		for {

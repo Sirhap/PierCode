@@ -35,6 +35,7 @@ type Turn struct {
 	ID            string
 	StartedAt     time.Time
 	UpdatedAt     time.Time
+	UserKey       string
 	UserText      string
 	AssistantKey  string
 	AssistantText string
@@ -123,6 +124,7 @@ func (m Model) renderTurnLines(turn Turn, width int) []string {
 }
 
 func (m *Model) recordUserPrompt(text string) {
+	wasFollowing := m.isFollowingTranscript()
 	now := time.Now()
 	m.turnSeq++
 	turnID := fmt.Sprintf("turn-%d", m.turnSeq)
@@ -138,7 +140,7 @@ func (m *Model) recordUserPrompt(text string) {
 	})
 	m.stats["pending"]++
 	m.logOffset = len(m.logs) - 1
-	m.transcriptOffset = -1
+	m.followTranscriptIfNeeded(wasFollowing)
 	m.addInputHistory(text)
 }
 
@@ -162,15 +164,30 @@ func (m *Model) recallInputHistory(delta int) {
 	}
 	if m.historyIdx < 0 {
 		if delta < 0 {
+			m.historyDraft = m.input
+			m.historyDraftPos = m.normalizedInputCursor()
 			m.historyIdx = len(m.inputHistory) - 1
 		} else {
 			return
 		}
 	} else {
-		m.historyIdx = clampInt(m.historyIdx+delta, 0, len(m.inputHistory)-1)
+		next := m.historyIdx + delta
+		if next >= len(m.inputHistory) {
+			m.input = m.historyDraft
+			m.inputCursor = clampInt(m.historyDraftPos, 0, len([]rune(m.input)))
+			m.resetHistoryRecall()
+			return
+		}
+		m.historyIdx = clampInt(next, 0, len(m.inputHistory)-1)
 	}
 	m.input = m.inputHistory[m.historyIdx]
 	m.inputCursor = len([]rune(m.input))
+}
+
+func (m *Model) resetHistoryRecall() {
+	m.historyIdx = -1
+	m.historyDraft = ""
+	m.historyDraftPos = 0
 }
 
 func (m *Model) latestTurn() *Turn {
@@ -195,7 +212,56 @@ func (m *Model) ensureTurn() *Turn {
 	return &m.turns[len(m.turns)-1]
 }
 
+func (m *Model) findTurnByUserKey(key string) *Turn {
+	if key == "" {
+		return nil
+	}
+	for i := range m.turns {
+		if m.turns[i].UserKey == key {
+			return &m.turns[i]
+		}
+	}
+	return nil
+}
+
+func (m *Model) findTurnByAssistantKey(key string) *Turn {
+	if key == "" {
+		return nil
+	}
+	for i := range m.turns {
+		if m.turns[i].AssistantKey == key {
+			return &m.turns[i]
+		}
+	}
+	return nil
+}
+
+func (m *Model) findTurnByToolKey(key string) (*Turn, *ToolRun) {
+	if key == "" {
+		return nil, nil
+	}
+	for i := range m.turns {
+		for j := range m.turns[i].Tools {
+			if m.turns[i].Tools[j].Key == key {
+				return &m.turns[i], &m.turns[i].Tools[j]
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (m *Model) isFollowingTranscript() bool {
+	return m.transcriptOffset < 0
+}
+
+func (m *Model) followTranscriptIfNeeded(wasFollowing bool) {
+	if wasFollowing {
+		m.transcriptOffset = -1
+	}
+}
+
 func (m *Model) appendSystemNotice(status, message string) {
+	wasFollowing := m.isFollowingTranscript()
 	turn := m.ensureTurn()
 	now := time.Now()
 	turn.Notices = append(turn.Notices, SystemNotice{Status: status, Message: message, Time: now})
@@ -203,7 +269,7 @@ func (m *Model) appendSystemNotice(status, message string) {
 	if status == "error" {
 		turn.Status = turnError
 	}
-	m.transcriptOffset = -1
+	m.followTranscriptIfNeeded(wasFollowing)
 }
 
 func (m *Model) applyLogToTranscript(entry LogEntry) {
@@ -212,49 +278,60 @@ func (m *Model) applyLogToTranscript(entry LogEntry) {
 		if text == "" {
 			return
 		}
-		if latest := m.latestTurn(); latest != nil && strings.TrimSpace(latest.UserText) == text {
+		if turn := m.findTurnByUserKey(entry.Key); turn != nil {
 			return
 		}
+		if latest := m.latestTurn(); latest != nil && strings.TrimSpace(latest.UserText) == text && latest.UserKey == "" {
+			latest.UserKey = entry.Key
+			return
+		}
+		wasFollowing := m.isFollowingTranscript()
 		now := time.Now()
 		m.turnSeq++
 		m.turns = append(m.turns, Turn{
 			ID:        fmt.Sprintf("turn-%d", m.turnSeq),
 			StartedAt: now,
 			UpdatedAt: now,
+			UserKey:   entry.Key,
 			UserText:  text,
 			Status:    turnPending,
 		})
-		m.transcriptOffset = -1
+		m.followTranscriptIfNeeded(wasFollowing)
 		return
 	}
 	if entry.Source == "ai" && strings.TrimSpace(entry.ToolName) == "" {
-		turn := m.ensureTurn()
-		turn.AssistantKey = entry.Key
+		wasFollowing := m.isFollowingTranscript()
+		turn := m.findTurnByAssistantKey(entry.Key)
+		if turn == nil {
+			turn = m.ensureTurn()
+			if entry.Key != "" {
+				turn.AssistantKey = entry.Key
+			}
+		}
 		turn.AssistantText = entry.Message
 		turn.UpdatedAt = time.Now()
 		if entry.Status == "error" {
 			turn.Status = turnError
 		}
-		m.transcriptOffset = -1
+		m.followTranscriptIfNeeded(wasFollowing)
 		return
 	}
 	if entry.Source == "ai" && strings.TrimSpace(entry.ToolName) != "" {
-		turn := m.ensureTurn()
+		wasFollowing := m.isFollowingTranscript()
 		now := time.Now()
+		if turn, tool := m.findTurnByToolKey(entry.Key); tool != nil {
+			tool.Status = entry.Status
+			tool.Message = entry.Message
+			tool.FullMessage = entry.FullMessage
+			tool.UpdatedAt = now
+			turn.UpdatedAt = now
+			m.followTranscriptIfNeeded(wasFollowing)
+			return
+		}
+		turn := m.ensureTurn()
 		key := entry.Key
 		if key == "" {
 			key = fmt.Sprintf("%s-%d", entry.ToolName, len(turn.Tools)+1)
-		}
-		for i := range turn.Tools {
-			if turn.Tools[i].Key == key && entry.Key != "" {
-				turn.Tools[i].Status = entry.Status
-				turn.Tools[i].Message = entry.Message
-				turn.Tools[i].FullMessage = entry.FullMessage
-				turn.Tools[i].UpdatedAt = now
-				turn.UpdatedAt = now
-				m.transcriptOffset = -1
-				return
-			}
 		}
 		turn.Tools = append(turn.Tools, ToolRun{
 			Key:         key,
@@ -269,7 +346,7 @@ func (m *Model) applyLogToTranscript(entry LogEntry) {
 		if entry.Status == "error" {
 			turn.Status = turnError
 		}
-		m.transcriptOffset = -1
+		m.followTranscriptIfNeeded(wasFollowing)
 		return
 	}
 	if entry.Source == "system" && strings.TrimSpace(entry.Message) != "" {

@@ -4,13 +4,30 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/afumu/openlink/internal/tool"
 	"github.com/afumu/openlink/internal/types"
 )
 
+type mutatingArgsTool struct{}
+
+func (mutatingArgsTool) Name() string                          { return "mutating_args" }
+func (mutatingArgsTool) Description() string                   { return "mutates args during execute" }
+func (mutatingArgsTool) Parameters() interface{}               { return nil }
+func (mutatingArgsTool) Validate(map[string]interface{}) error { return nil }
+func (mutatingArgsTool) Execute(ctx *tool.Context) *tool.Result {
+	ctx.Args["mutated"] = true
+	return &tool.Result{Status: "success", Output: "ok", StartTime: time.Now(), EndTime: time.Now()}
+}
+
 func testConfig(t *testing.T) *types.Config {
 	t.Helper()
-	return &types.Config{RootDir: t.TempDir(), Timeout: 10}
+	// Tests exercise the exec_cmd tool, which is gated off by default in
+	// production. Enable it explicitly here so the tool harness can run shell
+	// commands; the security default is verified by the tool-level test that
+	// constructs a Config with AllowShell=false.
+	return &types.Config{RootDir: t.TempDir(), Timeout: 10, AllowShell: true}
 }
 
 func TestExecutor(t *testing.T) {
@@ -60,6 +77,39 @@ func TestExecutor(t *testing.T) {
 		tools := e.ListTools()
 		if len(tools) == 0 {
 			t.Error("expected tools to be registered")
+		}
+	})
+
+	t.Run("tool args are copied without call id", func(t *testing.T) {
+		e := New(testConfig(t))
+		if err := e.registry.Register(mutatingArgsTool{}); err != nil {
+			t.Fatal(err)
+		}
+		args := map[string]interface{}{"value": "original"}
+		resp := e.Execute(context.Background(), &types.ToolRequest{
+			Name: "mutating_args",
+			Args: args,
+		})
+		if resp.Status != "success" {
+			t.Fatalf("expected success, got %s: %s", resp.Status, resp.Error)
+		}
+		if _, ok := args["mutated"]; ok {
+			t.Fatal("tool mutation leaked into request args")
+		}
+	})
+
+	t.Run("unknown tool does not mutate request args", func(t *testing.T) {
+		e := New(testConfig(t))
+		args := map[string]interface{}{"value": "original"}
+		resp := e.Execute(context.Background(), &types.ToolRequest{
+			Name: "missing_tool",
+			Args: args,
+		})
+		if resp.Status != "error" {
+			t.Fatalf("expected error, got %s", resp.Status)
+		}
+		if _, ok := args["tool"]; ok {
+			t.Fatal("invalid tool metadata leaked into request args")
 		}
 	})
 }

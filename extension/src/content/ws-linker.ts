@@ -6,6 +6,79 @@ let configuredApiUrl = '';
 let configuredToken = '';
 let connectionSeq = 0;
 
+export type ToolStreamMessage = {
+  type: 'tool_stream';
+  task_id?: string;
+  call_id?: string;
+  stream: 'stdout' | 'stderr';
+  text: string;
+};
+
+export type ToolDoneMessage = {
+  type: 'tool_done';
+  task_id?: string;
+  call_id?: string;
+  exit_code: number;
+  status: string;
+  error?: string;
+  duration_ms: number;
+};
+
+export type QuestionAskMessage = {
+  type: 'question_ask';
+  call_id: string;
+  question: string;
+  options?: unknown[];
+};
+
+export type QuestionCancelMessage = {
+  type: 'question_cancel';
+  call_id: string;
+  reason?: string;
+};
+
+type StreamHandler = (msg: ToolStreamMessage) => void;
+type DoneHandler = (msg: ToolDoneMessage) => void;
+type QuestionAskHandler = (msg: QuestionAskMessage) => void;
+type QuestionCancelHandler = (msg: QuestionCancelMessage) => void;
+
+const streamHandlers: StreamHandler[] = [];
+const doneHandlers: DoneHandler[] = [];
+const questionAskHandlers: QuestionAskHandler[] = [];
+const questionCancelHandlers: QuestionCancelHandler[] = [];
+
+export function onToolStream(handler: StreamHandler): () => void {
+  streamHandlers.push(handler);
+  return () => {
+    const idx = streamHandlers.indexOf(handler);
+    if (idx >= 0) streamHandlers.splice(idx, 1);
+  };
+}
+
+export function onToolDone(handler: DoneHandler): () => void {
+  doneHandlers.push(handler);
+  return () => {
+    const idx = doneHandlers.indexOf(handler);
+    if (idx >= 0) doneHandlers.splice(idx, 1);
+  };
+}
+
+export function onQuestionAsk(handler: QuestionAskHandler): () => void {
+  questionAskHandlers.push(handler);
+  return () => {
+    const idx = questionAskHandlers.indexOf(handler);
+    if (idx >= 0) questionAskHandlers.splice(idx, 1);
+  };
+}
+
+export function onQuestionCancel(handler: QuestionCancelHandler): () => void {
+  questionCancelHandlers.push(handler);
+  return () => {
+    const idx = questionCancelHandlers.indexOf(handler);
+    if (idx >= 0) questionCancelHandlers.splice(idx, 1);
+  };
+}
+
 type InjectConfig = {
   editor: string;
   sendBtn: string;
@@ -35,6 +108,22 @@ function toWebSocketUrl(apiUrl: string, token: string): string | null {
     return url.toString();
   } catch {
     return null;
+  }
+}
+
+// redactWsUrl 把 ?token=... 替换成 ?token=<前4>…<后4>，用于日志输出。
+// 短 token（≤8 字符）整体掩成 ***，避免短弱 token 的元信息也外泄。
+function redactWsUrl(wsUrl: string): string {
+  try {
+    const u = new URL(wsUrl);
+    const t = u.searchParams.get("token") || "";
+    if (t) {
+      const masked = t.length <= 8 ? "***" : `${t.slice(0, 4)}…${t.slice(-4)}`;
+      u.searchParams.set("token", masked);
+    }
+    return u.toString();
+  } catch {
+    return "[ws url]";
   }
 }
 
@@ -164,7 +253,9 @@ function connectWebSocket(apiUrl: string, token: string) {
     console.warn("[OpenLink] WebSocket URL 无效:", apiUrl);
     return;
   }
-  console.log("[OpenLink] WebSocket 连接中...", wsUrl);
+  // 不要打印完整 wsUrl —— 它带 ?token=... ，落到 DevTools console / 录屏 /
+  // 用户报错截图都是泄露面。脱敏成 host:port + token 首尾。
+  console.log("[OpenLink] WebSocket 连接中...", redactWsUrl(wsUrl));
 
   try {
     ws = new WebSocket(wsUrl);
@@ -182,6 +273,22 @@ function connectWebSocket(apiUrl: string, token: string) {
         const msg = JSON.parse(event.data);
         if (msg.type === "inject" && msg.text) {
           handleInjectMessage(msg.text);
+        } else if (msg.type === "tool_stream" && typeof msg.text === "string") {
+          for (const handler of streamHandlers.slice()) {
+            try { handler(msg as ToolStreamMessage); } catch (e) { console.error(e); }
+          }
+        } else if (msg.type === "tool_done") {
+          for (const handler of doneHandlers.slice()) {
+            try { handler(msg as ToolDoneMessage); } catch (e) { console.error(e); }
+          }
+        } else if (msg.type === "question_ask" && typeof msg.call_id === "string") {
+          for (const handler of questionAskHandlers.slice()) {
+            try { handler(msg as QuestionAskMessage); } catch (e) { console.error(e); }
+          }
+        } else if (msg.type === "question_cancel" && typeof msg.call_id === "string") {
+          for (const handler of questionCancelHandlers.slice()) {
+            try { handler(msg as QuestionCancelMessage); } catch (e) { console.error(e); }
+          }
         }
       } catch (e) {
         console.error("[OpenLink] 解析 WebSocket 消息失败:", e);
@@ -313,6 +420,38 @@ export function sendUserPromptLog(key: string, text: string): void {
   } catch (error) {
     console.warn("[OpenLink] 用户输入日志回传失败:", error);
   }
+}
+
+// sendQuestionAnswer routes a user's answer to a pending `question` tool call
+// back to the Go server, which dispatches it to the blocked tool goroutine.
+export function sendQuestionAnswer(callID: string, answer: string): boolean {
+	if (!ws || ws.readyState !== WebSocket.OPEN) {
+		console.warn("[OpenLink] WebSocket 未连接，无法回答 question");
+		return false;
+	}
+  try {
+    ws.send(JSON.stringify({ type: "question_answer", call_id: callID, answer }));
+    return true;
+  } catch (error) {
+    console.warn("[OpenLink] question_answer 发送失败:", error);
+    return false;
+	}
+}
+
+// sendQuestionCancel tells the Go server to unblock a pending `question`
+// invocation as canceled instead of waiting for timeout.
+export function sendQuestionCancel(callID: string, reason = "user_cancelled"): boolean {
+	if (!ws || ws.readyState !== WebSocket.OPEN) {
+		console.warn("[OpenLink] WebSocket 未连接，无法取消 question");
+		return false;
+	}
+	try {
+		ws.send(JSON.stringify({ type: "question_cancel", call_id: callID, reason }));
+		return true;
+	} catch (error) {
+		console.warn("[OpenLink] question_cancel 发送失败:", error);
+		return false;
+	}
 }
 
 // 初始化

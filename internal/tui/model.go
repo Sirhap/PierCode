@@ -54,6 +54,8 @@ type Model struct {
 	transcriptOffset int
 	inputHistory     []string
 	historyIdx       int
+	historyDraft     string
+	historyDraftPos  int
 }
 
 // 样式定义
@@ -345,6 +347,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.Type {
 			case tea.KeyEnter:
 				if msg.Alt {
+					m.resetHistoryRecall()
 					m.insertInput("\n")
 					m.clampCommandSelection()
 					return m, nil
@@ -358,7 +361,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.input = ""
 					m.inputCursor = 0
 					m.inputMode = true
-					m.historyIdx = -1
+					m.resetHistoryRecall()
 					return m, tea.Batch(tea.Println("openlink> "+text), injectInputCmd(text, m.port, m.token))
 				}
 				m.input = ""
@@ -372,15 +375,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input = ""
 				m.inputCursor = 0
 				m.commandIdx = 0
-				m.historyIdx = -1
+				m.resetHistoryRecall()
 				return m, nil
 			case tea.KeyEscape:
 				m.input = ""
 				m.inputCursor = 0
 				m.inputMode = false
-				m.historyIdx = -1
+				m.resetHistoryRecall()
 				return m, nil
 			case tea.KeyCtrlJ:
+				m.resetHistoryRecall()
 				m.insertInput("\n")
 				m.clampCommandSelection()
 				return m, nil
@@ -437,27 +441,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyPgDown, tea.KeyCtrlDown:
 				return m.handleScroll(3), nil
 			case tea.KeyCtrlU:
+				m.resetHistoryRecall()
 				m.input = ""
 				m.inputCursor = 0
 				m.commandIdx = 0
 				return m, nil
 			case tea.KeyCtrlW:
+				m.resetHistoryRecall()
 				m.input = trimLastWord(m.input)
 				m.inputCursor = len([]rune(m.input))
 				m.clampCommandSelection()
 				return m, nil
 			case tea.KeyBackspace:
+				m.resetHistoryRecall()
 				m.deleteInputBeforeCursor()
 				m.clampCommandSelection()
 				return m, nil
 			case tea.KeyRunes:
+				m.resetHistoryRecall()
 				m.insertInput(slashRunesToAppend(m.input, string(msg.Runes)))
-				m.historyIdx = -1
 				m.clampCommandSelection()
 				return m, nil
 			case tea.KeySpace:
+				m.resetHistoryRecall()
 				m.insertInput(" ")
-				m.historyIdx = -1
 				return m, nil
 			}
 			return m, nil

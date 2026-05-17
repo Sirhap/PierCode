@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/afumu/openlink/internal/types"
 )
@@ -75,6 +76,82 @@ func TestWriteReadFile(t *testing.T) {
 		res := w.Execute(testCtx(cfg, map[string]interface{}{"path": "../outside.txt", "content": "x"}))
 		if res.Status != "error" {
 			t.Error("expected error for path traversal")
+		}
+	})
+
+	t.Run("read prefixes cat -n style line numbers by default", func(t *testing.T) {
+		w := NewWriteFileTool(cfg)
+		r := NewReadFileTool(cfg)
+		w.Execute(testCtx(cfg, map[string]interface{}{"path": "numbered.txt", "content": "alpha\nbeta\ngamma"}))
+
+		res := r.Execute(testCtx(cfg, map[string]interface{}{"path": "numbered.txt"}))
+		if res.Status != "success" {
+			t.Fatalf("read failed: %s", res.Error)
+		}
+		want := "     1\talpha\n     2\tbeta\n     3\tgamma"
+		if res.Output != want {
+			t.Errorf("expected %q, got %q", want, res.Output)
+		}
+	})
+
+	t.Run("line_numbers=false returns plain text", func(t *testing.T) {
+		w := NewWriteFileTool(cfg)
+		r := NewReadFileTool(cfg)
+		w.Execute(testCtx(cfg, map[string]interface{}{"path": "plain.txt", "content": "x\ny"}))
+
+		res := r.Execute(testCtx(cfg, map[string]interface{}{"path": "plain.txt", "line_numbers": false}))
+		if res.Status != "success" {
+			t.Fatalf("read failed: %s", res.Error)
+		}
+		if res.Output != "x\ny" {
+			t.Errorf("expected plain text without numbers, got %q", res.Output)
+		}
+	})
+
+	t.Run("offset shifts line numbers", func(t *testing.T) {
+		w := NewWriteFileTool(cfg)
+		r := NewReadFileTool(cfg)
+		w.Execute(testCtx(cfg, map[string]interface{}{"path": "offset.txt", "content": "a\nb\nc\nd"}))
+
+		res := r.Execute(testCtx(cfg, map[string]interface{}{"path": "offset.txt", "offset": float64(3)}))
+		if res.Status != "success" {
+			t.Fatalf("read failed: %s", res.Error)
+		}
+		want := "     3\tc\n     4\td"
+		if res.Output != want {
+			t.Errorf("expected %q, got %q", want, res.Output)
+		}
+	})
+
+	t.Run("long single line beyond default scanner buffer", func(t *testing.T) {
+		// A minified bundle / JSON-on-one-line easily exceeds bufio's default
+		// 64KB token limit. Without an enlarged Buffer this used to fail with
+		// bufio.ErrTooLong — scanner.Err() would surface and the user got
+		// `error` status with nothing useful. After the fix scanner can read
+		// up to 1MB lines, and the read_file 50KB output cap is applied per
+		// line-prefix so the user still sees the start of the long line.
+		w := NewWriteFileTool(cfg)
+		r := NewReadFileTool(cfg)
+		long := strings.Repeat("x", 200*1024) // 200 KB on one line
+		w.Execute(testCtx(cfg, map[string]interface{}{"path": "long.txt", "content": long}))
+
+		res := r.Execute(testCtx(cfg, map[string]interface{}{
+			"path":         "long.txt",
+			"line_numbers": false,
+		}))
+		if res.Status != "success" {
+			t.Fatalf("expected success (no scanner error) for 200KB single line, got %s (%s)",
+				res.Status, res.Error)
+		}
+		if !strings.Contains(res.Output, strings.Repeat("x", 1000)) {
+			t.Errorf("expected at least 1000 chars of the long line to survive, got %d bytes of output", len(res.Output))
+		}
+		if !strings.Contains(res.Output, "[truncated") {
+			tail := res.Output
+			if len(tail) > 200 {
+				tail = tail[len(tail)-200:]
+			}
+			t.Errorf("expected truncation hint for 200KB single line, got %q", tail)
 		}
 	})
 }
@@ -177,4 +254,48 @@ func TestEditTool(t *testing.T) {
 			t.Error("expected error")
 		}
 	})
+}
+
+// TestReadFileTruncationRespectsUTF8 verifies that when a single very long
+// line is truncated to fit the MaxBytes budget, the cut lands on a UTF-8 rune
+// boundary instead of slicing through a CJK or emoji byte sequence.
+func TestReadFileTruncationRespectsUTF8(t *testing.T) {
+	cfg := testConfig(t)
+
+	// Build a single-line payload whose byte length comfortably exceeds
+	// MaxBytes. The line is "中" (3 bytes) repeated — every prefix that ends
+	// mid-rune is invalid UTF-8, so any byte-level cut has a 2/3 chance of
+	// producing a malformed string under the old code.
+	const rune3byte = "中"      // e4 b8 ad
+	const lineRepeats = 25_000 // 25k repeats → ~75 KB, beyond 50 KB MaxBytes
+	payload := strings.Repeat(rune3byte, lineRepeats)
+	if err := os.WriteFile(filepath.Join(cfg.RootDir, "wide.txt"), []byte(payload), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewReadFileTool(cfg)
+	res := r.Execute(testCtx(cfg, map[string]interface{}{
+		"path":         "wide.txt",
+		"line_numbers": false,
+	}))
+	if res.Status != "success" {
+		t.Fatalf("read failed: %s", res.Error)
+	}
+
+	// Strip the truncation marker the tool appends so we only validate the
+	// actual file content portion.
+	body := res.Output
+	if idx := strings.Index(body, "\n[truncated"); idx >= 0 {
+		body = body[:idx]
+	}
+	if !strings.HasPrefix(body, rune3byte+rune3byte) {
+		preview := body
+		if len(preview) > 20 {
+			preview = preview[:20]
+		}
+		t.Errorf("expected truncated body to start with valid CJK runes, got %q…", preview)
+	}
+	if !utf8.ValidString(body) {
+		t.Fatalf("truncated body is not valid UTF-8 (len=%d)", len(body))
+	}
 }

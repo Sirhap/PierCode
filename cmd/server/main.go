@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/afumu/openlink/internal/portutil"
 	"github.com/afumu/openlink/internal/security"
@@ -22,15 +23,20 @@ func main() {
 	dir := flag.String("dir", cwd, "工作目录")
 	port := flag.Int("port", 39527, "端口")
 	timeout := flag.Int("timeout", 60, "超时(秒)")
+	allowShell := flag.Bool("allow-shell", false, "启用 exec_cmd 工具（等同 shell 完整访问，谨慎使用）")
+	showToken := flag.Bool("show-token", true, "在终端打印认证 URL（含 token）。设 --show-token=false 可隐藏，避免泄露到 scrollback / tmux history")
+	allowedOrigins := flag.String("allowed-origins", "", "允许的 CORS/WS Origin 白名单（逗号分隔），默认仅放行 chrome-extension:// 与 127.0.0.1")
+	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 openlink 进程占用，强制结束该进程")
 	flag.Parse()
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
-	// 检测端口是否已被占用，若占用则自动杀掉旧进程
+	// 检测端口是否已被占用，若占用则尝试只杀掉旧的 openlink 进程；其它进程
+	// 默认不动，避免误杀用户自己的服务（除非显式 --force-kill-port）。
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		fmt.Printf("端口 %d 已被占用，正在尝试终止占用进程...\n", *port)
-		if killed := portutil.KillPortProcess(*port); killed {
+		fmt.Printf("端口 %d 已被占用，正在尝试终止 openlink 旧进程...\n", *port)
+		if killed := portutil.KillPortProcess(*port, *forceKillPort); killed {
 			fmt.Printf("✅ 已终止旧进程，重新检测端口...\n")
 			ln, err = net.Listen("tcp", addr)
 			if err != nil {
@@ -38,7 +44,7 @@ func main() {
 				os.Exit(1)
 			}
 		} else {
-			fmt.Printf("❌ 无法终止占用进程，请手动处理或使用 -port 指定其他端口\n")
+			fmt.Printf("❌ 端口被非 openlink 进程占用。请使用 -port 指定其他端口，或加 --force-kill-port 强制结束该进程。\n")
 			os.Exit(1)
 		}
 	}
@@ -49,6 +55,14 @@ func main() {
 		log.Fatal(err)
 	}
 
+	var origins []string
+	for _, o := range strings.Split(*allowedOrigins, ",") {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			origins = append(origins, o)
+		}
+	}
+
 	config := &types.Config{
 		RootDir:        *dir,
 		InitialRootDir: *dir,
@@ -56,10 +70,24 @@ func main() {
 		Timeout:        *timeout,
 		Token:          token,
 		DefaultPrompt:  prompts.DefaultPrompt,
+		AllowShell:     *allowShell,
+		AllowedOrigins: origins,
 	}
 
-	fmt.Printf("\n认证 URL: http://127.0.0.1:%d/auth?token=%s\n", *port, token)
-	fmt.Printf("请在浏览器扩展中输入此 URL\n\n")
+	if *allowShell {
+		fmt.Println("⚠️  exec_cmd 已启用：AI 可执行任意 shell 命令。命令黑名单只是基础防护，不能视为沙箱。")
+	} else {
+		fmt.Println("ℹ️  exec_cmd 默认禁用。需启用请加 --allow-shell（请知悉风险）。")
+	}
+
+	if *showToken {
+		fmt.Printf("\n认证 URL: http://127.0.0.1:%d/auth?token=%s\n", *port, token)
+		fmt.Printf("请在浏览器扩展中输入此 URL\n")
+	} else {
+		fmt.Printf("\n认证 token 已保存到 ~/.openlink/settings.json\n")
+		fmt.Printf("（--show-token=false 已启用：token 未打印；可 cat 该文件获取，或加 --show-token 恢复打印）\n")
+	}
+	fmt.Printf("服务器监听 http://127.0.0.1:%d\n\n", *port)
 
 	srv := server.New(config)
 

@@ -1,12 +1,14 @@
 package tool
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -55,7 +57,7 @@ func (t *EditTool) Execute(ctx *Context) *Result {
 
 	var safePath string
 	var err error
-	rootDir := ctx.Config.GetRootDir()
+	rootDir := ctx.EffectiveRootDir()
 	if filepath.IsAbs(path) {
 		safePath, err = resolveAbsPath(path, rootDir)
 	} else {
@@ -74,36 +76,105 @@ func (t *EditTool) Execute(ctx *Context) *Result {
 		return result
 	}
 
-	content := normalizeLineEndings(string(rawContent))
+	// Preserve the file's original line endings. Earlier we'd detect "any \r\n
+	// in the file" and rewrite every \n to \r\n on save — that silently broke
+	// files with mixed endings (e.g. a CRLF file with one stray LF). New
+	// strategy: do CRLF→LF normalization only on the search/replace path
+	// (matching is tolerant), then splice the new region back into the
+	// *original raw bytes* so any line that wasn't part of the edit keeps
+	// whatever ending it had on disk.
+	originalContent := string(rawContent)
+	content := normalizeLineEndings(originalContent)
 
-	replaced, err := replace(content, oldStr, newStr, replaceAll)
+	replaced, count, err := replace(content, oldStr, newStr, replaceAll)
 	if err != nil {
 		result.Status = "error"
 		result.Error = err.Error()
 		return result
 	}
 
-	if err := os.WriteFile(safePath, []byte(replaced), 0644); err != nil {
+	// If the original file was pure-LF, the normalized content is identical
+	// to the raw bytes, so we can write `replaced` directly. If it had any
+	// CRLFs, recompute the new full content by splicing newStr into the raw
+	// bytes at the same logical position. We do this by re-running the
+	// replacement against the original (un-normalized) content where
+	// possible; if the original used CRLF, oldStr likely came from the AI in
+	// LF form, so we also try the CRLF-converted variant before giving up.
+	var outBytes []byte
+	if !bytes.Contains(rawContent, []byte("\r\n")) {
+		outBytes = []byte(replaced)
+	} else {
+		// Try LF-form first (some editors author CRLF files with LF lines mixed in).
+		newRaw, ok := spliceOnRaw(originalContent, oldStr, newStr, replaceAll)
+		if !ok {
+			// Try the CRLF-form of oldStr/newStr against the raw content.
+			oldCRLF := strings.ReplaceAll(strings.ReplaceAll(oldStr, "\r\n", "\n"), "\n", "\r\n")
+			newCRLF := strings.ReplaceAll(strings.ReplaceAll(newStr, "\r\n", "\n"), "\n", "\r\n")
+			newRaw, ok = spliceOnRaw(originalContent, oldCRLF, newCRLF, replaceAll)
+		}
+		if ok {
+			outBytes = []byte(newRaw)
+		} else {
+			// Fall back to the LF-normalized result. Mixed-ending files will
+			// be normalized to LF here — that's worse than perfect but still
+			// honest, and this branch only fires when neither LF nor CRLF
+			// forms of oldStr matched the raw bytes.
+			outBytes = []byte(replaced)
+		}
+	}
+
+	if err := os.WriteFile(safePath, outBytes, 0644); err != nil {
 		result.Status = "error"
 		result.Error = err.Error()
 		return result
 	}
 
 	result.Status = "success"
-	result.Output = fmt.Sprintf("已替换 '%s' → '%s'", oldStr, newStr)
+	if replaceAll && count > 1 {
+		result.Output = fmt.Sprintf("已替换 %d 处 '%s' → '%s'", count, oldStr, newStr)
+	} else {
+		result.Output = fmt.Sprintf("已替换 '%s' → '%s'", oldStr, newStr)
+	}
 	result.EndTime = time.Now()
 	return result
 }
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
 
-const singleCandidateSimilarityThreshold = 0.5
-const multipleCandidatesSimilarityThreshold = 0.3
+// Block/context anchor matchers compare trimmed lines via Levenshtein similarity.
+// Earlier defaults (0.5 / 0.3) were aggressive enough to silently replace the
+// wrong block in large files. Tightened to mirror Claude Code's preference for
+// failing loudly over guessing — the AI can retry with more surrounding context.
+const singleCandidateSimilarityThreshold = 0.85
+const multipleCandidatesSimilarityThreshold = 0.95
+const contextAwareSimilarityThreshold = 0.85
 
 // ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
 func normalizeLineEndings(s string) string {
 	return strings.ReplaceAll(s, "\r\n", "\n")
+}
+
+// spliceOnRaw tries to replace oldStr with newStr in raw without any line-ending
+// normalization. Returns the new content and true if oldStr was found.
+// Used to preserve the original file's mixed/CRLF endings when the AI sent the
+// edit in matching form.
+func spliceOnRaw(raw, oldStr, newStr string, replaceAll bool) (string, bool) {
+	if oldStr == "" {
+		return raw, false
+	}
+	if !strings.Contains(raw, oldStr) {
+		return raw, false
+	}
+	if replaceAll {
+		return strings.ReplaceAll(raw, oldStr, newStr), true
+	}
+	// Single replace: only if exactly one match — otherwise refuse so the
+	// caller falls back to the smarter Replacer cascade.
+	if strings.Count(raw, oldStr) != 1 {
+		return raw, false
+	}
+	return strings.Replace(raw, oldStr, newStr, 1), true
 }
 
 func levenshtein(a, b string) int {
@@ -564,7 +635,7 @@ func ContextAwareReplacer(content, find string) []string {
 					}
 				}
 			}
-			if totalNonEmpty == 0 || float64(matchingLines)/float64(totalNonEmpty) >= 0.5 {
+			if totalNonEmpty == 0 || float64(matchingLines)/float64(totalNonEmpty) >= contextAwareSimilarityThreshold {
 				return []string{strings.Join(blockLines, "\n")}
 			}
 			break
@@ -573,27 +644,71 @@ func ContextAwareReplacer(content, find string) []string {
 	return nil
 }
 
-// ── 9. MultiOccurrenceReplacer ────────────────────────────────────────────────
-
-func MultiOccurrenceReplacer(content, find string) []string {
-	var results []string
-	startIndex := 0
-	for {
-		idx := strings.Index(content[startIndex:], find)
-		if idx == -1 {
-			break
-		}
-		results = append(results, find)
-		startIndex += idx + len(find)
-	}
-	return results
-}
-
 // ── replace 主函数 ─────────────────────────────────────────────────────────────
 
-func replace(content, oldString, newString string, replaceAll bool) (string, error) {
+type replacementSpan struct {
+	start int
+	end   int
+}
+
+func collectReplacementSpans(content string, searches []string) []replacementSpan {
+	seen := make(map[replacementSpan]struct{})
+	for _, search := range searches {
+		if search == "" {
+			continue
+		}
+		offset := 0
+		for offset <= len(content) {
+			idx := strings.Index(content[offset:], search)
+			if idx == -1 {
+				break
+			}
+			start := offset + idx
+			span := replacementSpan{start: start, end: start + len(search)}
+			seen[span] = struct{}{}
+			offset = span.end
+		}
+	}
+
+	spans := make([]replacementSpan, 0, len(seen))
+	for span := range seen {
+		spans = append(spans, span)
+	}
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].start != spans[j].start {
+			return spans[i].start < spans[j].start
+		}
+		return spans[i].end > spans[j].end
+	})
+
+	filtered := spans[:0]
+	lastEnd := -1
+	for _, span := range spans {
+		if span.start < lastEnd {
+			continue
+		}
+		filtered = append(filtered, span)
+		lastEnd = span.end
+	}
+	return filtered
+}
+
+func applyReplacementSpans(content string, spans []replacementSpan, newString string) string {
+	var b strings.Builder
+	b.Grow(len(content) + len(spans)*len(newString))
+	cursor := 0
+	for _, span := range spans {
+		b.WriteString(content[cursor:span.start])
+		b.WriteString(newString)
+		cursor = span.end
+	}
+	b.WriteString(content[cursor:])
+	return b.String()
+}
+
+func replace(content, oldString, newString string, replaceAll bool) (string, int, error) {
 	if oldString == newString {
-		return "", errors.New("No changes to apply: oldString and newString are identical.")
+		return "", 0, errors.New("No changes to apply: oldString and newString are identical.")
 	}
 
 	notFound := true
@@ -609,25 +724,30 @@ func replace(content, oldString, newString string, replaceAll bool) (string, err
 		TabNewlineReplacer,
 		ContextAwareReplacer,
 	} {
-		for _, search := range replacer(content, oldString) {
+		searches := replacer(content, oldString)
+		if replaceAll {
+			spans := collectReplacementSpans(content, searches)
+			if len(spans) > 0 {
+				return applyReplacementSpans(content, spans, newString), len(spans), nil
+			}
+			continue
+		}
+		for _, search := range searches {
 			index := strings.Index(content, search)
 			if index == -1 {
 				continue
 			}
 			notFound = false
-			if replaceAll {
-				return strings.ReplaceAll(content, search, newString), nil
-			}
 			lastIndex := strings.LastIndex(content, search)
 			if index != lastIndex {
 				continue // 出现多次，跳过这个候选
 			}
-			return content[:index] + newString + content[index+len(search):], nil
+			return content[:index] + newString + content[index+len(search):], 1, nil
 		}
 	}
 
 	if notFound {
-		return "", errors.New("Could not find old_string in the file. It must match exactly, including whitespace, indentation, and line endings.")
+		return "", 0, errors.New("Could not find old_string in the file. It must match exactly, including whitespace, indentation, and line endings.")
 	}
-	return "", errors.New("Found multiple matches for old_string. Provide more surrounding context to make the match unique.")
+	return "", 0, errors.New("Found multiple matches for old_string. Provide more surrounding context to make the match unique, or set replace_all=true to replace every occurrence.")
 }

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { DEFAULT_AUTO_EXECUTE, resolveAutoExecute } from '../settings'
 
-function normalizeAuthUrl(raw: string): { authUrl: URL; baseUrl: string; token: string; port: number } {
+function normalizeAuthUrl(raw: string): { baseUrl: string; token: string; port: number } {
   const authUrl = new URL(raw.trim())
   const token = (authUrl.searchParams.get('token') || '').trim()
   const baseUrl = `${authUrl.protocol}//${authUrl.host}`
   const port = Number(authUrl.port || (authUrl.protocol === 'https:' ? 443 : 80))
-  return { authUrl, baseUrl, token, port }
+  return { baseUrl, token, port }
 }
 
 function isValidAuthResponse(data: any): boolean {
@@ -91,17 +91,20 @@ export default function App() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json()
       })
-      .then(async data => {
+      .then(async () => {
+        // 注意：/health 现在只返回 {status, version}，不再回 dir。这是有意为之
+        // ——/health 不鉴权，回工作目录会让任何本机进程或恶意网页拿来侦察。
+        // 如果需要展示工作目录，应该走鉴权后的 /config（这里暂不展示）。
         setStatus('connected')
         const result = await ensureContentScripts()
         const injected = Number(result.injected || 0)
         const failed = Number(result.failed || 0)
         const suffix = injected > 0
-          ? `；已唤醒 ${injected} 个 AI 页面`
+          ? `已唤醒 ${injected} 个 AI 页面`
           : failed > 0
-            ? '；AI 页面注入失败，请刷新页面'
-            : '；未发现已打开的 AI 页面'
-        setInfo(`工作目录: ${data.dir || 'unknown'}${suffix}`)
+            ? 'AI 页面注入失败，请刷新页面'
+            : '未发现已打开的 AI 页面'
+        setInfo(suffix)
       })
       .catch(() => { setStatus('disconnected'); setInfo('服务未运行') })
   }
@@ -111,13 +114,19 @@ export default function App() {
     setLoading(true)
     setToast(null)
     try {
-      const { authUrl, baseUrl, token: tokenValue, port } = normalizeAuthUrl(token)
+      const { baseUrl, token: tokenValue, port } = normalizeAuthUrl(token)
       if (!tokenValue) {
         setToast({ msg: 'URL 格式错误', type: 'error' })
         setLoading(false)
         return
       }
-      const res = await fetch(authUrl.toString(), { method: 'GET' })
+      // 服务端只接受 POST /auth + JSON body。GET ?token=... 已移除：
+      // 长期凭据进浏览器历史 / 反向代理日志是泄露面。
+      const res = await fetch(`${baseUrl}/auth`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: tokenValue }),
+      })
       const text = await res.text()
       let data: any = {}
       try {

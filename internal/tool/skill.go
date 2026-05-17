@@ -46,7 +46,7 @@ func (t *SkillTool) Execute(ctx *Context) *Result {
 	skillName, _ := ctx.Args["skill"].(string)
 
 	if skillName == "" {
-		infos := skill.LoadInfos(ctx.Config.GetRootDir())
+		infos := skill.LoadInfos(ctx.EffectiveRootDir())
 		if len(infos) == 0 {
 			result.Status = "success"
 			result.Output = "没有找到可用的 skills"
@@ -63,7 +63,7 @@ func (t *SkillTool) Execute(ctx *Context) *Result {
 		return result
 	}
 
-	info, ok := skill.Get(ctx.Config.GetRootDir(), skillName)
+	info, ok := skill.Get(ctx.EffectiveRootDir(), skillName)
 	if !ok {
 		result.Status = "error"
 		result.Error = fmt.Sprintf("skill %q not found", skillName)

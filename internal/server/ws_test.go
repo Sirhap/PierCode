@@ -14,7 +14,7 @@ import (
 )
 
 func TestWSManager_RegisterAndUnregister(t *testing.T) {
-	m := NewWSManager()
+	m := NewWSManager(nil)
 	m.Start()
 	defer m.Close()
 
@@ -79,7 +79,7 @@ func TestWSManager_RegisterAndUnregister(t *testing.T) {
 }
 
 func TestWSManager_BroadcastConcurrent(t *testing.T) {
-	m := NewWSManager()
+	m := NewWSManager(nil)
 	m.Start()
 	defer m.Close()
 
@@ -146,7 +146,7 @@ func TestWSManager_BroadcastConcurrent(t *testing.T) {
 }
 
 func TestWSManager_CloseIsIdempotent(t *testing.T) {
-	m := NewWSManager()
+	m := NewWSManager(nil)
 	m.Start()
 
 	m.Close()
@@ -155,7 +155,7 @@ func TestWSManager_CloseIsIdempotent(t *testing.T) {
 }
 
 func TestWSManager_SendNonBlocking(t *testing.T) {
-	m := NewWSManager()
+	m := NewWSManager(nil)
 	m.Start()
 
 	// 快速发送大量消息，验证不会阻塞
@@ -176,6 +176,43 @@ func TestWSManager_SendNonBlocking(t *testing.T) {
 	}
 }
 
+func TestWSManager_BroadcastDisconnectsFullClientQueue(t *testing.T) {
+	m := NewWSManager(nil)
+	defer m.Close()
+
+	slow := &clientConn{send: make(chan []byte, 1)}
+	slow.send <- []byte("already full")
+	healthy := &clientConn{send: make(chan []byte, 1)}
+
+	m.clientsMu.Lock()
+	m.clients[slow] = true
+	m.clients[healthy] = true
+	m.clientsMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		m.Broadcast([]byte("ok"))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Broadcast waited on a full client queue")
+	}
+
+	select {
+	case msg := <-healthy.send:
+		assert.Equal(t, "ok", string(msg))
+	default:
+		t.Fatal("healthy client did not receive broadcast")
+	}
+
+	assert.Eventually(t, func() bool {
+		return m.ClientCount() == 1
+	}, time.Second, 10*time.Millisecond)
+}
+
 func TestInjectMessageFormat(t *testing.T) {
 	// 验证 /inject 接口生成的 WebSocket 消息格式正确
 	text := "测试消息 🎉"
@@ -191,4 +228,39 @@ func TestInjectMessageFormat(t *testing.T) {
 	// %q 会转义引号为 \"，反斜杠为 \\，所以断言转义后的内容
 	assert.Contains(t, expectedEscaped, `\"quotes\"`)
 	assert.Contains(t, expectedEscaped, `\\backslash`)
+}
+
+// TestIsAllowedOrigin pins the cross-site policy: empty Origin (same-origin /
+// curl / native clients) and known-safe schemes pass through; arbitrary HTTPS
+// hosts must be explicitly whitelisted. The matrix is small but the cost of a
+// silent regression here is direct CSRF / WS-hijack reachability, so the table
+// stays compact and verbose.
+func TestIsAllowedOrigin(t *testing.T) {
+	cases := []struct {
+		name    string
+		origin  string
+		allowed []string
+		want    bool
+	}{
+		{"empty origin allowed (same-origin / curl)", "", nil, true},
+		{"chrome extension always allowed", "chrome-extension://abcdef", nil, true},
+		{"firefox extension allowed", "moz-extension://uuid", nil, true},
+		{"safari extension allowed", "safari-web-extension://uuid", nil, true},
+		{"http loopback allowed any port", "http://127.0.0.1:8080", nil, true},
+		{"http localhost allowed", "http://localhost:5173", nil, true},
+		{"ipv6 loopback allowed", "http://[::1]:39527", nil, true},
+		{"https external rejected by default", "https://evil.com", nil, false},
+		{"http public rejected by default", "http://example.com", nil, false},
+		{"explicit whitelist match", "https://staging.app", []string{"https://staging.app"}, true},
+		{"whitelist requires exact match", "https://staging.app:443", []string{"https://staging.app"}, false},
+		{"malformed origin rejected", "://broken", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IsAllowedOrigin(tc.origin, tc.allowed)
+			if got != tc.want {
+				t.Errorf("IsAllowedOrigin(%q, %v) = %v, want %v", tc.origin, tc.allowed, got, tc.want)
+			}
+		})
+	}
 }

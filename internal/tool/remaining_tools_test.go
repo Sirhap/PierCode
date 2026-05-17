@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/afumu/openlink/internal/types"
 )
@@ -45,20 +46,91 @@ func TestListDirTool(t *testing.T) {
 func TestQuestionTool(t *testing.T) {
 	tool := NewQuestionTool()
 
-	t.Run("returns question in output", func(t *testing.T) {
-		res := tool.Execute(&Context{Args: map[string]interface{}{"question": "What is your name?"}})
-		if res.Status != "success" || !strings.Contains(res.Output, "What is your name?") {
-			t.Errorf("got %q", res.Output)
+	t.Run("blocks until Deliver is called and includes answer in output", func(t *testing.T) {
+		callID := "test-q-1"
+		go func() {
+			// Give Execute a moment to register on PendingQuestions.
+			time.Sleep(50 * time.Millisecond)
+			PendingQuestions.Deliver(callID, "Alice")
+		}()
+		res := tool.Execute(&Context{
+			Args: map[string]interface{}{
+				"question": "What is your name?",
+				"call_id":  callID,
+			},
+		})
+		if res.Status != "success" {
+			t.Fatalf("expected success, got %s (%s)", res.Status, res.Error)
+		}
+		if !strings.Contains(res.Output, "What is your name?") || !strings.Contains(res.Output, "Alice") {
+			t.Errorf("expected both question and answer in output, got %q", res.Output)
 		}
 	})
 
 	t.Run("includes options when provided", func(t *testing.T) {
-		res := tool.Execute(&Context{Args: map[string]interface{}{
-			"question": "Pick one",
-			"options":  []interface{}{"A", "B"},
-		}})
+		callID := "test-q-2"
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			PendingQuestions.Deliver(callID, "A")
+		}()
+		res := tool.Execute(&Context{
+			Args: map[string]interface{}{
+				"question": "Pick one",
+				"options":  []interface{}{"A", "B"},
+				"call_id":  callID,
+			},
+		})
 		if !strings.Contains(res.Output, "A") || !strings.Contains(res.Output, "B") {
 			t.Errorf("got %q", res.Output)
+		}
+	})
+
+	t.Run("missing call_id errors", func(t *testing.T) {
+		res := tool.Execute(&Context{Args: map[string]interface{}{"question": "no id?"}})
+		if res.Status != "error" {
+			t.Errorf("expected error when call_id is missing, got %s", res.Status)
+		}
+	})
+
+	t.Run("timeout returns error", func(t *testing.T) {
+		callID := "test-q-timeout"
+		res := tool.Execute(&Context{
+			Args: map[string]interface{}{
+				"question":    "no one will answer",
+				"call_id":     callID,
+				"timeout_sec": float64(0.1), // 100ms
+			},
+		})
+		if res.Status != "error" {
+			t.Errorf("expected error on timeout, got %s", res.Status)
+		}
+		if !strings.Contains(res.Error, "no answer received") {
+			t.Errorf("expected timeout message, got %q", res.Error)
+		}
+	})
+
+	t.Run("cancel returns error immediately", func(t *testing.T) {
+		callID := "test-q-cancel"
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			PendingQuestions.Cancel(callID, "user_cancelled")
+		}()
+		start := time.Now()
+		res := tool.Execute(&Context{
+			Args: map[string]interface{}{
+				"question":    "cancel me",
+				"call_id":     callID,
+				"timeout_sec": float64(30),
+			},
+		})
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("cancel should not wait for timeout, elapsed=%s", elapsed)
+		}
+		if res.Status != "error" {
+			t.Fatalf("expected error on cancel, got %s", res.Status)
+		}
+		if !strings.Contains(res.Error, "question canceled") {
+			t.Errorf("expected cancel message, got %q", res.Error)
 		}
 	})
 

@@ -19,6 +19,7 @@ import (
 	"github.com/afumu/openlink/internal/prompt"
 	"github.com/afumu/openlink/internal/security"
 	"github.com/afumu/openlink/internal/skill"
+	"github.com/afumu/openlink/internal/tool"
 	"github.com/afumu/openlink/internal/tui"
 	"github.com/afumu/openlink/internal/types"
 	"github.com/gin-gonic/gin"
@@ -31,6 +32,12 @@ type Server struct {
 	executor *executor.Executor
 	ws       *WSManager // WebSocket 管理器
 	logger   *tui.Logger
+
+	// Unsubscribe handles for the TUI-level chunk/done subscribers registered
+	// in SetTUILogger. We call them before re-subscribing so repeated
+	// SetTUILogger calls don't fan every chunk out N times.
+	tuiUnsubChunk func()
+	tuiUnsubDone  func()
 }
 
 func New(config *types.Config) *Server {
@@ -38,7 +45,7 @@ func New(config *types.Config) *Server {
 	router := gin.New()
 	router.Use(gin.Recovery())
 
-	ws := NewWSManager()
+	ws := NewWSManager(config.AllowedOrigins)
 	ws.Start()
 
 	s := &Server{
@@ -48,15 +55,68 @@ func New(config *types.Config) *Server {
 		ws:       ws,
 	}
 
+	// Tools (currently just `question`) can push arbitrary WS payloads via
+	// the executor's broadcaster. Wiring it here keeps the WSManager out of
+	// the tool layer.
+	s.executor.SetBroadcaster(func(payload []byte) {
+		s.ws.Send(payload)
+	})
+
+	// Wire background task events into the WebSocket broadcast channel so any
+	// connected extension / TUI sees live stdout and completion notices.
+	if tm := s.executor.Tasks(); tm != nil {
+		tm.SubscribeChunks(func(taskID, callID, stream, text string) {
+			payload, err := json.Marshal(gin.H{
+				"type":    "tool_stream",
+				"task_id": taskID,
+				"call_id": callID,
+				"stream":  stream,
+				"text":    text,
+			})
+			if err == nil {
+				s.ws.Send(payload)
+			}
+		})
+		tm.SubscribeDone(func(taskID, callID string, exitCode int, status string, errMsg string, durationMs int64) {
+			payload, err := json.Marshal(gin.H{
+				"type":        "tool_done",
+				"task_id":     taskID,
+				"call_id":     callID,
+				"exit_code":   exitCode,
+				"status":      status,
+				"error":       errMsg,
+				"duration_ms": durationMs,
+			})
+			if err == nil {
+				s.ws.Send(payload)
+			}
+		})
+	}
+
 	s.setupRoutes()
 	return s
 }
 
 func (s *Server) setupRoutes() {
 	s.router.Use(func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		origin := c.Request.Header.Get("Origin")
+		// 同源请求 / 非浏览器调用（curl、Go test）不带 Origin，直接放行；其余
+		// Origin 必须命中白名单（chrome-extension:// / 本地回环 / 用户配置）。
+		// 这避免任何随机网站凭借浏览器自带 cookie / token 跨站打到 /exec。
+		if origin != "" && IsAllowedOrigin(origin, s.config.AllowedOrigins) {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+			c.Writer.Header().Set("Vary", "Origin")
+			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		} else if origin != "" {
+			// Origin 不在白名单：preflight 直接 403，业务请求也阻断。
+			if c.Request.Method == "OPTIONS" {
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "origin not allowed"})
+			return
+		}
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
@@ -67,7 +127,8 @@ func (s *Server) setupRoutes() {
 	s.router.Use(security.AuthMiddleware(s.config.Token))
 
 	s.router.GET("/health", s.handleHealth)
-	s.router.GET("/auth", s.handleAuth)
+	// /auth 仅保留 POST：GET ?token=... 会让 token 进浏览器历史 / 反向代理日志，
+	// 长期凭据不能这样暴露。WS 仍允许 query 是一次性接受 + 立即升级。
 	s.router.POST("/auth", s.handleAuth)
 	s.router.GET("/config", s.handleConfig)
 	s.router.POST("/cwd", s.handleSetCWD)
@@ -78,31 +139,34 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/prompt", s.handlePrompt)
 	s.router.GET("/skills", s.handleListSkills)
 	s.router.GET("/files", s.handleListFiles)
+	s.router.GET("/tasks", s.handleListTasks)
+	s.router.GET("/tasks/:id", s.handleGetTask)
+	s.router.POST("/tasks/:id/stop", s.handleStopTask)
+	s.router.POST("/question_answer", s.handleQuestionAnswer)
 }
 
 func (s *Server) handleHealth(c *gin.Context) {
+	// /health 不鉴权；只能返回最少信息。早期版本会回 dir（绝对路径），
+	// 任何本机进程或恶意网页都能借此做侦察 + 定向攻击，已移除。
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
-		"dir":     s.config.GetRootDir(),
 		"version": "1.0.0",
 	})
 }
 
 func (s *Server) handleAuth(c *gin.Context) {
-	// 兼容 GET Query 参数和 POST JSON Body
-	token := c.Query("token")
-	if token == "" {
-		var req struct {
-			Token string `json:"token"`
+	// 仅接受 POST JSON 体；不再支持 GET ?token=...，避免 token 进浏览器历史或代理日志。
+	var req struct {
+		Token string `json:"token"`
+	}
+	token := ""
+	if err := c.ShouldBindJSON(&req); err != nil {
+		if !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+			return
 		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			if !errors.Is(err, io.EOF) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
-				return
-			}
-		} else {
-			token = req.Token
-		}
+	} else {
+		token = req.Token
 	}
 
 	token = strings.TrimSpace(token)
@@ -128,13 +192,14 @@ func (s *Server) handleConfig(c *gin.Context) {
 
 func (s *Server) handlePrompt(c *gin.Context) {
 	rootDir := s.config.GetRootDir()
-	content, err := os.ReadFile(filepath.Join(rootDir, "prompts", "init_prompt.txt"))
-	if err != nil {
-		if len(s.config.DefaultPrompt) == 0 {
-			c.JSON(http.StatusNotFound, gin.H{"error": "init_prompt.txt not found"})
-			return
-		}
-		content = s.config.DefaultPrompt
+	// 早期版本会优先读 <rootDir>/prompts/init_prompt.txt，但该路径在 sandbox
+	// 内、AI 通过 write_file 即可改写，等于把系统提示词控制权交给 AI。
+	// 改为只信任二进制内嵌的 DefaultPrompt（prompts/prompts.go 通过 //go:embed
+	// 提供），AI 无法改动。
+	content := s.config.DefaultPrompt
+	if len(content) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "init prompt not embedded"})
+		return
 	}
 	content = prompt.Render(content, rootDir, s.executor.ListTools())
 
@@ -246,9 +311,35 @@ func (s *Server) handleExec(c *gin.Context) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(s.config.Timeout)*time.Second)
+	// The standard /exec timeout is fine for filesystem/shell tools, but
+	// `question` legitimately blocks waiting for a human and would always
+	// hit the deadline. Give it the per-call timeout it advertises (or the
+	// 5-minute default the tool uses internally) plus a small grace window.
+	execTimeout := time.Duration(s.config.Timeout) * time.Second
+	if strings.EqualFold(req.Name, "question") {
+		execTimeout = 6 * time.Minute
+		if v, ok := req.Args["timeout_sec"].(float64); ok && v > 0 {
+			execTimeout = time.Duration(v*float64(time.Second)) + 30*time.Second
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
-	resp := s.executor.Execute(ctx, &req)
+
+	// Streaming bridge: every stdout/stderr chunk produced by a streaming
+	// tool (currently only exec_cmd) is broadcast over WebSocket so any
+	// connected extension can render it live in the corresponding ToolCard.
+	streamer := func(stream, text string) {
+		payload, err := json.Marshal(gin.H{
+			"type":    "tool_stream",
+			"call_id": req.CallID,
+			"stream":  stream,
+			"text":    text,
+		})
+		if err == nil {
+			s.ws.Send(payload)
+		}
+	}
+	resp := s.executor.ExecuteWithStream(ctx, &req, streamer)
 
 	log.Printf("[OpenLink] 执行结果: status=%s, output长度=%d\n", resp.Status, len(resp.Output))
 	if resp.Error != "" {
@@ -314,9 +405,12 @@ func (s *Server) handleWS(c *gin.Context) {
 
 func (s *Server) handleWSClientMessage(payload []byte) {
 	var msg struct {
-		Type string `json:"type"`
-		Key  string `json:"key"`
-		Text string `json:"text"`
+		Type   string `json:"type"`
+		Key    string `json:"key"`
+		Text   string `json:"text"`
+		CallID string `json:"call_id"`
+		Answer string `json:"answer"`
+		Reason string `json:"reason"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return
@@ -346,6 +440,18 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 			}
 			s.logger.LogAIResponse(key, summarizeBrowserAIText(text), text)
 		}
+	case "question_answer":
+		callID := strings.TrimSpace(msg.CallID)
+		if callID == "" {
+			return
+		}
+		tool.PendingQuestions.Deliver(callID, msg.Answer)
+	case "question_cancel":
+		callID := strings.TrimSpace(msg.CallID)
+		if callID == "" {
+			return
+		}
+		tool.PendingQuestions.Cancel(callID, msg.Reason)
 	}
 }
 
@@ -366,12 +472,37 @@ func (s *Server) Close() {
 	if s.ws != nil {
 		s.ws.Close()
 	}
+	if s.executor != nil {
+		if tm := s.executor.Tasks(); tm != nil {
+			tm.Close()
+		}
+	}
 }
 
-// SetTUILogger allows injecting a TUI logger for real-time monitoring
+// SetTUILogger allows injecting a TUI logger for real-time monitoring.
+// Safe to call multiple times: each call replaces any previously registered
+// TUI-level subscribers so we don't double-fan every chunk.
 func (s *Server) SetTUILogger(logger *tui.Logger) {
 	s.logger = logger
 	s.executor.SetLogger(logger)
+
+	if s.tuiUnsubChunk != nil {
+		s.tuiUnsubChunk()
+		s.tuiUnsubChunk = nil
+	}
+	if s.tuiUnsubDone != nil {
+		s.tuiUnsubDone()
+		s.tuiUnsubDone = nil
+	}
+
+	if tm := s.executor.Tasks(); tm != nil && logger != nil {
+		s.tuiUnsubChunk = tm.SubscribeChunks(func(taskID, callID, stream, text string) {
+			logger.LogTaskStream(taskID, callID, stream, text)
+		})
+		s.tuiUnsubDone = tm.SubscribeDone(func(taskID, callID string, exitCode int, status string, errMsg string, durationMs int64) {
+			logger.LogTaskDone(taskID, callID, exitCode, status, errMsg, durationMs)
+		})
+	}
 }
 
 func (s *Server) logTUI(source, toolName, status, message string) {
@@ -454,4 +585,81 @@ func (s *Server) handleListFiles(c *gin.Context) {
 		return nil
 	})
 	c.JSON(http.StatusOK, gin.H{"files": files})
+}
+
+func (s *Server) handleListTasks(c *gin.Context) {
+	tm := s.executor.Tasks()
+	if tm == nil {
+		c.JSON(http.StatusOK, gin.H{"tasks": []any{}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tasks": tm.List()})
+}
+
+func (s *Server) handleGetTask(c *gin.Context) {
+	tm := s.executor.Tasks()
+	if tm == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "task manager unavailable"})
+		return
+	}
+	t := tm.Get(c.Param("id"))
+	if t == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		return
+	}
+	stdout, stderr := t.Output()
+	snap := t.Snapshot()
+	c.JSON(http.StatusOK, gin.H{
+		"task":   snap,
+		"stdout": stdout,
+		"stderr": stderr,
+	})
+}
+
+func (s *Server) handleStopTask(c *gin.Context) {
+	tm := s.executor.Tasks()
+	if tm == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "task manager unavailable"})
+		return
+	}
+	err := tm.Stop(c.Param("id"))
+	if err != nil {
+		switch err {
+		case executor.ErrTaskNotFound:
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		case executor.ErrTaskAlreadyDone:
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "stopping", "id": c.Param("id")})
+}
+
+// handleQuestionAnswer lets the TUI (or curl) deliver an answer to a pending
+// question tool invocation. Mirrors the WS `question_answer` message.
+func (s *Server) handleQuestionAnswer(c *gin.Context) {
+	var req struct {
+		CallID string `json:"call_id" binding:"required"`
+		Answer string `json:"answer"`
+		Cancel bool   `json:"cancel"`
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	callID := strings.TrimSpace(req.CallID)
+	delivered := false
+	if req.Cancel {
+		delivered = tool.PendingQuestions.Cancel(callID, req.Reason)
+	} else {
+		delivered = tool.PendingQuestions.Deliver(callID, req.Answer)
+	}
+	if !delivered {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no pending question for call_id"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "delivered"})
 }

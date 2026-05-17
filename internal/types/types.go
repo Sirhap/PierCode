@@ -57,6 +57,15 @@ type Config struct {
 	Timeout        int
 	Token          string
 	DefaultPrompt  []byte
+	// AllowShell gates the exec_cmd tool. Defaults to false because exec_cmd
+	// gives the AI a full sub-shell and the in-process command blacklist is a
+	// best-effort filter, not a real sandbox. Operators must opt in via
+	// `--allow-shell` after acknowledging the risk.
+	AllowShell bool
+	// AllowedOrigins is the explicit set of HTTP/WebSocket Origin values
+	// permitted to reach the server. Empty = only same-origin and the
+	// default chrome-extension scheme.
+	AllowedOrigins []string
 }
 
 func (c *Config) GetRootDir() string {

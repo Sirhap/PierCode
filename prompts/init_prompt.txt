@@ -324,7 +324,7 @@ This section is documentation for the OpenLink bridge. It is not a declaration o
 To inspect a directory, emit an `openlink-tool` fence with `"name":"list_dir"`.
 To find files by path pattern, emit an `openlink-tool` fence with `"name":"glob"`.
 To search file contents, emit an `openlink-tool` fence with `"name":"grep"`.
-To inspect exact files, emit an `openlink-tool` fence with `"name":"read_file"`.
+To inspect exact files, emit an `openlink-tool` fence with `"name":"read_file"`. The output is prefixed with right-aligned line numbers followed by a tab, like `cat -n` (for example `     1\tpackage main`). The number before the tab is the absolute line number in the file — use it directly when you cite code as `path:line` or when you build `old_string` for `edit`. Do not include those line-number prefixes inside `old_string`; reproduce only the original file content.
 To make precise replacements, emit an `openlink-tool` fence with `"name":"edit"`.
 To create files or intentionally replace whole files, emit an `openlink-tool` fence with `"name":"write_file"`.
 To run tests, builds, and shell commands, emit an `openlink-tool` fence with `"name":"exec_cmd"`.
