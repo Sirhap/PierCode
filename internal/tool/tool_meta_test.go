@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/types"
 )
 
 // Tests for Name/Description/Parameters/Validate methods that have 0% coverage

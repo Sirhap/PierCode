@@ -94,8 +94,8 @@ describe('parseXmlToolCall', () => {
 // ── FENCE_RE ───────────────────────────────────────────────────────────────
 
 describe('FENCE_RE', () => {
-  it('extracts openlink-tool fence', () => {
-    const text = 'some text\n```openlink-tool\n{"name":"list_dir","call_id":"qwen1","args":{"path":"."}}\n```\nmore text';
+  it('extracts piercode-tool fence', () => {
+    const text = 'some text\n```piercode-tool\n{"name":"list_dir","call_id":"qwen1","args":{"path":"."}}\n```\nmore text';
     FENCE_RE.lastIndex = 0;
     const match = FENCE_RE.exec(text);
     expect(match).not.toBeNull();

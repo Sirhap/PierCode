@@ -8,11 +8,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/afumu/openlink/internal/portutil"
-	"github.com/afumu/openlink/internal/security"
-	"github.com/afumu/openlink/internal/server"
-	"github.com/afumu/openlink/internal/types"
-	"github.com/afumu/openlink/prompts"
+	"github.com/sirhap/piercode/internal/portutil"
+	"github.com/sirhap/piercode/internal/security"
+	"github.com/sirhap/piercode/internal/server"
+	"github.com/sirhap/piercode/internal/types"
+	"github.com/sirhap/piercode/prompts"
 )
 
 func main() {
@@ -27,16 +27,16 @@ func main() {
 	noShell := flag.Bool("no-shell", false, "禁用 exec_cmd（等价于 --allow-shell=false）")
 	showToken := flag.Bool("show-token", true, "在终端打印认证 URL（含 token）。设 --show-token=false 可隐藏，避免泄露到 scrollback / tmux history")
 	allowedOrigins := flag.String("allowed-origins", "", "允许的 CORS/WS Origin 白名单（逗号分隔），默认仅放行 chrome-extension:// 与 127.0.0.1")
-	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 openlink 进程占用，强制结束该进程")
+	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 piercode 进程占用，强制结束该进程")
 	flag.Parse()
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
-	// 检测端口是否已被占用，若占用则尝试只杀掉旧的 openlink 进程；其它进程
+	// 检测端口是否已被占用，若占用则尝试只杀掉旧的 piercode 进程；其它进程
 	// 默认不动，避免误杀用户自己的服务（除非显式 --force-kill-port）。
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		fmt.Printf("端口 %d 已被占用，正在尝试终止 openlink 旧进程...\n", *port)
+		fmt.Printf("端口 %d 已被占用，正在尝试终止 piercode 旧进程...\n", *port)
 		if killed := portutil.KillPortProcess(*port, *forceKillPort); killed {
 			fmt.Printf("✅ 已终止旧进程，重新检测端口...\n")
 			ln, err = net.Listen("tcp", addr)
@@ -45,7 +45,7 @@ func main() {
 				os.Exit(1)
 			}
 		} else {
-			fmt.Printf("❌ 端口被非 openlink 进程占用。请使用 -port 指定其他端口，或加 --force-kill-port 强制结束该进程。\n")
+			fmt.Printf("❌ 端口被非 piercode 进程占用。请使用 -port 指定其他端口，或加 --force-kill-port 强制结束该进程。\n")
 			os.Exit(1)
 		}
 	}
@@ -90,7 +90,7 @@ func main() {
 		fmt.Printf("\n认证 URL: http://127.0.0.1:%d/auth?token=%s\n", *port, token)
 		fmt.Printf("请在浏览器扩展中输入此 URL\n")
 	} else {
-		fmt.Printf("\n认证 token 已保存到 ~/.openlink/settings.json\n")
+		fmt.Printf("\n认证 token 已保存到 ~/.piercode/settings.json\n")
 		fmt.Printf("（--show-token=false 已启用：token 未打印；可 cat 该文件获取，或加 --show-token 恢复打印）\n")
 	}
 	fmt.Printf("服务器监听 http://127.0.0.1:%d\n\n", *port)

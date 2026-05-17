@@ -1,4 +1,4 @@
-module github.com/afumu/openlink
+module github.com/sirhap/piercode
 
 go 1.24.0
 

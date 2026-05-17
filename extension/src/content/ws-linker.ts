@@ -1,4 +1,4 @@
-// ws-linker.ts: 负责与 OpenLink 后端建立 WebSocket 连接并处理输入注入
+// ws-linker.ts: 负责与 PierCode 后端建立 WebSocket 连接并处理输入注入
 
 let ws: WebSocket | null = null;
 let reconnectTimer: number | null = null;
@@ -250,18 +250,18 @@ function connectWebSocket(apiUrl: string, token: string) {
 
   const wsUrl = toWebSocketUrl(apiUrl, token);
   if (!wsUrl) {
-    console.warn("[OpenLink] WebSocket URL 无效:", apiUrl);
+    console.warn("[PierCode] WebSocket URL 无效:", apiUrl);
     return;
   }
   // 不要打印完整 wsUrl —— 它带 ?token=... ，落到 DevTools console / 录屏 /
   // 用户报错截图都是泄露面。脱敏成 host:port + token 首尾。
-  console.log("[OpenLink] WebSocket 连接中...", redactWsUrl(wsUrl));
+  console.log("[PierCode] WebSocket 连接中...", redactWsUrl(wsUrl));
 
   try {
     ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
-      console.log("[OpenLink] ✅ WebSocket 已连接");
+      console.log("[PierCode] ✅ WebSocket 已连接");
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -291,27 +291,27 @@ function connectWebSocket(apiUrl: string, token: string) {
           }
         }
       } catch (e) {
-        console.error("[OpenLink] 解析 WebSocket 消息失败:", e);
+        console.error("[PierCode] 解析 WebSocket 消息失败:", e);
       }
     };
 
     ws.onclose = (e) => {
-      console.warn("[OpenLink] ⚠️ WebSocket 连接已关闭:", e.reason);
+      console.warn("[PierCode] ⚠️ WebSocket 连接已关闭:", e.reason);
       ws = null;
       if (seq !== connectionSeq) return;
       // 3 秒后尝试重连
       reconnectTimer = window.setTimeout(() => {
-        console.log("[OpenLink] 🔄 正在尝试重新连接 WebSocket...");
+        console.log("[PierCode] 🔄 正在尝试重新连接 WebSocket...");
         if (configuredApiUrl && configuredToken) connectWebSocket(configuredApiUrl, configuredToken);
       }, 3000);
     };
 
     ws.onerror = (err) => {
-      console.error("[OpenLink] ❌ WebSocket 发生错误:", err);
+      console.error("[PierCode] ❌ WebSocket 发生错误:", err);
       ws?.close();
     };
   } catch (e) {
-    console.error("[OpenLink] 创建 WebSocket 失败:", e);
+    console.error("[PierCode] 创建 WebSocket 失败:", e);
   }
 }
 
@@ -382,24 +382,24 @@ function clickSendButton(config: InjectConfig, targetInput: HTMLElement, attempt
 
 // 处理注入消息：查找聊天输入框并填入内容
 function handleInjectMessage(text: string) {
-  console.log("[OpenLink] 收到注入消息:", text);
+  console.log("[PierCode] 收到注入消息:", text);
   const cleanText = sanitizeInjectedText(text);
   if (!cleanText) {
-    console.warn("[OpenLink] 注入内容为空，已跳过");
+    console.warn("[PierCode] 注入内容为空，已跳过");
     return;
   }
   const config = getInjectConfig();
   const targetInput = querySelectorFirst(config.editor);
 
   if (!targetInput) {
-    console.warn("[OpenLink] 未找到当前页面的聊天输入框");
+    console.warn("[PierCode] 未找到当前页面的聊天输入框");
     return;
   }
 
   fillTargetInput(targetInput, cleanText, config.fillMethod);
   window.setTimeout(() => clickSendButton(config, targetInput), 100);
 
-  console.log("[OpenLink] ✅ 内容已注入并提交到输入框");
+  console.log("[PierCode] ✅ 内容已注入并提交到输入框");
 }
 
 export function sendAIResponseLog(key: string, text: string): void {
@@ -408,7 +408,7 @@ export function sendAIResponseLog(key: string, text: string): void {
   try {
     ws.send(JSON.stringify({ type: "ai_log", key, text: trimmed }));
   } catch (error) {
-    console.warn("[OpenLink] AI 响应日志回传失败:", error);
+    console.warn("[PierCode] AI 响应日志回传失败:", error);
   }
 }
 
@@ -418,7 +418,7 @@ export function sendUserPromptLog(key: string, text: string): void {
   try {
     ws.send(JSON.stringify({ type: "user_log", key, text: trimmed }));
   } catch (error) {
-    console.warn("[OpenLink] 用户输入日志回传失败:", error);
+    console.warn("[PierCode] 用户输入日志回传失败:", error);
   }
 }
 
@@ -426,14 +426,14 @@ export function sendUserPromptLog(key: string, text: string): void {
 // back to the Go server, which dispatches it to the blocked tool goroutine.
 export function sendQuestionAnswer(callID: string, answer: string): boolean {
 	if (!ws || ws.readyState !== WebSocket.OPEN) {
-		console.warn("[OpenLink] WebSocket 未连接，无法回答 question");
+		console.warn("[PierCode] WebSocket 未连接，无法回答 question");
 		return false;
 	}
   try {
     ws.send(JSON.stringify({ type: "question_answer", call_id: callID, answer }));
     return true;
   } catch (error) {
-    console.warn("[OpenLink] question_answer 发送失败:", error);
+    console.warn("[PierCode] question_answer 发送失败:", error);
     return false;
 	}
 }
@@ -442,14 +442,14 @@ export function sendQuestionAnswer(callID: string, answer: string): boolean {
 // invocation as canceled instead of waiting for timeout.
 export function sendQuestionCancel(callID: string, reason = "user_cancelled"): boolean {
 	if (!ws || ws.readyState !== WebSocket.OPEN) {
-		console.warn("[OpenLink] WebSocket 未连接，无法取消 question");
+		console.warn("[PierCode] WebSocket 未连接，无法取消 question");
 		return false;
 	}
 	try {
 		ws.send(JSON.stringify({ type: "question_cancel", call_id: callID, reason }));
 		return true;
 	} catch (error) {
-		console.warn("[OpenLink] question_cancel 发送失败:", error);
+		console.warn("[PierCode] question_cancel 发送失败:", error);
 		return false;
 	}
 }
@@ -469,7 +469,7 @@ function startConnection() {
     if (info) {
       connectWebSocket(info.apiUrl, info.token);
     } else {
-      console.log("[OpenLink] 等待认证配置... (将在认证后自动连接)");
+      console.log("[PierCode] 等待认证配置... (将在认证后自动连接)");
     }
   });
 
@@ -478,7 +478,7 @@ function startConnection() {
     if (namespace === "local" && (changes.apiUrl || changes.authToken || changes.authPort)) {
       getAuthInfo().then((info) => {
         if (info) {
-          console.log("[OpenLink] 检测到认证信息变更，重新连接 WebSocket");
+          console.log("[PierCode] 检测到认证信息变更，重新连接 WebSocket");
           connectWebSocket(info.apiUrl, info.token);
         }
       });

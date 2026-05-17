@@ -1,4 +1,4 @@
-const INJECTED_FENCE_RE = /```(?:openlink-tool|tool)\s*\n([\s\S]*?)\n```/gi;
+const INJECTED_FENCE_RE = /```(?:piercode-tool|tool)\s*\n([\s\S]*?)\n```/gi;
 
 function parseInjectedJsonFenceToolCall(jsonStr: string): any | null {
   try {
@@ -51,7 +51,7 @@ function tryParseInjectedToolJSON(raw: string): any | null {
 }
 
 (function() {
-  console.log('[OpenLink] 插件已加载');
+  console.log('[PierCode] 插件已加载');
   const originalFetch = window.fetch;
   let buffer = '';
 

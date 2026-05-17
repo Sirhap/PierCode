@@ -39,7 +39,7 @@ describe('Claude DOM adapter', () => {
     expect(extractWithClaudeAdapter(response!)).toContain('你好！有什么我可以帮你的吗？');
   });
 
-  it('normalizes Claude tool code blocks into openlink-tool fences', () => {
+  it('normalizes Claude tool code blocks into piercode-tool fences', () => {
     const dom = new JSDOM(`
       <div class="font-claude-response">
         <div class="standard-markdown">
@@ -50,19 +50,19 @@ describe('Claude DOM adapter', () => {
 
     const response = dom.window.document.querySelector(claudeAdapter.responseSelector)!;
     const text = extractWithClaudeAdapter(response);
-    expect(text).toContain('```openlink-tool');
+    expect(text).toContain('```piercode-tool');
     expect(text).toContain('"name":"read_file"');
     expect(text).toContain('"path":"README.md"');
   });
 
-  it('normalizes Claude language-openlink blocks into openlink-tool fences', () => {
+  it('normalizes Claude language-piercode blocks into piercode-tool fences', () => {
     const dom = new JSDOM(`
       <div class="font-claude-response">
         <div class="standard-markdown grid-cols-1 grid standard-markdown">
-          <div role="group" aria-label="openlink code">
-            <div class="text-text-500 font-small p-3.5 pb-0">openlink</div>
+          <div role="group" aria-label="piercode code">
+            <div class="text-text-500 font-small p-3.5 pb-0">piercode</div>
             <div class="overflow-x-auto">
-              <pre class="code-block__code"><code class="language-openlink"><span><span>{"name":"list_dir","call_id":"m3k9p","args":{"path":"."}}</span></span></code></pre>
+              <pre class="code-block__code"><code class="language-piercode"><span><span>{"name":"list_dir","call_id":"m3k9p","args":{"path":"."}}</span></span></code></pre>
             </div>
           </div>
         </div>
@@ -71,21 +71,21 @@ describe('Claude DOM adapter', () => {
 
     const response = dom.window.document.querySelector(claudeAdapter.responseSelector)!;
     const text = extractWithClaudeAdapter(response);
-    expect(text).toContain('```openlink-tool');
+    expect(text).toContain('```piercode-tool');
     expect(text).toContain('"name":"list_dir"');
     expect(text).toContain('"path":"."');
   });
 
-  it('normalizes multiple Claude language-openlink blocks', () => {
+  it('normalizes multiple Claude language-piercode blocks', () => {
     const dom = new JSDOM(`
       <div class="font-claude-response">
         <div class="standard-markdown grid-cols-1 grid standard-markdown">
-          <div role="group" aria-label="openlink code">
-            <pre class="code-block__code"><code class="language-openlink"><span><span>{"name":"list_dir","call_id":"claudea","args":{"path":"."}}</span></span></code></pre>
+          <div role="group" aria-label="piercode code">
+            <pre class="code-block__code"><code class="language-piercode"><span><span>{"name":"list_dir","call_id":"claudea","args":{"path":"."}}</span></span></code></pre>
           </div>
           <p>then inspect go files</p>
-          <div role="group" aria-label="openlink code">
-            <pre class="code-block__code"><code class="language-openlink"><span><span>{"name":"glob","call_id":"claudeb","args":{"path":".","pattern":"**/*.go"}}</span></span></code></pre>
+          <div role="group" aria-label="piercode code">
+            <pre class="code-block__code"><code class="language-piercode"><span><span>{"name":"glob","call_id":"claudeb","args":{"path":".","pattern":"**/*.go"}}</span></span></code></pre>
           </div>
         </div>
       </div>
@@ -93,7 +93,7 @@ describe('Claude DOM adapter', () => {
 
     const response = dom.window.document.querySelector(claudeAdapter.responseSelector)!;
     const text = extractWithClaudeAdapter(response);
-    expect(text.match(/```openlink-tool/g)).toHaveLength(2);
+    expect(text.match(/```piercode-tool/g)).toHaveLength(2);
     expect(text).toContain('"call_id":"claudea"');
     expect(text).toContain('"name":"list_dir"');
     expect(text).toContain('"call_id":"claudeb"');

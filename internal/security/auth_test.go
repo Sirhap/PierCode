@@ -39,7 +39,7 @@ func TestLoadOrCreateTokenExisting(t *testing.T) {
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
 
-	settingsDir := filepath.Join(dir, ".openlink")
+	settingsDir := filepath.Join(dir, ".piercode")
 	os.MkdirAll(settingsDir, 0700)
 	os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(`{"token":"mytoken123"}`), 0600)
 

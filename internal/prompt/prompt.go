@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/afumu/openlink/internal/tool"
+	"github.com/sirhap/piercode/internal/tool"
 )
 
 func Render(template []byte, rootDir string, tools []tool.ToolInfo) []byte {
@@ -50,7 +50,7 @@ func BuildToolsDoc(tools []tool.ToolInfo) string {
 			"call_id": callID,
 			"args":    exampleArgs,
 		})
-		sb.WriteString(fmt.Sprintf("```openlink-tool\n%s\n```\n", string(exampleJSON)))
+		sb.WriteString(fmt.Sprintf("```piercode-tool\n%s\n```\n", string(exampleJSON)))
 	}
 	return sb.String()
 }

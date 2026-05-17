@@ -10,8 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/afumu/openlink/internal/security"
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/security"
+	"github.com/sirhap/piercode/internal/types"
 )
 
 type ReadFileTool struct {

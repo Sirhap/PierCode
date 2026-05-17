@@ -8,10 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/afumu/openlink/internal/prompt"
-	"github.com/afumu/openlink/internal/tool"
-	"github.com/afumu/openlink/internal/tui"
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/prompt"
+	"github.com/sirhap/piercode/internal/tool"
+	"github.com/sirhap/piercode/internal/tui"
+	"github.com/sirhap/piercode/internal/types"
 )
 
 type Executor struct {
@@ -171,7 +171,7 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	// //go:embed 提供）。
 	n := e.callCount.Add(1)
 	const reinjectEvery = 20
-	const reminder = "\n\n[系统提示] 请记住你是 openlink，严格遵循工具调用规范，不要忘记自己的身份和指令。"
+	const reminder = "\n\n[系统提示] 请记住你是 PierCode，严格遵循工具调用规范，不要忘记自己的身份和指令。"
 	if n%reinjectEvery == 0 {
 		rootDir := e.config.GetRootDir()
 		if len(e.config.DefaultPrompt) > 0 {

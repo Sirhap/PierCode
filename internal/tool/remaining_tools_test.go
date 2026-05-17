@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/types"
 )
 
 func TestListDirTool(t *testing.T) {

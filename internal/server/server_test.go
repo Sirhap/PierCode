@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/types"
 )
 
 func testServer(t *testing.T) *Server {

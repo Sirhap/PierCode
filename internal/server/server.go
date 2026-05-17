@@ -15,13 +15,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/afumu/openlink/internal/executor"
-	"github.com/afumu/openlink/internal/prompt"
-	"github.com/afumu/openlink/internal/security"
-	"github.com/afumu/openlink/internal/skill"
-	"github.com/afumu/openlink/internal/tool"
-	"github.com/afumu/openlink/internal/tui"
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/executor"
+	"github.com/sirhap/piercode/internal/prompt"
+	"github.com/sirhap/piercode/internal/security"
+	"github.com/sirhap/piercode/internal/skill"
+	"github.com/sirhap/piercode/internal/tool"
+	"github.com/sirhap/piercode/internal/tui"
+	"github.com/sirhap/piercode/internal/types"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
@@ -213,7 +213,7 @@ func (s *Server) handlePrompt(c *gin.Context) {
 		content = append(content, []byte(sb.String())...)
 	}
 
-	content = append(content, []byte("\n\n初始化回复：\n你好，我是 openlink，请问有什么可以帮你？")...)
+	content = append(content, []byte("\n\n初始化回复：\n你好，我是 piercode，请问有什么可以帮你？")...)
 
 	c.String(http.StatusOK, string(content))
 }
@@ -288,11 +288,11 @@ func (s *Server) handleListTools(c *gin.Context) {
 }
 
 func (s *Server) handleExec(c *gin.Context) {
-	log.Println("[OpenLink] 收到 /exec 请求")
+	log.Println("[PierCode] 收到 /exec 请求")
 
 	var req types.ToolRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		log.Printf("[OpenLink] ❌ JSON 解析失败: %v\n", err)
+		log.Printf("[PierCode] ❌ JSON 解析失败: %v\n", err)
 		c.JSON(http.StatusBadRequest, types.ToolResponse{
 			Status: "error",
 			Error:  err.Error(),
@@ -300,7 +300,7 @@ func (s *Server) handleExec(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[OpenLink] 工具调用: name=%s, call_id=%s, args=%+v\n", req.Name, req.CallID, req.Args)
+	log.Printf("[PierCode] 工具调用: name=%s, call_id=%s, args=%+v\n", req.Name, req.CallID, req.Args)
 
 	// 修复 AI 模型将换行符误写为 \t 的情况（仅对 edit 工具的字符串参数）
 	if req.Name == "edit" {
@@ -341,13 +341,13 @@ func (s *Server) handleExec(c *gin.Context) {
 	}
 	resp := s.executor.ExecuteWithStream(ctx, &req, streamer)
 
-	log.Printf("[OpenLink] 执行结果: status=%s, output长度=%d\n", resp.Status, len(resp.Output))
+	log.Printf("[PierCode] 执行结果: status=%s, output长度=%d\n", resp.Status, len(resp.Output))
 	if resp.Error != "" {
-		log.Printf("[OpenLink] 错误信息: %s\n", resp.Error)
+		log.Printf("[PierCode] 错误信息: %s\n", resp.Error)
 	}
 
 	c.JSON(http.StatusOK, resp)
-	log.Println("[OpenLink] 响应已发送")
+	log.Println("[PierCode] 响应已发送")
 }
 
 // handleInject 接收 TUI 输入并通过 WebSocket 广播给所有连接的扩展
@@ -360,7 +360,7 @@ func (s *Server) handleInject(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[OpenLink] 收到 TUI 注入输入: %q\n", req.Text)
+	log.Printf("[PierCode] 收到 TUI 注入输入: %q\n", req.Text)
 
 	// 通过 WebSocket 广播给所有连接的扩展客户端
 	msg, err := json.Marshal(gin.H{"type": "inject", "text": req.Text})
@@ -378,10 +378,10 @@ func (s *Server) handleInject(c *gin.Context) {
 func (s *Server) handleWS(c *gin.Context) {
 	conn, err := s.ws.Upgrade(c.Writer, c.Request)
 	if err != nil {
-		log.Printf("[OpenLink] ❌ WebSocket 升级失败: %v\n", err)
+		log.Printf("[PierCode] ❌ WebSocket 升级失败: %v\n", err)
 		return
 	}
-	log.Println("[OpenLink] ✅ 扩展已连接 WebSocket")
+	log.Println("[PierCode] ✅ 扩展已连接 WebSocket")
 
 	s.ws.Register(conn)
 	s.logTUI("system", "BROWSER", "success", fmt.Sprintf("浏览器扩展已连接 (%d)", s.ws.ClientCount()))
@@ -395,7 +395,7 @@ func (s *Server) handleWS(c *gin.Context) {
 		_, payload, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("[OpenLink] ⚠️ WebSocket 连接异常: %v\n", err)
+				log.Printf("[PierCode] ⚠️ WebSocket 连接异常: %v\n", err)
 			}
 			break
 		}

@@ -27,24 +27,24 @@ export const kimiAdapter: PlatformAdapter = {
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';
 
-    // 跳过 Kimi 原生工具调用容器（不是 OpenLink 的 tool 代码块）
+    // 跳过 Kimi 原生工具调用容器（不是 PierCode 的 tool 代码块）
     if (classAttr.includes('toolcall-container')) {
       return true;
     }
 
-    // Kimi 的工具代码块渲染为 <div class="kimi-m-code-block ... tool/openlink-tool">
+    // Kimi 的工具代码块渲染为 <div class="kimi-m-code-block ... tool/piercode-tool">
     if (classAttr.includes('kimi-m-code-block') &&
-        (classAttr.includes('openlink-tool') || /\btool\b/.test(classAttr))) {
+        (classAttr.includes('piercode-tool') || /\btool\b/.test(classAttr))) {
       const innerText = el.textContent || '';
-      buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
+      buf.push('\n```piercode-tool\n' + innerText + '\n```\n');
       return true;
     }
 
     // Kimi 也可能用标准 Markdown 代码块
     if ((el.tagName.toLowerCase() === 'pre' || el.tagName.toLowerCase() === 'code') &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-piercode-tool') || classAttr.includes('language-piercode') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
-      buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
+      buf.push('\n```piercode-tool\n' + innerText + '\n```\n');
       return true;
     }
 
@@ -63,19 +63,19 @@ export const qwenAdapter: PlatformAdapter = {
 
     // 匹配最外层 <pre class="qwen-markdown-code"> 且子元素中有 .tool
     if (tag === 'pre' && classAttr.includes('qwen-markdown-code')) {
-      const toolBody = el.querySelector('.qwen-markdown-code-body.openlink-tool, .qwen-markdown-code-body.tool');
+      const toolBody = el.querySelector('.qwen-markdown-code-body.piercode-tool, .qwen-markdown-code-body.tool');
       if (!toolBody) return false;
 
       const codeText = extractMonacoText(toolBody);
-      buf.push('\n```openlink-tool\n' + codeText.text + '\n```\n');
+      buf.push('\n```piercode-tool\n' + codeText.text + '\n```\n');
       return true; // 跳过 pre 的所有 children
     }
 
-    // 兜底：匹配 <div class="qwen-markdown-code-body tool/openlink-tool">
+    // 兜底：匹配 <div class="qwen-markdown-code-body tool/piercode-tool">
     if (classAttr.includes('qwen-markdown-code-body') &&
-        (classAttr.includes('openlink-tool') || /\btool\b/.test(classAttr))) {
+        (classAttr.includes('piercode-tool') || /\btool\b/.test(classAttr))) {
       const codeText = extractMonacoText(el);
-      buf.push('\n```openlink-tool\n' + codeText.text + '\n```\n');
+      buf.push('\n```piercode-tool\n' + codeText.text + '\n```\n');
       return true;
     }
 
@@ -175,10 +175,10 @@ export const chatZAdapter: PlatformAdapter = {
 
     // Chat Z 使用 CodeMirror6 渲染 tool 代码块
     // 外层容器: div.language-tool 包含 cm-editor
-    if (classAttr.includes('language-openlink-tool') || classAttr.includes('language-tool')) {
+    if (classAttr.includes('language-piercode-tool') || classAttr.includes('language-tool')) {
       const codeText = extractCodeMirror6Text(el);
       if (codeText) {
-        buf.push('\n```openlink-tool\n' + codeText + '\n```\n');
+        buf.push('\n```piercode-tool\n' + codeText + '\n```\n');
         return true;
       }
     }
@@ -191,9 +191,9 @@ export const chatZAdapter: PlatformAdapter = {
 
     // 标准代码块
     if ((tag === 'pre' || tag === 'code') &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-piercode-tool') || classAttr.includes('language-piercode') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
-      buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
+      buf.push('\n```piercode-tool\n' + innerText + '\n```\n');
       return true;
     }
 
@@ -211,17 +211,17 @@ export const claudeAdapter: PlatformAdapter = {
     const tag = el.tagName.toLowerCase();
 
     if (tag === 'pre') {
-      const code = el.querySelector('code[class*="language-openlink-tool"], code[class*="language-openlink"], code[class*="language-tool"]');
+      const code = el.querySelector('code[class*="language-piercode-tool"], code[class*="language-piercode"], code[class*="language-tool"]');
       if (!code) return false;
       const innerText = code.textContent || '';
-      buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
+      buf.push('\n```piercode-tool\n' + innerText + '\n```\n');
       return true;
     }
 
     if (tag === 'code' &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-piercode-tool') || classAttr.includes('language-piercode') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
-      buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
+      buf.push('\n```piercode-tool\n' + innerText + '\n```\n');
       return true;
     }
 
@@ -229,7 +229,7 @@ export const claudeAdapter: PlatformAdapter = {
   }
 };
 
-// 辅助函数: 提取文本中所有的 openlink-tool JSON 调用
+// 辅助函数: 提取文本中所有的 piercode-tool JSON 调用
 function extractAllToolCalls(text: string, buf: string[]): number {
   let count = 0;
   let i = 0;
@@ -261,7 +261,7 @@ function extractAllToolCalls(text: string, buf: string[]): number {
       try {
         const parsed = JSON.parse(jsonStr);
         if (parsed.name && parsed.call_id && parsed.args) {
-          buf.push('\n```openlink-tool\n' + jsonStr + '\n```\n');
+          buf.push('\n```piercode-tool\n' + jsonStr + '\n```\n');
           count++;
         }
       } catch {
@@ -271,7 +271,7 @@ function extractAllToolCalls(text: string, buf: string[]): number {
           try {
             const parsedFixed = JSON.parse(fixed);
             if (parsedFixed.name && parsedFixed.call_id && parsedFixed.args) {
-              buf.push('\n```openlink-tool\n' + fixed + '\n```\n');
+              buf.push('\n```piercode-tool\n' + fixed + '\n```\n');
               count++;
               jsonStr = fixed;
             }
@@ -307,10 +307,10 @@ export const chatGPTAdapter: PlatformAdapter = {
 
     // 策略2: 传统类名匹配 (旧前端兜底)
     if ((tag === 'pre' || tag === 'code') &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-piercode-tool') || classAttr.includes('language-piercode') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
       if (innerText.trim()) {
-        buf.push('\n```openlink-tool\n' + innerText.trim() + '\n```\n');
+        buf.push('\n```piercode-tool\n' + innerText.trim() + '\n```\n');
         return true;
       }
     }
@@ -329,9 +329,9 @@ export const geminiAdapter: PlatformAdapter = {
 
     // Gemini 通常使用标准 Markdown 渲染
     if ((el.tagName.toLowerCase() === 'pre' || el.tagName.toLowerCase() === 'code') &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-piercode-tool') || classAttr.includes('language-piercode') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
-      buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
+      buf.push('\n```piercode-tool\n' + innerText + '\n```\n');
       return true;
     }
 
@@ -353,16 +353,16 @@ export const aiStudioAdapter: PlatformAdapter = {
       const text = el.textContent || '';
       // 尝试提取看起来像工具调用的内容
       if (text.includes('"name"') && text.includes('"args"')) {
-        buf.push('\n```openlink-tool\n' + text + '\n```\n');
+        buf.push('\n```piercode-tool\n' + text + '\n```\n');
         return true;
       }
     }
 
     // 标准代码块
     if ((el.tagName.toLowerCase() === 'pre' || el.tagName.toLowerCase() === 'code') &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-piercode-tool') || classAttr.includes('language-piercode') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
-      buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
+      buf.push('\n```piercode-tool\n' + innerText + '\n```\n');
       return true;
     }
 
@@ -380,18 +380,18 @@ export const defaultAdapter: PlatformAdapter = {
 
     // 通用检测：任何包含 language-tool 的 pre/code 元素
     if ((el.tagName.toLowerCase() === 'pre' || el.tagName.toLowerCase() === 'code') &&
-        (classAttr.includes('language-openlink-tool') || classAttr.includes('language-openlink') || classAttr.includes('language-tool'))) {
+        (classAttr.includes('language-piercode-tool') || classAttr.includes('language-piercode') || classAttr.includes('language-tool'))) {
       const innerText = el.textContent || '';
-      buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
+      buf.push('\n```piercode-tool\n' + innerText + '\n```\n');
       return true;
     }
 
-    // 通用检测：包含 code + tool/openlink-tool 类的元素
+    // 通用检测：包含 code + tool/piercode-tool 类的元素
     if (classAttr.includes('code') &&
-        (classAttr.includes('openlink-tool') || /\btool\b/.test(classAttr)) &&
+        (classAttr.includes('piercode-tool') || /\btool\b/.test(classAttr)) &&
         !classAttr.includes('hljs')) { // 排除语法高亮库
       const innerText = el.textContent || '';
-      buf.push('\n```openlink-tool\n' + innerText + '\n```\n');
+      buf.push('\n```piercode-tool\n' + innerText + '\n```\n');
       return true;
     }
 
@@ -415,7 +415,7 @@ export const platformAdapters: PlatformAdapter[] = [
 export function getPlatformAdapter(): PlatformAdapter {
   for (const adapter of platformAdapters) {
     if (adapter.match()) {
-      console.log(`[OpenLink] 使用 ${adapter.name} 平台适配器`);
+      console.log(`[PierCode] 使用 ${adapter.name} 平台适配器`);
       return adapter;
     }
   }

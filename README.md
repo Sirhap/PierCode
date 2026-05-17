@@ -1,6 +1,6 @@
-# OpenLink
+# PierCode
 
-OpenLink 是一个本地开发辅助工具：通过浏览器扩展把网页版 AI 和本机 Go 服务连接起来，让 AI 可以在受限工作目录内请求读取文件、编辑文件、执行命令、搜索内容等工具能力。
+PierCode 是一个本地开发辅助工具：通过浏览器扩展把网页版 AI 和本机 Go 服务连接起来，让 AI 可以在受限工作目录内请求读取文件、编辑文件、执行命令、搜索内容等工具能力。
 
 它不是 API 网关，也不是生产级 Agent 运行时，更不是面向不可信提示词的安全沙箱。请只在你愿意暴露给当前 AI 页面访问的工作目录中运行。
 
@@ -9,7 +9,7 @@ OpenLink 是一个本地开发辅助工具：通过浏览器扩展把网页版 A
 - 本地 HTTP 服务，默认监听 `127.0.0.1:39527`
 - 可选 TUI，用于查看状态、输入指令、向浏览器 AI 页面注入文本
 - Chrome Manifest V3 浏览器扩展
-- `openlink-tool` fenced code block 工具调用解析
+- `piercode-tool` fenced code block 工具调用解析
 - 兼容部分旧 XML / function-call 风格工具调用
 - 基于真实路径解析的工作目录沙箱
 - 扩展和本地服务之间的 token 认证
@@ -113,9 +113,9 @@ go run ./cmd/cli -dir .
 
 默认输出到 `release-packages\<timestamp>\`，包含：
 
-- `bin\openlink-cli.exe`
-- `bin\openlink.exe`
-- `openlink_windows_amd64.zip`
+- `bin\piercode-cli.exe`
+- `bin\piercode.exe`
+- `piercode_windows_amd64.zip`
 - `extension.zip`
 
 只想快速构建、不跑测试：
@@ -127,19 +127,19 @@ go run ./cmd/cli -dir .
 构建 TUI 版本：
 
 ```powershell
-go build -o openlink-cli.exe ./cmd/cli
+go build -o piercode-cli.exe ./cmd/cli
 ```
 
 构建普通服务版本：
 
 ```powershell
-go build -o openlink.exe ./cmd/server
+go build -o piercode.exe ./cmd/server
 ```
 
 这些构建产物不需要提交：
 
-- `openlink.exe`
-- `openlink-cli.exe`
+- `piercode.exe`
+- `piercode-cli.exe`
 - `extension/dist/`
 - `release/`
 - `release-packages/`
@@ -182,7 +182,7 @@ go build -o openlink.exe ./cmd/server
 
 ## 安全边界
 
-OpenLink 做了基础防护，但不能替代人工确认。
+PierCode 做了基础防护，但不能替代人工确认。
 
 已有保护：
 

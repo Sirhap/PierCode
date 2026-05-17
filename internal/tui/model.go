@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode"
 
-	skillpkg "github.com/afumu/openlink/internal/skill"
+	skillpkg "github.com/sirhap/piercode/internal/skill"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -287,7 +287,7 @@ func skillPromptCmd(rootDir, skillName string, port int, token string) tea.Cmd {
 }
 
 func formatSkillPrompt(info skillpkg.Info, content string) string {
-	return fmt.Sprintf("请加载并遵循这个 OpenLink skill。\n\n<skill_content name=%q>\nIMPORTANT: All file paths referenced in this skill must use absolute paths. The skill directory is: %s\n\n%s\n</skill_content>",
+	return fmt.Sprintf("请加载并遵循这个 PierCode skill。\n\n<skill_content name=%q>\nIMPORTANT: All file paths referenced in this skill must use absolute paths. The skill directory is: %s\n\n%s\n</skill_content>",
 		info.Name,
 		info.Dir,
 		strings.TrimSpace(content),
@@ -362,7 +362,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.inputCursor = 0
 					m.inputMode = true
 					m.resetHistoryRecall()
-					return m, tea.Batch(tea.Println("openlink> "+text), injectInputCmd(text, m.port, m.token))
+					return m, tea.Batch(tea.Println("piercode> "+text), injectInputCmd(text, m.port, m.token))
 				}
 				m.input = ""
 				m.inputCursor = 0
@@ -572,21 +572,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if strings.EqualFold(msg.ToolName, "BROWSER") {
 			m.browserClients = extractTrailingCount(msg.Message)
 		}
-		if msg.Key != "" {
-			for i := len(m.logs) - 1; i >= 0; i-- {
-				if m.logs[i].Key == msg.Key {
-					m.logs[i].Time = time.Now()
-					m.logs[i].Source = msg.Source
-					m.logs[i].ToolName = msg.ToolName
-					m.logs[i].Status = msg.Status
-					m.logs[i].Message = msg.Message
-					m.logs[i].FullMessage = msg.FullMessage
-					m.logOffset = i
-					m.applyLogToTranscript(m.logs[i])
-					return m, nil
+	if msg.Key != "" {
+		for i := len(m.logs) - 1; i >= 0; i-- {
+			if m.logs[i].Key == msg.Key {
+				oldStatus := m.logs[i].Status
+				m.logs[i].Time = time.Now()
+				m.logs[i].Source = msg.Source
+				m.logs[i].ToolName = msg.ToolName
+				m.logs[i].Status = msg.Status
+				m.logs[i].Message = msg.Message
+				m.logs[i].FullMessage = msg.FullMessage
+				m.logOffset = i
+				if oldStatus != msg.Status {
+					m.stats[oldStatus]--
+					m.stats[msg.Status]++
 				}
+				m.applyLogToTranscript(m.logs[i])
+				return m, nil
 			}
 		}
+	}
 		entry := LogEntry{
 			Key: msg.Key, Time: time.Now(), Source: msg.Source, ToolName: msg.ToolName, Status: msg.Status, Message: msg.Message, FullMessage: msg.FullMessage,
 		}
@@ -649,11 +654,6 @@ func (m Model) activityHeight(width int) int {
 	composer := m.renderComposer(width)
 	reservedHeight := lipgloss.Height(hero) + lipgloss.Height(status) + lipgloss.Height(auth) + lipgloss.Height(composer) + 4
 	logHeight := m.height - reservedHeight
-	if logHeight < 4 {
-		hero = m.renderCompactHero(width)
-		reservedHeight = lipgloss.Height(hero) + lipgloss.Height(status) + lipgloss.Height(auth) + lipgloss.Height(composer) + 4
-		logHeight = m.height - reservedHeight
-	}
 	return clampInt(logHeight, 3, maxInt(3, m.height-6))
 }
 
@@ -773,14 +773,14 @@ func (m Model) renderHero(width int) string {
 		lines = append(lines, lipgloss.PlaceHorizontal(width, lipgloss.Center, logoStyle.Render(line)))
 	}
 	lines = append(lines,
-		lipgloss.PlaceHorizontal(width, lipgloss.Center, subtitleStyle.Render("OpenLink local AI bridge · browser extension · sandboxed tools")),
+		lipgloss.PlaceHorizontal(width, lipgloss.Center, subtitleStyle.Render("PierCode local AI bridge · browser extension · sandboxed tools")),
 		lipgloss.PlaceHorizontal(width, lipgloss.Center, subtitleStyle.Render("Type a message to send it to the active AI page")),
 	)
 	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderCompactHero(width int) string {
-	title := logoStyle.Render("OpenLink")
+	title := logoStyle.Render("PierCode")
 	meta := subtitleStyle.Render(fmt.Sprintf("  local AI bridge  port %d", m.port))
 	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(title + meta)
 }
@@ -910,9 +910,9 @@ func (m Model) renderComposer(width int) string {
 	innerWidth := maxInt(12, width-4)
 	if m.inputMode {
 		label := lipgloss.NewStyle().Foreground(colorAccent).Render("▌") + " " +
-			lipgloss.NewStyle().Foreground(colorText).Bold(true).Render("openlink>") + " "
-		continuation := strings.Repeat(" ", len([]rune("▌ openlink> ")))
-		inputLines := renderInputLinesWithCursor(m.input, m.normalizedInputCursor(), maxInt(8, innerWidth-len([]rune("▌ openlink> "))))
+			lipgloss.NewStyle().Foreground(colorText).Bold(true).Render("piercode>") + " "
+		continuation := strings.Repeat(" ", len([]rune("▌ piercode> ")))
+		inputLines := renderInputLinesWithCursor(m.input, m.normalizedInputCursor(), maxInt(8, innerWidth-len([]rune("▌ piercode> "))))
 		parts := make([]string, 0, len(inputLines)+1)
 		for i, line := range inputLines {
 			prefix := continuation

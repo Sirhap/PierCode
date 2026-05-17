@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/afumu/openlink/internal/procutil"
-	"github.com/afumu/openlink/internal/security"
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/procutil"
+	"github.com/sirhap/piercode/internal/security"
+	"github.com/sirhap/piercode/internal/types"
 )
 
 type ExecCmdTool struct {

@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// KillPortProcess 查找占用端口的进程；默认只在该进程是 openlink 自身（按可执行
+// KillPortProcess 查找占用端口的进程；默认只在该进程是 piercode 自身（按可执行
 // 名匹配）时才终止，避免误杀用户的 dev server。force=true 时跳过名称校验。
 // 返回是否成功释放端口。
 func KillPortProcess(port int, force bool) bool {
@@ -25,8 +25,8 @@ func KillPortProcess(port int, force bool) bool {
 		if pid == os.Getpid() {
 			continue
 		}
-		if !force && !isOpenLinkProcess(pid) {
-			fmt.Printf("   跳过 PID %d：非 openlink 进程，使用 --force-kill-port 可强制终止\n", pid)
+		if !force && !isPierCodeProcess(pid) {
+			fmt.Printf("   跳过 PID %d：非 piercode 进程，使用 --force-kill-port 可强制终止\n", pid)
 			continue
 		}
 		fmt.Printf("   终止进程 PID %d\n", pid)
@@ -51,15 +51,15 @@ func KillPortProcess(port int, force bool) bool {
 	return false
 }
 
-// isOpenLinkProcess 判断 PID 对应的可执行名是否包含 "openlink"。失败则保守
+// isPierCodeProcess 判断 PID 对应的可执行名是否包含 "piercode"。失败则保守
 // 返回 false，让调用方走 --force 分支。
-func isOpenLinkProcess(pid int) bool {
+func isPierCodeProcess(pid int) bool {
 	name, err := processName(pid)
 	if err != nil || name == "" {
 		return false
 	}
 	lower := strings.ToLower(name)
-	return strings.Contains(lower, "openlink")
+	return strings.Contains(lower, "piercode")
 }
 
 func processName(pid int) (string, error) {

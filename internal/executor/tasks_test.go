@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/afumu/openlink/internal/tool"
+	"github.com/sirhap/piercode/internal/tool"
 )
 
 func skipOnWindows(t *testing.T) {

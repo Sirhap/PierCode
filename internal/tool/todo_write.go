@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/types"
 )
 
 type TodoWriteTool struct {

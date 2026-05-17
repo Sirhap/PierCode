@@ -1,5 +1,5 @@
-const MONACO_REQUEST = 'OPENLINK_MONACO_TEXT_REQUEST';
-const MONACO_RESPONSE = 'OPENLINK_MONACO_TEXT_RESPONSE';
+const MONACO_REQUEST = 'PIERCODE_MONACO_TEXT_REQUEST';
+const MONACO_RESPONSE = 'PIERCODE_MONACO_TEXT_RESPONSE';
 
 function normalize(text: string): string {
   return text.replace(/\u00A0/g, ' ').trim();
@@ -18,7 +18,7 @@ function getMonacoModels(): any[] {
 function readEditorByDomId(domId: string): string | null {
   for (const editor of getMonacoEditors()) {
     const dom = editor.getDomNode?.();
-    if (dom?.getAttribute?.('data-openlink-monaco-id') === domId) {
+    if (dom?.getAttribute?.('data-piercode-monaco-id') === domId) {
       const value = editor.getModel?.()?.getValue?.();
       return typeof value === 'string' ? value : null;
     }

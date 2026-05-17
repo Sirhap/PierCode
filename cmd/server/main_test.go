@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/afumu/openlink/internal/portutil"
+	"github.com/sirhap/piercode/internal/portutil"
 )
 
 func TestWindowsNetstatLinePIDMatchesExactListeningPort(t *testing.T) {

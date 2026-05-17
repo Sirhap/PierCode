@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/afumu/openlink/internal/tool"
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/tool"
+	"github.com/sirhap/piercode/internal/types"
 )
 
 type mutatingArgsTool struct{}

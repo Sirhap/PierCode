@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/types"
 )
 
 func testConfig(t *testing.T) *types.Config {

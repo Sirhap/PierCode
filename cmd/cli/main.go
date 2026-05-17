@@ -9,12 +9,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/afumu/openlink/internal/portutil"
-	"github.com/afumu/openlink/internal/security"
-	"github.com/afumu/openlink/internal/server"
-	"github.com/afumu/openlink/internal/tui"
-	"github.com/afumu/openlink/internal/types"
-	"github.com/afumu/openlink/prompts"
+	"github.com/sirhap/piercode/internal/portutil"
+	"github.com/sirhap/piercode/internal/security"
+	"github.com/sirhap/piercode/internal/server"
+	"github.com/sirhap/piercode/internal/tui"
+	"github.com/sirhap/piercode/internal/types"
+	"github.com/sirhap/piercode/prompts"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -29,16 +29,16 @@ func main() {
 	allowShell := flag.Bool("allow-shell", true, "启用 exec_cmd 工具。默认开启；用 --allow-shell=false 或 --no-shell 关闭")
 	noShell := flag.Bool("no-shell", false, "禁用 exec_cmd（等价于 --allow-shell=false）")
 	allowedOrigins := flag.String("allowed-origins", "", "允许的 CORS/WS Origin 白名单（逗号分隔），默认仅放行 chrome-extension:// 与 127.0.0.1")
-	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 openlink 进程占用，强制结束该进程")
+	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 piercode 进程占用，强制结束该进程")
 	flag.Parse()
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
-	// 检测端口是否已被占用，若占用则只杀掉 openlink 旧进程；其它进程默认
+	// 检测端口是否已被占用，若占用则只杀掉 piercode 旧进程；其它进程默认
 	// 不动以避免误杀用户的 dev server，--force-kill-port 才一律杀。
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		fmt.Printf("端口 %d 已被占用，正在尝试终止 openlink 旧进程...\n", *port)
+		fmt.Printf("端口 %d 已被占用，正在尝试终止 piercode 旧进程...\n", *port)
 		if killed := portutil.KillPortProcess(*port, *forceKillPort); killed {
 			fmt.Printf("✅ 已终止旧进程，重新检测端口...\n")
 			ln, err = net.Listen("tcp", addr)
@@ -47,7 +47,7 @@ func main() {
 				os.Exit(1)
 			}
 		} else {
-			fmt.Printf("❌ 端口被非 openlink 进程占用。请使用 -port 指定其他端口，或加 --force-kill-port 强制结束该进程。\n")
+			fmt.Printf("❌ 端口被非 piercode 进程占用。请使用 -port 指定其他端口，或加 --force-kill-port 强制结束该进程。\n")
 			os.Exit(1)
 		}
 	}

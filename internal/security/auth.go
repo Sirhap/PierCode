@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -20,7 +20,7 @@ func LoadOrCreateToken() (string, error) {
 		return "", err
 	}
 
-	dir := filepath.Join(home, ".openlink")
+	dir := filepath.Join(home, ".piercode")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}

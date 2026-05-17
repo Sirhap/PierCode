@@ -1,4 +1,4 @@
-export const FENCE_RE = /```(?:openlink-tool|tool)\s*\n([\s\S]*?)\n```/gi;
+export const FENCE_RE = /```(?:piercode-tool|tool)\s*\n([\s\S]*?)\n```/gi;
 
 export const TOOL_RE = /<tool(?:\s[^>]*)?>[\s\S]*?<\/(?:tool|function)(?:_call)?>/gi;
 

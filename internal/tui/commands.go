@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	skillpkg "github.com/afumu/openlink/internal/skill"
+	skillpkg "github.com/sirhap/piercode/internal/skill"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -348,13 +348,14 @@ func fuzzyMatch(query, value string) bool {
 	if strings.Contains(value, query) {
 		return true
 	}
+	queryRunes := []rune(query)
 	idx := 0
 	for _, r := range value {
-		if idx < len(query) && byte(r) == query[idx] {
+		if idx < len(queryRunes) && r == queryRunes[idx] {
 			idx++
 		}
 	}
-	return idx == len(query)
+	return idx == len(queryRunes)
 }
 
 func completeDirPath(rootDir, raw string) (string, bool) {
@@ -375,6 +376,10 @@ func completeDirPath(rootDir, raw string) (string, bool) {
 	entries, err := os.ReadDir(baseDir)
 	if err != nil {
 		return "", false
+	}
+	// 如果 raw 以 / 结尾，说明路径已完整，直接返回
+	if prefix == "" {
+		return raw, true
 	}
 	prefixLower := strings.ToLower(prefix)
 	for _, entry := range entries {

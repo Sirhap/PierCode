@@ -76,7 +76,7 @@ func (l *Logger) LogUserPrompt(key, message string) {
 			Status:  "pending",
 			Message: message,
 		})
-		l.program.Println("openlink> " + strings.TrimSpace(message))
+		l.program.Println("piercode> " + strings.TrimSpace(message))
 	}
 }
 

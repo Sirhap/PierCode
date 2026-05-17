@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/afumu/openlink/internal/security"
-	"github.com/afumu/openlink/internal/types"
+	"github.com/sirhap/piercode/internal/security"
+	"github.com/sirhap/piercode/internal/types"
 )
 
 type Tool interface {
@@ -117,13 +117,13 @@ type ToolInfo struct {
 	Parameters  interface{} `json:"parameters,omitempty"`
 }
 
-// resolveAbsPath validates an absolute path against RootDir and common allowed roots (~/.claude, ~/.openlink, ~/.agent).
+// resolveAbsPath validates an absolute path against RootDir and common allowed roots (~/.claude, ~/.piercode, ~/.agent).
 func resolveAbsPath(path, rootDir string) (string, error) {
 	home, _ := os.UserHomeDir()
 	roots := []string{
 		rootDir,
 		filepath.Join(home, ".claude"),
-		filepath.Join(home, ".openlink"),
+		filepath.Join(home, ".piercode"),
 		filepath.Join(home, ".agent"),
 	}
 	return security.SafeAbsPath(path, roots...)

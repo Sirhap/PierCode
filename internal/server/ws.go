@@ -146,7 +146,7 @@ func (m *WSManager) Send(message []byte) {
 	case m.broadcast <- message:
 	default:
 		// 队列满时丢弃，避免阻塞主流程，但记录日志便于诊断丢失。
-		log.Printf("[OpenLink][WS] ⚠️ 广播队列已满，丢弃 %d 字节消息", len(message))
+		log.Printf("[PierCode][WS] ⚠️ 广播队列已满，丢弃 %d 字节消息", len(message))
 	}
 }
 

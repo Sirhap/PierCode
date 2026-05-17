@@ -19,10 +19,10 @@ func SkillDirs(rootDir string) []string {
 	home, _ := os.UserHomeDir()
 	return []string{
 		filepath.Join(rootDir, ".skills"),
-		filepath.Join(rootDir, ".openlink", "skills"),
+		filepath.Join(rootDir, ".piercode", "skills"),
 		filepath.Join(rootDir, ".agent", "skills"),
 		filepath.Join(rootDir, ".claude", "skills"),
-		filepath.Join(home, ".openlink", "skills"),
+		filepath.Join(home, ".piercode", "skills"),
 		filepath.Join(home, ".agent", "skills"),
 		filepath.Join(home, ".claude", "skills"),
 	}

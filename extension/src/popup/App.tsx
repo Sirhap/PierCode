@@ -76,7 +76,7 @@ export default function App() {
     return new Promise(resolve => {
       chrome.runtime.sendMessage({ type: 'ENSURE_CONTENT_SCRIPTS' }, (result: EnsureContentResult) => {
         if (chrome.runtime.lastError) {
-          console.warn('[OpenLink] ensure content scripts failed:', chrome.runtime.lastError.message)
+          console.warn('[PierCode] ensure content scripts failed:', chrome.runtime.lastError.message)
           resolve({})
           return
         }
@@ -146,7 +146,7 @@ export default function App() {
         setToast({ msg: `❌ Token 验证失败：${reason}`, type: 'error' })
       }
     } catch (error) {
-      console.error('[OpenLink] auth failed:', error)
+      console.error('[PierCode] auth failed:', error)
       setToast({ msg: '❌ 连接失败，请检查服务是否运行', type: 'error' })
     } finally {
       setLoading(false)
@@ -180,7 +180,7 @@ export default function App() {
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <span className="text-lg">🔗</span>
-          <span className="font-semibold text-white tracking-wide">OpenLink</span>
+          <span className="font-semibold text-white tracking-wide">PierCode</span>
         </div>
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${statusColor} ${status === 'checking' ? 'animate-pulse' : ''}`} />

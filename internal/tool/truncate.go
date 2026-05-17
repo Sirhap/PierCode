@@ -30,7 +30,7 @@ func Truncate(output string) (string, bool) {
 	}
 
 	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".openlink", "tool-output")
+	dir := filepath.Join(home, ".piercode", "tool-output")
 	os.MkdirAll(dir, 0755)
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	fullPath := filepath.Join(dir, id)

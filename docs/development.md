@@ -9,7 +9,7 @@
 ## 项目结构
 
 ```
-openlink/
+piercode/
 ├── cmd/server/          # 服务端入口
 ├── internal/
 │   ├── executor/        # 工具执行器
@@ -39,7 +39,7 @@ go run cmd/server/main.go -dir=/your/workspace
 ### 构建服务端
 
 ```bash
-go build -o openlink cmd/server/main.go
+go build -o piercode cmd/server/main.go
 ```
 
 ### 开发扩展

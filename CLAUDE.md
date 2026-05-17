@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-openlink is a browser-local proxy that enables web-based AI assistants (Gemini/ChatGPT/DeepSeek etc.) to access the local filesystem through a sandboxed Go server and Chrome extension.
+piercode is a browser-local proxy that enables web-based AI assistants (Gemini/ChatGPT/DeepSeek etc.) to access the local filesystem through a sandboxed Go server and Chrome extension.
 
 **Architecture**: Two-component system:
 1. **Go Server** (`cmd/server/main.go`): HTTP server that executes filesystem operations within a sandboxed directory
@@ -26,10 +26,10 @@ go run cmd/server/main.go -dir=/path/to/workspace -port=39527 -timeout=60
 
 ```bash
 # Build server binary
-go build -o openlink cmd/server/main.go
+go build -o piercode cmd/server/main.go
 
 # Run built binary
-./openlink -dir=/your/workspace -port=39527
+./piercode -dir=/your/workspace -port=39527
 ```
 
 ### Building the Extension
@@ -155,7 +155,7 @@ Local Filesystem
 - Privilege: `sudo`, `chmod 777`
 - System: `kill -9`, `reboot`, `shutdown`
 
-**Token Auth**: All API endpoints protected by Bearer token (stored in `~/.openlink/token`)
+**Token Auth**: All API endpoints protected by Bearer token (stored in `~/.piercode/token`)
 
 **Timeout Control**: All commands timeout after configured duration (default 60s)
 
@@ -177,10 +177,10 @@ Skills are Markdown files that extend AI capabilities for specific domains. Scan
 
 ```
 <rootDir>/.skills/
-<rootDir>/.openlink/skills/
+<rootDir>/.piercode/skills/
 <rootDir>/.agent/skills/
 <rootDir>/.claude/skills/
-~/.openlink/skills/
+~/.piercode/skills/
 ~/.agent/skills/
 ~/.claude/skills/
 ```
@@ -189,7 +189,7 @@ Each skill is a subdirectory containing `SKILL.md` with frontmatter (`name`, `de
 
 ## Module Information
 
-- **Module**: `github.com/afumu/openlink`
+- **Module**: `github.com/Sirhap/PierCode`
 - **Go Version**: 1.23.0+ (toolchain 1.24.10)
 - **Main Dependencies**: Gin web framework, standard library only
 - **Extension**: TypeScript, Manifest V3, built with esbuild/webpack

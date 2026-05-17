@@ -135,8 +135,8 @@ func TestViewRendersLogoAndStatus(t *testing.T) {
 	model.status = "running"
 
 	view := model.View()
-	if !strings.Contains(view, "OpenLink") && !strings.Contains(view, "OPENLINK") {
-		t.Fatalf("expected OpenLink branding in view")
+	if !strings.Contains(view, "PierCode") && !strings.Contains(view, "PIERCODE") {
+		t.Fatalf("expected PierCode branding in view")
 	}
 	if !strings.Contains(view, "RUNNING") {
 		t.Fatalf("expected running status in view")
@@ -522,7 +522,7 @@ func TestInputHintDoesNotRenderShortcutHelp(t *testing.T) {
 	if strings.Contains(view, "i//") {
 		t.Fatalf("focus hint should not render malformed i// text, got %q", view)
 	}
-	if !strings.Contains(view, "openlink> hello") {
+	if !strings.Contains(view, "piercode> hello") {
 		t.Fatalf("expected shell-like input label, got %q", view)
 	}
 }

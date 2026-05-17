@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-const pendingQuestionCancelPrefix = "\x00openlink-cancel:"
+const pendingQuestionCancelPrefix = "\x00piercode-cancel:"
 
 // PendingQuestions tracks question tool invocations waiting for a user reply.
 // The question tool registers a channel keyed by call_id, broadcasts the

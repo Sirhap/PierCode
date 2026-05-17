@@ -41,7 +41,7 @@ describe('ChatGPT DOM adapter', () => {
     expect(extractWithChatGPTAdapter(response!)).toContain('你好！有什么我可以帮你的吗？');
   });
 
-  it('normalizes ChatGPT tool code blocks into openlink-tool fences', () => {
+  it('normalizes ChatGPT tool code blocks into piercode-tool fences', () => {
     const dom = new JSDOM(`
       <div data-message-author-role="assistant">
         <div class="markdown prose">
@@ -52,7 +52,7 @@ describe('ChatGPT DOM adapter', () => {
 
     const response = dom.window.document.querySelector(chatGPTAdapter.responseSelector)!;
     const text = extractWithChatGPTAdapter(response);
-    expect(text).toContain('```openlink-tool');
+    expect(text).toContain('```piercode-tool');
     expect(text).toContain('"name":"list_dir"');
     expect(text).toContain('"path":"."');
   });

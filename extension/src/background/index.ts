@@ -27,7 +27,7 @@ async function ensureContentScripts(): Promise<{ tabs: number; injected: number;
       injected += 1;
     } catch (error) {
       failed += 1;
-      console.warn('[OpenLink] 注入 AI 页面失败:', tab.url, error);
+      console.warn('[PierCode] 注入 AI 页面失败:', tab.url, error);
     }
   }));
 

@@ -5,9 +5,9 @@ import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
 
-const MONACO_ID_ATTR = 'data-openlink-monaco-id';
-const MONACO_REQUEST = 'OPENLINK_MONACO_TEXT_REQUEST';
-const MONACO_RESPONSE = 'OPENLINK_MONACO_TEXT_RESPONSE';
+const MONACO_ID_ATTR = 'data-piercode-monaco-id';
+const MONACO_REQUEST = 'PIERCODE_MONACO_TEXT_REQUEST';
+const MONACO_RESPONSE = 'PIERCODE_MONACO_TEXT_RESPONSE';
 
 let pageBridgeInjected = false;
 let monacoIdSeq = 0;
@@ -39,12 +39,12 @@ function requestMonacoModelText(container: Element, visibleText: string): Promis
 
   let domId = monacoEl.getAttribute(MONACO_ID_ATTR);
   if (!domId) {
-    domId = `openlink-monaco-${Date.now()}-${++monacoIdSeq}`;
+    domId = `piercode-monaco-${Date.now()}-${++monacoIdSeq}`;
     monacoEl.setAttribute(MONACO_ID_ATTR, domId);
   }
 
   injectPageBridge();
-  const requestId = `openlink-monaco-request-${Date.now()}-${++monacoRequestSeq}`;
+  const requestId = `piercode-monaco-request-${Date.now()}-${++monacoRequestSeq}`;
 
   return new Promise(resolve => {
     const timeout = setTimeout(() => {
@@ -74,8 +74,8 @@ function requestMonacoModelText(container: Element, visibleText: string): Promis
 function clickQwenOverflowPlaceholders(container: Element): boolean {
   let clicked = false;
   container.querySelectorAll<HTMLElement>('.mtkoverflow').forEach(el => {
-    if (el.dataset.openlinkClicked === '1') return;
-    el.dataset.openlinkClicked = '1';
+    if (el.dataset.piercodeClicked === '1') return;
+    el.dataset.piercodeClicked = '1';
     el.click();
     clicked = true;
   });
@@ -95,7 +95,7 @@ function notifyContextInvalid(): void {
 
 function checkContext(showNotice = false): boolean {
   if (isContextValid()) return true;
-  document.querySelectorAll('[data-openlink-key]').forEach(el => el.remove());
+  document.querySelectorAll('[data-piercode-key]').forEach(el => el.remove());
   const btn = document.querySelector('button[style*="z-index:99999"]');
   if (btn) {
     (btn as HTMLButtonElement).disabled = true;
@@ -183,7 +183,7 @@ function showRemoteQuestionPopup(callID: string, question: string, options: unkn
   dismissRemoteQuestionPopup(callID);
 
   const overlay = document.createElement('div');
-  overlay.dataset.openlinkQuestionId = callID;
+  overlay.dataset.piercodeQuestionId = callID;
   overlay.style.cssText = [
     'position:fixed', 'right:20px', 'bottom:20px', 'z-index:2147483646',
     'max-width:420px', 'min-width:300px', 'padding:14px 16px',
@@ -195,7 +195,7 @@ function showRemoteQuestionPopup(callID: string, question: string, options: unkn
   ].join(';');
 
   const header = document.createElement('div');
-  header.textContent = '🙋 openlink 需要您的回答';
+  header.textContent = '🙋 piercode 需要您的回答';
   header.style.cssText = 'font-weight:600;margin-bottom:8px;color:#fbbf24';
   overlay.appendChild(header);
 
@@ -390,8 +390,8 @@ function getSiteConfig(): SiteConfig {
   return { editor: 'textarea[placeholder*="Start typing a prompt"]', sendBtn: 'button.ctrl-enter-submits.ms-button-primary[type="submit"], button[aria-label*="Run"]', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || 'ms-chat-turn' };
 }
 
-if (!(window as any).__OPENLINK_LOADED__) {
-  (window as any).__OPENLINK_LOADED__ = true;
+if (!(window as any).__PIERCODE_LOADED__) {
+  (window as any).__PIERCODE_LOADED__ = true;
 
   const cfg = getSiteConfig();
 
@@ -443,7 +443,7 @@ function getConversationId(): string {
 
 function isExecuted(key: string): boolean {
   try {
-    const store: Record<string, number> = JSON.parse(localStorage.getItem('openlink_executed') || '{}');
+    const store: Record<string, number> = JSON.parse(localStorage.getItem('piercode_executed') || '{}');
     return !!store[key];
   } catch { return false; }
 }
@@ -452,13 +452,13 @@ const TTL = 7 * 24 * 60 * 60 * 1000;
 
 function markExecuted(key: string): void {
   try {
-    const store: Record<string, number> = JSON.parse(localStorage.getItem('openlink_executed') || '{}');
+    const store: Record<string, number> = JSON.parse(localStorage.getItem('piercode_executed') || '{}');
     const now = Date.now();
     for (const k of Object.keys(store)) {
       if (now - store[k] > TTL) delete store[k];
     }
     store[key] = now;
-    localStorage.setItem('openlink_executed', JSON.stringify(store));
+    localStorage.setItem('piercode_executed', JSON.stringify(store));
   } catch {}
 }
 
@@ -470,9 +470,9 @@ async function executeToolCallRaw(toolCall: any): Promise<string | null> {
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
   const response = await bgFetch(`${apiUrl}/exec`, { method: 'POST', headers, body: JSON.stringify(toolCall) });
   if (response.status === 401) return '认证失败，请在插件中重新输入 Token';
-  if (!response.ok) return `[OpenLink 错误] HTTP ${response.status}`;
+  if (!response.ok) return `[PierCode 错误] HTTP ${response.status}`;
   const result = JSON.parse(response.body);
-  const output = result.output || result.error || '[OpenLink] 空响应';
+  const output = result.output || result.error || '[PierCode] 空响应';
   const name = result.name || toolCall.name || '';
   const callId = result.callId || result.call_id || toolCall.callId || toolCall.call_id || '';
   return name ? `### ${name} #${callId}\n${output}` : output;
@@ -502,16 +502,16 @@ async function executeToolCallReturn(toolCall: any): Promise<ToolExecutionResult
     });
 
     if (response.status === 401) return { output: '认证失败，请在插件中重新输入 Token', stopStream: false, sendable: true };
-    if (!response.ok) return { output: `[OpenLink 错误] HTTP ${response.status}`, stopStream: false, sendable: true };
+    if (!response.ok) return { output: `[PierCode 错误] HTTP ${response.status}`, stopStream: false, sendable: true };
 
     const result = JSON.parse(response.body);
     return {
-      output: result.output || result.error || '[OpenLink] 空响应',
+      output: result.output || result.error || '[PierCode] 空响应',
       stopStream: !!result.stopStream,
       sendable: true
     };
   } catch (error) {
-    return { output: `[OpenLink 错误] ${error}`, stopStream: false, sendable: true };
+    return { output: `[PierCode 错误] ${error}`, stopStream: false, sendable: true };
   }
 }
 
@@ -523,13 +523,13 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   if (!anchor) return;
 
   // Prevent duplicate cards
-  if (anchor.querySelector(`[data-openlink-key="${CSS.escape(key)}"]`)) return;
+  if (anchor.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`)) return;
 
   ensureStreamDispatchers();
 
   const args = data.args || {};
   const card = document.createElement('div');
-  card.setAttribute('data-openlink-key', key);
+  card.setAttribute('data-piercode-key', key);
   card.style.cssText = 'border:1px solid #444;border-radius:8px;padding:12px;margin:8px 0;background:#1e1e2e;color:#cdd6f4;font-size:13px';
 
   const header = document.createElement('div');
@@ -804,7 +804,7 @@ function startDOMObserver(_responseSelector: string) {
           if (isExecuted(key)) continue;
 
           // 更新卡片状态为"执行中..."
-          const cardEl = document.querySelector(`[data-openlink-key="${CSS.escape(key)}"]`);
+          const cardEl = document.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`);
           const btnEl = cardEl?.querySelector('button') as HTMLButtonElement | null;
           if (btnEl) { btnEl.disabled = true; btnEl.textContent = '执行中...'; }
 
@@ -881,7 +881,7 @@ function startDOMObserver(_responseSelector: string) {
     if (sourceEl && platformAdapter.name === 'qwen') {
       const toolPres = sourceEl.querySelectorAll('pre.qwen-markdown-code');
       for (const pre of toolPres) {
-        const toolBody = pre.querySelector('.qwen-markdown-code-body.tool, .qwen-markdown-code-body.openlink-tool');
+        const toolBody = pre.querySelector('.qwen-markdown-code-body.tool, .qwen-markdown-code-body.piercode-tool');
         if (!toolBody) continue;
 
         let extraction = extractMonacoText(toolBody);
@@ -912,7 +912,7 @@ function startDOMObserver(_responseSelector: string) {
             notifyQwenOverflowOnce(codeText);
             continue;
           }
-          console.warn('[OpenLink] Qwen DOM提取解析失败:', codeText);
+          console.warn('[PierCode] Qwen DOM提取解析失败:', codeText);
           showToast('工具调用格式错误，请检查 AI 输出是否正确', 5000);
           continue;
         }
@@ -920,7 +920,7 @@ function startDOMObserver(_responseSelector: string) {
         const callId = getToolCallId(data);
         const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(codeText));
         if (processed.has(key)) continue;
-        console.log('[OpenLink] 提取到工具调用(Qwen DOM):', data);
+        console.log('[PierCode] 提取到工具调用(Qwen DOM):', data);
 
         if (sourceEl) {
           processed.add(key);
@@ -935,7 +935,7 @@ function startDOMObserver(_responseSelector: string) {
 
     // ── Phase 0b: 直接从 DOM 提取 tool 代码块（Chat Z CodeMirror6 专用） ──
     if (sourceEl && platformAdapter.name === 'chatz') {
-      const toolContainers = sourceEl.querySelectorAll('.language-openlink-tool, .language-tool');
+      const toolContainers = sourceEl.querySelectorAll('.language-piercode-tool, .language-tool');
       for (const container of toolContainers) {
         // 从 CodeMirror6 提取文本
         const cmContent = container.querySelector('.cm-content');
@@ -953,7 +953,7 @@ function startDOMObserver(_responseSelector: string) {
         }
         const data = parseJsonFenceToolCall(codeText) || tryParseToolJSON(codeText);
         if (!data) {
-          console.warn('[OpenLink] Chat Z DOM提取解析失败:', codeText);
+          console.warn('[PierCode] Chat Z DOM提取解析失败:', codeText);
           showToast('工具调用格式错误，请检查 AI 输出是否正确', 5000);
           continue;
         }
@@ -961,7 +961,7 @@ function startDOMObserver(_responseSelector: string) {
         const callId = getToolCallId(data);
         const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(codeText));
         if (processed.has(key)) continue;
-        console.log('[OpenLink] 提取到工具调用(Chat Z DOM):', data);
+        console.log('[PierCode] 提取到工具调用(Chat Z DOM):', data);
 
         if (sourceEl) {
           processed.add(key);
@@ -975,7 +975,7 @@ function startDOMObserver(_responseSelector: string) {
     }
 
     // ── Phase 1: JSON 围栏格式（优先） ──
-    if (lower.includes('```openlink-tool') || lower.includes('```tool')) {
+    if (lower.includes('```piercode-tool') || lower.includes('```tool')) {
       FENCE_RE.lastIndex = 0;
       let fenceMatch;
       while ((fenceMatch = FENCE_RE.exec(text)) !== null) {
@@ -988,7 +988,7 @@ function startDOMObserver(_responseSelector: string) {
         }
         const data = parseJsonFenceToolCall(cleanedJsonStr) || tryParseToolJSON(cleanedJsonStr);
         if (!data) {
-          console.warn('[OpenLink] JSON 围栏解析失败:', cleanedJsonStr);
+          console.warn('[PierCode] JSON 围栏解析失败:', cleanedJsonStr);
           showToast('工具调用格式错误，请检查 AI 输出是否正确', 5000);
           continue;
         }
@@ -996,7 +996,7 @@ function startDOMObserver(_responseSelector: string) {
         const callId = getToolCallId(data);
         const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(fenceMatch[0]));
         if (processed.has(key)) continue;
-        console.log('[OpenLink] 提取到工具调用(JSON):', data);
+        console.log('[PierCode] 提取到工具调用(JSON):', data);
 
         if (sourceEl) {
           processed.add(key);
@@ -1019,7 +1019,7 @@ function startDOMObserver(_responseSelector: string) {
         const inner = full.replace(/^<tool[^>]*>|<\/(?:tool|function)(?:_call)?>$/g, '').trim();
         const data = parseXmlToolCall(full, decodeHTMLEntities) || tryParseToolJSON(inner);
         if (!data) {
-          console.warn('[OpenLink] 工具调用解析失败:', full);
+          console.warn('[PierCode] 工具调用解析失败:', full);
           showToast('工具调用格式错误，请检查 AI 输出是否正确', 5000);
           continue;
         }
@@ -1027,7 +1027,7 @@ function startDOMObserver(_responseSelector: string) {
         const callId = getToolCallId(data);
         const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(full));
         if (processed.has(key)) continue;
-        console.log('[OpenLink] 提取到工具调用(XML):', data);
+        console.log('[PierCode] 提取到工具调用(XML):', data);
 
         if (sourceEl) {
           processed.add(key);
@@ -1078,7 +1078,7 @@ function startDOMObserver(_responseSelector: string) {
 
   function cleanAIResponseLogText(text: string): string {
     const clean = text
-      .replace(/```(?:openlink-tool|tool)\s*[\s\S]*?```/gi, '')
+      .replace(/```(?:piercode-tool|tool)\s*[\s\S]*?```/gi, '')
       .replace(/<tool[\s\S]*?<\/(?:tool|function)(?:_call)?>/gi, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
@@ -1697,7 +1697,7 @@ function attachInputListener(editorEl: HTMLElement) {
         filtered.map(s => ({
           label: s.name,
           sub: s.description,
-          value: `\`\`\`openlink-tool\n{"name":"skill","call_id":"${Math.random().toString(36).slice(2,8)}","args":{"skill":"${s.name}"}}\n\`\`\``,
+          value: `\`\`\`piercode-tool\n{"name":"skill","call_id":"${Math.random().toString(36).slice(2,8)}","args":{"skill":"${s.name}"}}\n\`\`\``,
         })),
         (xml) => { replaceTokenInEditor(editorEl, token, xml, fillMethod); dismiss(); },
         dismiss

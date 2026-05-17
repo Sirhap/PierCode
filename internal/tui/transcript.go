@@ -52,7 +52,7 @@ func (m Model) renderTranscript(width, height int) string {
 	contentWidth := maxInt(8, width-4)
 	lines := make([]string, 0, height)
 	if len(m.turns) == 0 {
-		empty := "openlink> 直接输入消息发送到 AI 页面，/ 查看指令，Esc 后可滚动转录。"
+		empty := "piercode> 直接输入消息发送到 AI 页面，/ 查看指令，Esc 后可滚动转录。"
 		lines = append(lines, lipgloss.NewStyle().PaddingLeft(1).Render(subtitleStyle.Render(truncateString(empty, maxInt(10, width-4)))))
 	} else {
 		for _, turn := range m.turns {
@@ -81,12 +81,12 @@ func (m Model) renderTranscript(width, height int) string {
 func (m Model) renderTurnLines(turn Turn, width int) []string {
 	lines := make([]string, 0, 4+len(turn.Tools)*4)
 	if strings.TrimSpace(turn.UserText) != "" {
-		prefix := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("openlink>")
+		prefix := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("piercode>")
 		for i, line := range wrapTextLines(turn.UserText, maxInt(8, width-10)) {
 			if i == 0 {
 				lines = append(lines, prefix+" "+lipgloss.NewStyle().Foreground(colorUser).Render(line))
 			} else {
-				lines = append(lines, strings.Repeat(" ", len([]rune("openlink> ")))+lipgloss.NewStyle().Foreground(colorUser).Render(line))
+				lines = append(lines, strings.Repeat(" ", len([]rune("piercode> ")))+lipgloss.NewStyle().Foreground(colorUser).Render(line))
 			}
 		}
 	}

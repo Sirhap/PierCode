@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/afumu/openlink/internal/procutil"
-	"github.com/afumu/openlink/internal/tool"
+	"github.com/sirhap/piercode/internal/procutil"
+	"github.com/sirhap/piercode/internal/tool"
 )
 
 // TaskStatus is the lifecycle state of a background task.

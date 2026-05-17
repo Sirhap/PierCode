@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "OpenLink",
+  "name": "PierCode",
   "version": "1.0.0",
-  "description": "OpenLink 代理 - 连接 AI 与本地环境",
+  "description": "PierCode 代理 - 连接 AI 与本地环境",
   "background": {
     "service_worker": "background.js",
     "type": "module"

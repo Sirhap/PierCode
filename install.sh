@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-REPO="afumu/openlink"
-BIN="openlink"
+REPO="afumu/piercode"
+BIN="piercode"
 INSTALL_DIR="/usr/local/bin"
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -21,7 +21,7 @@ fi
 FILE="${BIN}_${OS}_${ARCH}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${FILE}"
 
-echo "正在安装 openlink ${VERSION} (${OS}/${ARCH})..."
+echo "正在安装 piercode ${VERSION} (${OS}/${ARCH})..."
 TMP=$(mktemp -d)
 curl -fsSL "$URL" | tar -xz -C "$TMP"
 
@@ -33,4 +33,4 @@ fi
 rm -rf "$TMP"
 
 echo "安装完成: $(which $BIN)"
-echo "运行 'openlink' 启动服务"
+echo "运行 'piercode' 启动服务"
