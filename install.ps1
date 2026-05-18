@@ -1,8 +1,8 @@
 $ErrorActionPreference = "Stop"
 
-$REPO = "afumu/openlink"
-$BIN = "openlink"
-$INSTALL_DIR = "$env:USERPROFILE\.openlink"
+$REPO = "Sirhap/PierCode"
+$BIN = "piercode"
+$INSTALL_DIR = "$env:USERPROFILE\.piercode"
 
 $ARCH = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
 
@@ -13,14 +13,14 @@ if (-not $VERSION) { Write-Error "获取版本失败"; exit 1 }
 $FILE = "${BIN}_windows_${ARCH}.zip"
 $URL = "https://github.com/$REPO/releases/download/$VERSION/$FILE"
 
-Write-Host "正在安装 openlink $VERSION (windows/$ARCH)..."
+Write-Host "正在安装 piercode $VERSION (windows/$ARCH)..."
 
 New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
-$TMP = Join-Path $env:TEMP "openlink_install"
+$TMP = Join-Path $env:TEMP "piercode_install"
 New-Item -ItemType Directory -Force -Path $TMP | Out-Null
 
-Invoke-WebRequest -Uri $URL -OutFile "$TMP\openlink.zip"
-Expand-Archive -Path "$TMP\openlink.zip" -DestinationPath $TMP -Force
+Invoke-WebRequest -Uri $URL -OutFile "$TMP\piercode.zip"
+Expand-Archive -Path "$TMP\piercode.zip" -DestinationPath $TMP -Force
 Move-Item -Force "$TMP\$BIN.exe" "$INSTALL_DIR\$BIN.exe"
 Remove-Item -Recurse -Force $TMP
 
@@ -32,4 +32,4 @@ if ($path -notlike "*$INSTALL_DIR*") {
 }
 
 Write-Host "安装完成: $INSTALL_DIR\$BIN.exe"
-Write-Host "运行 'openlink' 启动服务"
+Write-Host "运行 'piercode' 启动服务"

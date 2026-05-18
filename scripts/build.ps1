@@ -57,12 +57,12 @@ try {
     Invoke-Step "go vet ./..." { go vet ./... }
   }
 
-  Invoke-Step "build openlink-cli.exe" {
-    go build -ldflags "-s -w" -o (Join-Path $binDir "openlink-cli.exe") ./cmd/cli
+  Invoke-Step "build piercode-cli.exe" {
+    go build -ldflags "-s -w" -o (Join-Path $binDir "piercode-cli.exe") ./cmd/cli
   }
 
-  Invoke-Step "build openlink.exe" {
-    go build -ldflags "-s -w" -o (Join-Path $binDir "openlink.exe") ./cmd/server
+  Invoke-Step "build piercode.exe" {
+    go build -ldflags "-s -w" -o (Join-Path $binDir "piercode.exe") ./cmd/server
   }
 
   Push-Location $extensionDir
@@ -93,7 +93,7 @@ try {
   }
 
   if (-not $NoPackage) {
-    $backendZip = Join-Path $outDir "openlink_windows_amd64.zip"
+    $backendZip = Join-Path $outDir "piercode_windows_amd64.zip"
     $extensionZip = Join-Path $outDir "extension.zip"
 
     Invoke-Step "package backend zip" {

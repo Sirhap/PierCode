@@ -3,7 +3,7 @@ version: 2
 builds:
   - id: server
     main: ./cmd/server
-    binary: openlink
+    binary: piercode
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
@@ -14,9 +14,9 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
-    name_template: "openlink_{{ .Os }}_{{ .Arch }}"
+    name_template: "piercode_{{ .Os }}_{{ .Arch }}"
 
 release:
   github:
-    owner: afumu
-    name: openlink
+    owner: Sirhap
+    name: PierCode
