@@ -129,7 +129,7 @@ func TestAssistantMarkdownRendersReadableBlocks(t *testing.T) {
 	})
 	model = next.(Model)
 
-	view := model.renderTranscript(100, 20)
+	view := model.renderTranscript(100)
 	for _, want := range []string{"标题", "• 第一项", "│ 引用", "``` code go", "│ fmt.Println"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected markdown render to contain %q, got %q", want, view)
@@ -156,7 +156,7 @@ func TestToolLogNestsUnderLatestTurn(t *testing.T) {
 	if model.turns[0].Tools[0].Name != "exec_cmd" {
 		t.Fatalf("expected exec_cmd tool, got %q", model.turns[0].Tools[0].Name)
 	}
-	view := model.renderTranscript(100, 20)
+	view := model.renderTranscript(100)
 	if !strings.Contains(view, "piercode> 跑测试") || !strings.Contains(view, "tool exec_cmd") {
 		t.Fatalf("expected transcript to group prompt and tool, got %q", view)
 	}

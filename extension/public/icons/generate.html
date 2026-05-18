@@ -1,0 +1,110 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Generate Icons</title>
+</head>
+<body>
+  <h2>Generating icons... Please wait.</h2>
+  <div id="status"></div>
+  <script>
+    const sizes = [16, 32, 48, 128];
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <!-- Gradient 1: Primary blue-cyan -->
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0099cc;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Gradient 2: Accent cyan-teal -->
+    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#64ffda;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00bfa5;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Glow filter -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background circle (subtle) -->
+  <circle cx="64" cy="64" r="60" fill="url(#grad1)" opacity="0.1"/>
+  
+  <!-- Main P letterform - bold and modern -->
+  <path d="M 32 24 
+           L 72 24 
+           C 92 24, 96 32, 96 44 
+           C 96 56, 92 64, 72 64 
+           L 52 64 
+           L 52 104 
+           L 32 104 
+           Z" 
+        fill="url(#grad1)" 
+        filter="url(#glow)"/>
+  
+  <!-- Horizontal bridge/pier lines -->
+  <rect x="32" y="64" width="24" height="4" fill="url(#grad2)" opacity="0.9"/>
+  <rect x="32" y="84" width="24" height="4" fill="url(#grad2)" opacity="0.9"/>
+  
+  <!-- Accent dots representing connection points -->
+  <circle cx="44" cy="34" r="3" fill="#64ffda"/>
+  <circle cx="44" cy="54" r="3" fill="#64ffda"/>
+  
+  <!-- Subtle code bracket accent -->
+  <path d="M 84 84 L 92 92 L 84 100" 
+        stroke="#64ffda" 
+        stroke-width="3" 
+        fill="none" 
+        stroke-linecap="round" 
+        stroke-linejoin="round"
+        opacity="0.7"/>
+</svg>
+`;
+    
+    async function generateIcons() {
+      const status = document.getElementById('status');
+      
+      for (const size of sizes) {
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        
+        const blob = new Blob([svg], {type: 'image/svg+xml'});
+        const url = URL.createObjectURL(blob);
+        
+        await new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            ctx.drawImage(img, 0, 0, size, size);
+            URL.revokeObjectURL(url);
+            
+            canvas.toBlob((pngBlob) => {
+              const link = document.createElement('a');
+              link.download = 'icon' + size + '.png';
+              link.href = URL.createObjectURL(pngBlob);
+              link.click();
+              
+              status.innerHTML += '<p>✓ Generated icon' + size + '.png</p>';
+              resolve();
+            });
+          };
+          img.src = url;
+        });
+      }
+      
+      status.innerHTML += '<h3>✅ All icons generated!</h3>';
+    }
+    
+    generateIcons();
+  </script>
+</body>
+</html>
+  

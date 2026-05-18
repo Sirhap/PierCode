@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PierCode Logo Generator</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 40px;
+            background: #0a0e27;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 40px;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+        
+        .preview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 30px;
+            max-width: 800px;
+        }
+        
+        .preview-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .preview-item span {
+            color: #8892b0;
+            font-size: 14px;
+        }
+        
+        canvas {
+            border: 1px solid rgba(100, 255, 218, 0.1);
+            border-radius: 8px;
+            background: transparent;
+        }
+    </style>
+</head>
+<body>
+    <h1 style="color: #64ffda; margin: 0;">PierCode Logo Preview</h1>
+    
+    <div class="preview-grid">
+        <div class="preview-item">
+            <canvas id="icon-16" width="16" height="16"></canvas>
+            <span>16x16</span>
+        </div>
+        <div class="preview-item">
+            <canvas id="icon-32" width="32" height="32"></canvas>
+            <span>32x32</span>
+        </div>
+        <div class="preview-item">
+            <canvas id="icon-48" width="48" height="48"></canvas>
+            <span>48x48</span>
+        </div>
+        <div class="preview-item">
+            <canvas id="icon-128" width="128" height="128"></canvas>
+            <span>128x128</span>
+        </div>
+    </div>
+
+    <script>
+        // PierCode Logo SVG Design
+        // Concept: A modern "P" with bridge/pier elements
+        const svgDesign = `
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+                <defs>
+                    <!-- Gradient 1: Primary blue-cyan -->
+                    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:1" />
+                        <stop offset="100%" style="stop-color:#0099cc;stop-opacity:1" />
+                    </linearGradient>
+                    
+                    <!-- Gradient 2: Accent cyan-teal -->
+                    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" style="stop-color:#64ffda;stop-opacity:1" />
+                        <stop offset="100%" style="stop-color:#00bfa5;stop-opacity:1" />
+                    </linearGradient>
+                    
+                    <!-- Glow filter -->
+                    <filter id="glow">
+                        <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+                        <feMerge>
+                            <feMergeNode in="coloredBlur"/>
+                            <feMergeNode in="SourceGraphic"/>
+                        </feMerge>
+                    </filter>
+                </defs>
+                
+                <!-- Background circle (subtle) -->
+                <circle cx="64" cy="64" r="60" fill="url(#grad1)" opacity="0.1"/>
+                
+                <!-- Main P letterform - bold and modern -->
+                <path d="M 32 24 
+                         L 72 24 
+                         C 92 24, 96 32, 96 44 
+                         C 96 56, 92 64, 72 64 
+                         L 52 64 
+                         L 52 104 
+                         L 32 104 
+                         Z" 
+                      fill="url(#grad1)" 
+                      filter="url(#glow)"/>
+                
+                <!-- Horizontal bridge/pier lines -->
+                <rect x="32" y="64" width="24" height="4" fill="url(#grad2)" opacity="0.9"/>
+                <rect x="32" y="84" width="24" height="4" fill="url(#grad2)" opacity="0.9"/>
+                
+                <!-- Accent dots representing connection points -->
+                <circle cx="44" cy="34" r="3" fill="#64ffda"/>
+                <circle cx="44" cy="54" r="3" fill="#64ffda"/>
+                
+                <!-- Subtle code bracket accent -->
+                <path d="M 84 84 L 92 92 L 84 100" 
+                      stroke="#64ffda" 
+                      stroke-width="3" 
+                      fill="none" 
+                      stroke-linecap="round" 
+                      stroke-linejoin="round"
+                      opacity="0.7"/>
+            </svg>
+        `;
+
+        // Function to draw SVG on canvas
+        function drawIcon(canvasId, size) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            const img = new Image();
+            
+            const svgBlob = new Blob([svgDesign], {type: 'image/svg+xml;charset=utf-8'});
+            const url = URL.createObjectURL(svgBlob);
+            
+            img.onload = function() {
+                ctx.clearRect(0, 0, size, size);
+                ctx.drawImage(img, 0, 0, size, size);
+                URL.revokeObjectURL(url);
+                
+                // Export as PNG
+                canvas.toBlob(function(blob) {
+                    const link = document.createElement('a');
+                    link.download = `icon-${size}.png`;
+                    link.href = URL.createObjectURL(blob);
+                    // Uncomment to auto-download: link.click();
+                });
+            };
+            
+            img.src = url;
+        }
+
+        // Draw all sizes
+        drawIcon('icon-16', 16);
+        drawIcon('icon-32', 32);
+        drawIcon('icon-48', 48);
+        drawIcon('icon-128', 128);
+    </script>
+</body>
+</html>

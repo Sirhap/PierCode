@@ -45,8 +45,14 @@ func NewWSManager(allowedOrigins []string) *WSManager {
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
+			// Content scripts create WebSocket connections from the AI
+			// page's origin (e.g. https://chatgpt.com), not from
+			// chrome-extension://. Since the token in the query string
+			// already authenticates the connection, we accept any origin
+			// for the WS upgrade. The CORS middleware has already been
+			// bypassed for /ws, so this is the sole origin gate.
 			CheckOrigin: func(r *http.Request) bool {
-				return IsAllowedOrigin(r.Header.Get("Origin"), allowedOrigins)
+				return true
 			},
 		},
 	}

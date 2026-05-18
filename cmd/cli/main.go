@@ -89,7 +89,7 @@ func main() {
 	// macOS Terminal / Windows Terminal. Users who explicitly want
 	// wheel-scrolling can run /mouse inside the TUI to toggle it on at
 	// runtime. PgUp/PgDn and Ctrl+↑/↓ scroll without mouse capture.
-	program := tea.NewProgram(model, tea.WithAltScreen())
+	program := tea.NewProgram(model)
 
 	// 创建 TUI Logger
 	tuiLogger := tui.NewLogger(program)

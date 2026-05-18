@@ -671,16 +671,19 @@ func TestFullAITranscriptCanScroll(t *testing.T) {
 	model = next.(Model)
 	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 	model = next.(Model)
-	if strings.Contains(model.renderLogs(80, 4), "FULL_SCROLL_TAIL") {
-		t.Fatalf("tail should not be visible before scrolling")
+	// Without height truncation, full view shows all lines from offset to end,
+	// so the tail is visible immediately.
+	if !strings.Contains(model.renderLogs(80), "FULL_SCROLL_TAIL") {
+		t.Fatalf("expected full scroll tail to be visible in full view")
 	}
 
+	// Scrolling down still increases fullOffset, shifting the start point.
 	for i := 0; i < 8; i++ {
 		next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
 		model = next.(Model)
 	}
-	if !strings.Contains(model.renderLogs(80, 4), "FULL_SCROLL_TAIL") {
-		t.Fatalf("expected full transcript tail after scrolling")
+	if model.fullOffset < 8 {
+		t.Fatalf("expected fullOffset to advance after scrolling, got %d", model.fullOffset)
 	}
 }
 
@@ -741,7 +744,7 @@ func TestLogsAutoScrollByRenderedLines(t *testing.T) {
 	next, _ = model.Update(LogMsg{Source: "ai", Status: "info", Message: "LATEST_VISIBLE_LINE"})
 	model = next.(Model)
 
-	view := model.renderLogs(80, 4)
+	view := model.renderLogs(80)
 	if !strings.Contains(view, "LATEST_VISIBLE_LINE") {
 		t.Fatalf("expected newest log to remain visible after a tall previous log, got %q", view)
 	}

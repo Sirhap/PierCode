@@ -84,24 +84,24 @@ type turnLinesCacheEntry struct {
 
 // 样式定义
 var (
-	colorCanvas  = lipgloss.Color("#FFFFFF")
-	colorSurface = lipgloss.Color("#FFFFFF")
-	colorLine    = lipgloss.Color("#CBD5E1")
-	colorAccent  = lipgloss.Color("#6D28D9")
-	colorCyan    = lipgloss.Color("#0369A1")
-	colorSuccess = lipgloss.Color("#166534")
-	colorError   = lipgloss.Color("#B91C1C")
-	colorWarning = lipgloss.Color("#9A3412")
-	colorMuted   = lipgloss.Color("#475569")
-	colorText    = lipgloss.Color("#111827")
+	colorCanvas  = lipgloss.Color("#1E1E2E")
+	colorSurface = lipgloss.Color("#2D2D3F")
+	colorLine    = lipgloss.Color("#454568")
+	colorAccent  = lipgloss.Color("#BB9AF7")
+	colorCyan    = lipgloss.Color("#7AA2F7")
+	colorSuccess = lipgloss.Color("#9ECE6A")
+	colorError   = lipgloss.Color("#F7768E")
+	colorWarning = lipgloss.Color("#E0AF68")
+	colorMuted   = lipgloss.Color("#565F89")
+	colorText    = lipgloss.Color("#C0CAF5")
 
 	// 角色区分颜色
-	colorUser = lipgloss.Color("#92400E")
-	colorAI   = lipgloss.Color("#075985")
-	colorSys  = lipgloss.Color("#6D28D9")
+	colorUser = lipgloss.Color("#E0AF68")
+	colorAI   = lipgloss.Color("#7AA2F7")
+	colorSys  = lipgloss.Color("#BB9AF7")
 
 	pageStyle     = lipgloss.NewStyle().Foreground(colorText)
-	canvasStyle   = lipgloss.NewStyle().Background(colorCanvas).Foreground(colorText)
+	canvasStyle   = lipgloss.NewStyle().Foreground(colorText)
 	logoStyle     = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	subtitleStyle = lipgloss.NewStyle().Foreground(colorMuted)
 	ruleStyle     = lipgloss.NewStyle().Foreground(colorLine)
@@ -109,7 +109,7 @@ var (
 	logMsgStyle   = lipgloss.NewStyle().Foreground(colorText)
 
 	inputStyle  = lipgloss.NewStyle().Padding(0, 1)
-	cursorStyle = lipgloss.NewStyle().Background(colorAccent).Foreground(lipgloss.Color("#FFFFFF"))
+	cursorStyle = lipgloss.NewStyle().Foreground(colorCanvas).Background(colorAccent)
 	keyStyle    = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 )
 
@@ -144,7 +144,11 @@ func authURLForToken(port int, token string) string {
 	return fmt.Sprintf("http://127.0.0.1:%d/auth?token=%s", port, token)
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd {
+	return tea.Tick(browserCountInterval, func(_ time.Time) tea.Msg {
+		return browserCountMsg{}
+	})
+}
 
 type injectResponse struct {
 	Status  string `json:"status"`
@@ -160,6 +164,41 @@ type cwdResponse struct {
 
 type cwdChangedMsg struct {
 	RootDir string
+}
+
+// browserCountMsg is an internal tick message that triggers a poll of the
+// server's /stats endpoint to refresh the browser client count. This
+// complements the event-driven BrowserCountMsg so the TUI always reflects
+// the true connection state even if a push message was lost.
+type browserCountMsg struct{}
+
+const browserCountInterval = 3 * time.Second
+
+func browserCountCmd(port int, token string) tea.Cmd {
+	return func() tea.Msg {
+		client := &http.Client{Timeout: 2 * time.Second}
+		url := fmt.Sprintf("http://127.0.0.1:%d/stats", port)
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return nil
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil // server not ready yet
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		var result struct {
+			BrowserClients int `json:"browser_clients"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil
+		}
+		return BrowserCountMsg{Count: result.BrowserClients}
+	}
 }
 
 func injectInputCmd(text string, port int, token string) tea.Cmd {
@@ -410,7 +449,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.inputCursor = 0
 					m.inputMode = true
 					m.clearHistoryDraft()
-					return m, tea.Batch(tea.Println("piercode> "+text), injectInputCmd(text, m.port, m.token))
+					return m, injectInputCmd(text, m.port, m.token)
 				}
 				m.input = ""
 				m.inputCursor = 0
@@ -717,12 +756,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case BrowserCountMsg:
 		m.browserClients = msg.Count
 		return m, nil
+
+	case browserCountMsg:
+		return m, tea.Batch(
+			browserCountCmd(m.port, m.token),
+			tea.Tick(browserCountInterval, func(_ time.Time) tea.Msg {
+				return browserCountMsg{}
+			}),
+		)
 	}
 	return m, nil
 }
 
 func (m Model) View() string {
-	if m.width == 0 || m.height == 0 {
+	if m.width == 0 {
 		return "Initializing..."
 	}
 
@@ -730,20 +777,20 @@ func (m Model) View() string {
 	hero := m.renderCompactHero(width)
 	status := m.renderStatusStrip(width)
 	auth := m.renderAuthURL(width)
+	activity := m.renderActivity(width)
 	composer := m.renderComposer(width)
-	logHeight := m.activityHeight(width)
 
 	view := lipgloss.JoinVertical(lipgloss.Left,
 		hero,
 		m.renderRule(width),
 		status,
 		auth,
-		m.renderActivity(width, logHeight),
-		m.renderRule(width),
+		activity,
+		m.renderInputRule(width),
 		composer,
 	)
 
-	return renderCanvas(view, width, m.height)
+	return m.renderCanvas(view, width)
 }
 
 func (m Model) activityHeight(width int) int {
@@ -759,16 +806,15 @@ func (m Model) activityHeight(width int) int {
 	return clampInt(logHeight, 3, maxInt(3, m.height-6))
 }
 
-func renderCanvas(view string, width, height int) string {
+func (m Model) renderCanvas(view string, width int) string {
 	lines := strings.Split(view, "\n")
-	if len(lines) > height {
-		lines = lines[:height]
-	}
-	for len(lines) < height {
-		lines = append(lines, "")
-	}
 	for i, line := range lines {
 		lines[i] = canvasStyle.Width(width).Render(pageStyle.Render(line))
+	}
+	// Fill remaining terminal height with blank lines so stale shell
+	// output doesn't bleed through below the active TUI area.
+	for len(lines) < m.height {
+		lines = append(lines, canvasStyle.Width(width).Render(""))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -949,34 +995,29 @@ func (m Model) renderAuthURL(width int) string {
 	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(content)
 }
 
-func (m Model) renderLogs(width, height int) string {
+func (m Model) renderLogs(width int) string {
+	height := m.activityHeight(width)
 	if m.fullView && m.hasActiveFullLog() {
 		entry := m.logs[m.logOffset]
 		msgWidth := maxInt(8, m.width-6)
 		all := logDisplayLines(entry, msgWidth, true, m.detailMode)
-		maxOffset := maxInt(0, len(all)-height)
-		offset := clampInt(m.fullOffset, 0, maxOffset)
-		lines := make([]string, 0, height)
-		for i := offset; i < len(all) && len(lines) < height; i++ {
+		offset := clampInt(m.fullOffset, 0, len(all))
+		lines := make([]string, 0)
+		for i := offset; i < len(all); i++ {
 			prefix := "  "
 			if i == 0 {
 				prefix = lipgloss.NewStyle().Foreground(logColor(entry)).Render("▌") + " "
 			}
 			lines = append(lines, prefix+logLineStyle(entry, all[i], i, logColor(entry)).Render(all[i]))
 		}
-		if len(all) > height {
-			hint := fmt.Sprintf("  %d-%d/%d  j/k 滚动  Ctrl+T 返回摘要", offset+1, minInt(offset+len(lines), len(all)), len(all))
-			if len(lines) < height {
-				lines = append(lines, subtitleStyle.Render(truncateString(hint, maxInt(8, width-4))))
-			}
+		if len(all) > 0 {
+			lines = append(lines, subtitleStyle.Render(truncateString(fmt.Sprintf("  %d-%d/%d  j/k 滚动  Ctrl+T 返回摘要", offset+1, len(lines), len(all)), maxInt(8, width-4))))
 		}
-		for len(lines) < height {
-			lines = append(lines, "")
-		}
-		return lipgloss.NewStyle().Width(width).Height(height).Padding(0, 1).Render(strings.Join(lines, "\n"))
+		lines = constrainToHeight(lines, height, -1)
+		return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(strings.Join(lines, "\n"))
 	}
 
-	lines := make([]string, 0, height)
+	lines := make([]string, 0)
 	if len(m.logs) == 0 {
 		empty := "No activity yet. Paste the auth URL in the extension, then type here to send text to the browser."
 		lines = append(lines, lipgloss.NewStyle().PaddingLeft(1).Render(subtitleStyle.Render(truncateString(empty, maxInt(10, width-4)))))
@@ -990,31 +1031,26 @@ func (m Model) renderLogs(width, height int) string {
 				lines = append(lines, line)
 			}
 		}
-		if len(lines) > height {
-			lines = lines[len(lines)-height:]
-		}
 	}
-	for len(lines) < height {
-		lines = append(lines, "")
-	}
-
-	return lipgloss.NewStyle().Width(width).Height(height).Padding(0, 1).Render(strings.Join(lines, "\n"))
+	lines = constrainToHeight(lines, height, -1)
+	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(strings.Join(lines, "\n"))
 }
 
-func (m Model) renderActivity(width, height int) string {
+func (m Model) renderActivity(width int) string {
 	if m.logsMode {
-		return m.renderLogs(width, height)
+		return m.renderLogs(width)
 	}
-	return m.renderTranscript(width, height)
+	return m.renderTranscript(width)
 }
 
 func (m Model) renderComposer(width int) string {
 	innerWidth := maxInt(12, width-4)
 	if m.inputMode {
 		label := lipgloss.NewStyle().Foreground(colorAccent).Render("▌") + " " +
-			lipgloss.NewStyle().Foreground(colorText).Bold(true).Render("piercode>") + " "
-		continuation := strings.Repeat(" ", len([]rune("▌ piercode> ")))
-		inputLines := renderInputLinesWithCursor(m.input, m.normalizedInputCursor(), maxInt(8, innerWidth-len([]rune("▌ piercode> "))))
+			lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("piercode>") + " "
+		promptWidth := stringDisplayWidth("▌ piercode> ")
+		continuation := strings.Repeat(" ", promptWidth)
+		inputLines := renderInputLinesWithCursor(m.input, m.normalizedInputCursor(), maxInt(8, innerWidth-promptWidth))
 		parts := make([]string, 0, len(inputLines)+1)
 		for i, line := range inputLines {
 			prefix := continuation
@@ -1145,6 +1181,16 @@ func renderInputLinesWithCursor(input string, cursor int, width int) []string {
 }
 
 func (m Model) renderRule(width int) string {
+	return ruleStyle.Render(strings.Repeat("─", maxInt(1, width)))
+}
+
+// renderInputRule renders the separator above the composer. When in input
+// mode the line uses a heavier glyph and accent color to visually anchor
+// the input area and make it easier to spot where to type.
+func (m Model) renderInputRule(width int) string {
+	if m.inputMode {
+		return lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Repeat("━", maxInt(1, width)))
+	}
 	return ruleStyle.Render(strings.Repeat("─", maxInt(1, width)))
 }
 
@@ -1415,6 +1461,26 @@ func clampInt(value, min, max int) int {
 		return max
 	}
 	return value
+}
+
+// constrainToHeight returns a slice of lines that fits within the given
+// height. When following (offset < 0), it shows the last height lines.
+// When offset >= 0, it shows from that position. If there are fewer lines
+// than height, it returns them as-is (no padding) so the layout stays
+// compact and the composer follows right below the content.
+func constrainToHeight(lines []string, height, offset int) []string {
+	total := len(lines)
+	if total <= height {
+		return lines
+	}
+	startLine := 0
+	if offset < 0 {
+		startLine = total - height
+	} else {
+		startLine = clampInt(offset, 0, maxInt(0, total-height))
+	}
+	endLine := minInt(startLine+height, total)
+	return lines[startLine:endLine]
 }
 
 func maxInt(a, b int) int {

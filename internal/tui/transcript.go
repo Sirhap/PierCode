@@ -44,13 +44,13 @@ type Turn struct {
 	Notices       []SystemNotice
 }
 
-func (m Model) renderTranscript(width, height int) string {
+func (m Model) renderTranscript(width int) string {
 	if m.fullView && m.hasActiveFullLog() {
-		return m.renderLogs(width, height)
+		return m.renderLogs(width)
 	}
 
 	contentWidth := maxInt(8, width-4)
-	lines := make([]string, 0, height)
+	lines := make([]string, 0)
 	if len(m.turns) == 0 {
 		empty := "piercode> 直接输入消息发送到 AI 页面，/ 查看指令，Esc 后可滚动转录。"
 		lines = append(lines, lipgloss.NewStyle().PaddingLeft(1).Render(subtitleStyle.Render(truncateString(empty, maxInt(10, width-4)))))
@@ -60,22 +60,13 @@ func (m Model) renderTranscript(width, height int) string {
 		}
 	}
 
-	if len(lines) > height {
-		maxOffset := len(lines) - height
-		offset := maxOffset
-		if m.transcriptOffset >= 0 {
-			offset = clampInt(m.transcriptOffset, 0, maxOffset)
-		}
-		lines = lines[offset : offset+height]
-	} else {
-		more := make([]string, 0, height)
-		more = append(more, lines...)
-		lines = more
-	}
-	for len(lines) < height {
-		lines = append(lines, "")
-	}
-	return lipgloss.NewStyle().Width(width).Height(height).Padding(0, 1).Render(strings.Join(lines, "\n"))
+	// Constrain to available height so the composer always stays at the
+	// bottom of the terminal instead of being pushed upward by growing
+	// transcript content.
+	height := m.activityHeight(width)
+	lines = constrainToHeight(lines, height, m.transcriptOffset)
+
+	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(strings.Join(lines, "\n"))
 }
 
 func (m *Model) renderTurnLines(turn Turn, width int) []string {

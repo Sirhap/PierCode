@@ -20,6 +20,18 @@ async function ensureContentScripts(): Promise<{ tabs: number; injected: number;
   await Promise.all(tabs.map(async tab => {
     if (!tab.id) return;
     try {
+      // Check whether the content script has already been loaded by the
+      // manifest's content_scripts section. Injecting the same script
+      // twice causes "Identifier has already been declared" errors
+      // because classic (non-module) content scripts share a global scope.
+      const probe = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => !!(window as any).__PIERCODE_LOADED__,
+      });
+      if (probe[0]?.result) {
+        injected += 1;
+        return;
+      }
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         files: ['content.js']

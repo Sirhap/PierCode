@@ -99,6 +99,17 @@ func New(config *types.Config) *Server {
 
 func (s *Server) setupRoutes() {
 	s.router.Use(func(c *gin.Context) {
+		// WebSocket upgrade requests carry the Origin of the page that
+		// created the socket (e.g. https://chatgpt.com). CORS rules don't
+		// apply to WS the same way as fetch/XHR; the token in the query
+		// string already authenticates the connection, and the upgrader
+		// has its own CheckOrigin. Skip CORS entirely for /ws so that
+		// content scripts running inside AI pages can connect.
+		if c.Request.URL.Path == "/ws" {
+			c.Next()
+			return
+		}
+
 		origin := c.Request.Header.Get("Origin")
 		// 同源请求 / 非浏览器调用（curl、Go test）不带 Origin，直接放行；其余
 		// Origin 必须命中白名单（chrome-extension:// / 本地回环 / 用户配置）。
@@ -137,6 +148,7 @@ func (s *Server) setupRoutes() {
 	s.router.POST("/inject", s.handleInject)
 	s.router.GET("/ws", s.handleWS) // WebSocket 连接端点
 	s.router.GET("/prompt", s.handlePrompt)
+	s.router.GET("/stats", s.handleStats)
 	s.router.GET("/skills", s.handleListSkills)
 	s.router.GET("/files", s.handleListFiles)
 	s.router.GET("/tasks", s.handleListTasks)
@@ -187,6 +199,12 @@ func (s *Server) handleConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"rootDir": s.config.GetRootDir(),
 		"timeout": s.config.Timeout,
+	})
+}
+
+func (s *Server) handleStats(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"browser_clients": s.ws.ClientCount(),
 	})
 }
 
