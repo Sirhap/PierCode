@@ -22,9 +22,7 @@ const taskBufStaleAfter = 30 * time.Minute
 
 // Logger 用于将后端事件发送到 TUI
 type Logger struct {
-	program      *tea.Program
-	mu           sync.Mutex
-	printedByKey map[string]string
+	program *tea.Program
 
 	taskMu     sync.Mutex
 	taskBuf    map[string]*taskBuffer
@@ -41,10 +39,9 @@ type taskBuffer struct {
 
 func NewLogger(program *tea.Program) *Logger {
 	return &Logger{
-		program:      program,
-		printedByKey: make(map[string]string),
-		taskBuf:      make(map[string]*taskBuffer),
-		reaperStop:   make(chan struct{}),
+		program:    program,
+		taskBuf:    make(map[string]*taskBuffer),
+		reaperStop: make(chan struct{}),
 	}
 }
 
@@ -99,10 +96,9 @@ func (l *Logger) LogToolCallWithSource(source, toolName, status, message string)
 func (l *Logger) LogToolCallWithSourceFull(source, toolName, status, message, fullMessage string) {
 	if l.program != nil {
 		// SECURITY/UX: route everything through the model's transcript via
-		// LogMsg. We used to also `program.Println(...)` for ai-tool calls,
-		// which doubled every event on screen (once as a tool card in the
-		// transcript and once as a raw line above it). The transcript path
-		// is the canonical view; the model decides how to render it.
+		// LogMsg. Direct `program.Println(...)` output bypasses our styling
+		// and leaves stale raw rows above the active frame. The transcript path
+		// is the canonical view; the model decides how to render each event.
 		l.program.Send(LogMsg{
 			Source:      source,
 			ToolName:    toolName,
@@ -122,7 +118,6 @@ func (l *Logger) LogAIResponse(key, message, fullMessage string) {
 			Message:     message,
 			FullMessage: fullMessage,
 		})
-		l.printAssistantDelta(key, firstNonEmpty(fullMessage, message))
 	}
 }
 
@@ -134,47 +129,7 @@ func (l *Logger) LogUserPrompt(key, message string) {
 			Status:  "pending",
 			Message: message,
 		})
-		l.program.Println("piercode> " + strings.TrimSpace(message))
 	}
-}
-
-func (l *Logger) printAssistantDelta(key, text string) {
-	text = strings.TrimRight(text, "\n")
-	if strings.TrimSpace(text) == "" {
-		return
-	}
-	if key == "" {
-		key = "assistant"
-	}
-
-	l.mu.Lock()
-	last := l.printedByKey[key]
-	if last == text {
-		l.mu.Unlock()
-		return
-	}
-	l.printedByKey[key] = text
-	l.mu.Unlock()
-
-	delta := assistantPrintDelta(last, text)
-	if strings.TrimSpace(delta) == "" {
-		return
-	}
-	prefix := "assistant> "
-	if last != "" && strings.HasPrefix(text, last) {
-		prefix = ""
-	}
-	l.program.Println(prefix + delta)
-}
-
-func assistantPrintDelta(last, text string) string {
-	if strings.HasPrefix(text, last) {
-		return strings.TrimLeft(text[len(last):], "\n")
-	}
-	if last != "" {
-		return "[updated]\n" + text
-	}
-	return text
 }
 
 func formatTranscriptToolLine(toolName, status, message string) string {
@@ -183,15 +138,6 @@ func formatTranscriptToolLine(toolName, status, message string) string {
 		line = status
 	}
 	return fmt.Sprintf("tool[%s] %s: %s", toolName, status, line)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 // LogStatus 更新服务状态
@@ -206,8 +152,12 @@ func (l *Logger) LogStatus(status string) {
 // log message that the TUI re-parsed with a `(N)` regex. The structured form
 // avoids parsing-induced bugs such as treating `(retrying)` as 0.
 func (l *Logger) LogBrowserCount(count int) {
+	l.LogBrowserStatus(count, nil)
+}
+
+func (l *Logger) LogBrowserStatus(count int, providers map[string]int) {
 	if l.program != nil {
-		l.program.Send(BrowserCountMsg{Count: count})
+		l.program.Send(BrowserCountMsg{Count: count, Providers: providers})
 	}
 }
 

@@ -79,8 +79,3 @@ func (c *Config) SetRootDir(rootDir string) {
 	defer c.mu.Unlock()
 	c.RootDir = rootDir
 }
-
-type Settings struct {
-	Token     string `json:"token"`
-	CreatedAt string `json:"created_at"`
-}

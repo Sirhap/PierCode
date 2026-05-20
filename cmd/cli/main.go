@@ -7,15 +7,16 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sirhap/piercode/internal/portutil"
 	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/server"
 	"github.com/sirhap/piercode/internal/tui"
 	"github.com/sirhap/piercode/internal/types"
 	"github.com/sirhap/piercode/prompts"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {
@@ -31,6 +32,11 @@ func main() {
 	allowedOrigins := flag.String("allowed-origins", "", "允许的 CORS/WS Origin 白名单（逗号分隔），默认仅放行 chrome-extension:// 与 127.0.0.1")
 	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 piercode 进程占用，强制结束该进程")
 	flag.Parse()
+
+	absDir, err := filepath.Abs(*dir)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
@@ -53,7 +59,7 @@ func main() {
 	}
 	ln.Close()
 
-	token, err := security.LoadOrCreateToken()
+	token, err := security.NewSessionToken()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -69,8 +75,8 @@ func main() {
 	shellEnabled := *allowShell && !*noShell
 
 	config := &types.Config{
-		RootDir:        *dir,
-		InitialRootDir: *dir,
+		RootDir:        absDir,
+		InitialRootDir: absDir,
 		Port:           *port,
 		Timeout:        *timeout,
 		Token:          token,
@@ -83,7 +89,7 @@ func main() {
 	// 创建 TUI 模型
 	// TODO: 后续可从配置或环境变量读取实际的 AI 服务商
 	aiProvider := "OpenAI / Claude / Local"
-	model := tui.NewModel(*port, *dir, aiProvider, token)
+	model := tui.NewModel(*port, absDir, aiProvider, token)
 	// Mouse capture is OFF by default: enabling it would let bubbletea eat
 	// click/drag events, breaking native mouse-select-to-copy in iTerm /
 	// macOS Terminal / Windows Terminal. Users who explicitly want

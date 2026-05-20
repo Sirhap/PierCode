@@ -33,8 +33,19 @@ function formatAuthFailure(res: Response, data: any): string {
 type EnsureContentResult = {
   tabs?: number
   injected?: number
+  loaded?: number
+  wsConnected?: number
   failed?: number
 }
+
+type BridgeStatusResult = {
+  tabs?: number
+  loaded?: number
+  wsConnected?: number
+  failed?: number
+}
+
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 export default function App() {
   const [status, setStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking')
@@ -58,7 +69,7 @@ export default function App() {
   useEffect(() => {
     chrome.storage.local.get(['authToken', 'apiUrl', 'autoSend', 'autoExecute', 'delayMin', 'delayMax'], (result) => {
       if (result.authToken && result.apiUrl) {
-        checkConnection(result.apiUrl)
+        checkConnection(result.apiUrl, result.authToken)
       } else {
         setStatus('disconnected')
         setInfo('请输入认证 Token URL')
@@ -85,7 +96,20 @@ export default function App() {
     })
   }
 
-  const checkConnection = (url: string) => {
+  const getBridgeStatus = (): Promise<BridgeStatusResult> => {
+    return new Promise(resolve => {
+      chrome.runtime.sendMessage({ type: 'GET_BRIDGE_STATUS' }, (result: BridgeStatusResult) => {
+        if (chrome.runtime.lastError) {
+          console.warn('[PierCode] get bridge status failed:', chrome.runtime.lastError.message)
+          resolve({})
+          return
+        }
+        resolve(result || {})
+      })
+    })
+  }
+
+  const checkConnection = (url: string, authToken?: string) => {
     fetch(`${url}/health`)
       .then(res => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -95,18 +119,45 @@ export default function App() {
         // 注意：/health 现在只返回 {status, version}，不再回 dir。这是有意为之
         // ——/health 不鉴权，回工作目录会让任何本机进程或恶意网页拿来侦察。
         // 如果需要展示工作目录，应该走鉴权后的 /config（这里暂不展示）。
-        setStatus('connected')
+        const headers: Record<string, string> = {}
+        if (authToken) headers.Authorization = `Bearer ${authToken}`
+        const statsRes = await fetch(`${url}/stats`, { headers })
+        if (statsRes.status === 401) throw new Error('unauthorized')
+        if (!statsRes.ok) throw new Error(`stats HTTP ${statsRes.status}`)
+        const stats = await statsRes.json()
+        const backendClients = Number(stats.browser_clients || 0)
+
         const result = await ensureContentScripts()
-        const injected = Number(result.injected || 0)
-        const failed = Number(result.failed || 0)
-        const suffix = injected > 0
-          ? `已唤醒 ${injected} 个 AI 页面`
-          : failed > 0
-            ? 'AI 页面注入失败，请刷新页面'
-            : '未发现已打开的 AI 页面'
+        await wait(600)
+        const bridge = await getBridgeStatus()
+
+        setStatus('connected')
+        const tabs = Number(bridge.tabs ?? result.tabs ?? 0)
+        const loaded = Number(bridge.loaded ?? result.loaded ?? 0)
+        const wsConnected = Number(bridge.wsConnected ?? result.wsConnected ?? 0)
+        const failed = Number((bridge.failed || 0) + (result.failed || 0))
+        const suffix = backendClients > 0
+          ? `桥接已连接 ${backendClients} 个 AI 页面`
+          : wsConnected > 0
+            ? `AI 页面 WebSocket 已打开，等待后端统计刷新 (${wsConnected})`
+            : loaded > 0
+              ? `已唤醒 ${loaded} 个 AI 页面，等待 WebSocket 连接`
+              : failed > 0
+                ? 'AI 页面注入失败，请刷新页面'
+                : tabs > 0
+                  ? '已发现 AI 页面，等待插件脚本加载'
+                  : '未发现已打开的 AI 页面'
         setInfo(suffix)
       })
-      .catch(() => { setStatus('disconnected'); setInfo('服务未运行') })
+      .catch((error) => {
+        setStatus('disconnected')
+        if (error instanceof Error && error.message === 'unauthorized') {
+          setReconfig(true)
+          setInfo('Token 已失效，请重新输入当前 TUI 显示的认证 URL')
+        } else {
+          setInfo('服务未运行')
+        }
+      })
   }
 
   const handleConnect = async () => {
@@ -140,7 +191,7 @@ export default function App() {
         })
         setReconfig(false)
         setToast({ msg: '✅ 授权成功，正在唤醒 AI 页面', type: 'success' })
-        checkConnection(baseUrl)
+        checkConnection(baseUrl, tokenValue)
       } else {
         const reason = formatAuthFailure(res, data)
         setToast({ msg: `❌ Token 验证失败：${reason}`, type: 'error' })

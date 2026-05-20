@@ -4,54 +4,17 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"time"
 
-	"github.com/sirhap/piercode/internal/types"
 	"github.com/gin-gonic/gin"
 )
 
-func LoadOrCreateToken() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-
-	dir := filepath.Join(home, ".piercode")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
-	}
-
-	path := filepath.Join(dir, "settings.json")
-	data, err := os.ReadFile(path)
-	if err == nil {
-		var settings types.Settings
-		if err := json.Unmarshal(data, &settings); err == nil && settings.Token != "" {
-			return settings.Token, nil
-		}
-	}
-
+func NewSessionToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("failed to generate token: %w", err)
 	}
-	token := hex.EncodeToString(b)
-	settings := types.Settings{
-		Token:     token,
-		CreatedAt: time.Now().Format(time.RFC3339),
-	}
-
-	data, err = json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal settings: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return "", fmt.Errorf("failed to write token file: %w", err)
-	}
-	return token, nil
+	return hex.EncodeToString(b), nil
 }
 
 func AuthMiddleware(token string) gin.HandlerFunc {

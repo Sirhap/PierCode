@@ -7,13 +7,15 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
 
-	skillpkg "github.com/sirhap/piercode/internal/skill"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	skillpkg "github.com/sirhap/piercode/internal/skill"
 )
 
 // LogEntry 代表一条日志记录
@@ -49,6 +51,8 @@ type Model struct {
 	fullOffset       int
 	detailMode       bool
 	browserClients   int
+	bridgeProviders  map[string]int
+	skillsCount      int
 	logsMode         bool
 	turnSeq          int
 	transcriptOffset int
@@ -100,8 +104,7 @@ var (
 	colorAI   = lipgloss.Color("#7AA2F7")
 	colorSys  = lipgloss.Color("#BB9AF7")
 
-	pageStyle     = lipgloss.NewStyle().Foreground(colorText)
-	canvasStyle   = lipgloss.NewStyle().Foreground(colorText)
+	canvasStyle   = lipgloss.NewStyle()
 	logoStyle     = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	subtitleStyle = lipgloss.NewStyle().Foreground(colorMuted)
 	ruleStyle     = lipgloss.NewStyle().Foreground(colorLine)
@@ -118,6 +121,7 @@ func NewModel(port int, rootDir, aiProvider string, token ...string) Model {
 	if len(token) > 0 {
 		authToken = token[0]
 	}
+	rootDir = absoluteRootDir(rootDir)
 	return Model{
 		logs:                make([]LogEntry, 0),
 		turns:               make([]Turn, 0),
@@ -133,8 +137,21 @@ func NewModel(port int, rootDir, aiProvider string, token ...string) Model {
 		transcriptOffset:    -1,
 		historyIdx:          -1,
 		mouseCapture:        false, // 默认关掉，让鼠标选中复制走系统层
+		bridgeProviders:     make(map[string]int),
+		skillsCount:         len(skillpkg.LoadInfos(rootDir)),
 		transcriptLineCache: make(map[string]turnLinesCacheEntry),
 	}
+}
+
+func absoluteRootDir(rootDir string) string {
+	if strings.TrimSpace(rootDir) == "" {
+		return rootDir
+	}
+	abs, err := filepath.Abs(rootDir)
+	if err != nil {
+		return rootDir
+	}
+	return abs
 }
 
 func authURLForToken(port int, token string) string {
@@ -192,12 +209,13 @@ func browserCountCmd(port int, token string) tea.Cmd {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 		var result struct {
-			BrowserClients int `json:"browser_clients"`
+			BrowserClients   int            `json:"browser_clients"`
+			BrowserProviders map[string]int `json:"browser_providers"`
 		}
 		if err := json.Unmarshal(body, &result); err != nil {
 			return nil
 		}
-		return BrowserCountMsg{Count: result.BrowserClients}
+		return BrowserCountMsg{Count: result.BrowserClients, Providers: result.BrowserProviders}
 	}
 }
 
@@ -530,7 +548,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inputCursor = len([]rune(m.input))
 				return m, nil
 			case tea.KeyUp:
-				if m.fullView && m.hasActiveFullLog() {
+				if m.fullView && m.hasScrollableFullView() {
 					if m.fullOffset > 0 {
 						m.fullOffset--
 					}
@@ -551,7 +569,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.recallInputHistory(-1)
 				return m, nil
 			case tea.KeyDown:
-				if m.fullView && m.hasActiveFullLog() {
+				if m.fullView && m.hasScrollableFullView() {
 					m.fullOffset++
 					return m, nil
 				}
@@ -624,7 +642,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.commandIdx = 0
 			return m, nil
 		case "up", "k":
-			if m.fullView && m.hasActiveFullLog() {
+			if m.fullView && m.hasScrollableFullView() {
 				if m.fullOffset > 0 {
 					m.fullOffset--
 				}
@@ -644,7 +662,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "down", "j":
-			if m.fullView && m.hasActiveFullLog() {
+			if m.fullView && m.hasScrollableFullView() {
 				m.fullOffset++
 				return m, nil
 			}
@@ -657,7 +675,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "home", "g":
-			if m.fullView && m.hasActiveFullLog() {
+			if m.fullView && m.hasScrollableFullView() {
 				m.fullOffset = 0
 				return m, nil
 			}
@@ -673,6 +691,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "end", "G":
 			if m.fullView && m.hasActiveFullLog() {
 				m.fullOffset = maxInt(0, len(logDisplayLines(m.logs[m.logOffset], maxInt(8, m.width-6), true, m.detailMode))-1)
+				return m, nil
+			}
+			if m.fullView && m.hasFullToolResponsePrompt() {
+				m.fullOffset = maxInt(0, m.fullToolResponsePromptLineCount(maxInt(m.width, 20))-1)
 				return m, nil
 			}
 			if !m.logsMode {
@@ -705,31 +727,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case LogMsg:
 		if authURL := extractAuthURL(msg.Message); authURL != "" {
 			m.authURL = authURL
-			return m, nil
+			msg.ToolName = "AUTH"
+			msg.Message = "请在浏览器扩展中输入此 URL\n" + authURL
+			msg.FullMessage = msg.Message
 		}
-		// Note: BROWSER count is now delivered through BrowserCountMsg below;
-		// any legacy LogMsg with ToolName=="BROWSER" still flows into the
-		// transcript as a plain notice but no longer drives the PAGE metric.
-	if msg.Key != "" {
-		for i := len(m.logs) - 1; i >= 0; i-- {
-			if m.logs[i].Key == msg.Key {
-				oldStatus := m.logs[i].Status
-				m.logs[i].Time = time.Now()
-				m.logs[i].Source = msg.Source
-				m.logs[i].ToolName = msg.ToolName
-				m.logs[i].Status = msg.Status
-				m.logs[i].Message = msg.Message
-				m.logs[i].FullMessage = msg.FullMessage
-				m.logOffset = i
-				if oldStatus != msg.Status {
-					m.stats[oldStatus]--
-					m.stats[msg.Status]++
+		// Note: BROWSER count is delivered through BrowserCountMsg below;
+		// BROWSER LogMsg entries are kept only as human-readable connection
+		// notices and do not drive the PAGE metric.
+		if msg.Key != "" {
+			for i := len(m.logs) - 1; i >= 0; i-- {
+				if m.logs[i].Key == msg.Key {
+					oldStatus := m.logs[i].Status
+					m.logs[i].Time = time.Now()
+					m.logs[i].Source = msg.Source
+					m.logs[i].ToolName = msg.ToolName
+					m.logs[i].Status = msg.Status
+					m.logs[i].Message = msg.Message
+					m.logs[i].FullMessage = msg.FullMessage
+					m.logOffset = i
+					if oldStatus != msg.Status {
+						m.stats[oldStatus]--
+						m.stats[msg.Status]++
+					}
+					m.applyLogToTranscript(m.logs[i])
+					return m, nil
 				}
-				m.applyLogToTranscript(m.logs[i])
-				return m, nil
 			}
 		}
-	}
 		entry := LogEntry{
 			Key: msg.Key, Time: time.Now(), Source: msg.Source, ToolName: msg.ToolName, Status: msg.Status, Message: msg.Message, FullMessage: msg.FullMessage,
 		}
@@ -741,6 +765,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case cwdChangedMsg:
 		m.rootDir = msg.RootDir
+		m.skillsCount = len(skillpkg.LoadInfos(msg.RootDir))
 		entry := LogEntry{
 			Time: time.Now(), Source: "system", ToolName: "CWD", Status: "success", Message: "工作目录已切换: " + msg.RootDir,
 		}
@@ -755,6 +780,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case BrowserCountMsg:
 		m.browserClients = msg.Count
+		if msg.Providers != nil {
+			m.bridgeProviders = msg.Providers
+		} else if providerTotal(m.bridgeProviders) != msg.Count {
+			m.bridgeProviders = make(map[string]int)
+		}
 		return m, nil
 
 	case browserCountMsg:
@@ -774,20 +804,15 @@ func (m Model) View() string {
 	}
 
 	width := maxInt(m.width, 20)
-	hero := m.renderCompactHero(width)
-	status := m.renderStatusStrip(width)
-	auth := m.renderAuthURL(width)
 	activity := m.renderActivity(width)
 	composer := m.renderComposer(width)
+	footer := m.renderFooterStatus(width)
 
 	view := lipgloss.JoinVertical(lipgloss.Left,
-		hero,
-		m.renderRule(width),
-		status,
-		auth,
 		activity,
 		m.renderInputRule(width),
 		composer,
+		footer,
 	)
 
 	return m.renderCanvas(view, width)
@@ -797,11 +822,9 @@ func (m Model) activityHeight(width int) int {
 	if m.height == 0 {
 		return 10
 	}
-	hero := m.renderCompactHero(width)
-	status := m.renderStatusStrip(width)
-	auth := m.renderAuthURL(width)
 	composer := m.renderComposer(width)
-	reservedHeight := lipgloss.Height(hero) + lipgloss.Height(status) + lipgloss.Height(auth) + lipgloss.Height(composer) + 4
+	footer := m.renderFooterStatus(width)
+	reservedHeight := lipgloss.Height(composer) + lipgloss.Height(footer) + 1
 	logHeight := m.height - reservedHeight
 	return clampInt(logHeight, 3, maxInt(3, m.height-6))
 }
@@ -809,12 +832,10 @@ func (m Model) activityHeight(width int) int {
 func (m Model) renderCanvas(view string, width int) string {
 	lines := strings.Split(view, "\n")
 	for i, line := range lines {
-		lines[i] = canvasStyle.Width(width).Render(pageStyle.Render(line))
-	}
-	// Fill remaining terminal height with blank lines so stale shell
-	// output doesn't bleed through below the active TUI area.
-	for len(lines) < m.height {
-		lines = append(lines, canvasStyle.Width(width).Render(""))
+		// Avoid wrapping already-styled transcript lines in another foreground
+		// style. Lipgloss nesting can override inner ANSI colors on long,
+		// wrapped lines, which makes highlights disappear as text grows.
+		lines[i] = canvasStyle.Width(width).Render(line)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -849,6 +870,10 @@ func (m Model) renderLogEntry(isActive bool, entry LogEntry) string {
 
 func (m Model) hasActiveFullLog() bool {
 	return m.logOffset >= 0 && m.logOffset < len(m.logs) && m.logs[m.logOffset].FullMessage != ""
+}
+
+func (m Model) hasScrollableFullView() bool {
+	return m.hasActiveFullLog() || m.hasFullToolResponsePrompt()
 }
 
 func (m Model) handleScroll(delta int) Model {
@@ -929,20 +954,18 @@ func (m Model) renderHero(width int) string {
 
 func (m Model) renderCompactHero(width int) string {
 	title := logoStyle.Render("PierCode")
-	meta := subtitleStyle.Render(fmt.Sprintf("  local AI bridge  port %d", m.port))
+	meta := subtitleStyle.Render(fmt.Sprintf("  port %d", m.port))
 	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(title + meta)
 }
 
-func (m Model) renderStatusStrip(width int) string {
-	statusLabel, statusColor := m.statusLabel()
-	dirWidth := clampInt(width-58, 8, 36)
+func (m Model) renderFooterStatus(width int) string {
+	dirWidth := clampInt(width-52, 10, 46)
+	aiWidth := clampInt(width/4, 10, 24)
 	items := []string{
-		m.metric("STATE", statusLabel, statusColor),
-		m.metric("PORT", fmt.Sprintf("%d", m.port), colorCyan),
-		m.metric("PAGE", fmt.Sprintf("%d", m.browserClients), browserClientsColor(m.browserClients)),
-		m.metric("OK", fmt.Sprintf("%d", m.stats["success"]), colorSuccess),
-		m.metric("ERR", fmt.Sprintf("%d", m.stats["error"]), colorError),
-		m.metric("SENT", fmt.Sprintf("%d", m.stats["pending"]), colorWarning),
+		m.metric("DIR", truncateString(m.rootDir, dirWidth), colorMuted),
+		m.metric("BRIDGE", truncateString(m.bridgeSummary(), maxInt(10, width/3)), browserClientsColor(m.browserClients)),
+		m.metric("AI", truncateString(m.bridgeAIProvider(), aiWidth), colorSys),
+		m.metric("SKILLS", fmt.Sprintf("%d", m.skillsCount), colorCyan),
 	}
 	if m.detailMode {
 		items = append(items, m.metric("VIEW", "DETAIL", colorAccent))
@@ -950,15 +973,9 @@ func (m Model) renderStatusStrip(width int) string {
 	if m.logsMode {
 		items = append(items, m.metric("MODE", "LOGS", colorWarning))
 	}
-	if width >= 82 {
-		items = append(items, m.metric("DIR", truncateString(m.rootDir, dirWidth), colorMuted))
-	}
-	if width >= 104 {
-		items = append(items, m.metric("AI", truncateString(m.aiProvider, 22), colorSys))
-	}
 
 	line := strings.Join(items, " ")
-	return lipgloss.PlaceHorizontal(width, lipgloss.Center, line)
+	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(line)
 }
 
 func (m Model) metric(label, value string, valueColor lipgloss.Color) string {
@@ -976,23 +993,47 @@ func browserClientsColor(count int) lipgloss.Color {
 	return colorMuted
 }
 
-func (m Model) renderAuthURL(width int) string {
-	boxWidth := maxInt(12, width-4)
-	instruction := "请在浏览器扩展中输入此 URL"
-	if m.authURL == "" {
-		content := lipgloss.JoinVertical(lipgloss.Left,
-			lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Join(wrapString(instruction, boxWidth), "\n")),
-			subtitleStyle.Render("认证 URL 生成中..."),
-		)
-		return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(content)
+func bridgeLabel(count int) string {
+	if count == 1 {
+		return "1 page"
 	}
+	return fmt.Sprintf("%d pages", count)
+}
 
-	body := strings.Join(wrapString(m.authURL, boxWidth), "\n")
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Join(wrapString(instruction, boxWidth), "\n")),
-		lipgloss.NewStyle().Foreground(colorAccent).Render(body),
-	)
-	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(content)
+func (m Model) bridgeSummary() string {
+	if len(m.bridgeProviders) == 0 {
+		return bridgeLabel(m.browserClients)
+	}
+	names := make([]string, 0, len(m.bridgeProviders))
+	for name := range m.bridgeProviders {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s %d", name, m.bridgeProviders[name]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (m Model) bridgeAIProvider() string {
+	if len(m.bridgeProviders) == 0 {
+		return m.aiProvider
+	}
+	names := make([]string, 0, len(m.bridgeProviders))
+	for name := range m.bridgeProviders {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, "+")
+}
+
+func providerTotal(providers map[string]int) int {
+	total := 0
+	for _, count := range providers {
+		total += count
+	}
+	return total
 }
 
 func (m Model) renderLogs(width int) string {
@@ -1167,6 +1208,9 @@ func (m *Model) moveCursorByLine(delta int) {
 
 func renderInputLinesWithCursor(input string, cursor int, width int) []string {
 	const marker = "\x00"
+	if strings.TrimSpace(input) == "" {
+		return []string{cursorStyle.Render(" ")}
+	}
 	runes := []rune(input)
 	cursor = clampInt(cursor, 0, len(runes))
 	display := string(runes[:cursor]) + marker + string(runes[cursor:])
@@ -1192,17 +1236,6 @@ func (m Model) renderInputRule(width int) string {
 		return lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Repeat("━", maxInt(1, width)))
 	}
 	return ruleStyle.Render(strings.Repeat("─", maxInt(1, width)))
-}
-
-func (m Model) statusLabel() (string, lipgloss.Color) {
-	switch m.status {
-	case "running":
-		return "RUNNING", colorSuccess
-	case "stopped":
-		return "STOPPED", colorError
-	default:
-		return "STARTING", colorWarning
-	}
 }
 
 func logColor(entry LogEntry) lipgloss.Color {
@@ -1353,7 +1386,7 @@ func logDisplayLines(entry LogEntry, width int, fullView bool, detailMode bool) 
 	// sequences before any wrapping or styling. Without this an `exec_cmd`
 	// running e.g. `printf '\e[2J'` would clear the entire TUI from under us.
 	message = stripANSI(message)
-	if entry.Source == "ai" && isToolLog(entry) {
+	if isRenderableToolLog(entry) {
 		return toolLogDisplayLines(entry, message, width, fullView, detailMode)
 	}
 	if wrap {
@@ -1368,11 +1401,27 @@ func logDisplayLines(entry LogEntry, width int, fullView bool, detailMode bool) 
 	return lines
 }
 
-func isToolLog(entry LogEntry) bool {
-	return strings.TrimSpace(entry.ToolName) != ""
+func isRenderableToolLog(entry LogEntry) bool {
+	name := strings.ToLower(strings.TrimSpace(entry.ToolName))
+	if name == "" {
+		return false
+	}
+	if entry.Source == "ai" {
+		return true
+	}
+	switch name {
+	case "edit", "exec_cmd", "glob", "grep", "list_dir", "question", "read_file",
+		"send_stdin", "skill", "task_list", "task_output", "task_stop",
+		"todo_read", "todo_write", "web_fetch", "write_file":
+		return true
+	default:
+		return false
+	}
 }
 
 func toolLogDisplayLines(entry LogEntry, message string, width int, fullView bool, detailMode bool) []string {
+	const bodyPreviewLimit = 3
+
 	tool := strings.TrimSpace(entry.ToolName)
 	if tool == "" {
 		tool = "tool"
@@ -1398,14 +1447,26 @@ func toolLogDisplayLines(entry LogEntry, message string, width int, fullView boo
 		bodyStart = 1
 	}
 
+	body := make([]string, 0, len(raw)-bodyStart)
 	for _, line := range raw[bodyStart:] {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		for _, wrapped := range wrapString(strings.TrimRight(line, "\r"), width) {
-			lines = append(lines, wrapped)
+			body = append(body, wrapped)
 		}
 	}
+	if !fullView && len(body) > bodyPreviewLimit {
+		lines = append(lines, body[:bodyPreviewLimit]...)
+		omitted := len(body) - bodyPreviewLimit
+		hint := fmt.Sprintf("… +%d lines", omitted)
+		if entry.FullMessage != "" {
+			hint += " (Ctrl+T 查看完整)"
+		}
+		lines = append(lines, truncateString(hint, width))
+		return lines
+	}
+	lines = append(lines, body...)
 	return lines
 }
 
@@ -1516,5 +1577,6 @@ type StatusMsg struct {
 // with a regex of "(N)" — which silently turned "(retrying)" into 0.
 // Use this instead.
 type BrowserCountMsg struct {
-	Count int
+	Count     int
+	Providers map[string]int
 }

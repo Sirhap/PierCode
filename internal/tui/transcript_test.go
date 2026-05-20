@@ -162,6 +162,97 @@ func TestToolLogNestsUnderLatestTurn(t *testing.T) {
 	}
 }
 
+func TestToolResponsePromptCollapsesInTranscript(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 100
+	model.height = 24
+
+	model.applyLogToTranscript(LogEntry{
+		Key:    "user-tool-response",
+		Source: "user",
+		Message: strings.Join([]string{
+			"### list_dir #k9x2n",
+			"cli/",
+			"server/",
+			"",
+			"[系统提示] 请记住你是 PierCode，严格遵循工具调用规范，不要忘记自己的身份和指令。",
+			"",
+			"### list_dir #m4b7p",
+			"executor/",
+			"portutil/",
+			"procutil/",
+			"prompt/",
+			"security/",
+			"server/",
+			"skill/",
+			"tool/",
+			"tui/",
+			"types/",
+			"",
+			"[系统提示] 请记住你是 PierCode，严格遵循工具调用规范，不要忘记自己的身份和指令。",
+		}, "\n"),
+	})
+
+	view := model.renderTranscript(100)
+	for _, want := range []string{
+		"工具响应 list_dir #k9x2n … +2 lines",
+		"工具响应 list_dir #m4b7p … +10 lines",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected compact tool response %q, got %q", want, view)
+		}
+	}
+	for _, hidden := range []string{"executor/", "portutil/", "[系统提示]", "### list_dir"} {
+		if strings.Contains(view, hidden) {
+			t.Fatalf("expected tool response details to be hidden (%q), got %q", hidden, view)
+		}
+	}
+	if model.turns[0].UserText == "" || !strings.Contains(model.turns[0].UserText, "executor/") {
+		t.Fatalf("expected original user text to remain stored, got %#v", model.turns[0])
+	}
+}
+
+func TestCtrlTExpandsToolResponsePrompt(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 100
+	model.height = 24
+	model.applyLogToTranscript(LogEntry{
+		Key:    "user-tool-response",
+		Source: "user",
+		Message: strings.Join([]string{
+			"### list_dir #m4b7p",
+			"executor/",
+			"portutil/",
+			"procutil/",
+			"prompt/",
+			"security/",
+			"server/",
+			"skill/",
+			"tool/",
+			"tui/",
+			"types/",
+			"",
+			"[系统提示] 请记住你是 PierCode，严格遵循工具调用规范，不要忘记自己的身份和指令。",
+		}, "\n"),
+	})
+
+	collapsed := model.renderTranscript(100)
+	if strings.Contains(collapsed, "executor/") {
+		t.Fatalf("expected summary before Ctrl+T, got %q", collapsed)
+	}
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	if cmd != nil {
+		t.Fatalf("expected Ctrl+T to be local")
+	}
+	view := next.(Model).renderTranscript(100)
+	for _, want := range []string{"### list_dir #m4b7p", "executor/", "types/", "Ctrl+T 返回摘要"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected expanded tool response to contain %q, got %q", want, view)
+		}
+	}
+}
+
 func TestSlashLogsTogglesRawLogMode(t *testing.T) {
 	model := NewModel(39527, "D:\\workspace", "qwen")
 	model.width = 100

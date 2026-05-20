@@ -12,9 +12,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/sirhap/piercode/internal/executor"
 	"github.com/sirhap/piercode/internal/prompt"
 	"github.com/sirhap/piercode/internal/security"
@@ -22,8 +25,6 @@ import (
 	"github.com/sirhap/piercode/internal/tool"
 	"github.com/sirhap/piercode/internal/tui"
 	"github.com/sirhap/piercode/internal/types"
-	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 )
 
 type Server struct {
@@ -204,7 +205,8 @@ func (s *Server) handleConfig(c *gin.Context) {
 
 func (s *Server) handleStats(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"browser_clients": s.ws.ClientCount(),
+		"browser_clients":   s.ws.ClientCount(),
+		"browser_providers": s.ws.ProviderCounts(),
 	})
 }
 
@@ -401,18 +403,19 @@ func (s *Server) handleWS(c *gin.Context) {
 	}
 	log.Println("[PierCode] ✅ 扩展已连接 WebSocket")
 
-	s.ws.Register(conn)
+	provider := browserProviderFromRequest(c.Request)
+	s.ws.RegisterWithProvider(conn, provider)
 	count := s.ws.ClientCount()
 	s.logTUI("system", "BROWSER", "success", fmt.Sprintf("浏览器扩展已连接 (%d)", count))
 	if s.logger != nil {
-		s.logger.LogBrowserCount(count)
+		s.logger.LogBrowserStatus(count, s.ws.ProviderCounts())
 	}
 	defer func() {
 		s.ws.Unregister(conn)
 		count := s.ws.ClientCount()
 		s.logTUI("system", "BROWSER", "info", fmt.Sprintf("浏览器扩展已断开 (%d)", count))
 		if s.logger != nil {
-			s.logger.LogBrowserCount(count)
+			s.logger.LogBrowserStatus(count, s.ws.ProviderCounts())
 		}
 	}()
 
@@ -426,6 +429,32 @@ func (s *Server) handleWS(c *gin.Context) {
 			break
 		}
 		s.handleWSClientMessage(payload)
+	}
+}
+
+func browserProviderFromRequest(r *http.Request) string {
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
+	if provider != "" {
+		return provider
+	}
+	host := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("host")))
+	switch {
+	case strings.Contains(host, "qwen.ai"), strings.Contains(host, "qwenlm.ai"):
+		return "Qwen"
+	case strings.Contains(host, "claude.ai"):
+		return "Claude"
+	case strings.Contains(host, "chatgpt.com"), strings.Contains(host, "chat.openai.com"):
+		return "ChatGPT"
+	case strings.Contains(host, "gemini.google.com"):
+		return "Gemini"
+	case strings.Contains(host, "aistudio.google.com"):
+		return "AI Studio"
+	case strings.Contains(host, "kimi.com"):
+		return "Kimi"
+	case strings.Contains(host, "chat.z.ai"):
+		return "Z.ai"
+	default:
+		return "Browser"
 	}
 }
 
@@ -483,11 +512,93 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 
 func summarizeBrowserAIText(text string) string {
 	const maxLines = 50
+	text = summarizeBrowserToolCalls(text)
 	lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(text), "\r\n", "\n"), "\n")
 	if len(lines) <= maxLines {
 		return strings.TrimSpace(text)
 	}
 	return strings.Join(lines[:maxLines], "\n") + fmt.Sprintf("\n… +%d lines (Ctrl+T 查看完整)", len(lines)-maxLines)
+}
+
+var (
+	browserToolFenceRE = regexp.MustCompile("(?is)```(?:piercode-tool|tool)\\s*\\n([\\s\\S]*?)\\n```")
+	browserXMLToolRE   = regexp.MustCompile("(?is)<tool(?:\\s[^>]*)?>[\\s\\S]*?</(?:tool|function)(?:_call)?>")
+)
+
+func summarizeBrowserToolCalls(text string) string {
+	text = browserToolFenceRE.ReplaceAllStringFunc(text, func(raw string) string {
+		body := ""
+		if match := browserToolFenceRE.FindStringSubmatch(raw); len(match) == 2 {
+			body = match[1]
+		}
+		return "\n" + toolCallSummary(parseToolCallJSON(body)) + "\n"
+	})
+	text = browserXMLToolRE.ReplaceAllStringFunc(text, func(raw string) string {
+		return "\n" + toolCallSummary(toolCallInfo{
+			Name:   extractXMLAttr(raw, "name"),
+			CallID: extractXMLAttr(raw, "call_id"),
+		}) + "\n"
+	})
+	return text
+}
+
+type toolCallInfo struct {
+	Name   string
+	CallID string
+}
+
+func parseToolCallJSON(raw string) toolCallInfo {
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.ReplaceAll(raw, "\u00a0", " ")), &payload); err != nil {
+		return toolCallInfo{}
+	}
+	info := toolCallInfo{}
+	if name, ok := payload["name"].(string); ok {
+		info.Name = name
+	}
+	if callID, ok := payload["call_id"].(string); ok {
+		info.CallID = callID
+	} else if callID, ok := payload["callId"].(string); ok {
+		info.CallID = callID
+	}
+	return info
+}
+
+func toolCallSummary(info toolCallInfo) string {
+	name := strings.TrimSpace(info.Name)
+	if name == "" {
+		name = "tool"
+	}
+	if callID := strings.TrimSpace(info.CallID); callID != "" {
+		return fmt.Sprintf("调用工具 %s #%s … (Ctrl+T 查看完整)", name, callID)
+	}
+	return fmt.Sprintf("调用工具 %s … (Ctrl+T 查看完整)", name)
+}
+
+func extractXMLAttr(raw, name string) string {
+	openingTag := raw
+	if end := strings.IndexByte(openingTag, '>'); end >= 0 {
+		openingTag = openingTag[:end]
+	}
+	lower := strings.ToLower(openingTag)
+	key := strings.ToLower(name) + "="
+	idx := strings.Index(lower, key)
+	if idx < 0 {
+		return ""
+	}
+	rest := openingTag[idx+len(key):]
+	if rest == "" {
+		return ""
+	}
+	quote := rest[0]
+	if quote != '"' && quote != '\'' {
+		return ""
+	}
+	end := strings.IndexByte(rest[1:], quote)
+	if end < 0 {
+		return ""
+	}
+	return rest[1 : 1+end]
 }
 
 func (s *Server) Run() error {

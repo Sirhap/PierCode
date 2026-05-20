@@ -8,7 +8,7 @@
     "type": "module"
   },
   "permissions": ["activeTab", "storage", "tabs", "scripting"],
-  "host_permissions": ["http://127.0.0.1:*/*", "*://*.gemini.google.com/*", "*://aistudio.google.com/*", "*://*.qwen.ai/*", "*://*.qwenlm.ai/*", "*://chat.z.ai/*", "*://*.kimi.com/*", "*://claude.ai/*", "*://*.claude.ai/*", "*://chatgpt.com/*", "*://*.chatgpt.com/*", "*://chat.openai.com/*"],
+  "host_permissions": ["http://127.0.0.1:*/*", "*://*.gemini.google.com/*", "*://aistudio.google.com/*", "*://qwen.ai/*", "*://chat.qwen.ai/*", "*://*.qwen.ai/*", "*://*.qwenlm.ai/*", "*://chat.z.ai/*", "*://*.kimi.com/*", "*://claude.ai/*", "*://*.claude.ai/*", "*://chatgpt.com/*", "*://*.chatgpt.com/*", "*://chat.openai.com/*"],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -26,7 +26,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*.gemini.google.com/*", "*://aistudio.google.com/*", "*://*.qwen.ai/*", "*://*.qwenlm.ai/*", "*://chat.z.ai/*", "*://*.kimi.com/*", "*://claude.ai/*", "*://*.claude.ai/*", "*://chatgpt.com/*", "*://*.chatgpt.com/*", "*://chat.openai.com/*"],
+      "matches": ["*://*.gemini.google.com/*", "*://aistudio.google.com/*", "*://qwen.ai/*", "*://chat.qwen.ai/*", "*://*.qwen.ai/*", "*://*.qwenlm.ai/*", "*://chat.z.ai/*", "*://*.kimi.com/*", "*://claude.ai/*", "*://*.claude.ai/*", "*://chatgpt.com/*", "*://*.chatgpt.com/*", "*://chat.openai.com/*"],
       "js": ["content.js"],
       "run_at": "document_start"
     }
@@ -34,7 +34,7 @@
   "web_accessible_resources": [
     {
       "resources": ["injected.js", "page-bridge.js"],
-      "matches": ["*://*.gemini.google.com/*", "*://aistudio.google.com/*", "*://*.qwen.ai/*", "*://*.qwenlm.ai/*", "*://chat.z.ai/*", "*://*.kimi.com/*", "*://claude.ai/*", "*://*.claude.ai/*", "*://chatgpt.com/*", "*://*.chatgpt.com/*", "*://chat.openai.com/*"]
+      "matches": ["*://*.gemini.google.com/*", "*://aistudio.google.com/*", "*://qwen.ai/*", "*://chat.qwen.ai/*", "*://*.qwen.ai/*", "*://*.qwenlm.ai/*", "*://chat.z.ai/*", "*://*.kimi.com/*", "*://claude.ai/*", "*://*.claude.ai/*", "*://chatgpt.com/*", "*://*.chatgpt.com/*", "*://chat.openai.com/*"]
     }
   ]
 }

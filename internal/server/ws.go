@@ -4,6 +4,9 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +23,7 @@ const (
 type clientConn struct {
 	conn      *websocket.Conn
 	send      chan []byte
+	provider  string
 	closeOnce sync.Once
 }
 
@@ -65,9 +69,16 @@ func (m *WSManager) Upgrade(w http.ResponseWriter, r *http.Request) (*websocket.
 
 // Register 注册新的客户端连接
 func (m *WSManager) Register(conn *websocket.Conn) {
+	m.RegisterWithProvider(conn, "")
+}
+
+// RegisterWithProvider registers a client and records the AI surface it came
+// from so status UIs can show something more useful than a raw page count.
+func (m *WSManager) RegisterWithProvider(conn *websocket.Conn, provider string) {
 	cc := &clientConn{
-		conn: conn,
-		send: make(chan []byte, wsClientQueueSize),
+		conn:     conn,
+		send:     make(chan []byte, wsClientQueueSize),
+		provider: normalizeProvider(provider),
 	}
 	m.clientsMu.Lock()
 	m.clients[cc] = true
@@ -80,6 +91,48 @@ func (m *WSManager) ClientCount() int {
 	m.clientsMu.RLock()
 	defer m.clientsMu.RUnlock()
 	return len(m.clients)
+}
+
+func (m *WSManager) ProviderCounts() map[string]int {
+	m.clientsMu.RLock()
+	defer m.clientsMu.RUnlock()
+	counts := make(map[string]int)
+	for cc := range m.clients {
+		counts[normalizeProvider(cc.provider)]++
+	}
+	return counts
+}
+
+func normalizeProvider(provider string) string {
+	switch strings.TrimSpace(provider) {
+	case "ChatGPT", "Claude", "Gemini", "Qwen", "Kimi", "Z.ai", "AI Studio":
+		return provider
+	default:
+		return "Browser"
+	}
+}
+
+func FormatProviderCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "0 pages"
+	}
+	names := make([]string, 0, len(counts))
+	for name := range counts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+" "+formatPageCount(counts[name]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatPageCount(count int) string {
+	if count == 1 {
+		return "1 page"
+	}
+	return strconv.Itoa(count) + " pages"
 }
 
 // Unregister 移除客户端连接

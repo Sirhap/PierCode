@@ -6,6 +6,17 @@ let configuredApiUrl = '';
 let configuredToken = '';
 let connectionSeq = 0;
 
+type BridgeState = 'not_configured' | 'connecting' | 'open' | 'closed' | 'error' | 'invalid_url';
+
+function setBridgeStatus(state: BridgeState, apiUrl = configuredApiUrl) {
+  (window as any).__PIERCODE_WS_STATUS__ = {
+    connected: state === 'open',
+    state,
+    apiUrl,
+    updatedAt: Date.now(),
+  };
+}
+
 export type ToolStreamMessage = {
   type: 'tool_stream';
   task_id?: string;
@@ -104,10 +115,39 @@ function toWebSocketUrl(apiUrl: string, token: string): string | null {
     const url = new URL(apiUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.pathname = "/ws";
-    url.search = `?token=${encodeURIComponent(token)}`;
+    url.searchParams.set("token", token);
+    url.searchParams.set("provider", currentProvider());
+    url.searchParams.set("host", location.hostname);
     return url.toString();
   } catch {
     return null;
+  }
+}
+
+function currentProvider(): string {
+  const h = location.hostname.toLowerCase();
+  if (h.includes("qwen.ai") || h.includes("qwenlm.ai")) return "Qwen";
+  if (h.includes("claude.ai")) return "Claude";
+  if (h.includes("chatgpt.com") || h.includes("chat.openai.com")) return "ChatGPT";
+  if (h.includes("gemini.google.com")) return "Gemini";
+  if (h.includes("aistudio.google.com")) return "AI Studio";
+  if (h.includes("kimi.com")) return "Kimi";
+  if (h.includes("chat.z.ai")) return "Z.ai";
+  return "Browser";
+}
+
+function isQwenPage(): boolean {
+  const h = location.hostname.toLowerCase();
+  return h.includes("qwen.ai") || h.includes("qwenlm.ai");
+}
+
+async function focusCurrentTabForSend(): Promise<void> {
+  if (!isQwenPage()) return;
+  try {
+    await chrome.runtime.sendMessage({ type: "FOCUS_SELF" });
+    await new Promise(resolve => window.setTimeout(resolve, 150));
+  } catch (error) {
+    console.warn("[PierCode] 激活 Qwen 标签页失败，继续尝试发送:", error);
   }
 }
 
@@ -132,12 +172,15 @@ function getInjectConfig(): InjectConfig {
   if (h.includes("qwen.ai") || h.includes("qwenlm.ai")) {
     return {
       editor: [
+        "textarea[class*='MessageInput__TextArea']",
         "textarea.message-input-textarea",
+        "textarea[placeholder*='Qwen']",
         "textarea[placeholder*='Send']",
         "textarea[placeholder*='输入']",
         "[contenteditable='true']"
       ].join(","),
       sendBtn: [
+        "div[class*='MessageInput__Submit']:not([aria-disabled='true'])",
         "button.send-button:not([disabled])",
         "button[aria-label*='发送']:not([disabled])",
         "button[aria-label*='Send']:not([disabled])"
@@ -251,17 +294,21 @@ function connectWebSocket(apiUrl: string, token: string) {
   const wsUrl = toWebSocketUrl(apiUrl, token);
   if (!wsUrl) {
     console.warn("[PierCode] WebSocket URL 无效:", apiUrl);
+    setBridgeStatus('invalid_url', apiUrl);
     return;
   }
   // 不要打印完整 wsUrl —— 它带 ?token=... ，落到 DevTools console / 录屏 /
   // 用户报错截图都是泄露面。脱敏成 host:port + token 首尾。
   console.log("[PierCode] WebSocket 连接中...", redactWsUrl(wsUrl));
+  setBridgeStatus('connecting', apiUrl);
 
   try {
     ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
       console.log("[PierCode] ✅ WebSocket 已连接");
+      setBridgeStatus('open', apiUrl);
+      window.dispatchEvent(new CustomEvent("PIERCODE_BACKEND_CONNECTED"));
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -299,6 +346,7 @@ function connectWebSocket(apiUrl: string, token: string) {
       console.warn("[PierCode] ⚠️ WebSocket 连接已关闭:", e.reason);
       ws = null;
       if (seq !== connectionSeq) return;
+      setBridgeStatus('closed', apiUrl);
       // 3 秒后尝试重连
       reconnectTimer = window.setTimeout(() => {
         console.log("[PierCode] 🔄 正在尝试重新连接 WebSocket...");
@@ -308,10 +356,12 @@ function connectWebSocket(apiUrl: string, token: string) {
 
     ws.onerror = (err) => {
       console.error("[PierCode] ❌ WebSocket 发生错误:", err);
+      setBridgeStatus('error', apiUrl);
       ws?.close();
     };
   } catch (e) {
     console.error("[PierCode] 创建 WebSocket 失败:", e);
+    setBridgeStatus('error', apiUrl);
   }
 }
 
@@ -381,13 +431,14 @@ function clickSendButton(config: InjectConfig, targetInput: HTMLElement, attempt
 }
 
 // 处理注入消息：查找聊天输入框并填入内容
-function handleInjectMessage(text: string) {
+async function handleInjectMessage(text: string) {
   console.log("[PierCode] 收到注入消息:", text);
   const cleanText = sanitizeInjectedText(text);
   if (!cleanText) {
     console.warn("[PierCode] 注入内容为空，已跳过");
     return;
   }
+  await focusCurrentTabForSend();
   const config = getInjectConfig();
   const targetInput = querySelectorFirst(config.editor);
 
@@ -397,6 +448,7 @@ function handleInjectMessage(text: string) {
   }
 
   fillTargetInput(targetInput, cleanText, config.fillMethod);
+  window.dispatchEvent(new CustomEvent("PIERCODE_PROMPT_SUBMITTED", { detail: cleanText }));
   window.setTimeout(() => clickSendButton(config, targetInput), 100);
 
   console.log("[PierCode] ✅ 内容已注入并提交到输入框");
@@ -469,6 +521,7 @@ function startConnection() {
     if (info) {
       connectWebSocket(info.apiUrl, info.token);
     } else {
+      setBridgeStatus('not_configured');
       console.log("[PierCode] 等待认证配置... (将在认证后自动连接)");
     }
   });

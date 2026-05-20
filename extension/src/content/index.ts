@@ -14,6 +14,15 @@ let monacoIdSeq = 0;
 let monacoRequestSeq = 0;
 const CONTEXT_INVALID_MESSAGE = '扩展已失效，请刷新页面';
 let lastContextInvalidNoticeAt = 0;
+let responseSessionActivatedAt = 0;
+
+function activateResponseSession(): void {
+  if (!responseSessionActivatedAt) responseSessionActivatedAt = Date.now();
+}
+
+function isResponseSessionActive(): boolean {
+  return responseSessionActivatedAt > 0;
+}
 
 function injectPageScript(fileName: string): void {
   if (!checkContext()) return;
@@ -385,7 +394,14 @@ function getSiteConfig(): SiteConfig {
   if (h.includes('gemini.google.com'))
     return { editor: 'div.ql-editor[contenteditable="true"]', sendBtn: 'button.send-button[aria-label*="发送"], button.send-button[aria-label*="Send"]', stopBtn: null, fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || 'model-response, .model-response-text, message-content' };
   if (h.includes('qwen.ai') || h.includes('qwenlm.ai'))
-    return { editor: 'textarea.message-input-textarea', sendBtn: 'button.send-button', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || '.qwen-chat-message-assistant' };
+    return {
+      editor: 'textarea[class*="MessageInput__TextArea"], textarea.message-input-textarea, textarea[placeholder*="Qwen"]',
+      sendBtn: 'div[class*="MessageInput__Submit"]:not([aria-disabled="true"]), button.send-button',
+      stopBtn: null,
+      fillMethod: 'value',
+      useObserver: true,
+      responseSelector: adapterSelector || '.qwen-chat-message-assistant'
+    };
   // Default: AI Studio
   return { editor: 'textarea[placeholder*="Start typing a prompt"]', sendBtn: 'button.ctrl-enter-submits.ms-button-primary[type="submit"], button[aria-label*="Run"]', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || 'ms-chat-turn' };
 }
@@ -723,6 +739,17 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
 
 function startDOMObserver(_responseSelector: string) {
   const processed = new Set<string>();
+  const ignoredPreSessionContainers = new WeakSet<Element>();
+  const markCurrentResponsesAsHistory = () => {
+    document.querySelectorAll(responseContainerSelector()).forEach(el => {
+      ignoredPreSessionContainers.add(el);
+    });
+  };
+  window.addEventListener('PIERCODE_PROMPT_SUBMITTED', activateResponseSession);
+  window.addEventListener('PIERCODE_BACKEND_CONNECTED', () => {
+    responseSessionActivatedAt = 0;
+    markCurrentResponsesAsHistory();
+  });
   let autoExecute: boolean | null = null;
   const pendingAutoExecute = new Map<string, { data: any; key: string }>();
   chrome.storage.local.get(['autoExecute']).then(r => {
@@ -875,6 +902,7 @@ function startDOMObserver(_responseSelector: string) {
   }
 
   async function scanText(text: string, sourceEl?: Element) {
+    if (!isResponseSessionActive()) return;
     const lower = text.toLowerCase();
 
     // ── Phase 0: 直接从 DOM 提取 tool 代码块（Qwen Monaco Editor 专用） ──
@@ -1078,13 +1106,24 @@ function startDOMObserver(_responseSelector: string) {
 
   function cleanAIResponseLogText(text: string): string {
     const clean = text
-      .replace(/```(?:piercode-tool|tool)\s*[\s\S]*?```/gi, '')
-      .replace(/<tool[\s\S]*?<\/(?:tool|function)(?:_call)?>/gi, '')
+      .replace(/```(?:piercode-tool|tool)\s*\n([\s\S]*?)\n```/gi, (_full, body) => `\n${summarizeToolCallForLog(body)}\n`)
+      .replace(/<tool[\s\S]*?<\/(?:tool|function)(?:_call)?>/gi, (full) => `\n${summarizeToolCallForLog(full)}\n`)
       .replace(/\n{3,}/g, '\n\n')
       .trim();
     if (!clean) return '';
-    if (tryParseToolJSON(clean)) return '';
+    if (tryParseToolJSON(clean)) return summarizeToolCallForLog(clean);
     return clean;
+  }
+
+  function summarizeToolCallForLog(raw: string): string {
+    const parsed = parseJsonFenceToolCall(raw) ||
+      parseXmlToolCall(raw, decodeHTMLEntities) ||
+      tryParseToolJSON(raw);
+    const name = typeof parsed?.name === 'string' && parsed.name.trim() ? parsed.name.trim() : 'tool';
+    const callId = typeof parsed?.callId === 'string' && parsed.callId.trim()
+      ? parsed.callId.trim()
+      : (typeof parsed?.call_id === 'string' ? parsed.call_id.trim() : '');
+    return callId ? `调用工具 ${name} #${callId} …` : `调用工具 ${name} …`;
   }
 
   function scanNode(node: Node) {
@@ -1099,9 +1138,21 @@ function startDOMObserver(_responseSelector: string) {
     if (!el) return;
     notifyResponseLoading(el);
     const mc = findResponseContainer(el);
-    if (mc) scheduleScan(mc);
+    if (mc) {
+      if (!isResponseSessionActive()) {
+        ignoredPreSessionContainers.add(mc);
+      } else {
+        scheduleScan(mc);
+      }
+    }
     if (el.nodeType === Node.ELEMENT_NODE) {
-      el.querySelectorAll?.(responseContainerSelector()).forEach(container => scheduleScan(container));
+      el.querySelectorAll?.(responseContainerSelector()).forEach(container => {
+        if (!isResponseSessionActive()) {
+          ignoredPreSessionContainers.add(container);
+        } else {
+          scheduleScan(container);
+        }
+      });
     }
   }
 
@@ -1194,6 +1245,7 @@ function startDOMObserver(_responseSelector: string) {
   }
 
   function scheduleScan(container: Element) {
+    if (ignoredPreSessionContainers.has(container)) return;
     pendingContainers.add(container);
     if (!maxWaitTimer) {
       maxWaitTimer = setTimeout(() => {
@@ -1229,11 +1281,10 @@ function startDOMObserver(_responseSelector: string) {
     }
   }).observe(document.body, { childList: true, subtree: true, characterData: true });
 
-  // Initial scan for already-rendered tool calls (e.g. after page refresh)
+  // Mark already-rendered history as out-of-scope. The TUI should only mirror
+  // prompts and answers that happen after this content script session starts.
   requestAnimationFrame(() => {
-    document.querySelectorAll(responseContainerSelector()).forEach(el => {
-      scanText(getCleanText(el), el);
-    });
+    markCurrentResponsesAsHistory();
   });
 }
 
@@ -1358,8 +1409,26 @@ function querySelectorFirst(selectors: string): HTMLElement | null {
   return null;
 }
 
+function isQwenPage(): boolean {
+  const h = location.hostname.toLowerCase();
+  return h.includes('qwen.ai') || h.includes('qwenlm.ai');
+}
+
+async function focusCurrentTabForSend(): Promise<void> {
+  if (!isQwenPage()) return;
+  try {
+    await chrome.runtime.sendMessage({ type: 'FOCUS_SELF' });
+    await new Promise(resolve => setTimeout(resolve, 150));
+  } catch (error) {
+    console.warn('[PierCode] 激活 Qwen 标签页失败，继续尝试发送:', error);
+  }
+}
+
 async function fillAndSend(result: string, autoSend = false) {
   const { editor: editorSel, sendBtn: sendBtnSel, fillMethod } = getSiteConfig();
+  if (autoSend) {
+    await focusCurrentTabForSend();
+  }
   const editor = querySelectorFirst(editorSel);
   if (!editor) return;
 
@@ -1656,6 +1725,7 @@ function attachInputListener(editorEl: HTMLElement) {
   function logSubmittedPrompt(): void {
     const text = getEditorText(editorEl).trim();
     if (!text) return;
+    activateResponseSession();
     const now = Date.now();
     if (text === lastPromptText && now - lastPromptAt < 1500) return;
     lastPromptText = text;

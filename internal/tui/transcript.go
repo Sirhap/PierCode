@@ -48,6 +48,11 @@ func (m Model) renderTranscript(width int) string {
 	if m.fullView && m.hasActiveFullLog() {
 		return m.renderLogs(width)
 	}
+	if m.fullView {
+		if text, ok := m.latestToolResponsePromptText(); ok {
+			return m.renderFullToolResponsePrompt(width, text)
+		}
+	}
 
 	contentWidth := maxInt(8, width-4)
 	lines := make([]string, 0)
@@ -60,11 +65,9 @@ func (m Model) renderTranscript(width int) string {
 		}
 	}
 
-	// Constrain to available height so the composer always stays at the
-	// bottom of the terminal instead of being pushed upward by growing
-	// transcript content.
-	height := m.activityHeight(width)
-	lines = constrainToHeight(lines, height, m.transcriptOffset)
+	if m.transcriptOffset >= 0 {
+		lines = constrainToHeight(lines, m.activityHeight(width), m.transcriptOffset)
+	}
 
 	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(strings.Join(lines, "\n"))
 }
@@ -99,7 +102,7 @@ func (m *Model) computeTurnLines(turn Turn, width int) []string {
 	lines := make([]string, 0, 4+len(turn.Tools)*4)
 	if strings.TrimSpace(turn.UserText) != "" {
 		prefix := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("piercode>")
-		for i, line := range wrapTextLines(turn.UserText, maxInt(8, width-10)) {
+		for i, line := range renderUserTextLines(turn.UserText, maxInt(8, width-10)) {
 			if i == 0 {
 				lines = append(lines, prefix+" "+lipgloss.NewStyle().Foreground(colorUser).Render(line))
 			} else {
@@ -138,6 +141,118 @@ func (m *Model) computeTurnLines(turn Turn, width int) []string {
 		lines = append(lines, "")
 	}
 	return lines
+}
+
+type toolResponsePromptSummary struct {
+	Name   string
+	CallID string
+	Lines  int
+}
+
+func renderUserTextLines(text string, width int) []string {
+	if summaries, ok := summarizeToolResponsePrompt(text); ok {
+		lines := make([]string, 0, len(summaries))
+		for _, summary := range summaries {
+			label := fmt.Sprintf("工具响应 %s", summary.Name)
+			if summary.CallID != "" {
+				label += " #" + summary.CallID
+			}
+			if summary.Lines > 0 {
+				label += fmt.Sprintf(" … +%d lines", summary.Lines)
+			} else {
+				label += " …"
+			}
+			lines = append(lines, truncateString(label, width))
+		}
+		return lines
+	}
+	return wrapTextLines(text, width)
+}
+
+func summarizeToolResponsePrompt(text string) ([]toolResponsePromptSummary, bool) {
+	raw := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	summaries := make([]toolResponsePromptSummary, 0)
+	current := -1
+	for _, line := range raw {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || isSystemReminderLine(trimmed) {
+			continue
+		}
+		if name, callID, ok := parseToolResponseHeading(trimmed); ok {
+			summaries = append(summaries, toolResponsePromptSummary{Name: name, CallID: callID})
+			current = len(summaries) - 1
+			continue
+		}
+		if current < 0 {
+			return nil, false
+		}
+		summaries[current].Lines++
+	}
+	return summaries, len(summaries) > 0
+}
+
+func parseToolResponseHeading(line string) (string, string, bool) {
+	const prefix = "### "
+	if !strings.HasPrefix(line, prefix) {
+		return "", "", false
+	}
+	fields := strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, prefix)))
+	if len(fields) < 2 || !strings.HasPrefix(fields[1], "#") {
+		return "", "", false
+	}
+	name := strings.TrimSpace(fields[0])
+	callID := strings.TrimPrefix(strings.TrimSpace(fields[1]), "#")
+	if name == "" || callID == "" {
+		return "", "", false
+	}
+	return name, callID, true
+}
+
+func isSystemReminderLine(line string) bool {
+	return strings.HasPrefix(line, "[系统提示]")
+}
+
+func (m Model) latestToolResponsePromptText() (string, bool) {
+	for i := len(m.turns) - 1; i >= 0; i-- {
+		text := m.turns[i].UserText
+		if _, ok := summarizeToolResponsePrompt(text); ok {
+			return text, true
+		}
+	}
+	return "", false
+}
+
+func (m Model) hasFullToolResponsePrompt() bool {
+	_, ok := m.latestToolResponsePromptText()
+	return ok
+}
+
+func (m Model) fullToolResponsePromptLineCount(width int) int {
+	text, ok := m.latestToolResponsePromptText()
+	if !ok {
+		return 0
+	}
+	return len(wrapTextLines(stripANSI(text), maxInt(8, width-4)))
+}
+
+func (m Model) renderFullToolResponsePrompt(width int, text string) string {
+	height := m.activityHeight(width)
+	msgWidth := maxInt(8, width-4)
+	all := wrapTextLines(stripANSI(text), msgWidth)
+	offset := clampInt(m.fullOffset, 0, len(all))
+	lines := make([]string, 0, len(all)-offset+1)
+	for i := offset; i < len(all); i++ {
+		prefix := "  "
+		if i == 0 {
+			prefix = lipgloss.NewStyle().Foreground(colorUser).Render("▌") + " "
+		}
+		lines = append(lines, prefix+lipgloss.NewStyle().Foreground(colorUser).Render(all[i]))
+	}
+	if len(all) > 0 {
+		lines = append(lines, subtitleStyle.Render(truncateString(fmt.Sprintf("  %d-%d/%d  j/k 滚动  Ctrl+T 返回摘要", offset+1, len(lines), len(all)), msgWidth)))
+	}
+	lines = constrainToHeight(lines, height, -1)
+	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(strings.Join(lines, "\n"))
 }
 
 func (m *Model) recordUserPrompt(text string) {
@@ -346,7 +461,7 @@ func (m *Model) applyLogToTranscript(entry LogEntry) {
 		m.followTranscriptIfNeeded(wasFollowing)
 		return
 	}
-	if entry.Source == "ai" && strings.TrimSpace(entry.ToolName) != "" {
+	if isRenderableToolLog(entry) {
 		wasFollowing := m.isFollowingTranscript()
 		now := time.Now()
 		if turn, tool := m.findTurnByToolKey(entry.Key); tool != nil {
@@ -380,7 +495,7 @@ func (m *Model) applyLogToTranscript(entry LogEntry) {
 		return
 	}
 	if entry.Source == "system" && strings.TrimSpace(entry.Message) != "" {
-		if strings.EqualFold(entry.ToolName, "BROWSER") || strings.EqualFold(entry.ToolName, "SYSTEM") {
+		if strings.EqualFold(entry.ToolName, "SYSTEM") {
 			return
 		}
 		m.appendSystemNotice(entry.Status, entry.Message)

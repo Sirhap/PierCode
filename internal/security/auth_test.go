@@ -5,36 +5,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 )
 
-func TestLoadOrCreateToken(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	t.Setenv("USERPROFILE", dir)
-
-	// First call creates token
-	token1, err := LoadOrCreateToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(token1) == 0 {
-		t.Fatal("expected non-empty token")
-	}
-
-	// Second call returns same token
-	token2, err := LoadOrCreateToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if token1 != token2 {
-		t.Errorf("expected same token, got %q vs %q", token1, token2)
-	}
-}
-
-func TestLoadOrCreateTokenExisting(t *testing.T) {
+func TestNewSessionTokenDoesNotReuseStoredToken(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
@@ -43,12 +20,28 @@ func TestLoadOrCreateTokenExisting(t *testing.T) {
 	os.MkdirAll(settingsDir, 0700)
 	os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(`{"token":"mytoken123"}`), 0600)
 
-	token, err := LoadOrCreateToken()
+	token1, err := NewSessionToken()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if token != "mytoken123" {
-		t.Errorf("expected mytoken123, got %q", token)
+	token2, err := NewSessionToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if token1 == "mytoken123" || token2 == "mytoken123" {
+		t.Fatalf("session token should not reuse stored token: %q %q", token1, token2)
+	}
+	if token1 == token2 {
+		t.Fatalf("session token should be regenerated each call, got %q", token1)
+	}
+	if len(token1) != 64 || len(token2) != 64 {
+		t.Fatalf("expected 64 hex chars, got %d and %d", len(token1), len(token2))
+	}
+	for _, token := range []string{token1, token2} {
+		if _, err := strconv.ParseUint(token[:16], 16, 64); err != nil {
+			t.Fatalf("expected hex token, got %q", token)
+		}
 	}
 }
 

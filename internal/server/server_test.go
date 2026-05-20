@@ -319,6 +319,35 @@ func TestSummarizeBrowserAITextFoldsAfterFiftyLines(t *testing.T) {
 	}
 }
 
+func TestSummarizeBrowserAITextFoldsToolCalls(t *testing.T) {
+	text := "我先看文件\n```piercode-tool\n{\"name\":\"read_file\",\"call_id\":\"abc123\",\"args\":{\"path\":\"internal/tui/transcript.go\"}}\n```\n继续分析"
+
+	summary := summarizeBrowserAIText(text)
+	if !strings.Contains(summary, "调用工具 read_file #abc123") {
+		t.Fatalf("expected compact tool-call summary, got %q", summary)
+	}
+	if strings.Contains(summary, "internal/tui/transcript.go") || strings.Contains(summary, "piercode-tool") {
+		t.Fatalf("expected raw tool call to be hidden, got %q", summary)
+	}
+	if !strings.Contains(summary, "Ctrl+T 查看完整") {
+		t.Fatalf("expected full-view hint, got %q", summary)
+	}
+}
+
+func TestSummarizeBrowserAITextFoldsXMLToolCalls(t *testing.T) {
+	text := `<tool name="grep" call_id="xml9">
+  <parameter name="pattern">secret</parameter>
+</tool>`
+
+	summary := summarizeBrowserAIText(text)
+	if !strings.Contains(summary, "调用工具 grep #xml9") {
+		t.Fatalf("expected compact XML tool-call summary, got %q", summary)
+	}
+	if strings.Contains(summary, "<parameter") {
+		t.Fatalf("expected XML body to be hidden, got %q", summary)
+	}
+}
+
 func TestHandlePrompt(t *testing.T) {
 	t.Run("missing default prompt returns 404", func(t *testing.T) {
 		// Build a server with no DefaultPrompt to verify the no-fallback path.

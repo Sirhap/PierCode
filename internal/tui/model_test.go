@@ -128,21 +128,39 @@ func TestSlashKeySeedsCommandInput(t *testing.T) {
 	}
 }
 
-func TestViewRendersLogoAndStatus(t *testing.T) {
-	model := NewModel(39527, "D:\\workspace", "qwen")
+func TestViewRendersCompactFooterStatus(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("USERPROFILE", root)
+	model := NewModel(39527, root, "qwen")
 	model.width = 100
 	model.height = 30
 	model.status = "running"
 
 	view := model.View()
-	if !strings.Contains(view, "PierCode") && !strings.Contains(view, "PIERCODE") {
-		t.Fatalf("expected PierCode branding in view")
+	for _, want := range []string{"DIR", "BRIDGE", "AI", "SKILLS", "0 pages"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected compact footer item %q in view, got %q", want, view)
+		}
 	}
-	if !strings.Contains(view, "RUNNING") {
-		t.Fatalf("expected running status in view")
+	for _, removed := range []string{"PierCode", "STATE", "RUNNING", "OK", "ERR", "SENT"} {
+		if strings.Contains(view, removed) {
+			t.Fatalf("did not expect noisy top status item %q in view, got %q", removed, view)
+		}
 	}
-	if !strings.Contains(view, "PAGE") || !strings.Contains(view, "0") {
-		t.Fatalf("expected browser page count in status strip")
+	if strings.Index(view, "BRIDGE") < strings.Index(view, "piercode>") {
+		t.Fatalf("expected compact status below input, got %q", view)
+	}
+}
+
+func TestNewModelNormalizesRootDirToAbsolutePath(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(39527, ".", "qwen")
+	if model.rootDir != wd {
+		t.Fatalf("expected absolute root dir %q, got %q", wd, model.rootDir)
 	}
 }
 
@@ -157,9 +175,82 @@ func TestBrowserConnectionCountUpdatesStatusStrip(t *testing.T) {
 		Status:   "success",
 		Message:  "浏览器扩展已连接 (2)",
 	})
+	next, _ = next.(Model).Update(BrowserCountMsg{Count: 2})
 	view := next.(Model).View()
-	if !strings.Contains(view, "PAGE") || !strings.Contains(view, "2") {
-		t.Fatalf("expected connected browser page count in status strip, got %q", view)
+	if !strings.Contains(view, "BRIDGE") || !strings.Contains(view, "2 pages") {
+		t.Fatalf("expected connected browser page count in footer, got %q", view)
+	}
+	if !strings.Contains(view, "浏览器扩展已连接") {
+		t.Fatalf("expected browser connection notice in activity stream, got %q", view)
+	}
+}
+
+func TestBrowserProviderStatusRendersInFooter(t *testing.T) {
+	model := NewModel(39527, t.TempDir(), "OpenAI / Claude / Local")
+	model.width = 100
+	model.height = 30
+
+	next, _ := model.Update(BrowserCountMsg{Count: 1, Providers: map[string]int{"Qwen": 1}})
+	view := next.(Model).View()
+	if !strings.Contains(view, "BRIDGE") || !strings.Contains(view, "Qwen 1") {
+		t.Fatalf("expected provider bridge summary in footer, got %q", view)
+	}
+	if !strings.Contains(view, "AI") || !strings.Contains(view, "Qwen") {
+		t.Fatalf("expected active AI provider in footer, got %q", view)
+	}
+}
+
+func TestCanvasDoesNotOverrideStyledLongText(t *testing.T) {
+	model := NewModel(39527, t.TempDir(), "qwen")
+	model.height = 1
+	styled := "\x1b[31m" + strings.Repeat("x", 80) + "\x1b[0m"
+
+	view := model.renderCanvas(styled, 100)
+	if !strings.HasPrefix(view, "\x1b[31m") {
+		t.Fatalf("expected existing text highlight to remain outermost, got %q", view[:minInt(len(view), 20)])
+	}
+}
+
+func TestWhitespaceOnlyInputRendersOnlyCursor(t *testing.T) {
+	line := renderInputLinesWithCursor("   ", 3, 20)
+	plain := stripANSI(strings.Join(line, "\n"))
+
+	if plain != " " {
+		t.Fatalf("expected whitespace-only input to render as a single cursor cell, got %q", plain)
+	}
+	if plain == "   " {
+		t.Fatalf("expected whitespace-only input not to render all typed spaces, got %q", plain)
+	}
+}
+
+func TestCanvasDoesNotHardCropTerminalScrollback(t *testing.T) {
+	model := NewModel(39527, t.TempDir(), "qwen")
+	model.width = 80
+	model.height = 8
+	model.recordUserPrompt("解释")
+
+	next, _ := model.Update(LogMsg{
+		Key:    "ai-long",
+		Source: "ai",
+		Status: "info",
+		Message: strings.Join([]string{
+			"line-01", "line-02", "line-03", "line-04", "line-05",
+			"line-06", "line-07", "line-08", "line-09", "line-10",
+			"line-11", "line-12", "line-13", "line-14", "line-15",
+		}, "\n"),
+	})
+	model = next.(Model)
+	view := model.View()
+	plain := stripANSI(view)
+
+	if count := strings.Count(plain, "▌ piercode>"); count != 1 {
+		t.Fatalf("expected exactly one live input prompt, got %d in %q", count, plain)
+	}
+	if !strings.Contains(plain, "line-01") || !strings.Contains(plain, "line-15") {
+		t.Fatalf("expected transcript to remain in terminal scrollback, got %q", plain)
+	}
+	if !strings.Contains(plain, "DIR ") {
+		t.Fatalf("expected footer to stay visible, got %q", plain)
 	}
 }
 
@@ -181,7 +272,7 @@ func TestAuthURLIsRenderedCompletely(t *testing.T) {
 
 	instructionIdx := strings.Index(view, "请在浏览器扩展中输入此 URL")
 	if instructionIdx < 0 {
-		t.Fatalf("expected auth URL instruction in dedicated block")
+		t.Fatalf("expected auth URL instruction in activity stream")
 	}
 	tokenIdx := strings.Index(view, token[len(token)-12:])
 	if tokenIdx < 0 {
@@ -205,7 +296,7 @@ func TestLogEntryRendersMessageWithoutMetadata(t *testing.T) {
 
 	next, _ := model.Update(LogMsg{
 		Source:   "system",
-		ToolName: "SYSTEM",
+		ToolName: "NOTICE",
 		Status:   "info",
 		Message:  "请在浏览器扩展中输入此 URL",
 	})
@@ -799,6 +890,62 @@ func TestLogEntryRendersMultilineSummary(t *testing.T) {
 	}
 	if !strings.Contains(view, "> Get-Content internal\\tool\\grep.go -Encoding UTF8") {
 		t.Fatalf("tool card should render command line, got %q", view)
+	}
+}
+
+func TestToolLogCollapsesLongBodyByDefault(t *testing.T) {
+	entry := LogEntry{
+		Source:      "ai",
+		ToolName:    "exec_cmd",
+		Status:      "success",
+		Message:     "Ran Get-Content file\nline-01\nline-02\nline-03\nline-04\nline-05\nline-06",
+		FullMessage: "Ran Get-Content file\nline-01\nline-02\nline-03\nline-04\nline-05\nline-06",
+	}
+	lines := logDisplayLines(entry, 80, false, false)
+	joined := strings.Join(lines, "\n")
+
+	if !strings.Contains(joined, "… +3 lines (Ctrl+T 查看完整)") {
+		t.Fatalf("expected collapsed long tool body, got %q", joined)
+	}
+	if strings.Contains(joined, "line-05") || strings.Contains(joined, "line-06") {
+		t.Fatalf("collapsed summary should hide tail lines, got %q", joined)
+	}
+
+	full := strings.Join(logDisplayLines(entry, 80, true, false), "\n")
+	if !strings.Contains(full, "line-06") {
+		t.Fatalf("full view should keep complete output, got %q", full)
+	}
+}
+
+func TestBackendToolLogCollapsesWithoutAIPageEcho(t *testing.T) {
+	model := NewModel(39527, "D:\\workspace", "qwen")
+	model.width = 100
+	model.height = 24
+
+	next, _ := model.Update(LogMsg{
+		Key:         "backend-tool-1",
+		Source:      "system",
+		ToolName:    "exec_cmd",
+		Status:      "success",
+		Message:     "Ran Get-Content file\nline-01\nline-02\nline-03\nline-04\nline-05\nline-06",
+		FullMessage: "Ran Get-Content file\nline-01\nline-02\nline-03\nline-04\nline-05\nline-06",
+	})
+	model = next.(Model)
+	view := model.renderTranscript(100)
+
+	if !strings.Contains(view, "tool exec_cmd") {
+		t.Fatalf("expected backend tool response in transcript, got %q", view)
+	}
+	if !strings.Contains(view, "… +3 lines (Ctrl+T 查看完整)") {
+		t.Fatalf("expected backend tool response to be collapsed, got %q", view)
+	}
+	if strings.Contains(view, "line-05") || strings.Contains(view, "line-06") {
+		t.Fatalf("backend tool response should hide tail lines by default, got %q", view)
+	}
+
+	full := strings.Join(logDisplayLines(model.logs[0], 80, true, false), "\n")
+	if !strings.Contains(full, "line-06") {
+		t.Fatalf("full view should still preserve backend output, got %q", full)
 	}
 }
 

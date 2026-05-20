@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/sirhap/piercode/internal/portutil"
@@ -25,10 +26,15 @@ func main() {
 	timeout := flag.Int("timeout", 60, "超时(秒)")
 	allowShell := flag.Bool("allow-shell", true, "启用 exec_cmd 工具。默认开启；用 --allow-shell=false 或 --no-shell 关闭")
 	noShell := flag.Bool("no-shell", false, "禁用 exec_cmd（等价于 --allow-shell=false）")
-	showToken := flag.Bool("show-token", true, "在终端打印认证 URL（含 token）。设 --show-token=false 可隐藏，避免泄露到 scrollback / tmux history")
+	showToken := flag.Bool("show-token", true, "在终端打印本次启动的认证 URL（含临时 token）。设 --show-token=false 可隐藏，隐藏后需重启并显示 token 才能重新授权")
 	allowedOrigins := flag.String("allowed-origins", "", "允许的 CORS/WS Origin 白名单（逗号分隔），默认仅放行 chrome-extension:// 与 127.0.0.1")
 	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 piercode 进程占用，强制结束该进程")
 	flag.Parse()
+
+	absDir, err := filepath.Abs(*dir)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
@@ -51,7 +57,7 @@ func main() {
 	}
 	ln.Close()
 
-	token, err := security.LoadOrCreateToken()
+	token, err := security.NewSessionToken()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -69,8 +75,8 @@ func main() {
 	shellEnabled := *allowShell && !*noShell
 
 	config := &types.Config{
-		RootDir:        *dir,
-		InitialRootDir: *dir,
+		RootDir:        absDir,
+		InitialRootDir: absDir,
 		Port:           *port,
 		Timeout:        *timeout,
 		Token:          token,
@@ -90,8 +96,8 @@ func main() {
 		fmt.Printf("\n认证 URL: http://127.0.0.1:%d/auth?token=%s\n", *port, token)
 		fmt.Printf("请在浏览器扩展中输入此 URL\n")
 	} else {
-		fmt.Printf("\n认证 token 已保存到 ~/.piercode/settings.json\n")
-		fmt.Printf("（--show-token=false 已启用：token 未打印；可 cat 该文件获取，或加 --show-token 恢复打印）\n")
+		fmt.Printf("\n认证 token 为本次启动临时生成，--show-token=false 已隐藏。\n")
+		fmt.Printf("如需重新授权浏览器插件，请重启并显示认证 URL。\n")
 	}
 	fmt.Printf("服务器监听 http://127.0.0.1:%d\n\n", *port)
 

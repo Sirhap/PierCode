@@ -1,6 +1,59 @@
 const MONACO_REQUEST = 'PIERCODE_MONACO_TEXT_REQUEST';
 const MONACO_RESPONSE = 'PIERCODE_MONACO_TEXT_RESPONSE';
 
+function installKeepAliveVisibilityShim(): void {
+  const host = location.hostname.toLowerCase();
+  if (!host.includes('qwen.ai') && !host.includes('qwenlm.ai')) return;
+  if ((window as any).__PIERCODE_KEEP_ALIVE_SHIM__) return;
+  (window as any).__PIERCODE_KEEP_ALIVE_SHIM__ = true;
+
+  const defineGetter = (target: object, prop: string, value: unknown) => {
+    try {
+      Object.defineProperty(target, prop, { configurable: true, get: () => value });
+    } catch {}
+  };
+
+  defineGetter(Document.prototype, 'hidden', false);
+  defineGetter(Document.prototype, 'visibilityState', 'visible');
+  defineGetter(Document.prototype, 'webkitHidden', false);
+  defineGetter(Document.prototype, 'webkitVisibilityState', 'visible');
+  try {
+    Document.prototype.hasFocus = () => true;
+  } catch {}
+
+  const blockedEvents = new Set([
+    'visibilitychange',
+    'webkitvisibilitychange',
+    'blur',
+    'pagehide',
+    'freeze',
+  ]);
+
+  const blockHiddenSignal = (event: Event) => {
+    event.stopImmediatePropagation();
+  };
+
+  for (const eventName of blockedEvents) {
+    window.addEventListener(eventName, blockHiddenSignal, true);
+    document.addEventListener(eventName, blockHiddenSignal, true);
+  }
+
+  const originalAddEventListener = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+    if ((this === window || this === document) && blockedEvents.has(type)) {
+      const wrapped = function(this: EventTarget, event: Event) {
+        if (blockedEvents.has(event.type)) return;
+        if (typeof listener === 'function') return listener.call(this, event);
+        return listener?.handleEvent?.(event);
+      };
+      return originalAddEventListener.call(this, type, wrapped, options);
+    }
+    return originalAddEventListener.call(this, type, listener, options);
+  };
+}
+
+installKeepAliveVisibilityShim();
+
 function normalize(text: string): string {
   return text.replace(/\u00A0/g, ' ').trim();
 }

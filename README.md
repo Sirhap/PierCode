@@ -48,20 +48,22 @@ cd ..
 启动 TUI 版本：
 
 ```powershell
-go run ./cmd/cli -dir D:\path\to\workspace
+go run ./cmd/cli -dir .
 ```
 
 或者启动无 TUI 的普通服务：
 
 ```powershell
-go run ./cmd/server -dir D:\path\to\workspace
+go run ./cmd/server -dir .
 ```
 
-启动后会显示认证 URL，格式类似：
+启动后会显示本次进程的临时认证 URL，格式类似：
 
 ```text
 http://127.0.0.1:39527/auth?token=<token>
 ```
+
+认证 token 每次启动都会重新生成；重启后需要在浏览器扩展里重新粘贴当前 URL。
 
 安装浏览器扩展：
 
