@@ -1052,7 +1052,7 @@ func (m Model) renderLogs(width int) string {
 			lines = append(lines, prefix+logLineStyle(entry, all[i], i, logColor(entry)).Render(all[i]))
 		}
 		if len(all) > 0 {
-			lines = append(lines, subtitleStyle.Render(truncateString(fmt.Sprintf("  %d-%d/%d  j/k 滚动  Ctrl+T 返回摘要", offset+1, len(lines), len(all)), maxInt(8, width-4))))
+			lines = append(lines, subtitleStyle.Render(truncateString(fmt.Sprintf("  %d-%d/%d  j/k 滚动  Ctrl+T 返回摘要", offset+1, len(all), len(all)), maxInt(8, width-4))))
 		}
 		lines = constrainToHeight(lines, height, -1)
 		return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(strings.Join(lines, "\n"))

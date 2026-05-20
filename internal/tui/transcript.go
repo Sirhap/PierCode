@@ -249,7 +249,7 @@ func (m Model) renderFullToolResponsePrompt(width int, text string) string {
 		lines = append(lines, prefix+lipgloss.NewStyle().Foreground(colorUser).Render(all[i]))
 	}
 	if len(all) > 0 {
-		lines = append(lines, subtitleStyle.Render(truncateString(fmt.Sprintf("  %d-%d/%d  j/k 滚动  Ctrl+T 返回摘要", offset+1, len(lines), len(all)), msgWidth)))
+		lines = append(lines, subtitleStyle.Render(truncateString(fmt.Sprintf("  %d-%d/%d  j/k 滚动  Ctrl+T 返回摘要", offset+1, len(all), len(all)), msgWidth)))
 	}
 	lines = constrainToHeight(lines, height, -1)
 	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(strings.Join(lines, "\n"))
