@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="afumu/piercode"
+REPO="sirhap/piercode"
 BIN="piercode"
 INSTALL_DIR="/usr/local/bin"
 
