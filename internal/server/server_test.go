@@ -143,6 +143,45 @@ func TestHandleExec(t *testing.T) {
 			t.Errorf("expected 400, got %d", w.Code)
 		}
 	})
+
+	t.Run("edit preserves literal tab indentation", func(t *testing.T) {
+		path := filepath.Join(s.config.GetRootDir(), "tabbed.go")
+		if err := os.WriteFile(path, []byte("\tfunc foo() {}\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		body, _ := json.Marshal(types.ToolRequest{
+			Name:   "edit",
+			CallID: "tabedit1",
+			Args: map[string]interface{}{
+				"path":       "tabbed.go",
+				"old_string": "\tfunc foo() {}",
+				"new_string": "\tfunc bar() {}",
+			},
+		})
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/exec", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer testtoken")
+		s.router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		var resp types.ToolResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Status != "success" {
+			t.Fatalf("expected success, got %s: %s", resp.Status, resp.Error)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "\tfunc bar() {}\n" {
+			t.Fatalf("literal tab edit was corrupted: %q", string(got))
+		}
+	})
 }
 
 func TestHandleAuth(t *testing.T) {

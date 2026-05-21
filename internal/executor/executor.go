@@ -441,9 +441,6 @@ func compactLines(output string) []string {
 func editPreview(oldText, newText string) string {
 	oldLines := compactLines(oldText)
 	newLines := compactLines(newText)
-	if len(oldLines)+len(newLines) > 8 {
-		return ""
-	}
 
 	var b strings.Builder
 	for _, line := range firstN(oldLines, 3) {
@@ -454,7 +451,18 @@ func editPreview(oldText, newText string) string {
 		b.WriteString("\n   + ")
 		b.WriteString(truncateRunes(line, 110))
 	}
+	hidden := hiddenPreviewLines(oldLines, 3) + hiddenPreviewLines(newLines, 3)
+	if hidden > 0 {
+		b.WriteString(fmt.Sprintf("\n   … +%d lines (Ctrl+T 查看完整)", hidden))
+	}
 	return b.String()
+}
+
+func hiddenPreviewLines(lines []string, shown int) int {
+	if len(lines) <= shown {
+		return 0
+	}
+	return len(lines) - shown
 }
 
 func firstN(lines []string, n int) []string {

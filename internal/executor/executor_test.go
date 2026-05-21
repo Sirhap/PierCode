@@ -190,6 +190,29 @@ func TestSummarizeToolLog(t *testing.T) {
 		}
 	})
 
+	t.Run("edit command keeps a folded preview for larger edits", func(t *testing.T) {
+		req := &types.ToolRequest{
+			Name: "edit",
+			Args: map[string]interface{}{
+				"path":       "internal\\server\\server.go",
+				"old_string": strings.Join([]string{"old1", "old2", "old3", "old4", "old5"}, "\n"),
+				"new_string": strings.Join([]string{"new1", "new2", "new3", "new4"}, "\n"),
+			},
+		}
+		resp := &types.ToolResponse{Status: "success", Output: "ok"}
+
+		summary := summarizeToolLog(req, resp)
+		if !strings.Contains(summary, "Edited internal\\server\\server.go (+4 -5)") {
+			t.Fatalf("expected edited summary, got %q", summary)
+		}
+		if !strings.Contains(summary, "- old1") || !strings.Contains(summary, "+ new1") {
+			t.Fatalf("expected folded preview to keep first changed lines, got %q", summary)
+		}
+		if !strings.Contains(summary, "… +3 lines") || !strings.Contains(summary, "Ctrl+T 查看完整") {
+			t.Fatalf("expected hidden-line hint, got %q", summary)
+		}
+	})
+
 	t.Run("full tool log preserves hidden output", func(t *testing.T) {
 		req := &types.ToolRequest{
 			Name: "exec_cmd",
