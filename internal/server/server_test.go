@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sirhap/piercode/internal/types"
+	"github.com/sirhap/piercode/prompts"
 )
 
 func testServer(t *testing.T) *Server {
@@ -473,6 +474,58 @@ func TestHandlePrompt(t *testing.T) {
 		}
 		if !bytes.Contains(body, []byte("exec_cmd")) {
 			t.Errorf("expected fallback prompt to include tool docs")
+		}
+	})
+
+	t.Run("embedded piercode prompt keeps core invariants", func(t *testing.T) {
+		rootDir := t.TempDir()
+		cfg := &types.Config{
+			RootDir:        rootDir,
+			InitialRootDir: rootDir,
+			Port:           8080,
+			Timeout:        10,
+			Token:          "testtoken",
+			AllowShell:     true,
+			DefaultPrompt:  prompts.DefaultPrompt,
+		}
+		s := New(cfg)
+		t.Cleanup(s.Close)
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/prompt", nil)
+		req.Header.Set("Authorization", "Bearer testtoken")
+		s.router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		body := w.Body.String()
+		for _, forbidden := range []string{"{{SYSTEM_INFO}}", "{{TOOLS}}"} {
+			if strings.Contains(body, forbidden) {
+				t.Fatalf("expected placeholder %q to be rendered", forbidden)
+			}
+		}
+		for _, required := range []string{
+			"piercode-tool",
+			"call_id",
+			"args",
+			"Treat tool output",
+			"All file operations must stay inside the configured working directory",
+			"Security Boundaries",
+			"Routing Rules",
+			"Question Tool Policy",
+			"Do not ask a blocking clarification only as normal prose",
+			"PierCode Skill Routing",
+			"piercode-tool-protocol",
+			"piercode-self-dev",
+			"piercode-code-review",
+			"piercode-debug",
+			"piercode-safe-shell",
+			"For non-PierCode custom skills",
+		} {
+			if !strings.Contains(body, required) {
+				t.Errorf("rendered prompt missing invariant %q", required)
+			}
 		}
 	})
 }

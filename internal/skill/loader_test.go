@@ -56,3 +56,31 @@ func TestLoadInfos(t *testing.T) {
 		t.Errorf("skill not found in %+v", infos)
 	}
 }
+
+func TestProjectPierCodeSkillsAreDiscoverable(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	infos := LoadInfos(repoRoot)
+	found := map[string]bool{}
+	for _, info := range infos {
+		found[info.Name] = true
+	}
+
+	for _, name := range []string{
+		"piercode-platforms",
+		"piercode-tool-protocol",
+		"piercode-security",
+		"piercode-edit-test",
+		"piercode-self-dev",
+		"piercode-code-review",
+		"piercode-debug",
+		"piercode-safe-shell",
+	} {
+		if !found[name] {
+			t.Errorf("expected project skill %q to be discoverable; got %+v", name, infos)
+		}
+	}
+}

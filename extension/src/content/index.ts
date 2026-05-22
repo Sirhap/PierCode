@@ -1,5 +1,6 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
-import { extractMonacoText, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
+import { extractMonacoText, findQwenToolBody, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
+import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel } from './ws-linker';
 
 // 获取当前平台适配器
@@ -191,102 +192,20 @@ const activeQuestionPopups = new Map<string, HTMLDivElement>();
 function showRemoteQuestionPopup(callID: string, question: string, options: unknown[]) {
   dismissRemoteQuestionPopup(callID);
 
-  const overlay = document.createElement('div');
-  overlay.dataset.piercodeQuestionId = callID;
-  overlay.style.cssText = [
-    'position:fixed', 'right:20px', 'bottom:20px', 'z-index:2147483646',
-    'max-width:420px', 'min-width:300px', 'padding:14px 16px',
-    'background:#1e293b', 'color:#f1f5f9',
-    'border:1px solid #475569', 'border-radius:10px',
-    'box-shadow:0 10px 30px rgba(0,0,0,0.4)',
-    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-    'font-size:13px', 'line-height:1.5',
-  ].join(';');
-
-  const header = document.createElement('div');
-  header.textContent = '🙋 piercode 需要您的回答';
-  header.style.cssText = 'font-weight:600;margin-bottom:8px;color:#fbbf24';
-  overlay.appendChild(header);
-
-  const body = document.createElement('div');
-  body.textContent = question;
-  body.style.cssText = 'white-space:pre-wrap;margin-bottom:10px';
-  overlay.appendChild(body);
-
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.placeholder = options.length > 0 ? `回车提交，可输入选项 1-${options.length}` : '回车提交回答';
-  input.style.cssText = [
-    'width:100%', 'padding:8px 10px', 'box-sizing:border-box',
-    'border:1px solid #475569', 'border-radius:6px',
-    'background:#0f172a', 'color:#f1f5f9', 'font-size:13px',
-    'outline:none',
-  ].join(';');
-  overlay.appendChild(input);
-
-  if (options.length > 0) {
-    const optWrap = document.createElement('div');
-    optWrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:8px';
-    options.forEach((opt, i) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = `${i + 1}. ${String(opt)}`;
-      btn.style.cssText = [
-        'padding:4px 10px', 'border:1px solid #64748b', 'border-radius:4px',
-        'background:#334155', 'color:#f1f5f9', 'cursor:pointer', 'font-size:12px',
-      ].join(';');
-      btn.onclick = () => {
-        sendQuestionAnswer(callID, String(opt));
-        dismissRemoteQuestionPopup(callID);
-      };
-      optWrap.appendChild(btn);
-    });
-    overlay.appendChild(optWrap);
-  }
-
-  const actions = document.createElement('div');
-  actions.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:10px';
-  const cancelBtn = document.createElement('button');
-  cancelBtn.type = 'button';
-  cancelBtn.textContent = '取消';
-  cancelBtn.style.cssText = 'padding:5px 10px;border:1px solid #64748b;border-radius:4px;background:transparent;color:#cbd5e1;cursor:pointer';
-  cancelBtn.onclick = () => {
-    sendQuestionCancel(callID);
-    dismissRemoteQuestionPopup(callID);
-  };
-  const submitBtn = document.createElement('button');
-  submitBtn.type = 'button';
-  submitBtn.textContent = '提交';
-  submitBtn.style.cssText = 'padding:5px 14px;border:1px solid #2563eb;border-radius:4px;background:#2563eb;color:white;cursor:pointer;font-weight:600';
-  const submit = () => {
-    let answer = input.value.trim();
-    if (!answer) return;
-    if (options.length > 0) {
-      const idx = parseInt(answer, 10);
-      if (!Number.isNaN(idx) && idx >= 1 && idx <= options.length) {
-        answer = String(options[idx - 1]);
-      }
-    }
-    sendQuestionAnswer(callID, answer);
-    dismissRemoteQuestionPopup(callID);
-  };
-  submitBtn.onclick = submit;
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); submit(); }
-    if (e.key === 'Escape') {
-      e.preventDefault();
+  const panel = showInlineQuestionPanel({
+    question,
+    options,
+    onSubmit: answer => {
+      sendQuestionAnswer(callID, answer);
+      dismissRemoteQuestionPopup(callID);
+    },
+    onCancel: () => {
       sendQuestionCancel(callID);
       dismissRemoteQuestionPopup(callID);
-    }
+    },
   });
-  actions.append(cancelBtn, submitBtn);
-  overlay.appendChild(actions);
-
-  document.body.appendChild(overlay);
-  activeQuestionPopups.set(callID, overlay);
-  // Focus after the element is attached so the editor's existing autofocus
-  // doesn't steal it back.
-  setTimeout(() => input.focus(), 50);
+  panel.dataset.piercodeQuestionId = callID;
+  activeQuestionPopups.set(callID, panel);
 }
 
 function dismissRemoteQuestionPopup(callID: string) {
@@ -294,6 +213,133 @@ function dismissRemoteQuestionPopup(callID: string) {
   if (!el) return;
   el.remove();
   activeQuestionPopups.delete(callID);
+}
+
+type InlineQuestionPanelOptions = {
+  question: string;
+  options: unknown[];
+  onSubmit: (answer: string) => void;
+  onCancel?: () => void;
+};
+
+function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivElement {
+  const options = config.options.map(opt => String(opt));
+  const panel = document.createElement('div');
+  panel.style.cssText = buildQuestionPanelStyle();
+
+  const header = document.createElement('div');
+  header.textContent = 'PierCode 需要回答';
+  header.style.cssText = 'font-weight:600;margin-bottom:8px;color:#fbbf24';
+  panel.appendChild(header);
+
+  const body = document.createElement('div');
+  body.textContent = config.question;
+  body.style.cssText = 'white-space:pre-wrap;margin-bottom:10px;max-height:120px;overflow:auto';
+  panel.appendChild(body);
+
+  if (options.length > 0) {
+    const optWrap = document.createElement('div');
+    optWrap.style.cssText = 'display:grid;gap:6px;margin-bottom:10px';
+    options.forEach((opt, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = `${i + 1}. ${opt}`;
+      btn.style.cssText = [
+        'width:100%', 'padding:7px 10px', 'border:1px solid #64748b', 'border-radius:6px',
+        'background:#334155', 'color:#f1f5f9', 'cursor:pointer', 'font-size:12px',
+        'text-align:left', 'line-height:1.35',
+      ].join(';');
+      btn.onmouseenter = () => { btn.style.background = '#475569'; };
+      btn.onmouseleave = () => { btn.style.background = '#334155'; };
+      btn.onclick = () => config.onSubmit(opt);
+      optWrap.appendChild(btn);
+    });
+    panel.appendChild(optWrap);
+  }
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = options.length > 0 ? '自定义回答，或输入选项序号后回车' : '输入回答后回车';
+  input.style.cssText = [
+    'width:100%', 'padding:8px 10px', 'box-sizing:border-box',
+    'border:1px solid #475569', 'border-radius:6px',
+    'background:#0f172a', 'color:#f1f5f9', 'font-size:13px',
+    'outline:none',
+  ].join(';');
+  panel.appendChild(input);
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:10px';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.textContent = '取消';
+  cancelBtn.style.cssText = 'padding:5px 10px;border:1px solid #64748b;border-radius:4px;background:transparent;color:#cbd5e1;cursor:pointer';
+  cancelBtn.onclick = () => {
+    config.onCancel?.();
+    panel.remove();
+  };
+
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'button';
+  submitBtn.textContent = '提交';
+  submitBtn.style.cssText = 'padding:5px 14px;border:1px solid #2563eb;border-radius:4px;background:#2563eb;color:white;cursor:pointer;font-weight:600';
+
+  const submit = () => {
+    let answer = input.value.trim();
+    if (!answer) return;
+    const idx = parseInt(answer, 10);
+    if (options.length > 0 && !Number.isNaN(idx) && idx >= 1 && idx <= options.length) {
+      answer = options[idx - 1];
+    }
+    config.onSubmit(answer);
+    panel.remove();
+  };
+
+  submitBtn.onclick = submit;
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      config.onCancel?.();
+      panel.remove();
+    }
+  });
+
+  actions.append(cancelBtn, submitBtn);
+  panel.appendChild(actions);
+
+  document.body.appendChild(panel);
+  setTimeout(() => input.focus(), 50);
+  return panel;
+}
+
+function buildQuestionPanelStyle(): string {
+  const editor = querySelectorFirst(getSiteConfig().editor);
+  const rect = editor?.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 768;
+  const margin = 12;
+  const width = Math.min(460, Math.max(320, rect?.width ?? 380));
+  const maxLeft = Math.max(margin, viewportWidth - width - margin);
+  const left = rect
+    ? Math.min(Math.max(rect.left + rect.width - width, margin), maxLeft)
+    : Math.max(margin, viewportWidth - width - 20);
+  const bottom = rect && rect.top > 80
+    ? Math.min(Math.max(viewportHeight - rect.top + margin, margin), viewportHeight - 80)
+    : 96;
+
+  return [
+    'position:fixed', `left:${Math.round(left)}px`, `bottom:${Math.round(bottom)}px`,
+    `width:${Math.round(width)}px`, 'z-index:2147483646',
+    'max-height:min(420px, calc(100vh - 32px))', 'overflow:auto',
+    'padding:14px 16px', 'box-sizing:border-box',
+    'background:#1e293b', 'color:#f1f5f9',
+    'border:1px solid #475569', 'border-radius:10px',
+    'box-shadow:0 10px 30px rgba(0,0,0,0.4)',
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+    'font-size:13px', 'line-height:1.5',
+  ].join(';');
 }
 
 // renderTodoChecklist renders the todo array (from todo_write args) as a
@@ -395,8 +441,20 @@ function getSiteConfig(): SiteConfig {
     return { editor: 'div.ql-editor[contenteditable="true"]', sendBtn: 'button.send-button[aria-label*="发送"], button.send-button[aria-label*="Send"]', stopBtn: null, fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || 'model-response, .model-response-text, message-content' };
   if (h.includes('qwen.ai') || h.includes('qwenlm.ai'))
     return {
-      editor: 'textarea[class*="MessageInput__TextArea"], textarea.message-input-textarea, textarea[placeholder*="Qwen"]',
-      sendBtn: 'div[class*="MessageInput__Submit"]:not([aria-disabled="true"]), button.send-button',
+      editor: [
+        'textarea[class*="MessageInput__TextArea"]',
+        'textarea.message-input-textarea',
+        'textarea[placeholder*="Qwen"]',
+        'textarea[placeholder*="Send"]',
+        'textarea[placeholder*="输入"]',
+        '[contenteditable="true"]'
+      ].join(','),
+      sendBtn: [
+        'div[class*="MessageInput__Submit"]:not([aria-disabled="true"])',
+        'button.send-button:not([disabled])',
+        'button[aria-label*="发送"]:not([disabled])',
+        'button[aria-label*="Send"]:not([disabled])'
+      ].join(','),
       stopBtn: null,
       fillMethod: 'value',
       useObserver: true,
@@ -431,16 +489,14 @@ if (!(window as any).__PIERCODE_LOADED__) {
   else document.addEventListener('DOMContentLoaded', injectInitButton);
 
   function mountInputListener() {
-    const editorEl = querySelectorFirst(cfg.editor);
-    if (editorEl) {
-      attachInputListener(editorEl as HTMLElement);
-    } else {
-      const obs = new MutationObserver(() => {
-        const el = querySelectorFirst(cfg.editor);
-        if (el) { obs.disconnect(); attachInputListener(el as HTMLElement); }
-      });
-      obs.observe(document.body, { childList: true, subtree: true });
-    }
+    const attachCurrentEditor = () => {
+      const editorEl = querySelectorFirst(getSiteConfig().editor);
+      if (editorEl) attachInputListener(editorEl as HTMLElement);
+    };
+
+    attachCurrentEditor();
+    const obs = new MutationObserver(attachCurrentEditor);
+    obs.observe(document.body, { childList: true, subtree: true });
   }
   if (document.body) mountInputListener();
   else document.addEventListener('DOMContentLoaded', mountInputListener);
@@ -500,7 +556,7 @@ async function executeToolCallReturn(toolCall: any): Promise<ToolExecutionResult
     const q: string = toolCall.args?.question ?? '';
     const rawOpts = toolCall.args?.options;
     const opts: string[] = parseOptions(rawOpts);
-    const answer = opts.length > 0 ? await showQuestionPopup(q, opts) : (prompt(q) ?? '');
+    const answer = await showQuestionPopup(q, opts);
     return { output: answer, stopStream: false, sendable: true };
   }
 
@@ -747,8 +803,12 @@ function startDOMObserver(_responseSelector: string) {
   };
   window.addEventListener('PIERCODE_PROMPT_SUBMITTED', activateResponseSession);
   window.addEventListener('PIERCODE_BACKEND_CONNECTED', () => {
-    responseSessionActivatedAt = 0;
-    markCurrentResponsesAsHistory();
+    // A backend connection can finish after the user already submitted the
+    // first prompt. Do not reset that active response session, otherwise the
+    // first assistant answer is marked as history and never scanned.
+    if (!isResponseSessionActive()) {
+      markCurrentResponsesAsHistory();
+    }
   });
   let autoExecute: boolean | null = null;
   const pendingAutoExecute = new Map<string, { data: any; key: string }>();
@@ -907,9 +967,10 @@ function startDOMObserver(_responseSelector: string) {
 
     // ── Phase 0: 直接从 DOM 提取 tool 代码块（Qwen Monaco Editor 专用） ──
     if (sourceEl && platformAdapter.name === 'qwen') {
+      let parsedQwenTool = false;
       const toolPres = sourceEl.querySelectorAll('pre.qwen-markdown-code');
       for (const pre of toolPres) {
-        const toolBody = pre.querySelector('.qwen-markdown-code-body.tool, .qwen-markdown-code-body.piercode-tool');
+        const toolBody = findQwenToolBody(pre);
         if (!toolBody) continue;
 
         let extraction = extractMonacoText(toolBody);
@@ -952,13 +1013,15 @@ function startDOMObserver(_responseSelector: string) {
 
         if (sourceEl) {
           processed.add(key);
+          parsedQwenTool = true;
           renderToolCard(data, codeText, sourceEl, key, processed);
           maybeScheduleAutoExecute(data, key);
         }
       }
       scheduleAIResponseLog(sourceEl, text);
-      // Qwen 已通过 DOM 直接提取，不再走文本解析
-      return;
+      // 只有 Qwen DOM 专用路径真正解析到工具时才结束；否则继续走通用
+      // fence/XML 兜底，避免新版 DOM 结构让工具块静默漏掉。
+      if (parsedQwenTool) return;
     }
 
     // ── Phase 0b: 直接从 DOM 提取 tool 代码块（Chat Z CodeMirror6 专用） ──
@@ -1126,6 +1189,11 @@ function startDOMObserver(_responseSelector: string) {
     return callId ? `调用工具 ${name} #${callId} …` : `调用工具 ${name} …`;
   }
 
+  function scheduleActiveScan(container: Element): void {
+    ignoredPreSessionContainers.delete(container);
+    scheduleScan(container);
+  }
+
   function scanNode(node: Node) {
     let el: Element | null;
     if (node.nodeType === Node.TEXT_NODE) {
@@ -1142,7 +1210,7 @@ function startDOMObserver(_responseSelector: string) {
       if (!isResponseSessionActive()) {
         ignoredPreSessionContainers.add(mc);
       } else {
-        scheduleScan(mc);
+        scheduleActiveScan(mc);
       }
     }
     if (el.nodeType === Node.ELEMENT_NODE) {
@@ -1150,7 +1218,7 @@ function startDOMObserver(_responseSelector: string) {
         if (!isResponseSessionActive()) {
           ignoredPreSessionContainers.add(container);
         } else {
-          scheduleScan(container);
+          scheduleActiveScan(container);
         }
       });
     }
@@ -1172,6 +1240,7 @@ function startDOMObserver(_responseSelector: string) {
       'ms-chat-turn',
       '.model-response-text',
       '.qwen-chat-message-assistant',
+      '.response-message-content.phase-answer',
       '#response-content-container',
       '.segment-assistant',
       '.font-claude-response',
@@ -1186,6 +1255,7 @@ function startDOMObserver(_responseSelector: string) {
       if (tag === 'message-content') return el;
       if (tag === 'ms-chat-turn') return el;
       if (el.matches?.('.qwen-chat-message-assistant')) return el;
+      if (el.matches?.('.response-message-content.phase-answer')) return el;
       if (el.matches?.('#response-content-container')) return el;
       if (el.matches?.('.segment-assistant')) return el;
       if (el.matches?.('.font-claude-response')) return el;
@@ -1274,7 +1344,13 @@ function startDOMObserver(_responseSelector: string) {
     for (const mutation of mutations) {
       if (mutation.type === 'characterData') {
         const container = findResponseContainer((mutation.target as Text).parentElement);
-        if (container) scheduleScan(container);
+        if (container) {
+          if (!isResponseSessionActive()) {
+            ignoredPreSessionContainers.add(container);
+          } else {
+            scheduleActiveScan(container);
+          }
+        }
       } else {
         mutation.addedNodes.forEach(scanNode);
       }
@@ -1341,25 +1417,13 @@ async function fillAiStudioSystemInstructions(prompt: string) {
 
 function showQuestionPopup(question: string, options: string[]): Promise<string> {
   return new Promise(resolve => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2147483647;display:flex;align-items:center;justify-content:center';
-    const box = document.createElement('div');
-    box.style.cssText = 'background:#1e1e2e;color:#cdd6f4;border-radius:12px;padding:24px;max-width:480px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.5)';
-    const title = document.createElement('p');
-    title.style.cssText = 'margin:0 0 16px;font-size:15px;line-height:1.5;white-space:pre-wrap';
-    title.textContent = question;
-    box.appendChild(title);
-    options.forEach((opt, i) => {
-      const btn = document.createElement('button');
-      btn.textContent = `${i + 1}. ${opt}`;
-      btn.style.cssText = 'display:block;width:100%;margin-bottom:8px;padding:10px 14px;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:8px;cursor:pointer;font-size:13px;text-align:left';
-      btn.onmouseenter = () => { btn.style.background = '#45475a'; };
-      btn.onmouseleave = () => { btn.style.background = '#313244'; };
-      btn.onclick = () => { overlay.remove(); resolve(opt); };
-      box.appendChild(btn);
+    const panel = showInlineQuestionPanel({
+      question,
+      options,
+      onSubmit: answer => resolve(answer),
+      onCancel: () => resolve(''),
     });
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
+    panel.style.zIndex = '2147483647';
   });
 }
 
@@ -1404,9 +1468,20 @@ function showCountdownToast(ms: number, onFire: () => void): void {
 function querySelectorFirst(selectors: string): HTMLElement | null {
   for (const sel of selectors.split(',').map(s => s.trim())) {
     const el = document.querySelector(sel) as HTMLElement | null;
-    if (el) return el;
+    if (el && isVisibleElement(el)) return el;
   }
   return null;
+}
+
+function isVisibleElement(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  const style = window.getComputedStyle(el);
+  return rect.width > 0 &&
+    rect.height > 0 &&
+    style.display !== 'none' &&
+    style.visibility !== 'hidden' &&
+    style.opacity !== '0' &&
+    el.getAttribute('aria-hidden') !== 'true';
 }
 
 function isQwenPage(): boolean {
@@ -1417,7 +1492,8 @@ function isQwenPage(): boolean {
 async function focusCurrentTabForSend(): Promise<void> {
   if (!isQwenPage()) return;
   try {
-    await chrome.runtime.sendMessage({ type: 'FOCUS_SELF' });
+    // Request tab activation without stealing window focus by default
+    await chrome.runtime.sendMessage({ type: 'FOCUS_SELF', forceFocus: false });
     await new Promise(resolve => setTimeout(resolve, 150));
   } catch (error) {
     console.warn('[PierCode] 激活 Qwen 标签页失败，继续尝试发送:', error);
@@ -1485,12 +1561,12 @@ async function fillAndSend(result: string, autoSend = false) {
 
 // ── 斜杠命令 / @ 文件补全 ──────────────────────────────────────────────────────
 
-let skillsCache: Array<{ name: string; description: string }> | null = null;
+let skillsCache: SkillSummary[] | null = null;
 let skillsCacheTime = 0;
 const filesCache = new Map<string, { ts: number; files: string[] }>();
 const FILES_TTL = 5000;
 
-async function fetchSkills(): Promise<Array<{ name: string; description: string }>> {
+async function fetchSkills(): Promise<SkillSummary[]> {
   if (!checkContext()) return [];
   if (skillsCache && Date.now() - skillsCacheTime < 30000) return skillsCache;
   const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
@@ -1505,6 +1581,30 @@ async function fetchSkills(): Promise<Array<{ name: string; description: string 
     skillsCacheTime = Date.now();
     return skillsCache!;
   } catch { return []; }
+}
+
+async function loadSkillContent(skillName: string): Promise<string | null> {
+  const callId = `skill_${Math.random().toString(36).slice(2, 8)}`;
+  const result = await executeToolCallReturn({
+    name: 'skill',
+    call_id: callId,
+    args: { skill: skillName },
+  });
+  if (!result.sendable) return null;
+  const output = result.output.trim();
+  return output || null;
+}
+
+function formatSkillInsertion(skillName: string, content: string): string {
+  return [
+    `请加载并遵循下面的 PierCode skill。`,
+    '',
+    `<skill name="${skillName}">`,
+    content.trim(),
+    '</skill>',
+    '',
+    '任务：',
+  ].join('\n');
 }
 
 async function fetchFiles(q: string): Promise<string[]> {
@@ -1711,19 +1811,25 @@ function replaceTokenInEditor(el: HTMLElement, token: string, replacement: strin
   }
 }
 
+const attachedInputEditors = new WeakSet<HTMLElement>();
+let sendClickListenerAttached = false;
+let lastPromptText = '';
+let lastPromptAt = 0;
+
 function attachInputListener(editorEl: HTMLElement) {
+  if (attachedInputEditors.has(editorEl)) return;
+  attachedInputEditors.add(editorEl);
+
   const { fillMethod } = getSiteConfig();
   let destroyPicker: (() => void) | null = null;
   let inputVersion = 0;
-  let lastPromptText = '';
-  let lastPromptAt = 0;
 
   function dismiss() {
     if (destroyPicker) { destroyPicker(); destroyPicker = null; }
   }
 
-  function logSubmittedPrompt(): void {
-    const text = getEditorText(editorEl).trim();
+  function logSubmittedPrompt(activeEditor: HTMLElement): void {
+    const text = getEditorText(activeEditor).trim();
     if (!text) return;
     activateResponseSession();
     const now = Date.now();
@@ -1735,15 +1841,20 @@ function attachInputListener(editorEl: HTMLElement) {
 
   editorEl.addEventListener('keydown', event => {
     if (event.key !== 'Enter' || event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) return;
-    logSubmittedPrompt();
+    logSubmittedPrompt(editorEl);
   }, true);
 
-  document.addEventListener('click', event => {
-    const target = event.target as Element | null;
-    if (!target) return;
-    const sendSelector = getSiteConfig().sendBtn;
-    if (target.closest(sendSelector)) logSubmittedPrompt();
-  }, true);
+  if (!sendClickListenerAttached) {
+    sendClickListenerAttached = true;
+    document.addEventListener('click', event => {
+      const target = event.target as Element | null;
+      if (!target) return;
+      const siteConfig = getSiteConfig();
+      if (!target.closest(siteConfig.sendBtn)) return;
+      const activeEditor = querySelectorFirst(siteConfig.editor) || editorEl;
+      logSubmittedPrompt(activeEditor);
+    }, true);
+  }
 
   editorEl.addEventListener('input', async () => {
     const currentVersion = ++inputVersion;
@@ -1755,7 +1866,7 @@ function attachInputListener(editorEl: HTMLElement) {
     if (slashMatch) {
       const token = slashMatch[1];
       const query = slashMatch[2].toLowerCase();
-      const skills = await fetchSkills();
+      const skills = filterUserVisibleSkills(await fetchSkills());
       if (currentVersion !== inputVersion) return;
       const filtered = query
         ? skills.filter(s => s.name.toLowerCase().includes(query) || s.description.toLowerCase().includes(query))
@@ -1767,9 +1878,20 @@ function attachInputListener(editorEl: HTMLElement) {
         filtered.map(s => ({
           label: s.name,
           sub: s.description,
-          value: `\`\`\`piercode-tool\n{"name":"skill","call_id":"${Math.random().toString(36).slice(2,8)}","args":{"skill":"${s.name}"}}\n\`\`\``,
+          value: s.name,
         })),
-        (xml) => { replaceTokenInEditor(editorEl, token, xml, fillMethod); dismiss(); },
+        async (skillName) => {
+          dismiss();
+          // Slash skill selection is a local UX shortcut: insert a bounded
+          // instruction wrapper plus resolved SKILL.md content, not a visible
+          // tool-call fence that the assistant must execute later.
+          const content = await loadSkillContent(skillName);
+          if (!content) {
+            showToast(`加载 skill ${skillName} 失败`, 5000);
+            return;
+          }
+          replaceTokenInEditor(editorEl, token, formatSkillInsertion(skillName, content), fillMethod);
+        },
         dismiss
       );
       return;
