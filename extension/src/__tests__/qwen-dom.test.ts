@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { FENCE_RE, parseJsonFenceToolCall, tryParseToolJSON } from '../parser';
-import { extractMonacoText as extractPlatformMonacoText } from '../platform-adapters';
+import { extractMonacoText as extractPlatformMonacoText, findQwenToolBody, qwenAdapter } from '../platform-adapters';
 
 // ── 模拟 Qwen Monaco Editor DOM 提取 ────────────────────────────────────────
 
@@ -75,7 +75,7 @@ function extractText(node: Node, buf: string[]): void {
 function scanTextPhase1(text: string): any[] {
   const lower = text.toLowerCase();
   const results: any[] = [];
-  if (lower.includes('```tool')) {
+  if (lower.includes('```piercode-tool') || lower.includes('```tool')) {
     FENCE_RE.lastIndex = 0;
     let fenceMatch;
     while ((fenceMatch = FENCE_RE.exec(text)) !== null) {
@@ -557,5 +557,83 @@ describe('Qwen DOM 集成测试', () => {
     expect(result.hasOverflow).toBe(true);
     expect(result.text).not.toContain('Show more');
     expect(parseJsonFenceToolCall(result.text)).toBeNull();
+  });
+
+  it('Qwen header 标记 piercode-tool 时，即使 body 没有 tool class 也能识别', () => {
+    const html = `
+      <pre class="qwen-markdown-code">
+        <div class="qwen-markdown-code-header-wrapper">
+          <div class="qwen-markdown-code-header"><div>piercode-tool</div></div>
+        </div>
+        <div class="qwen-markdown-code-body">
+          <div class="monaco-editor vs-dark">
+            <div class="view-lines">
+              <div class="view-line"><span><span class="mtk1">{"name":&nbsp;"skill",&nbsp;"call_id":&nbsp;"pua9x2k",&nbsp;"args":&nbsp;{"skill":&nbsp;"pua"}}</span></span></div>
+            </div>
+          </div>
+        </div>
+      </pre>`;
+
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const pre = container.querySelector('pre.qwen-markdown-code')!;
+    const toolBody = findQwenToolBody(pre);
+
+    expect(toolBody).not.toBeNull();
+    const data = parseJsonFenceToolCall(extractMonacoText(toolBody!));
+    expect(data).toEqual({ name: 'skill', callId: 'pua9x2k', args: { skill: 'pua' } });
+  });
+
+  it('Qwen adapter 从 header-only piercode-tool 代码块提取 fence', () => {
+    const html = `
+      <pre class="qwen-markdown-code">
+        <div class="qwen-markdown-code-header"><div>piercode-tool</div></div>
+        <div class="qwen-markdown-code-body">
+          <div class="view-lines">
+            <div class="view-line"><span><span class="mtk1">{"name":&nbsp;"list_dir",&nbsp;"call_id":&nbsp;"qwenh1",&nbsp;"args":&nbsp;{"path":&nbsp;"."}}</span></span></div>
+          </div>
+        </div>
+      </pre>`;
+
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const pre = container.querySelector('pre.qwen-markdown-code')!;
+    const buf: string[] = [];
+
+    expect(qwenAdapter.extractText(pre, buf)).toBe(true);
+    const results = scanTextPhase1(buf.join(''));
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual({ name: 'list_dir', callId: 'qwenh1', args: { path: '.' } });
+  });
+
+  it('识别新版 Qwen response-message-content 容器里的 piercode-tool', () => {
+    const html = `
+      <div class="response-message-content t2t phase-answer">
+        <div class="custom-qwen-markdown">
+          <div class="qwen-markdown">
+            <pre class="qwen-markdown-code">
+              <div class="qwen-markdown-code-header-wrapper qwen-markdown-code-header-wrapper-sticky">
+                <div class="qwen-markdown-code-header"><div>piercode-tool</div></div>
+              </div>
+              <div class="qwen-markdown-code-body piercode-tool">
+                <div class="monaco-editor vs-dark">
+                  <div class="view-lines monaco-mouse-cursor-text">
+                    <div class="view-line"><span><span class="mtk1">{"name":"skill","call_id":"pua9x2k","args":{"skill</span><span class="mtk1">":"pua"}}</span></span></div>
+                  </div>
+                </div>
+              </div>
+            </pre>
+          </div>
+        </div>
+      </div>`;
+
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const response = container.querySelector(qwenAdapter.responseSelector)!;
+    const text = getCleanText(response);
+    const results = scanTextPhase1(text);
+
+    expect(response).not.toBeNull();
+    expect(results).toEqual([{ name: 'skill', callId: 'pua9x2k', args: { skill: 'pua' } }]);
   });
 });

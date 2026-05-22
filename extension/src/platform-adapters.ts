@@ -19,6 +19,30 @@ function normalizeCodeText(text: string): string {
   return text.replace(/\u00A0/g, ' ').trim();
 }
 
+function looksLikePierCodeLanguage(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/\s+/g, ' ').trim();
+  return normalized.includes('piercode-tool') ||
+    normalized.includes('language-piercode-tool') ||
+    /\btool\b/.test(normalized);
+}
+
+function hasPierCodeToolClass(classAttr: string): boolean {
+  return classAttr.includes('piercode-tool') || /\btool\b/.test(classAttr);
+}
+
+export function findQwenToolBody(pre: Element): Element | null {
+  const directBody = pre.querySelector('.qwen-markdown-code-body');
+  if (!directBody) return null;
+
+  const bodyClass = directBody.getAttribute('class') || '';
+  if (hasPierCodeToolClass(bodyClass)) return directBody;
+
+  const headerText = pre.querySelector('.qwen-markdown-code-header, .qwen-markdown-code-header-wrapper')?.textContent || '';
+  if (looksLikePierCodeLanguage(headerText)) return directBody;
+
+  return null;
+}
+
 // Kimi (kimi.moonshot.cn) 适配器
 export const kimiAdapter: PlatformAdapter = {
   name: 'kimi',
@@ -56,14 +80,15 @@ export const kimiAdapter: PlatformAdapter = {
 export const qwenAdapter: PlatformAdapter = {
   name: 'qwen',
   match: () => location.hostname.includes('qwen.ai') || location.hostname.includes('qwenlm.ai'),
-  responseSelector: '.qwen-chat-message-assistant',
+  responseSelector: '.qwen-chat-message-assistant, .response-message-content.phase-answer',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';
     const tag = el.tagName.toLowerCase();
 
-    // 匹配最外层 <pre class="qwen-markdown-code"> 且子元素中有 .tool
+    // 匹配最外层 <pre class="qwen-markdown-code">。Qwen 有时只把语言名放在
+    // header 文本里，body 不一定带 tool/piercode-tool class。
     if (tag === 'pre' && classAttr.includes('qwen-markdown-code')) {
-      const toolBody = el.querySelector('.qwen-markdown-code-body.piercode-tool, .qwen-markdown-code-body.tool');
+      const toolBody = findQwenToolBody(el);
       if (!toolBody) return false;
 
       const codeText = extractMonacoText(toolBody);
@@ -73,7 +98,7 @@ export const qwenAdapter: PlatformAdapter = {
 
     // 兜底：匹配 <div class="qwen-markdown-code-body tool/piercode-tool">
     if (classAttr.includes('qwen-markdown-code-body') &&
-        (classAttr.includes('piercode-tool') || /\btool\b/.test(classAttr))) {
+        hasPierCodeToolClass(classAttr)) {
       const codeText = extractMonacoText(el);
       buf.push('\n```piercode-tool\n' + codeText.text + '\n```\n');
       return true;
