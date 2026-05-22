@@ -144,7 +144,7 @@ function isQwenPage(): boolean {
 async function focusCurrentTabForSend(): Promise<void> {
   if (!isQwenPage()) return;
   try {
-    await chrome.runtime.sendMessage({ type: "FOCUS_SELF" });
+    await chrome.runtime.sendMessage({ type: "FOCUS_SELF", forceFocus: false });
     await new Promise(resolve => window.setTimeout(resolve, 150));
   } catch (error) {
     console.warn("[PierCode] 激活 Qwen 标签页失败，继续尝试发送:", error);

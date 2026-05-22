@@ -132,7 +132,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'FOCUS_SELF') {
-    focusSenderTab(_sender)
+    // FOCUS_SELF from content script: default to non-intrusive mode
+    focusSenderTab(_sender, { forceFocus: msg.forceFocus === true })
       .then(sendResponse)
       .catch(error => sendResponse({ ok: false, error: String(error) }));
     return true;
@@ -140,14 +141,22 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return false;
 });
 
-async function focusSenderTab(sender: chrome.runtime.MessageSender): Promise<{ ok: boolean }> {
+async function focusSenderTab(sender: chrome.runtime.MessageSender, options?: { forceFocus?: boolean }): Promise<{ ok: boolean }> {
+  // Default: do NOT steal window focus. Only activate tab if explicitly requested.
+  // This respects the user's current workflow (e.g., working in terminal/IDE).
+  const shouldFocus = options?.forceFocus === true;
   const tabId = sender.tab?.id;
   if (!tabId) return { ok: false };
 
-  const windowId = sender.tab?.windowId;
-  if (typeof windowId === 'number' && windowId >= 0) {
-    await chrome.windows.update(windowId, { focused: true, state: 'normal' });
+  if (shouldFocus) {
+    const windowId = sender.tab?.windowId;
+    if (typeof windowId === 'number' && windowId >= 0) {
+      await chrome.windows.update(windowId, { focused: true, state: 'normal' });
+    }
+    await chrome.tabs.update(tabId, { active: true });
+  } else {
+    // Lightweight activation: just mark tab as active without stealing window focus
+    await chrome.tabs.update(tabId, { active: true });
   }
-  await chrome.tabs.update(tabId, { active: true });
   return { ok: true };
 }
