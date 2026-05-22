@@ -1,3 +1,5 @@
+// Deprecated: piercode-cli/TUI is retained for compatibility only. Prefer
+// `go run ./cmd/server -dir .` plus the browser extension for normal use.
 package main
 
 import (
@@ -99,6 +101,7 @@ func main() {
 
 	// 创建 TUI Logger
 	tuiLogger := tui.NewLogger(program)
+	tuiLogger.Printf("⚠️  piercode-cli/TUI 已废弃，仅保留兼容；日常使用请启动无 TUI 服务：go run ./cmd/server -dir .")
 
 	// 启动后端服务（在后台 goroutine 中）
 	go func() {

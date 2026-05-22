@@ -2,18 +2,18 @@
 
 ## Project Structure & Module Organization
 
-PierCode is a Go backend plus a Chrome Manifest V3 extension. Server entry points live in `cmd/cli` for the TUI and `cmd/server` for the plain HTTP server. Core backend packages are under `internal/`: `server` owns routes and WebSocket bridging, `tool` owns tool implementations, `security` owns token and sandbox checks, `tui` owns the terminal UI, and `prompt`/`skill` support prompt rendering and local skills. Extension source is in `extension/src`, with page integration in `content`, platform-specific parsing in `platform-adapters.ts`, popup UI in `popup`, and tests in `extension/src/__tests__`. Default prompts live in `prompts/`.
+PierCode is a Go backend plus a Chrome Manifest V3 extension. Server entry points live in `cmd/server` for the primary plain HTTP server and `cmd/cli` for the deprecated compatibility TUI. Core backend packages are under `internal/`: `server` owns routes and WebSocket bridging, `tool` owns tool implementations, `security` owns token and sandbox checks, deprecated `tui` owns the legacy terminal UI, and `prompt`/`skill` support prompt rendering and local skills. Extension source is in `extension/src`, with page integration in `content`, platform-specific parsing in `platform-adapters.ts`, popup UI in `popup`, and tests in `extension/src/__tests__`. Default prompts live in `prompts/`.
 
 ## Build, Test, and Development Commands
 
 Use PowerShell-friendly UTF-8 commands on Windows.
 
 ```powershell
-go run ./cmd/cli -dir .          # start local server with TUI
-go run ./cmd/server -dir .       # start plain local server
+go run ./cmd/server -dir .       # start primary plain local server
+go run ./cmd/cli -dir .          # deprecated compatibility TUI
 go test ./...                    # run all Go tests
-go build -o piercode-cli.exe ./cmd/cli
 go build -o piercode.exe ./cmd/server
+go build -o piercode-cli.exe ./cmd/cli  # deprecated compatibility TUI
 cd extension; npm install; npm test; npm run build; npx tsc --noEmit
 ```
 

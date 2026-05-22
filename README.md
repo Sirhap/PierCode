@@ -7,7 +7,7 @@ PierCode 是一个本地开发辅助工具：通过浏览器扩展把网页版 A
 ## 组成
 
 - 本地 HTTP 服务，默认监听 `127.0.0.1:39527`
-- 可选 TUI，用于查看状态、输入指令、向浏览器 AI 页面注入文本
+- 已废弃的可选 TUI，仅为兼容旧流程保留
 - Chrome Manifest V3 浏览器扩展
 - `piercode-tool` fenced code block 工具调用解析
 - 兼容部分旧 XML / function-call 风格工具调用
@@ -45,16 +45,16 @@ npm run build
 cd ..
 ```
 
-启动 TUI 版本：
-
-```powershell
-go run ./cmd/cli -dir .
-```
-
-或者启动无 TUI 的普通服务：
+启动普通服务版本（推荐）：
 
 ```powershell
 go run ./cmd/server -dir .
+```
+
+旧 TUI 入口已废弃，仅为兼容旧流程保留：
+
+```powershell
+go run ./cmd/cli -dir .
 ```
 
 启动后会显示本次进程的临时认证 URL，格式类似：
@@ -75,9 +75,9 @@ http://127.0.0.1:39527/auth?token=<token>
 
 如果 AI 页面在扩展安装前已经打开，安装后需要刷新页面。
 
-## TUI 使用
+## TUI 使用（已废弃）
 
-推荐日常使用 TUI 入口：
+TUI 入口仅保留兼容，不再作为日常推荐入口。优先使用 `cmd/server` 启动本地服务，并通过浏览器扩展完成交互。
 
 ```powershell
 go run ./cmd/cli -dir .
@@ -126,7 +126,7 @@ go run ./cmd/cli -dir .
 .\scripts\build.ps1 -SkipTests
 ```
 
-构建 TUI 版本：
+构建旧 TUI 版本（已废弃，仅兼容）：
 
 ```powershell
 go build -o piercode-cli.exe ./cmd/cli
@@ -221,12 +221,12 @@ npx tsc --noEmit
 
 主要目录：
 
-- `cmd/cli`：TUI 启动入口
+- `cmd/cli`：已废弃的 TUI 启动入口，仅兼容旧流程
 - `cmd/server`：普通服务启动入口
 - `internal/server`：HTTP 路由和 WebSocket 桥接
 - `internal/tool`：本地工具实现
 - `internal/security`：token 和沙箱校验
-- `internal/tui`：终端 UI 和日志模型
+- `internal/tui`：已废弃的终端 UI 和日志模型，仅兼容旧流程
 - `extension/src/content`：页面注入和工具调用检测
 - `extension/src/platform-adapters.ts`：站点适配逻辑
 - `extension/src/popup`：扩展弹窗和认证 UI
