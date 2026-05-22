@@ -226,6 +226,17 @@ function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivEle
   const options = config.options.map(opt => String(opt));
   const panel = document.createElement('div');
   panel.style.cssText = buildQuestionPanelStyle();
+  let closed = false;
+  const closePanel = () => {
+    if (closed) return;
+    closed = true;
+    panel.remove();
+  };
+  const submitAnswer = (answer: string) => {
+    if (!answer) return;
+    config.onSubmit(answer);
+    closePanel();
+  };
 
   const header = document.createElement('div');
   header.textContent = 'PierCode 需要回答';
@@ -251,7 +262,7 @@ function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivEle
       ].join(';');
       btn.onmouseenter = () => { btn.style.background = '#475569'; };
       btn.onmouseleave = () => { btn.style.background = '#334155'; };
-      btn.onclick = () => config.onSubmit(opt);
+      btn.onclick = () => submitAnswer(opt);
       optWrap.appendChild(btn);
     });
     panel.appendChild(optWrap);
@@ -277,7 +288,7 @@ function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivEle
   cancelBtn.style.cssText = 'padding:5px 10px;border:1px solid #64748b;border-radius:4px;background:transparent;color:#cbd5e1;cursor:pointer';
   cancelBtn.onclick = () => {
     config.onCancel?.();
-    panel.remove();
+    closePanel();
   };
 
   const submitBtn = document.createElement('button');
@@ -292,8 +303,7 @@ function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivEle
     if (options.length > 0 && !Number.isNaN(idx) && idx >= 1 && idx <= options.length) {
       answer = options[idx - 1];
     }
-    config.onSubmit(answer);
-    panel.remove();
+    submitAnswer(answer);
   };
 
   submitBtn.onclick = submit;
@@ -302,7 +312,7 @@ function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivEle
     if (e.key === 'Escape') {
       e.preventDefault();
       config.onCancel?.();
-      panel.remove();
+      closePanel();
     }
   });
 
@@ -320,7 +330,8 @@ function buildQuestionPanelStyle(): string {
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 768;
   const margin = 12;
-  const width = Math.min(460, Math.max(320, rect?.width ?? 380));
+  const availableWidth = Math.max(320, viewportWidth - margin * 2);
+  const width = Math.min(680, availableWidth, Math.max(480, rect?.width ?? 560));
   const maxLeft = Math.max(margin, viewportWidth - width - margin);
   const left = rect
     ? Math.min(Math.max(rect.left + rect.width - width, margin), maxLeft)
