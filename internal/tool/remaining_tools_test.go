@@ -46,6 +46,15 @@ func TestListDirTool(t *testing.T) {
 func TestQuestionTool(t *testing.T) {
 	tool := NewQuestionTool()
 
+	t.Run("description explains when to use question", func(t *testing.T) {
+		desc := tool.Description()
+		for _, want := range []string{"blocking question", "instead of plain prose", "implementation choices", "Do not ask for codebase facts"} {
+			if !strings.Contains(desc, want) {
+				t.Fatalf("expected description to contain %q, got %q", want, desc)
+			}
+		}
+	})
+
 	t.Run("blocks until Deliver is called and includes answer in output", func(t *testing.T) {
 		callID := "test-q-1"
 		go func() {

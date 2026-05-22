@@ -164,25 +164,41 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 		logger.LogToolCallFull(req.Name, resp.Status, summarizeToolLog(req, resp), fullToolLog(req, resp))
 	}
 
-	// Fix 4: append identity reminder; re-inject full prompt every 20 calls.
+	// Fix 4: append operating reminders; re-inject full prompt every 20 calls.
 	// SECURITY: 之前会优先从 <rootDir>/prompts/init_prompt.txt 读取——但该
 	// 路径在 sandbox 内，AI 用 write_file 即可改写，从而永久篡改自己的系统
 	// 提示词。改为只信任二进制内嵌的 DefaultPrompt（prompts/prompts.go 通过
 	// //go:embed 提供）。
 	n := e.callCount.Add(1)
-	const reinjectEvery = 20
-	const reminder = "\n\n[系统提示] 请记住你是 PierCode，严格遵循工具调用规范，不要忘记自己的身份和指令。"
-	if n%reinjectEvery == 0 {
+	e.appendPromptGuidance(resp, n)
+
+	return resp
+}
+
+const (
+	fullPromptReinjectEvery = 20
+	taskCheckpointEvery     = 5
+)
+
+const operatingReminder = "\n\n[系统提示] 继续以 PierCode 身份执行：工具调用必须使用可见的 `piercode-tool` fenced JSON；所有文件操作保持在当前工作目录/sandbox 内；需要更细规则时加载匹配的 `piercode-*` skill；完成前用测试或明确证据验证。"
+
+const taskCheckpointReminder = "\n\n[任务状态快照提示] 如果当前任务已跨多步或上下文变长，请在下一次回复中简短保留：目标、已完成事项、已改文件、验证结果、下一步/阻塞；必要时用 `todo_write`/`todo_read` 同步待办。"
+
+func (e *Executor) appendPromptGuidance(resp *types.ToolResponse, n int64) {
+	if n%fullPromptReinjectEvery == 0 {
 		rootDir := e.config.GetRootDir()
 		if len(e.config.DefaultPrompt) > 0 {
 			rendered := prompt.Render(e.config.DefaultPrompt, rootDir, e.ListTools())
 			resp.Output += "\n\n[系统重新注入提示词]\n" + string(rendered)
+		} else {
+			resp.Output += operatingReminder
 		}
 	} else {
-		resp.Output += reminder
+		resp.Output += operatingReminder
 	}
-
-	return resp
+	if n%taskCheckpointEvery == 0 {
+		resp.Output += taskCheckpointReminder
+	}
 }
 
 func (e *Executor) ListTools() []tool.ToolInfo {

@@ -114,6 +114,63 @@ func TestExecutor(t *testing.T) {
 	})
 }
 
+func TestExecutorPromptGuidance(t *testing.T) {
+	t.Run("tool responses include operating reminder", func(t *testing.T) {
+		e := New(testConfig(t))
+		resp := e.Execute(context.Background(), &types.ToolRequest{
+			Name:   "list_dir",
+			CallID: "list1a",
+			Args:   map[string]interface{}{"path": "."},
+		})
+		for _, want := range []string{"[系统提示]", "piercode-tool", "sandbox", "piercode-*", "测试或明确证据"} {
+			if !strings.Contains(resp.Output, want) {
+				t.Fatalf("expected reminder to contain %q, got %q", want, resp.Output)
+			}
+		}
+	})
+
+	t.Run("every fifth tool response asks for task checkpoint", func(t *testing.T) {
+		e := New(testConfig(t))
+		var resp *types.ToolResponse
+		for i := 0; i < 5; i++ {
+			resp = e.Execute(context.Background(), &types.ToolRequest{
+				Name:   "list_dir",
+				CallID: "list5a",
+				Args:   map[string]interface{}{"path": "."},
+			})
+		}
+		for _, want := range []string{"[任务状态快照提示]", "已改文件", "验证结果", "todo_write"} {
+			if !strings.Contains(resp.Output, want) {
+				t.Fatalf("expected checkpoint reminder to contain %q, got %q", want, resp.Output)
+			}
+		}
+	})
+
+	t.Run("every twentieth tool response reinjects embedded prompt", func(t *testing.T) {
+		cfg := testConfig(t)
+		cfg.DefaultPrompt = []byte("system {{SYSTEM_INFO}}\noperations {{TOOLS}}")
+		e := New(cfg)
+		var resp *types.ToolResponse
+		for i := 0; i < 20; i++ {
+			resp = e.Execute(context.Background(), &types.ToolRequest{
+				Name:   "list_dir",
+				CallID: "list20a",
+				Args:   map[string]interface{}{"path": "."},
+			})
+		}
+		for _, want := range []string{"[系统重新注入提示词]", "system - 操作系统:", "operations ###", "[任务状态快照提示]"} {
+			if !strings.Contains(resp.Output, want) {
+				t.Fatalf("expected reinjected prompt to contain %q, got %q", want, resp.Output)
+			}
+		}
+		for _, forbidden := range []string{"{{SYSTEM_INFO}}", "{{TOOLS}}"} {
+			if strings.Contains(resp.Output, forbidden) {
+				t.Fatalf("expected placeholder %q to be rendered, got %q", forbidden, resp.Output)
+			}
+		}
+	})
+}
+
 func TestSummarizeToolLog(t *testing.T) {
 	t.Run("exec command folds long output", func(t *testing.T) {
 		var output strings.Builder
