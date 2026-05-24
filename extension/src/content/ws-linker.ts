@@ -48,15 +48,28 @@ export type QuestionCancelMessage = {
   reason?: string;
 };
 
+export type BrowserApprovalAskMessage = {
+  type: 'browser_approval_ask';
+  approval_id: string;
+  call_id?: string;
+  action: string;
+  tab?: { tabId?: number; title?: string; url?: string };
+  target: string;
+  risk: string;
+  options?: string[];
+};
+
 type StreamHandler = (msg: ToolStreamMessage) => void;
 type DoneHandler = (msg: ToolDoneMessage) => void;
 type QuestionAskHandler = (msg: QuestionAskMessage) => void;
 type QuestionCancelHandler = (msg: QuestionCancelMessage) => void;
+type BrowserApprovalAskHandler = (msg: BrowserApprovalAskMessage) => void;
 
 const streamHandlers: StreamHandler[] = [];
 const doneHandlers: DoneHandler[] = [];
 const questionAskHandlers: QuestionAskHandler[] = [];
 const questionCancelHandlers: QuestionCancelHandler[] = [];
+const browserApprovalAskHandlers: BrowserApprovalAskHandler[] = [];
 
 export function onToolStream(handler: StreamHandler): () => void {
   streamHandlers.push(handler);
@@ -90,6 +103,14 @@ export function onQuestionCancel(handler: QuestionCancelHandler): () => void {
   };
 }
 
+export function onBrowserApprovalAsk(handler: BrowserApprovalAskHandler): () => void {
+  browserApprovalAskHandlers.push(handler);
+  return () => {
+    const idx = browserApprovalAskHandlers.indexOf(handler);
+    if (idx >= 0) browserApprovalAskHandlers.splice(idx, 1);
+  };
+}
+
 type InjectConfig = {
   editor: string;
   sendBtn: string;
@@ -116,6 +137,8 @@ function toWebSocketUrl(apiUrl: string, token: string): string | null {
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.pathname = "/ws";
     url.searchParams.set("token", token);
+    url.searchParams.set("client", "content");
+    url.searchParams.set("role", "ai-page");
     url.searchParams.set("provider", currentProvider());
     url.searchParams.set("host", location.hostname);
     return url.toString();
@@ -336,6 +359,10 @@ function connectWebSocket(apiUrl: string, token: string) {
           for (const handler of questionCancelHandlers.slice()) {
             try { handler(msg as QuestionCancelMessage); } catch (e) { console.error(e); }
           }
+        } else if (msg.type === "browser_approval_ask" && typeof msg.approval_id === "string") {
+          for (const handler of browserApprovalAskHandlers.slice()) {
+            try { handler(msg as BrowserApprovalAskMessage); } catch (e) { console.error(e); }
+          }
         }
       } catch (e) {
         console.error("[PierCode] 解析 WebSocket 消息失败:", e);
@@ -504,6 +531,20 @@ export function sendQuestionCancel(callID: string, reason = "user_cancelled"): b
 		console.warn("[PierCode] question_cancel 发送失败:", error);
 		return false;
 	}
+}
+
+export function sendBrowserApprovalAnswer(approvalID: string, approved: boolean, reason = ""): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn("[PierCode] WebSocket 未连接，无法发送 browser approval");
+    return false;
+  }
+  try {
+    ws.send(JSON.stringify({ type: "browser_approval_answer", approval_id: approvalID, approved, reason }));
+    return true;
+  } catch (error) {
+    console.warn("[PierCode] browser_approval_answer 发送失败:", error);
+    return false;
+  }
 }
 
 // 初始化

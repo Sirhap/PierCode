@@ -1,7 +1,7 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
 import { extractMonacoText, findQwenToolBody, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
-import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel } from './ws-linker';
+import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer } from './ws-linker';
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
@@ -185,9 +185,13 @@ function ensureStreamDispatchers() {
   onQuestionCancel(msg => {
     dismissRemoteQuestionPopup(msg.call_id);
   });
+  onBrowserApprovalAsk(msg => {
+    showBrowserApprovalPopup(msg);
+  });
 }
 
 const activeQuestionPopups = new Map<string, HTMLDivElement>();
+const activeBrowserApprovalPopups = new Map<string, HTMLDivElement>();
 
 function showRemoteQuestionPopup(callID: string, question: string, options: unknown[]) {
   dismissRemoteQuestionPopup(callID);
@@ -213,6 +217,43 @@ function dismissRemoteQuestionPopup(callID: string) {
   if (!el) return;
   el.remove();
   activeQuestionPopups.delete(callID);
+}
+
+function showBrowserApprovalPopup(msg: {
+  approval_id: string;
+  action: string;
+  tab?: { tabId?: number; title?: string; url?: string };
+  target: string;
+  risk: string;
+}) {
+  const existing = activeBrowserApprovalPopups.get(msg.approval_id);
+  if (existing) existing.remove();
+  const tabLine = msg.tab
+    ? `tabId=${msg.tab.tabId ?? ''}\n标题：${msg.tab.title || '(untitled)'}\nURL：${msg.tab.url || '(unknown)'}`
+    : '目标标签页未知';
+  const panel = showInlineQuestionPanel({
+    question: [
+      `浏览器操作：${msg.action}`,
+      '',
+      tabLine,
+      '',
+      `目标：${msg.target || '(unknown)'}`,
+      `风险：${msg.risk || '此操作会改变网页状态。'}`,
+    ].join('\n'),
+    options: ['允许', '拒绝'],
+    onSubmit: answer => {
+      const approved = answer.trim() === '允许' || answer.trim() === '1';
+      sendBrowserApprovalAnswer(msg.approval_id, approved, approved ? '' : 'user rejected browser action');
+      panel.remove();
+      activeBrowserApprovalPopups.delete(msg.approval_id);
+    },
+    onCancel: () => {
+      sendBrowserApprovalAnswer(msg.approval_id, false, 'user cancelled browser action');
+      activeBrowserApprovalPopups.delete(msg.approval_id);
+    },
+  });
+  panel.dataset.piercodeBrowserApprovalId = msg.approval_id;
+  activeBrowserApprovalPopups.set(msg.approval_id, panel);
 }
 
 type InlineQuestionPanelOptions = {

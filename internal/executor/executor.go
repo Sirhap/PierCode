@@ -26,6 +26,8 @@ type Executor struct {
 	logger    atomic.Pointer[tui.Logger]
 	tasks     *TaskManager
 	broadcast atomic.Pointer[func([]byte)]
+	browserMu sync.RWMutex
+	browser   tool.BrowserController
 }
 
 // SetLogger sets the TUI logger for real-time feedback. Safe to call
@@ -43,6 +45,12 @@ func (e *Executor) SetBroadcaster(fn func([]byte)) {
 		return
 	}
 	e.broadcast.Store(&fn)
+}
+
+func (e *Executor) SetBrowserController(controller tool.BrowserController) {
+	e.browserMu.Lock()
+	e.browser = controller
+	e.browserMu.Unlock()
 }
 
 // Tasks returns the background task manager owned by this executor.
@@ -72,6 +80,14 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewTaskOutputTool())
 	e.registry.Register(tool.NewTaskStopTool())
 	e.registry.Register(tool.NewSendStdinTool())
+	e.registry.Register(tool.NewBrowserTabsTool())
+	e.registry.Register(tool.NewBrowserNewTabTool())
+	e.registry.Register(tool.NewBrowserUseTabTool())
+	e.registry.Register(tool.NewBrowserNavigateTool())
+	e.registry.Register(tool.NewBrowserSnapshotTool())
+	e.registry.Register(tool.NewBrowserClickTool())
+	e.registry.Register(tool.NewBrowserTypeTool())
+	e.registry.Register(tool.NewBrowserScreenshotTool())
 	return e
 }
 
@@ -136,6 +152,9 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 		RootDir:    rootSnapshot,
 		TaskRunner: e.tasks,
 	}
+	e.browserMu.RLock()
+	toolCtx.Browser = e.browser
+	e.browserMu.RUnlock()
 	if streamer != nil {
 		toolCtx.Streamer = func(stream, text string) { streamer(stream, text) }
 	}
@@ -234,7 +253,8 @@ func (e *Executor) lockForTool(name string) func() {
 func isReadOnlyTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question",
-		"todo_read", "task_list", "task_output":
+		"todo_read", "task_list", "task_output", "browser_tabs", "browser_snapshot",
+		"browser_screenshot":
 		return true
 	default:
 		return false

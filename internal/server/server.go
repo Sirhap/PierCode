@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/sirhap/piercode/internal/browser"
 	"github.com/sirhap/piercode/internal/executor"
 	"github.com/sirhap/piercode/internal/prompt"
 	"github.com/sirhap/piercode/internal/security"
@@ -32,6 +33,7 @@ type Server struct {
 	router   *gin.Engine
 	executor *executor.Executor
 	ws       *WSManager // WebSocket 管理器
+	browser  *browser.Controller
 	logger   *tui.Logger
 
 	// Unsubscribe handles for the TUI-level chunk/done subscribers registered
@@ -55,6 +57,13 @@ func New(config *types.Config) *Server {
 		executor: executor.New(config),
 		ws:       ws,
 	}
+	relay := browser.NewRelayManager(func(payload []byte) bool {
+		return ws.SendToRole("browser-relay", payload)
+	})
+	s.browser = browser.NewController(relay, func(payload []byte) {
+		ws.Send(payload)
+	})
+	s.executor.SetBrowserController(s.browser)
 
 	// Tools (currently just `question`) can push arbitrary WS payloads via
 	// the executor's broadcaster. Wiring it here keeps the WSManager out of
@@ -206,6 +215,7 @@ func (s *Server) handleConfig(c *gin.Context) {
 func (s *Server) handleStats(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"browser_clients":   s.ws.ClientCount(),
+		"browser_relays":    s.ws.RoleCount("browser-relay"),
 		"browser_providers": s.ws.ProviderCounts(),
 	})
 }
@@ -332,6 +342,8 @@ func (s *Server) handleExec(c *gin.Context) {
 		if v, ok := req.Args["timeout_sec"].(float64); ok && v > 0 {
 			execTimeout = time.Duration(v*float64(time.Second)) + 30*time.Second
 		}
+	} else if strings.HasPrefix(strings.ToLower(req.Name), "browser_") {
+		execTimeout = 6 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
@@ -395,7 +407,9 @@ func (s *Server) handleWS(c *gin.Context) {
 	log.Println("[PierCode] ✅ 扩展已连接 WebSocket")
 
 	provider := browserProviderFromRequest(c.Request)
-	s.ws.RegisterWithProvider(conn, provider)
+	role := strings.TrimSpace(c.Query("role"))
+	client := strings.TrimSpace(c.Query("client"))
+	s.ws.RegisterWithMeta(conn, WSClientMeta{Provider: provider, Role: role, Client: client})
 	count := s.ws.ClientCount()
 	s.logTUI("system", "BROWSER", "success", fmt.Sprintf("浏览器扩展已连接 (%d)", count))
 	if s.logger != nil {
@@ -451,12 +465,22 @@ func browserProviderFromRequest(r *http.Request) string {
 
 func (s *Server) handleWSClientMessage(payload []byte) {
 	var msg struct {
-		Type   string `json:"type"`
-		Key    string `json:"key"`
-		Text   string `json:"text"`
-		CallID string `json:"call_id"`
-		Answer string `json:"answer"`
-		Reason string `json:"reason"`
+		Type       string          `json:"type"`
+		Key        string          `json:"key"`
+		Text       string          `json:"text"`
+		CallID     string          `json:"call_id"`
+		Answer     string          `json:"answer"`
+		Reason     string          `json:"reason"`
+		ID         string          `json:"id"`
+		Success    bool            `json:"success"`
+		Data       json.RawMessage `json:"data"`
+		Error      string          `json:"error"`
+		ApprovalID string          `json:"approval_id"`
+		Approved   bool            `json:"approved"`
+		Event      string          `json:"event"`
+		TabID      int             `json:"tabId"`
+		URL        string          `json:"url"`
+		Title      string          `json:"title"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return
@@ -498,6 +522,38 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 			return
 		}
 		tool.PendingQuestions.Cancel(callID, msg.Reason)
+	case "browser_result":
+		if s.browser != nil {
+			s.browser.DeliverResult(browser.Result{
+				Type:    msg.Type,
+				ID:      msg.ID,
+				Success: msg.Success,
+				Data:    msg.Data,
+				Error:   msg.Error,
+			})
+		}
+	case "browser_approval_answer":
+		if s.browser != nil {
+			s.browser.DeliverApproval(browser.ApprovalAnswer{
+				Type:       msg.Type,
+				ApprovalID: msg.ApprovalID,
+				Approved:   msg.Approved,
+				Reason:     msg.Reason,
+			})
+		}
+	case "browser_event":
+		if s.browser != nil {
+			s.browser.HandleEvent(browser.Event{
+				Type:   msg.Type,
+				Event:  msg.Event,
+				TabID:  msg.TabID,
+				Reason: msg.Reason,
+				URL:    msg.URL,
+				Title:  msg.Title,
+			})
+		}
+	case "browser_ping", "browser_hello":
+		return
 	}
 }
 

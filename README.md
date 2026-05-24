@@ -161,6 +161,10 @@ go build -o piercode.exe ./cmd/server
 | `skill` | 加载本地 skill 文档 |
 | `question` | 向用户提问 |
 | `todo_write` | 写入 `.todos.json` 任务状态 |
+| `browser_tabs` / `browser_new_tab` / `browser_use_tab` | 列出、创建、选择 Chrome 受控标签页；控制 AI 对话页前必须显式选择并审批 |
+| `browser_navigate` / `browser_snapshot` | 导航受控标签页并读取可访问性树快照；页面理解优先使用 snapshot refs |
+| `browser_click` / `browser_type` | 经用户确认后点击或输入；操作后旧 snapshot refs 视为失效 |
+| `browser_screenshot` | 截取受控标签页截图并保存到工作区 `.piercode/screenshots` |
 
 `/prompt` 会根据当前工作目录和已注册工具动态渲染初始化提示词。
 
@@ -170,7 +174,7 @@ go build -o piercode.exe ./cmd/server
 
 | 端点 | 说明 |
 | --- | --- |
-| `GET /auth?token=...` | 校验扩展 token |
+| `POST /auth` | 校验扩展 token |
 | `GET /health` | 服务健康检查 |
 | `GET /config` | 查看当前目录和超时配置 |
 | `POST /cwd` | 切换当前工作目录 |
@@ -181,6 +185,28 @@ go build -o piercode.exe ./cmd/server
 | `GET /prompt` | 获取渲染后的初始化提示词 |
 | `GET /skills` | 列出本地 skills |
 | `GET /files?q=...` | 搜索当前目录下的文件 |
+
+## 浏览器控制
+
+PierCode 可以通过 Chrome 扩展的 background service worker 使用 `chrome.debugger` 控制专用受控标签页。扩展要求 Chrome 118+，manifest 会请求 `debugger` 权限。
+
+默认安全策略：
+
+- 默认创建或选择专用受控 tab，不控制 ChatGPT、Gemini、Claude、Qwen 等 AI 对话页；如确需控制 AI 对话页，必须先调用 `browser_use_tab` 并由用户审批。
+- `browser_snapshot` 返回紧凑 AX tree 文本和 `e0/e1` refs，是 AI 理解页面和后续点击/输入的主路径。
+- `browser_click` 和 `browser_type` 会弹出确认面板，用户拒绝时工具失败；点击、输入、导航后旧 snapshot refs 视为失效，需要重新 snapshot。
+- `browser_screenshot` 只在视觉布局、图片、图表或渲染外观重要时使用，截图保存为工作区 `.piercode/screenshots` 下的图片文件，不把图片数据内联回对话。
+- 拒绝 `file:`、`chrome:`、`chrome-extension:`、`javascript:`、`data:` 等高风险导航。
+- 不提供 Cookie、localStorage、sessionStorage 或任意 JS 执行工具。
+
+手工验收建议：
+
+1. `cd extension && npm run build` 后加载 `extension/dist` 为 unpacked extension。
+2. 打开一个 AI 页面并完成 PierCode 授权，popup 中应显示浏览器控制 relay 状态。
+3. 让 AI 依次调用 `browser_new_tab`、`browser_navigate`、`browser_snapshot`，确认能创建受控 tab、导航并返回 refs。
+4. 调用 `browser_screenshot`，确认结果只返回保存路径且文件位于 `.piercode/screenshots`，不会把图片数据内联到对话。
+5. 调用 `browser_click` 或 `browser_type`，确认页面出现审批面板，允许后执行，拒绝后工具返回错误。
+6. 打开受控 tab 的 DevTools，确认 debugger detach 时工具能给出明确错误。
 
 ## 安全边界
 

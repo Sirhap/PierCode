@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -23,8 +24,20 @@ const (
 type clientConn struct {
 	conn      *websocket.Conn
 	send      chan []byte
+	id        string
+	client    string
+	role      string
 	provider  string
+	connected time.Time
 	closeOnce sync.Once
+}
+
+type WSClientMeta struct {
+	ID        string
+	Client    string
+	Role      string
+	Provider  string
+	Connected time.Time
 }
 
 // WSManager 管理所有 WebSocket 连接
@@ -75,10 +88,30 @@ func (m *WSManager) Register(conn *websocket.Conn) {
 // RegisterWithProvider registers a client and records the AI surface it came
 // from so status UIs can show something more useful than a raw page count.
 func (m *WSManager) RegisterWithProvider(conn *websocket.Conn, provider string) {
+	m.RegisterWithMeta(conn, WSClientMeta{Provider: provider})
+}
+
+func (m *WSManager) RegisterWithMeta(conn *websocket.Conn, meta WSClientMeta) {
+	if meta.ID == "" {
+		meta.ID = fmt.Sprintf("ws_%d", time.Now().UnixNano())
+	}
+	if meta.Client == "" {
+		meta.Client = "content"
+	}
+	if meta.Role == "" {
+		meta.Role = "ai-page"
+	}
+	if meta.Connected.IsZero() {
+		meta.Connected = time.Now()
+	}
 	cc := &clientConn{
-		conn:     conn,
-		send:     make(chan []byte, wsClientQueueSize),
-		provider: normalizeProvider(provider),
+		conn:      conn,
+		send:      make(chan []byte, wsClientQueueSize),
+		id:        meta.ID,
+		client:    strings.TrimSpace(meta.Client),
+		role:      strings.TrimSpace(meta.Role),
+		provider:  normalizeProvider(meta.Provider),
+		connected: meta.Connected,
 	}
 	m.clientsMu.Lock()
 	m.clients[cc] = true
@@ -103,9 +136,21 @@ func (m *WSManager) ProviderCounts() map[string]int {
 	return counts
 }
 
+func (m *WSManager) RoleCount(role string) int {
+	m.clientsMu.RLock()
+	defer m.clientsMu.RUnlock()
+	count := 0
+	for cc := range m.clients {
+		if cc.role == role {
+			count++
+		}
+	}
+	return count
+}
+
 func normalizeProvider(provider string) string {
 	switch strings.TrimSpace(provider) {
-	case "ChatGPT", "Claude", "Gemini", "Qwen", "Kimi", "Z.ai", "AI Studio":
+	case "ChatGPT", "Claude", "Gemini", "Qwen", "Kimi", "Z.ai", "AI Studio", "Extension":
 		return provider
 	default:
 		return "Browser"
@@ -207,6 +252,28 @@ func (m *WSManager) Send(message []byte) {
 		// 队列满时丢弃，避免阻塞主流程，但记录日志便于诊断丢失。
 		log.Printf("[PierCode][WS] ⚠️ 广播队列已满，丢弃 %d 字节消息", len(message))
 	}
+}
+
+func (m *WSManager) SendToRole(role string, message []byte) bool {
+	var failed []*clientConn
+	sent := false
+	m.clientsMu.RLock()
+	for cc := range m.clients {
+		if cc.role != role {
+			continue
+		}
+		select {
+		case cc.send <- message:
+			sent = true
+		default:
+			failed = append(failed, cc)
+		}
+	}
+	m.clientsMu.RUnlock()
+	for _, cc := range failed {
+		m.unregisterClient(cc)
+	}
+	return sent
 }
 
 // IsAllowedOrigin 判断 Origin header 是否允许。空 Origin（同源 / 非浏览器

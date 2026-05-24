@@ -22,6 +22,7 @@ type Context struct {
 	Context context.Context
 	Args    map[string]interface{}
 	Config  *types.Config
+	Browser BrowserController
 
 	// RootDir is a snapshot of Config.GetRootDir() taken at request entry by
 	// the executor. Tools must prefer this over Config.GetRootDir() to avoid
@@ -115,6 +116,73 @@ type ToolInfo struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
 	Parameters  interface{} `json:"parameters,omitempty"`
+}
+
+type BrowserController interface {
+	ListTabs(ctx context.Context, includeAI bool) ([]BrowserTab, error)
+	NewTab(ctx context.Context, url string) (BrowserTab, error)
+	UseTab(ctx context.Context, tabID int, reason, callID string) (BrowserTab, error)
+	Navigate(ctx context.Context, tabID *int, url, callID string) (BrowserTab, error)
+	Snapshot(ctx context.Context, tabID *int, maxNodes int) (BrowserSnapshot, error)
+	Click(ctx context.Context, req BrowserClickRequest) (string, error)
+	Type(ctx context.Context, req BrowserTypeRequest) (string, error)
+	Screenshot(ctx context.Context, req BrowserScreenshotRequest) (BrowserScreenshot, error)
+}
+
+type BrowserTab struct {
+	TabID      int    `json:"tabId"`
+	URL        string `json:"url"`
+	Title      string `json:"title"`
+	Active     bool   `json:"active"`
+	Controlled bool   `json:"controlled"`
+}
+
+type BrowserSnapshot struct {
+	SnapshotID string
+	Tab        BrowserTab
+	Text       string
+	NodeCount  int
+	RefCount   int
+	Truncated  bool
+}
+
+type BrowserClickRequest struct {
+	TabID      *int
+	Ref        string
+	Selector   string
+	X          *float64
+	Y          *float64
+	SnapshotID string
+	CallID     string
+}
+
+type BrowserTypeRequest struct {
+	TabID      *int
+	Text       string
+	Ref        string
+	Selector   string
+	SnapshotID string
+	Clear      bool
+	Submit     bool
+	CallID     string
+}
+
+type BrowserScreenshotRequest struct {
+	TabID     *int
+	Format    string
+	Quality   int
+	FullPage  bool
+	OutputDir string
+}
+
+type BrowserScreenshot struct {
+	Tab      BrowserTab
+	Format   string
+	Bytes    int
+	Width    int
+	Height   int
+	DataURL  string
+	FilePath string // [Fixed by mimo-v2.5-pro: screenshot saved to file]
 }
 
 // resolveAbsPath validates an absolute path against RootDir and common allowed roots (~/.claude, ~/.piercode, ~/.agent).

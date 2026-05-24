@@ -2,12 +2,13 @@
   "manifest_version": 3,
   "name": "PierCode",
   "version": "1.0.0",
+  "minimum_chrome_version": "118",
   "description": "PierCode 代理 - 连接 AI 与本地环境",
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["activeTab", "storage", "tabs", "scripting"],
+  "permissions": ["activeTab", "storage", "tabs", "scripting", "debugger"],
   "host_permissions": ["http://127.0.0.1:*/*", "*://*.gemini.google.com/*", "*://aistudio.google.com/*", "*://qwen.ai/*", "*://chat.qwen.ai/*", "*://*.qwen.ai/*", "*://*.qwenlm.ai/*", "*://chat.z.ai/*", "*://*.kimi.com/*", "*://claude.ai/*", "*://*.claude.ai/*", "*://chatgpt.com/*", "*://*.chatgpt.com/*", "*://chat.openai.com/*"],
   "action": {
     "default_popup": "popup.html",

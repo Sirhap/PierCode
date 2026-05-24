@@ -959,11 +959,12 @@ func (m Model) renderCompactHero(width int) string {
 }
 
 func (m Model) renderFooterStatus(width int) string {
-	dirWidth := clampInt(width-52, 10, 46)
-	aiWidth := clampInt(width/4, 10, 24)
+	dirWidth := clampInt(width/4, 10, 30)
+	bridgeWidth := clampInt(width/5, 10, 18)
+	aiWidth := clampInt(width/7, 8, 14)
 	items := []string{
 		m.metric("DIR", truncateString(m.rootDir, dirWidth), colorMuted),
-		m.metric("BRIDGE", truncateString(m.bridgeSummary(), maxInt(10, width/3)), browserClientsColor(m.browserClients)),
+		m.metric("BRIDGE", truncateString(m.bridgeSummary(), bridgeWidth), browserClientsColor(m.browserClients)),
 		m.metric("AI", truncateString(m.bridgeAIProvider(), aiWidth), colorSys),
 		m.metric("SKILLS", fmt.Sprintf("%d", m.skillsCount), colorCyan),
 	}

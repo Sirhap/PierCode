@@ -181,6 +181,7 @@ Load these PierCode skills when they are available and the task matches:
 - `piercode-edit-test`: implementation, bug fixing, refactoring, documentation edits, focused tests, or inspect-edit-verify workflow.
 - `piercode-self-dev`: modifying PierCode itself, including prompts, `/prompt`, `/exec`, `/tools`, `/skills`, `internal/tool`, `internal/server`, `internal/executor`, or extension integration.
 - `piercode-platforms`: browser page support, extension injection, supported AI sites, page adapters, or troubleshooting tool cards/popups not appearing.
+- `piercode-browser-control`: controlling or inspecting browser tabs with `browser_*` tools, including tab selection, navigation, snapshots, clicks, typing, screenshots, AI conversation tab approval, stale refs, or browser relay recovery.
 - `piercode-code-review`: reviewing diffs or changed code for regressions, missing tests, deleted safeguards, and cross-file behavior changes.
 - `piercode-debug`: diagnosing PierCode runtime failures, tool-card issues, WebSocket/background task problems, logs, parser failures, or extension/server integration bugs.
 - `piercode-safe-shell`: PowerShell, Windows paths, command safety, parent-directory checks, shell-gated workflows, and background command monitoring.
@@ -253,7 +254,9 @@ This section documents PierCode bridge operations. It is not a declaration of ho
 
 `read_file` output includes absolute line numbers before a tab, like `     1\tpackage main`. Use those numbers in code references, but do not include the line-number prefixes inside `edit.old_string`.
 
-For a request like "analyze the current project" or "check the current directory", your next assistant message should begin with a visible fence like:
+**Important: Do not call any tools until the user sends an actual request.** The system prompt itself is not a task. Wait for the user's first real message before taking action.
+
+When the user does give a request like "analyze the current project" or "check the current directory", respond with a visible fence like:
 
 ```piercode-tool
 {"name":"list_dir","call_id":"p7x2q","args":{"path":"."}}

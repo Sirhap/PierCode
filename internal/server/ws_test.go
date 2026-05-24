@@ -213,6 +213,33 @@ func TestWSManager_BroadcastDisconnectsFullClientQueue(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+func TestWSManagerSendToRoleTargetsOnlyMatchingClients(t *testing.T) {
+	m := NewWSManager(nil)
+	defer m.Close()
+
+	content := &clientConn{send: make(chan []byte, 1), role: "ai-page"}
+	relay := &clientConn{send: make(chan []byte, 1), role: "browser-relay"}
+	m.clientsMu.Lock()
+	m.clients[content] = true
+	m.clients[relay] = true
+	m.clientsMu.Unlock()
+
+	if !m.SendToRole("browser-relay", []byte("cmd")) {
+		t.Fatal("expected browser-relay send to report success")
+	}
+	select {
+	case msg := <-relay.send:
+		assert.Equal(t, "cmd", string(msg))
+	default:
+		t.Fatal("relay did not receive targeted message")
+	}
+	select {
+	case msg := <-content.send:
+		t.Fatalf("content client should not receive browser command, got %q", msg)
+	default:
+	}
+}
+
 func TestInjectMessageFormat(t *testing.T) {
 	// 验证 /inject 接口生成的 WebSocket 消息格式正确
 	text := "测试消息 🎉"

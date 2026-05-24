@@ -45,6 +45,13 @@ type BridgeStatusResult = {
   failed?: number
 }
 
+type BrowserRelayStatus = {
+  state?: string
+  controlledTabId?: number | null
+  lastError?: string
+  updatedAt?: number
+}
+
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 export default function App() {
@@ -58,6 +65,7 @@ export default function App() {
   const [autoExecute, setAutoExecute] = useState(DEFAULT_AUTO_EXECUTE)
   const [delayMin, setDelayMin] = useState(1)
   const [delayMax, setDelayMax] = useState(4)
+  const [browserRelay, setBrowserRelay] = useState<BrowserRelayStatus>({})
 
   useEffect(() => {
     if (toast) {
@@ -109,6 +117,19 @@ export default function App() {
     })
   }
 
+  const getBrowserRelayStatus = (): Promise<BrowserRelayStatus> => {
+    return new Promise(resolve => {
+      chrome.runtime.sendMessage({ type: 'GET_BROWSER_RELAY_STATUS' }, (result: BrowserRelayStatus) => {
+        if (chrome.runtime.lastError) {
+          console.warn('[PierCode] get browser relay status failed:', chrome.runtime.lastError.message)
+          resolve({})
+          return
+        }
+        resolve(result || {})
+      })
+    })
+  }
+
   const checkConnection = (url: string, authToken?: string) => {
     fetch(`${url}/health`)
       .then(res => {
@@ -130,6 +151,8 @@ export default function App() {
         const result = await ensureContentScripts()
         await wait(600)
         const bridge = await getBridgeStatus()
+        const relay = await getBrowserRelayStatus()
+        setBrowserRelay(relay)
 
         setStatus('connected')
         const tabs = Number(bridge.tabs ?? result.tabs ?? 0)
@@ -328,6 +351,21 @@ export default function App() {
 
       {/* Info */}
       {info && <div className="mt-3 text-xs text-gray-500 truncate">{info}</div>}
+
+      <div className="mt-3 rounded-lg border border-gray-800 bg-gray-900 p-3 text-xs text-gray-400">
+        <div className="flex items-center justify-between">
+          <span>浏览器控制</span>
+          <span className={browserRelay.state === 'open' ? 'text-emerald-300' : 'text-gray-500'}>
+            {browserRelay.state === 'open' ? 'relay 已连接' : 'relay 未连接'}
+          </span>
+        </div>
+        {browserRelay.controlledTabId ? (
+          <div className="mt-1 text-gray-500">受控 tabId={browserRelay.controlledTabId}</div>
+        ) : (
+          <div className="mt-1 text-gray-500">尚未选择受控标签页</div>
+        )}
+        {browserRelay.lastError && <div className="mt-1 truncate text-red-300">{browserRelay.lastError}</div>}
+      </div>
 
       {/* Toast Notification */}
       {toast && (
