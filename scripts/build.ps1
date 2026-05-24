@@ -57,10 +57,6 @@ try {
     Invoke-Step "go vet ./..." { go vet ./... }
   }
 
-  Invoke-Step "build piercode-cli.exe" {
-    go build -ldflags "-s -w" -o (Join-Path $binDir "piercode-cli.exe") ./cmd/cli
-  }
-
   Invoke-Step "build piercode.exe" {
     go build -ldflags "-s -w" -o (Join-Path $binDir "piercode.exe") ./cmd/server
   }

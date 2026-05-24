@@ -7,7 +7,6 @@ PierCode 是一个本地开发辅助工具：通过浏览器扩展把网页版 A
 ## 组成
 
 - 本地 HTTP 服务，默认监听 `127.0.0.1:39527`
-- 已废弃的可选 TUI，仅为兼容旧流程保留
 - Chrome Manifest V3 浏览器扩展
 - `piercode-tool` fenced code block 工具调用解析
 - 兼容部分旧 XML / function-call 风格工具调用
@@ -45,16 +44,10 @@ npm run build
 cd ..
 ```
 
-启动普通服务版本（推荐）：
+启动服务：
 
 ```powershell
 go run ./cmd/server -dir .
-```
-
-旧 TUI 入口已废弃，仅为兼容旧流程保留：
-
-```powershell
-go run ./cmd/cli -dir .
 ```
 
 启动后会显示本次进程的临时认证 URL，格式类似：
@@ -74,36 +67,6 @@ http://127.0.0.1:39527/auth?token=<token>
 5. 打开扩展弹窗，粘贴服务端输出的认证 URL。
 
 如果 AI 页面在扩展安装前已经打开，安装后需要刷新页面。
-
-## TUI 使用（已废弃）
-
-TUI 入口仅保留兼容，不再作为日常推荐入口。优先使用 `cmd/server` 启动本地服务，并通过浏览器扩展完成交互。
-
-```powershell
-go run ./cmd/cli -dir .
-```
-
-常用操作：
-
-- 直接输入文本：发送到当前已连接的 AI 页面输入框
-- `/`：进入指令输入
-- `Tab`：补全 slash 指令或 `/cd` 目录
-- `Ctrl+J` 或 `Alt+Enter`：在输入框内换行
-- `Ctrl+T`：切换完整输出视图
-- `q` 或 `Ctrl+C`：退出
-
-支持的 slash 指令：
-
-```text
-/cd <path>     切换 AI 工具执行目录，限制在启动目录内
-/cwd           显示当前执行目录
-/url           显示认证 URL
-/send <text>   把文本发送到已连接的 AI 页面
-/clear         清空 TUI 活动区
-/help          显示指令帮助
-```
-
-`/cd` 不允许跳出程序启动时指定的根目录，即使路径经过符号链接或 junction 也会按真实路径校验。
 
 ## 构建二进制
 
@@ -126,13 +89,7 @@ go run ./cmd/cli -dir .
 .\scripts\build.ps1 -SkipTests
 ```
 
-构建旧 TUI 版本（已废弃，仅兼容）：
-
-```powershell
-go build -o piercode-cli.exe ./cmd/cli
-```
-
-构建普通服务版本：
+构建服务版本：
 
 ```powershell
 go build -o piercode.exe ./cmd/server
@@ -141,7 +98,6 @@ go build -o piercode.exe ./cmd/server
 这些构建产物不需要提交：
 
 - `piercode.exe`
-- `piercode-cli.exe`
 - `extension/dist/`
 - `release/`
 - `release-packages/`
@@ -247,12 +203,10 @@ npx tsc --noEmit
 
 主要目录：
 
-- `cmd/cli`：已废弃的 TUI 启动入口，仅兼容旧流程
-- `cmd/server`：普通服务启动入口
+- `cmd/server`：服务启动入口
 - `internal/server`：HTTP 路由和 WebSocket 桥接
 - `internal/tool`：本地工具实现
 - `internal/security`：token 和沙箱校验
-- `internal/tui`：已废弃的终端 UI 和日志模型，仅兼容旧流程
 - `extension/src/content`：页面注入和工具调用检测
 - `extension/src/platform-adapters.ts`：站点适配逻辑
 - `extension/src/popup`：扩展弹窗和认证 UI
@@ -277,3 +231,7 @@ npx tsc --noEmit
 - `release/`、`release-packages/`
 - `.omx/`、`.claude/`、`.playwright-mcp/`
 - 临时分析报告和本机工具状态文件
+
+## 致谢
+
+- [OpenLink](https://github.com/afumu/openlink) — PierCode 的前身项目，提供了初始架构和核心思路。
