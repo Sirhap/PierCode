@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PierCode",
-  "version": "1.0.0",
+  "version": "2.0.0-bate",
   "minimum_chrome_version": "118",
   "description": "PierCode 代理 - 连接 AI 与本地环境",
   "background": {
