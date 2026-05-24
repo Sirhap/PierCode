@@ -8,9 +8,9 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/sirhap/piercode/internal/logsink"
 	"github.com/sirhap/piercode/internal/prompt"
 	"github.com/sirhap/piercode/internal/tool"
-	"github.com/sirhap/piercode/internal/tui"
 	"github.com/sirhap/piercode/internal/types"
 )
 
@@ -23,17 +23,26 @@ type Executor struct {
 	// goroutines) and written from SetLogger at startup or when the TUI
 	// reconfigures. atomic.Pointer keeps the read path lock-free and
 	// race-free without forcing every caller through a mutex.
-	logger    atomic.Pointer[tui.Logger]
+	logger    atomic.Value // stores logsink.Sink
 	tasks     *TaskManager
 	broadcast atomic.Pointer[func([]byte)]
 	browserMu sync.RWMutex
 	browser   tool.BrowserController
 }
 
-// SetLogger sets the TUI logger for real-time feedback. Safe to call
+// SetLogger sets the event sink for real-time feedback. Safe to call
 // concurrently with Execute.
-func (e *Executor) SetLogger(logger *tui.Logger) {
+func (e *Executor) SetLogger(logger logsink.Sink) {
 	e.logger.Store(logger)
+}
+
+func (e *Executor) getLogger() logsink.Sink {
+	v := e.logger.Load()
+	if v == nil {
+		return nil
+	}
+	s, _ := v.(logsink.Sink)
+	return s
 }
 
 // SetBroadcaster wires a WS-broadcast callback so tools like `question` can
@@ -116,7 +125,7 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 		args := copyToolArgs(req.Args, 1)
 		args["tool"] = req.Name
 		msg := invalid.Execute(&tool.Context{Context: ctx, Args: args, Config: e.config}).Error
-		if logger := e.logger.Load(); logger != nil {
+		if logger := e.getLogger(); logger != nil {
 			logger.LogToolCall(req.Name, "error", "Tool not found")
 		}
 		return &types.ToolResponse{Name: req.Name, CallID: req.CallID, Status: "error", Output: msg, Error: msg}
@@ -124,7 +133,7 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 
 	if err := t.Validate(req.Args); err != nil {
 		msg := fmt.Sprintf("validation failed: %s", err)
-		if logger := e.logger.Load(); logger != nil {
+		if logger := e.getLogger(); logger != nil {
 			logger.LogToolCall(req.Name, "error", msg)
 		}
 		return &types.ToolResponse{Name: req.Name, CallID: req.CallID, Status: "error", Output: msg, Error: msg}
@@ -179,7 +188,7 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	}
 
 	// TUI Log: End
-	if logger := e.logger.Load(); logger != nil {
+	if logger := e.getLogger(); logger != nil {
 		logger.LogToolCallFull(req.Name, resp.Status, summarizeToolLog(req, resp), fullToolLog(req, resp))
 	}
 

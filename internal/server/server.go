@@ -20,11 +20,11 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sirhap/piercode/internal/browser"
 	"github.com/sirhap/piercode/internal/executor"
+	"github.com/sirhap/piercode/internal/logsink"
 	"github.com/sirhap/piercode/internal/prompt"
 	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/skill"
 	"github.com/sirhap/piercode/internal/tool"
-	"github.com/sirhap/piercode/internal/tui"
 	"github.com/sirhap/piercode/internal/types"
 )
 
@@ -34,11 +34,11 @@ type Server struct {
 	executor *executor.Executor
 	ws       *WSManager // WebSocket 管理器
 	browser  *browser.Controller
-	logger   *tui.Logger
+	logger   logsink.Sink
 
 	// Unsubscribe handles for the TUI-level chunk/done subscribers registered
-	// in SetTUILogger. We call them before re-subscribing so repeated
-	// SetTUILogger calls don't fan every chunk out N times.
+	// in SetLogSink. We call them before re-subscribing so repeated
+	// SetLogSink calls don't fan every chunk out N times.
 	tuiUnsubChunk func()
 	tuiUnsubDone  func()
 }
@@ -663,12 +663,12 @@ func (s *Server) Close() {
 	}
 }
 
-// SetTUILogger allows injecting a TUI logger for real-time monitoring.
+// SetLogSink allows injecting an event sink for real-time monitoring.
 // Safe to call multiple times: each call replaces any previously registered
-// TUI-level subscribers so we don't double-fan every chunk.
-func (s *Server) SetTUILogger(logger *tui.Logger) {
-	s.logger = logger
-	s.executor.SetLogger(logger)
+// subscribers so we don't double-fan every chunk.
+func (s *Server) SetLogSink(sink logsink.Sink) {
+	s.logger = sink
+	s.executor.SetLogger(sink)
 
 	if s.tuiUnsubChunk != nil {
 		s.tuiUnsubChunk()
@@ -679,12 +679,12 @@ func (s *Server) SetTUILogger(logger *tui.Logger) {
 		s.tuiUnsubDone = nil
 	}
 
-	if tm := s.executor.Tasks(); tm != nil && logger != nil {
+	if tm := s.executor.Tasks(); tm != nil && sink != nil {
 		s.tuiUnsubChunk = tm.SubscribeChunks(func(taskID, callID, stream, text string) {
-			logger.LogTaskStream(taskID, callID, stream, text)
+			sink.LogTaskStream(taskID, callID, stream, text)
 		})
 		s.tuiUnsubDone = tm.SubscribeDone(func(taskID, callID string, exitCode int, status string, errMsg string, durationMs int64) {
-			logger.LogTaskDone(taskID, callID, exitCode, status, errMsg, durationMs)
+			sink.LogTaskDone(taskID, callID, exitCode, status, errMsg, durationMs)
 		})
 	}
 }
