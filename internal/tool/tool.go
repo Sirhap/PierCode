@@ -127,6 +127,21 @@ type BrowserController interface {
 	Click(ctx context.Context, req BrowserClickRequest) (string, error)
 	Type(ctx context.Context, req BrowserTypeRequest) (string, error)
 	Screenshot(ctx context.Context, req BrowserScreenshotRequest) (BrowserScreenshot, error)
+	Wait(ctx context.Context, req BrowserWaitRequest) (string, error)
+	WaitForFunction(ctx context.Context, req BrowserWaitForFunctionRequest) (string, error)
+	Hover(ctx context.Context, req BrowserHoverRequest) (string, error)
+	Scroll(ctx context.Context, req BrowserScrollRequest) (string, error)
+	Evaluate(ctx context.Context, req BrowserEvaluateRequest) (BrowserEvaluateResponse, error)
+	GetContent(ctx context.Context, req BrowserGetContentRequest) (string, error)
+	Select(ctx context.Context, req BrowserSelectRequest) (string, error)
+	GoBack(ctx context.Context, tabID *int, callID string) (BrowserTab, error)
+	GoForward(ctx context.Context, tabID *int, callID string) (BrowserTab, error)
+	Reload(ctx context.Context, req BrowserReloadRequest) (BrowserTab, error)
+	Focus(ctx context.Context, req BrowserFocusRequest) (string, error)
+	PressKey(ctx context.Context, req BrowserPressKeyRequest) (string, error)
+	Drag(ctx context.Context, req BrowserDragRequest) (string, error)
+	PDF(ctx context.Context, req BrowserPDFRequest) (BrowserPDFResponse, error)
+	HandleDialog(ctx context.Context, req BrowserHandleDialogRequest) (string, error)
 }
 
 type BrowserTab struct {
@@ -183,6 +198,123 @@ type BrowserScreenshot struct {
 	Height   int
 	DataURL  string
 	FilePath string // [Fixed by mimo-v2.5-pro: screenshot saved to file]
+}
+
+type BrowserWaitRequest struct {
+	TabID          *int
+	Selector       string
+	State          string
+	LoadState      string
+	TimeoutSeconds int
+}
+
+type BrowserWaitForFunctionRequest struct {
+	TabID          *int
+	Expression     string
+	TimeoutSeconds int
+	Polling        string
+}
+
+type BrowserHoverRequest struct {
+	TabID            *int
+	Ref              string
+	Selector         string
+	X                *float64
+	Y                *float64
+	SnapshotID       string
+	WaitAfterHoverMS int
+	CallID           string
+}
+
+type BrowserScrollRequest struct {
+	TabID      *int
+	Ref        string
+	Selector   string
+	SnapshotID string
+	Direction  string
+	Amount     int
+	Method     string
+}
+
+type BrowserEvaluateRequest struct {
+	TabID         *int
+	Expression    string
+	ReturnByValue bool
+	CallID        string
+}
+
+type BrowserEvaluateResponse struct {
+	Tab   BrowserTab
+	Type  string
+	Value string
+}
+
+type BrowserGetContentRequest struct {
+	TabID    *int
+	Format   string
+	Selector string
+}
+
+type BrowserSelectRequest struct {
+	TabID      *int
+	Ref        string
+	Selector   string
+	SnapshotID string
+	Value      string
+	CallID     string
+}
+
+type BrowserReloadRequest struct {
+	TabID       *int
+	IgnoreCache bool
+}
+
+type BrowserFocusRequest struct {
+	TabID      *int
+	Ref        string
+	Selector   string
+	SnapshotID string
+}
+
+type BrowserPressKeyRequest struct {
+	TabID  *int
+	Key    string
+	CallID string
+}
+
+type BrowserDragRequest struct {
+	TabID        *int
+	FromRef      string
+	FromSelector string
+	FromX        *float64
+	FromY        *float64
+	ToRef        string
+	ToSelector   string
+	ToX          *float64
+	ToY          *float64
+	SnapshotID   string
+	CallID       string
+}
+
+type BrowserPDFRequest struct {
+	TabID      *int
+	OutputPath string
+	Format     string
+	Landscape  bool
+}
+
+type BrowserPDFResponse struct {
+	Tab      BrowserTab
+	FilePath string
+	Bytes    int
+}
+
+type BrowserHandleDialogRequest struct {
+	TabID          *int
+	Action         string
+	PromptText     string
+	TimeoutSeconds int
+	CallID         string
 }
 
 // resolveAbsPath validates an absolute path against RootDir and common allowed roots (~/.claude, ~/.piercode, ~/.agent).

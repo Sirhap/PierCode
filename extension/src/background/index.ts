@@ -73,6 +73,9 @@ let controlledTabId: number | null = null;
 let configuredBrowserAuth: AuthInfo | null = null;
 const attachedTabs = new Set<number>();
 const perTabQueues = new Map<number, Promise<unknown>>();
+const DEBUGGER_EVENTS_TO_RELAY = new Set([
+  'Page.javascriptDialogOpening',
+]);
 
 async function probeBridge(tabId: number): Promise<BridgeProbe> {
   const probe = await chrome.scripting.executeScript({
@@ -276,7 +279,7 @@ async function connectBrowserRelay() {
     setBrowserRelayStatus({ state: 'open' });
     sendBrowserMessage({
       type: 'browser_hello',
-      capabilities: ['cdp', 'tabs', 'selectorRect'],
+      capabilities: ['cdp', 'tabs', 'selectorRect', 'debuggerEvents'],
       version: chrome.runtime.getManifest().version,
     });
     if (browserPingTimer) clearInterval(browserPingTimer);
@@ -508,6 +511,19 @@ chrome.debugger.onDetach.addListener((source, reason) => {
     attachedTabs.delete(source.tabId);
     sendBrowserMessage({ type: 'browser_event', event: 'debugger_detached', tabId: source.tabId, reason });
   }
+});
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  const tabId = source.tabId;
+  if (typeof tabId !== 'number') return;
+  if (!attachedTabs.has(tabId)) return;
+  if (!DEBUGGER_EVENTS_TO_RELAY.has(method)) return;
+  sendBrowserMessage({
+    type: 'browser_event',
+    event: method,
+    tabId,
+    params: params || {},
+  });
 });
 
 chrome.tabs.onRemoved.addListener(tabId => {

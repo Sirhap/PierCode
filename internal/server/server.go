@@ -480,6 +480,7 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 		TabID      int             `json:"tabId"`
 		URL        string          `json:"url"`
 		Title      string          `json:"title"`
+		Params     json.RawMessage `json:"params"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return
@@ -549,6 +550,7 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 				Reason: msg.Reason,
 				URL:    msg.URL,
 				Title:  msg.Title,
+				Params: msg.Params,
 			})
 		}
 	case "browser_ping", "browser_hello":

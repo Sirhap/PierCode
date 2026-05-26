@@ -24,12 +24,13 @@ type Result struct {
 }
 
 type Event struct {
-	Type   string `json:"type"`
-	Event  string `json:"event"`
-	TabID  int    `json:"tabId,omitempty"`
-	Reason string `json:"reason,omitempty"`
-	URL    string `json:"url,omitempty"`
-	Title  string `json:"title,omitempty"`
+	Type   string          `json:"type"`
+	Event  string          `json:"event"`
+	TabID  int             `json:"tabId,omitempty"`
+	Reason string          `json:"reason,omitempty"`
+	URL    string          `json:"url,omitempty"`
+	Title  string          `json:"title,omitempty"`
+	Params json.RawMessage `json:"params,omitempty"`
 }
 
 type ApprovalAsk struct {

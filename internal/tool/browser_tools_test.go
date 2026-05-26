@@ -98,3 +98,48 @@ func (f *fakeBrowserController) Screenshot(_ context.Context, req BrowserScreens
 		FilePath: filepath.Join(req.OutputDir, "shot.png"),
 	}, nil
 }
+func (f *fakeBrowserController) Wait(context.Context, BrowserWaitRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) WaitForFunction(context.Context, BrowserWaitForFunctionRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) Hover(context.Context, BrowserHoverRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) Scroll(context.Context, BrowserScrollRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) Evaluate(context.Context, BrowserEvaluateRequest) (BrowserEvaluateResponse, error) {
+	return BrowserEvaluateResponse{}, nil
+}
+func (f *fakeBrowserController) GetContent(context.Context, BrowserGetContentRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) Select(context.Context, BrowserSelectRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) GoBack(context.Context, *int, string) (BrowserTab, error) {
+	return BrowserTab{}, nil
+}
+func (f *fakeBrowserController) GoForward(context.Context, *int, string) (BrowserTab, error) {
+	return BrowserTab{}, nil
+}
+func (f *fakeBrowserController) Reload(context.Context, BrowserReloadRequest) (BrowserTab, error) {
+	return BrowserTab{}, nil
+}
+func (f *fakeBrowserController) Focus(context.Context, BrowserFocusRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) PressKey(context.Context, BrowserPressKeyRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) Drag(context.Context, BrowserDragRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) PDF(context.Context, BrowserPDFRequest) (BrowserPDFResponse, error) {
+	return BrowserPDFResponse{}, nil
+}
+func (f *fakeBrowserController) HandleDialog(context.Context, BrowserHandleDialogRequest) (string, error) {
+	return "", nil
+}

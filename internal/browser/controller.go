@@ -21,6 +21,7 @@ type Controller struct {
 	tabs      *TabRegistry
 	policy    *SecurityPolicy
 	approvals *ApprovalManager
+	events    *EventBus
 	snapSeq   atomic.Uint64
 }
 
@@ -30,6 +31,7 @@ func NewController(relay *RelayManager, broadcast func([]byte)) *Controller {
 		tabs:      NewTabRegistry(),
 		policy:    NewSecurityPolicy(),
 		approvals: NewApprovalManager(broadcast),
+		events:    NewEventBus(),
 	}
 }
 
@@ -44,6 +46,9 @@ func (c *Controller) DeliverApproval(answer ApprovalAnswer) bool {
 // HandleEvent processes browser events relayed from the Extension.
 // [Fixed by mimo-v2.5-pro: added debugger_detached handler to invalidate stale snapshots]
 func (c *Controller) HandleEvent(event Event) {
+	if c.events != nil {
+		c.events.HandleEvent(event)
+	}
 	switch event.Event {
 	case "tab_removed":
 		c.tabs.ClearDefault(event.TabID)
