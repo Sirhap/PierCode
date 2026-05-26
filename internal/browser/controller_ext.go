@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -391,6 +392,35 @@ func (c *Controller) PDF(ctx context.Context, req tool.BrowserPDFRequest) (tool.
 	return tool.BrowserPDFResponse{Tab: tab, FilePath: filePath, Bytes: len(decoded)}, nil
 }
 
+func (c *Controller) Upload(ctx context.Context, req tool.BrowserUploadRequest) (string, error) {
+	tab, err := c.ensureTab(ctx, req.TabID)
+	if err != nil {
+		return "", err
+	}
+	if len(req.Paths) == 0 {
+		return "", fmt.Errorf("paths is required")
+	}
+	if c.policy.IsSensitive(tab) {
+		return "", fmt.Errorf("browser_upload refused on sensitive payment/financial page")
+	}
+	target := targetLabel(req.Ref, req.Selector)
+	if err := c.ask(ctx, req.CallID, "上传本地文件", tab, target, "上传会把本地文件提供给网页表单。"); err != nil {
+		return "", err
+	}
+
+	method := "DOM.setFileInputFiles"
+	if err := c.setFileInputFilesWithCDP(ctx, tab.TabID, req, req.Paths); err != nil {
+		primaryErr := err
+		method = "DataTransfer fallback"
+		if err := c.setFileInputFilesWithDataTransfer(ctx, tab.TabID, req); err != nil {
+			return "", fmt.Errorf("DOM.setFileInputFiles failed: %v; fallback failed: %w", primaryErr, err)
+		}
+	}
+
+	c.tabs.MarkStale(tab.TabID)
+	return fmt.Sprintf("uploaded %d file(s) to %s in tabId=%d using %s: %s", len(req.Paths), target, tab.TabID, method, uploadPathSummary(req.Paths)), nil
+}
+
 func (c *Controller) HandleDialog(ctx context.Context, req tool.BrowserHandleDialogRequest) (string, error) {
 	tab, err := c.ensureTab(ctx, req.TabID)
 	if err != nil {
@@ -530,6 +560,42 @@ func (c *Controller) runtimeEvaluate(ctx context.Context, tabID int, expression 
 	return &out, nil
 }
 
+func (c *Controller) withFileInputObject(ctx context.Context, tabID int, ref, selector, snapshotID string, fn func(objectID string) error) error {
+	var objectID string
+	var release func()
+	var err error
+	if ref != "" {
+		objectID, release, err = c.resolveRefObject(ctx, tabID, snapshotID, ref)
+	} else {
+		objectID, release, err = c.resolveSelectorObject(ctx, tabID, selector)
+	}
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn(objectID)
+}
+
+func (c *Controller) resolveSelectorObject(ctx context.Context, tabID int, selector string) (string, func(), error) {
+	expression := `(function() {
+  var el = document.querySelector(` + jsString(selector) + `);
+  if (!el) throw new Error('Element not found: ' + ` + jsString(selector) + `);
+  return el;
+})()`
+	out, err := c.runtimeEvaluate(ctx, tabID, expression, false, defaultActionTimeout, false)
+	if err != nil {
+		return "", func() {}, err
+	}
+	if out.Result.ObjectID == "" {
+		return "", func() {}, fmt.Errorf("selector %s did not resolve to an object", selector)
+	}
+	release := func() {
+		params, _ := json.Marshal(map[string]string{"objectId": out.Result.ObjectID})
+		_, _ = c.relay.SendCommand(context.Background(), Command{TabID: &tabID, Domain: "Runtime", Method: "releaseObject", Params: params}, time.Second)
+	}
+	return out.Result.ObjectID, release, nil
+}
+
 func (c *Controller) resolveRefObject(ctx context.Context, tabID int, snapshotID, ref string) (string, func(), error) {
 	target, err := c.tabs.ResolveRef(tabID, snapshotID, ref)
 	if err != nil {
@@ -592,6 +658,45 @@ func (c *Controller) callFunctionOnObject(ctx context.Context, tabID int, object
 	return &out, nil
 }
 
+func (c *Controller) setFileInputFilesWithCDP(ctx context.Context, tabID int, req tool.BrowserUploadRequest, paths []string) error {
+	return c.withFileInputObject(ctx, tabID, req.Ref, req.Selector, req.SnapshotID, func(objectID string) error {
+		params, _ := json.Marshal(map[string]interface{}{
+			"objectId": objectID,
+			"files":    paths,
+		})
+		if _, err := c.relay.SendCommand(ctx, Command{
+			TabID:  &tabID,
+			Domain: "DOM",
+			Method: "setFileInputFiles",
+			Params: params,
+		}, defaultActionTimeout); err != nil {
+			return err
+		}
+		return c.dispatchFileInputEvents(ctx, tabID, objectID)
+	})
+}
+
+func (c *Controller) setFileInputFilesWithDataTransfer(ctx context.Context, tabID int, req tool.BrowserUploadRequest) error {
+	files, err := buildUploadFallbackFiles(req.Paths)
+	if err != nil {
+		return err
+	}
+	return c.withFileInputObject(ctx, tabID, req.Ref, req.Selector, req.SnapshotID, func(objectID string) error {
+		_, err := c.callFunctionOnObject(ctx, tabID, objectID, fileInputDataTransferFunction(), []interface{}{files})
+		return err
+	})
+}
+
+func (c *Controller) dispatchFileInputEvents(ctx context.Context, tabID int, objectID string) error {
+	_, err := c.callFunctionOnObject(ctx, tabID, objectID, `function() {
+  if (!(this instanceof HTMLInputElement) || this.type !== 'file') throw new Error('Target is not a file input');
+  this.dispatchEvent(new Event('input', {bubbles: true}));
+  this.dispatchEvent(new Event('change', {bubbles: true}));
+  return {count: this.files ? this.files.length : 0};
+}`, nil)
+	return err
+}
+
 func (c *Controller) scrollBackendNodeIntoView(ctx context.Context, tabID, backendID int) error {
 	params, _ := json.Marshal(map[string]int{"backendNodeId": backendID})
 	if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "DOM", Method: "scrollIntoViewIfNeeded", Params: params}, defaultActionTimeout); err == nil {
@@ -628,6 +733,71 @@ func (c *Controller) resolveRefObjectByBackendID(ctx context.Context, tabID, bac
 		_, _ = c.relay.SendCommand(context.Background(), Command{TabID: &tabID, Domain: "Runtime", Method: "releaseObject", Params: params}, time.Second)
 	}
 	return out.Object.ObjectID, release, nil
+}
+
+type uploadFallbackFile struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Data string `json:"data"`
+}
+
+const maxUploadFallbackBytes int64 = 25 * 1024 * 1024
+
+func buildUploadFallbackFiles(paths []string) ([]uploadFallbackFile, error) {
+	files := make([]uploadFallbackFile, 0, len(paths))
+	var total int64
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("upload file is not readable: %s: %w", path, err)
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("upload path is a directory: %s", path)
+		}
+		total += info.Size()
+		if total > maxUploadFallbackBytes {
+			return nil, fmt.Errorf("fallback upload is limited to %d bytes total", maxUploadFallbackBytes)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read upload file %s: %w", path, err)
+		}
+		contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+		files = append(files, uploadFallbackFile{
+			Name: filepath.Base(path),
+			Type: contentType,
+			Data: base64.StdEncoding.EncodeToString(data),
+		})
+	}
+	return files, nil
+}
+
+func fileInputDataTransferFunction() string {
+	return `function(files) {
+  if (!(this instanceof HTMLInputElement) || this.type !== 'file') throw new Error('Target is not a file input');
+  if (!this.multiple && files.length > 1) throw new Error('Target file input does not accept multiple files');
+  var transfer = new DataTransfer();
+  files.forEach(function(file) {
+    var binary = atob(file.data);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    transfer.items.add(new File([bytes], file.name, {type: file.type || 'application/octet-stream'}));
+  });
+  var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'files').set;
+  if (setter) setter.call(this, transfer.files);
+  else this.files = transfer.files;
+  this.dispatchEvent(new Event('input', {bubbles: true}));
+  this.dispatchEvent(new Event('change', {bubbles: true}));
+  return {count: this.files.length, names: Array.prototype.map.call(this.files, function(file) { return file.name; })};
+}`
+}
+
+func uploadPathSummary(paths []string) string {
+	names := make([]string, 0, len(paths))
+	for _, path := range paths {
+		names = append(names, filepath.Base(path))
+	}
+	return strings.Join(names, ", ")
 }
 
 func (c *Controller) dispatchMouseMoved(ctx context.Context, tabID int, x, y float64) error {

@@ -152,10 +152,10 @@ PierCode 可以通过 Chrome 扩展的 background service worker 使用 `chrome.
 
 - 默认创建或选择专用受控 tab，不控制 ChatGPT、Gemini、Claude、Qwen 等 AI 对话页；如确需控制 AI 对话页，必须先调用 `browser_use_tab` 并由用户审批。
 - `browser_snapshot` 返回紧凑 AX tree 文本和 `e0/e1` refs，是 AI 理解页面和后续点击/输入的主路径。
-- `browser_click` 和 `browser_type` 会弹出确认面板，用户拒绝时工具失败；点击、输入、导航后旧 snapshot refs 视为失效，需要重新 snapshot。
+- `browser_click`、`browser_type`、`browser_upload`、`browser_evaluate` 等会改变页面或读取/执行页面脚本的工具会弹出确认面板，用户拒绝时工具失败；点击、输入、上传、导航后旧 snapshot refs 视为失效，需要重新 snapshot。
 - `browser_screenshot` 只在视觉布局、图片、图表或渲染外观重要时使用，截图保存为工作区 `.piercode/screenshots` 下的图片文件，不把图片数据内联回对话。
 - 拒绝 `file:`、`chrome:`、`chrome-extension:`、`javascript:`、`data:` 等高风险导航。
-- 不提供 Cookie、localStorage、sessionStorage 或任意 JS 执行工具。
+- 不提供 Cookie、localStorage 或 sessionStorage 专用读取工具；`browser_evaluate` 属于审批工具，只应在明确需要页面内表达式时使用。
 
 手工验收建议：
 
@@ -164,7 +164,15 @@ PierCode 可以通过 Chrome 扩展的 background service worker 使用 `chrome.
 3. 让 AI 依次调用 `browser_new_tab`、`browser_navigate`、`browser_snapshot`，确认能创建受控 tab、导航并返回 refs。
 4. 调用 `browser_screenshot`，确认结果只返回保存路径且文件位于 `.piercode/screenshots`，不会把图片数据内联到对话。
 5. 调用 `browser_click` 或 `browser_type`，确认页面出现审批面板，允许后执行，拒绝后工具返回错误。
-6. 打开受控 tab 的 DevTools，确认 debugger detach 时工具能给出明确错误。
+6. 调用 `browser_upload` 到测试页的 `<input type="file">`，确认页面收到文件名；调用 `browser_handle_dialog` 处理延迟触发的 alert，确认不会卡住后续工具。
+7. 打开受控 tab 的 DevTools，确认 debugger detach 时工具能给出明确错误。
+
+自动 smoke test 可在构建扩展后运行：
+
+```powershell
+cd extension; npm run build; cd ..
+node scripts/browser-smoke.mjs
+```
 
 ## 安全边界
 

@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,8 +64,37 @@ func TestBrowserScreenshotSavesUnderWorkspaceAndDoesNotLeakDataURL(t *testing.T)
 	}
 }
 
+func TestBrowserUploadResolvesWorkspaceFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "fixture.txt"), []byte("upload"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	fake := &fakeBrowserController{}
+	tool := NewBrowserUploadTool()
+	result := tool.Execute(&Context{
+		Context: context.Background(),
+		Args: map[string]interface{}{
+			"selector": "#file",
+			"paths":    []interface{}{"fixture.txt"},
+		},
+		RootDir: root,
+		Browser: fake,
+	})
+	if result.Status != "success" {
+		t.Fatalf("expected success, got status=%s error=%s", result.Status, result.Error)
+	}
+	wantPath, err := filepath.EvalSymlinks(filepath.Join(root, "fixture.txt"))
+	if err != nil {
+		t.Fatalf("resolve fixture path: %v", err)
+	}
+	if len(fake.uploadReq.Paths) != 1 || fake.uploadReq.Paths[0] != wantPath {
+		t.Fatalf("unexpected upload paths: %#v", fake.uploadReq.Paths)
+	}
+}
+
 type fakeBrowserController struct {
 	screenshotReq BrowserScreenshotRequest
+	uploadReq     BrowserUploadRequest
 }
 
 func (f *fakeBrowserController) ListTabs(context.Context, bool) ([]BrowserTab, error) {
@@ -139,6 +169,10 @@ func (f *fakeBrowserController) Drag(context.Context, BrowserDragRequest) (strin
 }
 func (f *fakeBrowserController) PDF(context.Context, BrowserPDFRequest) (BrowserPDFResponse, error) {
 	return BrowserPDFResponse{}, nil
+}
+func (f *fakeBrowserController) Upload(_ context.Context, req BrowserUploadRequest) (string, error) {
+	f.uploadReq = req
+	return "", nil
 }
 func (f *fakeBrowserController) HandleDialog(context.Context, BrowserHandleDialogRequest) (string, error) {
 	return "", nil

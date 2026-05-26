@@ -112,6 +112,7 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserPressKeyTool())
 	e.registry.Register(tool.NewBrowserDragTool())
 	e.registry.Register(tool.NewBrowserPDFTool())
+	e.registry.Register(tool.NewBrowserUploadTool())
 	e.registry.Register(tool.NewBrowserHandleDialogTool())
 	return e
 }

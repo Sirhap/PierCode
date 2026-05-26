@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -390,6 +391,35 @@ func NewBrowserPDFTool() Tool {
 	}
 }
 
+func NewBrowserUploadTool() Tool {
+	return &browserTool{
+		name:        "browser_upload",
+		description: "Attach one or more local files to a browser <input type=file> after user approval.",
+		parameters: map[string]string{
+			"ref":        "string (optional) - target file input ref from browser_snapshot",
+			"snapshotId": "string (required with ref) - snapshot id from browser_snapshot",
+			"selector":   "string (optional) - CSS selector fallback for the file input",
+			"paths":      "array (required) - local file paths under workspace, ~/.claude, ~/.piercode, or ~/.agent",
+			"tabId":      "number (optional) - controlled tab id",
+		},
+		validate: validateBrowserUpload,
+		execute: func(ctx *Context) (string, error) {
+			paths, err := resolveUploadPaths(ctx.Args, ctx.EffectiveRootDir())
+			if err != nil {
+				return "", err
+			}
+			return ctx.Browser.Upload(ctx.Context, BrowserUploadRequest{
+				TabID:      optionalInt(ctx.Args, "tabId"),
+				Ref:        stringArg(ctx.Args, "ref"),
+				Selector:   stringArg(ctx.Args, "selector"),
+				SnapshotID: stringArg(ctx.Args, "snapshotId"),
+				Paths:      paths,
+				CallID:     stringArg(ctx.Args, "call_id"),
+			})
+		},
+	}
+}
+
 func NewBrowserHandleDialogTool() Tool {
 	return &browserTool{
 		name:        "browser_handle_dialog",
@@ -481,6 +511,20 @@ func validateBrowserDrag(args map[string]interface{}) error {
 	return nil
 }
 
+func validateBrowserUpload(args map[string]interface{}) error {
+	if err := validateElementTarget(args); err != nil {
+		return err
+	}
+	paths := stringListArg(args, "paths")
+	if len(paths) == 0 {
+		return fmt.Errorf("paths is required")
+	}
+	if len(paths) > 20 {
+		return fmt.Errorf("paths may contain at most 20 files")
+	}
+	return nil
+}
+
 func validateDragEndpoint(args map[string]interface{}, prefix string) error {
 	ref := stringArg(args, prefix+"Ref")
 	selector := stringArg(args, prefix+"Selector")
@@ -503,6 +547,66 @@ func validateDragEndpoint(args map[string]interface{}, prefix string) error {
 		return fmt.Errorf("provide exactly one %s target: %sRef, %sSelector, or %sX/%sY", prefix, prefix, prefix, prefix, prefix)
 	}
 	return nil
+}
+
+func resolveUploadPaths(args map[string]interface{}, rootDir string) ([]string, error) {
+	paths := stringListArg(args, "paths")
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("paths is required")
+	}
+	resolved := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(rootDir, path)
+		}
+		safePath, err := resolveAbsPath(path, rootDir)
+		if err != nil {
+			return nil, err
+		}
+		info, err := os.Stat(safePath)
+		if err != nil {
+			return nil, fmt.Errorf("upload file is not readable: %s: %w", safePath, err)
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("upload path is a directory: %s", safePath)
+		}
+		resolved = append(resolved, safePath)
+	}
+	return resolved, nil
+}
+
+func stringListArg(args map[string]interface{}, key string) []string {
+	if args == nil {
+		return nil
+	}
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch values := raw.(type) {
+	case []string:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			s, ok := value.(string)
+			if !ok {
+				continue
+			}
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func hasBoolArg(args map[string]interface{}, key string) bool {

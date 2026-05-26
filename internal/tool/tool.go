@@ -141,6 +141,7 @@ type BrowserController interface {
 	PressKey(ctx context.Context, req BrowserPressKeyRequest) (string, error)
 	Drag(ctx context.Context, req BrowserDragRequest) (string, error)
 	PDF(ctx context.Context, req BrowserPDFRequest) (BrowserPDFResponse, error)
+	Upload(ctx context.Context, req BrowserUploadRequest) (string, error)
 	HandleDialog(ctx context.Context, req BrowserHandleDialogRequest) (string, error)
 }
 
@@ -307,6 +308,15 @@ type BrowserPDFResponse struct {
 	Tab      BrowserTab
 	FilePath string
 	Bytes    int
+}
+
+type BrowserUploadRequest struct {
+	TabID      *int
+	Ref        string
+	Selector   string
+	SnapshotID string
+	Paths      []string
+	CallID     string
 }
 
 type BrowserHandleDialogRequest struct {
