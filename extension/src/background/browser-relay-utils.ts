@@ -6,6 +6,8 @@ const AI_PAGE_HOSTS = [
   'chat.z.ai',
   'kimi.com',
   'claude.ai',
+  'free.easychat.top',
+  'aistudio.xiaomimimo.com',
   'chatgpt.com',
   'chat.openai.com',
 ];

@@ -1,10 +1,11 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
-import { extractMonacoText, findQwenToolBody, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
+import { extractMonacoText, findQwenToolBody, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer } from './ws-linker';
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
+const platformProfile = getAdapterProfileName(platformAdapter);
 
 const MONACO_ID_ATTR = 'data-piercode-monaco-id';
 const MONACO_REQUEST = 'PIERCODE_MONACO_TEXT_REQUEST';
@@ -471,7 +472,7 @@ function getSiteConfig(): SiteConfig {
     return { editor: 'div.chat-input-editor[contenteditable="true"]', sendBtn: 'div.send-button-container', stopBtn: null, fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || '.segment-assistant' };
   if (h.includes('chat.z.ai'))
     return { editor: 'textarea#chat-input', sendBtn: 'button#send-message-button', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || '#response-content-container' };
-  if (h.includes('claude.ai'))
+  if (h.includes('claude.ai') || h.includes('free.easychat.top'))
     return {
       editor: 'div[contenteditable="true"][data-testid="chat-input"], div.ProseMirror[contenteditable="true"][aria-label*="Claude"], div.ProseMirror[contenteditable="true"]',
       sendBtn: 'button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled])',
@@ -511,6 +512,15 @@ function getSiteConfig(): SiteConfig {
       fillMethod: 'value',
       useObserver: true,
       responseSelector: adapterSelector || '.qwen-chat-message-assistant'
+    };
+  if (h.includes('aistudio.xiaomimimo.com'))
+    return {
+      editor: 'textarea',
+      sendBtn: 'button[data-track-id="home_send_btn"]',
+      stopBtn: null,
+      fillMethod: 'value',
+      useObserver: true,
+      responseSelector: adapterSelector || '.markdown-prose'
     };
   // Default: AI Studio
   return { editor: 'textarea[placeholder*="Start typing a prompt"]', sendBtn: 'button.ctrl-enter-submits.ms-button-primary[type="submit"], button[aria-label*="Run"]', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || 'ms-chat-turn' };
@@ -592,13 +602,14 @@ async function executeToolCallRaw(toolCall: any): Promise<string | null> {
   if (!apiUrl) return '请先在插件中配置 API 地址';
   const headers: any = { 'Content-Type': 'application/json' };
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-  const response = await bgFetch(`${apiUrl}/exec`, { method: 'POST', headers, body: JSON.stringify(toolCall) });
+  const request = withPlatformProfile(toolCall);
+  const response = await bgFetch(apiEndpoint(apiUrl, '/exec'), { method: 'POST', headers, body: JSON.stringify(request) });
   if (response.status === 401) return '认证失败，请在插件中重新输入 Token';
   if (!response.ok) return `[PierCode 错误] HTTP ${response.status}`;
   const result = JSON.parse(response.body);
   const output = result.output || result.error || '[PierCode] 空响应';
-  const name = result.name || toolCall.name || '';
-  const callId = result.callId || result.call_id || toolCall.callId || toolCall.call_id || '';
+  const name = result.name || request.name || '';
+  const callId = result.callId || result.call_id || request.callId || request.call_id || '';
   return name ? `### ${name} #${callId}\n${output}` : output;
 }
 
@@ -619,10 +630,11 @@ async function executeToolCallReturn(toolCall: any): Promise<ToolExecutionResult
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
     if (!apiUrl) return { output: '请先在插件中配置 API 地址', stopStream: false, sendable: true };
 
-    const response = await bgFetch(`${apiUrl}/exec`, {
+    const request = withPlatformProfile(toolCall);
+    const response = await bgFetch(apiEndpoint(apiUrl, '/exec'), {
       method: 'POST',
       headers,
-      body: JSON.stringify(toolCall)
+      body: JSON.stringify(request)
     });
 
     if (response.status === 401) return { output: '认证失败，请在插件中重新输入 Token', stopStream: false, sendable: true };
@@ -1304,6 +1316,7 @@ function startDOMObserver(_responseSelector: string) {
   function findResponseContainer(el: Element | null): Element | null {
     while (el) {
       const tag = el.tagName.toLowerCase();
+      if (platformAdapter.responseSelector && el.matches?.(platformAdapter.responseSelector)) return el;
       if (tag === 'message-content') return el;
       if (tag === 'ms-chat-turn') return el;
       if (el.matches?.('.qwen-chat-message-assistant')) return el;
@@ -1429,13 +1442,26 @@ async function bgFetch(url: string, options?: any): Promise<{ ok: boolean; statu
   return chrome.runtime.sendMessage({ type: 'FETCH', url, options });
 }
 
+function apiEndpoint(apiUrl: string, path: string): string {
+  return `${apiUrl.replace(/\/+$/, '')}${path}`;
+}
+
+function apiEndpointForProfile(apiUrl: string, path: string): string {
+  const sep = path.includes('?') ? '&' : '?';
+  return `${apiEndpoint(apiUrl, path)}${sep}adapter=${encodeURIComponent(platformProfile)}`;
+}
+
+function withPlatformProfile(toolCall: any): any {
+  return { ...toolCall, profile: platformProfile };
+}
+
 async function sendInitPrompt() {
   if (!checkContext()) return;
   const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
   if (!apiUrl) { alert('请先在插件中配置 API 地址'); return; }
   const headers: any = { 'Content-Type': 'application/json' };
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-  const resp = await bgFetch(`${apiUrl}/prompt`, { headers });
+  const resp = await bgFetch(apiEndpointForProfile(apiUrl, '/prompt'), { headers });
   if (!resp.ok) { alert('获取初始化提示词失败'); return; }
 
   if (location.hostname.includes('aistudio.google.com')) {
@@ -1626,7 +1652,7 @@ async function fetchSkills(): Promise<SkillSummary[]> {
   const headers: any = {};
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
   try {
-    const resp = await bgFetch(`${apiUrl}/skills`, { headers });
+    const resp = await bgFetch(apiEndpointForProfile(apiUrl, '/skills'), { headers });
     if (!resp.ok) return [];
     const data = JSON.parse(resp.body);
     skillsCache = data.skills || [];

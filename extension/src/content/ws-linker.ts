@@ -131,6 +131,60 @@ async function getAuthInfo(): Promise<{ apiUrl: string; token: string } | null> 
   });
 }
 
+function clearStoredAuth(): Promise<void> {
+  return new Promise(resolve => {
+    chrome.storage.local.remove(["authToken", "apiUrl", "authPort"], () => resolve());
+  });
+}
+
+function apiEndpoint(apiUrl: string, path: string): string {
+  return `${apiUrl.replace(/\/+$/, "")}${path}`;
+}
+
+function bgFetch(url: string, options?: Record<string, unknown>): Promise<{ ok: boolean; status: number; body: string }> {
+  return new Promise(resolve => {
+    try {
+      chrome.runtime.sendMessage({ type: "FETCH", url, options }, result => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, status: 0, body: chrome.runtime.lastError.message || "" });
+          return;
+        }
+        resolve(result || { ok: false, status: 0, body: "" });
+      });
+    } catch (error) {
+      resolve({ ok: false, status: 0, body: String(error) });
+    }
+  });
+}
+
+async function verifyStoredAuth(info: { apiUrl: string; token: string }): Promise<"valid" | "unauthorized" | "unknown"> {
+  const response = await bgFetch(apiEndpoint(info.apiUrl, "/stats"), {
+    headers: { Authorization: `Bearer ${info.token}` }
+  });
+  if (response.status === 401) return "unauthorized";
+  if (response.ok) return "valid";
+  return "unknown";
+}
+
+async function connectWithStoredAuth(info: { apiUrl: string; token: string }) {
+  const authState = await verifyStoredAuth(info);
+  if (authState === "unauthorized") {
+    console.log("[PierCode] 保存的认证信息已失效，清空缓存并停止 WebSocket 重连");
+    await clearStoredAuth();
+    disconnectWebSocket("not_configured");
+    return;
+  }
+  const current = await getAuthInfo();
+  if (!current) {
+    disconnectWebSocket("not_configured");
+    return;
+  }
+  if (current.apiUrl !== info.apiUrl || current.token !== info.token) {
+    return;
+  }
+  connectWebSocket(info.apiUrl, info.token);
+}
+
 function toWebSocketUrl(apiUrl: string, token: string): string | null {
   try {
     const url = new URL(apiUrl);
@@ -147,11 +201,36 @@ function toWebSocketUrl(apiUrl: string, token: string): string | null {
   }
 }
 
+function sameAuthInfo(info: { apiUrl: string; token: string } | null): boolean {
+  return !!info && info.apiUrl === configuredApiUrl && info.token === configuredToken;
+}
+
+function disconnectWebSocket(state: BridgeState = 'not_configured') {
+  connectionSeq++;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  const current = ws;
+  ws = null;
+  if (current) {
+    current.onopen = null;
+    current.onmessage = null;
+    current.onclose = null;
+    current.onerror = null;
+    try { current.close(); } catch {}
+  }
+  configuredApiUrl = '';
+  configuredToken = '';
+  setBridgeStatus(state, '');
+}
+
 function currentProvider(): string {
   const h = location.hostname.toLowerCase();
   if (h.includes("qwen.ai") || h.includes("qwenlm.ai")) return "Qwen";
-  if (h.includes("claude.ai")) return "Claude";
+  if (h.includes("claude.ai") || h.includes("free.easychat.top")) return "Claude";
   if (h.includes("chatgpt.com") || h.includes("chat.openai.com")) return "ChatGPT";
+  if (h.includes("aistudio.xiaomimimo.com")) return "MiMo";
   if (h.includes("gemini.google.com")) return "Gemini";
   if (h.includes("aistudio.google.com")) return "AI Studio";
   if (h.includes("kimi.com")) return "Kimi";
@@ -225,7 +304,7 @@ function getInjectConfig(): InjectConfig {
       fillMethod: "value"
     };
   }
-  if (h.includes("claude.ai")) {
+  if (h.includes("claude.ai") || h.includes("free.easychat.top")) {
     return {
       editor: [
         "div[contenteditable='true'][data-testid='chat-input']",
@@ -262,6 +341,13 @@ function getInjectConfig(): InjectConfig {
       editor: "div.ql-editor[contenteditable='true'], [contenteditable='true']",
       sendBtn: "button.send-button[aria-label*='发送']:not([disabled]), button.send-button[aria-label*='Send']:not([disabled])",
       fillMethod: "execCommand"
+    };
+  }
+  if (h.includes("aistudio.xiaomimimo.com")) {
+    return {
+      editor: "textarea",
+      sendBtn: "button[data-track-id='home_send_btn']",
+      fillMethod: "value"
     };
   }
   return {
@@ -374,10 +460,30 @@ function connectWebSocket(apiUrl: string, token: string) {
       ws = null;
       if (seq !== connectionSeq) return;
       setBridgeStatus('closed', apiUrl);
-      // 3 秒后尝试重连
       reconnectTimer = window.setTimeout(() => {
-        console.log("[PierCode] 🔄 正在尝试重新连接 WebSocket...");
-        if (configuredApiUrl && configuredToken) connectWebSocket(configuredApiUrl, configuredToken);
+        reconnectTimer = null;
+        getAuthInfo().then(async (info) => {
+          if (!info) {
+            console.log("[PierCode] 认证信息已清空，停止旧 WebSocket 重连");
+            disconnectWebSocket('not_configured');
+            return;
+          }
+          if (!sameAuthInfo(info)) {
+            console.log("[PierCode] 认证信息已变更或清空，停止旧 WebSocket 重连");
+            disconnectWebSocket('closed');
+            connectWithStoredAuth(info);
+            return;
+          }
+          const authState = await verifyStoredAuth(info);
+          if (authState === "unauthorized") {
+            console.log("[PierCode] 保存的认证信息已失效，清空缓存并停止 WebSocket 重连");
+            await clearStoredAuth();
+            disconnectWebSocket("not_configured");
+            return;
+          }
+          console.log("[PierCode] 🔄 正在尝试重新连接 WebSocket...");
+          connectWebSocket(info.apiUrl, info.token);
+        });
       }, 3000);
     };
 
@@ -560,7 +666,7 @@ export function initWsLinker() {
 function startConnection() {
   getAuthInfo().then((info) => {
     if (info) {
-      connectWebSocket(info.apiUrl, info.token);
+      connectWithStoredAuth(info);
     } else {
       setBridgeStatus('not_configured');
       console.log("[PierCode] 等待认证配置... (将在认证后自动连接)");
@@ -573,7 +679,10 @@ function startConnection() {
       getAuthInfo().then((info) => {
         if (info) {
           console.log("[PierCode] 检测到认证信息变更，重新连接 WebSocket");
-          connectWebSocket(info.apiUrl, info.token);
+          connectWithStoredAuth(info);
+        } else {
+          console.log("[PierCode] 认证信息已清空，停止 WebSocket 重连");
+          disconnectWebSocket('not_configured');
         }
       });
     }

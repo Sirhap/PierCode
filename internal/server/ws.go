@@ -150,7 +150,7 @@ func (m *WSManager) RoleCount(role string) int {
 
 func normalizeProvider(provider string) string {
 	switch strings.TrimSpace(provider) {
-	case "ChatGPT", "Claude", "Gemini", "Qwen", "Kimi", "Z.ai", "AI Studio", "Extension":
+	case "ChatGPT", "Claude", "Gemini", "Qwen", "Kimi", "Z.ai", "AI Studio", "MiMo", "Extension":
 		return provider
 	default:
 		return "Browser"

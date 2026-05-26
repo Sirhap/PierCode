@@ -10,6 +10,7 @@ import (
 
 	"github.com/sirhap/piercode/internal/logsink"
 	"github.com/sirhap/piercode/internal/prompt"
+	"github.com/sirhap/piercode/internal/skill"
 	"github.com/sirhap/piercode/internal/tool"
 	"github.com/sirhap/piercode/internal/types"
 )
@@ -198,7 +199,7 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	// 提示词。改为只信任二进制内嵌的 DefaultPrompt（prompts/prompts.go 通过
 	// //go:embed 提供）。
 	n := e.callCount.Add(1)
-	e.appendPromptGuidance(resp, n)
+	e.appendPromptGuidance(resp, n, req.Profile)
 
 	return resp
 }
@@ -212,11 +213,12 @@ const operatingReminder = "\n\n[系统提示] 继续以 PierCode 身份执行：
 
 const taskCheckpointReminder = "\n\n[任务状态快照提示] 如果当前任务已跨多步或上下文变长，请在下一次回复中简短保留：目标、已完成事项、已改文件、验证结果、下一步/阻塞；必要时用 `todo_write`/`todo_read` 同步待办。"
 
-func (e *Executor) appendPromptGuidance(resp *types.ToolResponse, n int64) {
+func (e *Executor) appendPromptGuidance(resp *types.ToolResponse, n int64, profileID string) {
 	if n%fullPromptReinjectEvery == 0 {
 		rootDir := e.config.GetRootDir()
-		if len(e.config.DefaultPrompt) > 0 {
-			rendered := prompt.Render(e.config.DefaultPrompt, rootDir, e.ListTools())
+		profile := prompt.DefaultProfileRegistry(e.config.DefaultPrompt).Select(profileID)
+		if len(profile.Prompt) > 0 {
+			rendered := profile.Render(rootDir, e.ListTools(), skill.LoadInfos(rootDir))
 			resp.Output += "\n\n[系统重新注入提示词]\n" + string(rendered)
 		} else {
 			resp.Output += operatingReminder

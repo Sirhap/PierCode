@@ -70,6 +70,7 @@ let browserPingTimer: ReturnType<typeof setInterval> | null = null;
 let browserReconnectAttempt = 0;
 let browserConnectionSeq = 0;
 let controlledTabId: number | null = null;
+let configuredBrowserAuth: AuthInfo | null = null;
 const attachedTabs = new Set<number>();
 const perTabQueues = new Map<number, Promise<unknown>>();
 
@@ -174,6 +175,27 @@ function getAuthInfo(): Promise<AuthInfo | null> {
   });
 }
 
+function clearStoredAuth(): Promise<void> {
+  return new Promise(resolve => {
+    chrome.storage.local.remove(['authToken', 'apiUrl', 'authPort'], () => resolve());
+  });
+}
+
+function apiEndpoint(apiUrl: string, path: string): string {
+  return `${apiUrl.replace(/\/+$/, '')}${path}`;
+}
+
+async function verifyStoredAuth(info: AuthInfo): Promise<'valid' | 'unauthorized' | 'unknown'> {
+  try {
+    const response = await fetch(apiEndpoint(info.apiUrl, '/stats'), {
+      headers: { Authorization: `Bearer ${info.token}` },
+    });
+    if (response.status === 401) return 'unauthorized';
+    if (response.ok) return 'valid';
+  } catch {}
+  return 'unknown';
+}
+
 function sendBrowserMessage(payload: unknown): boolean {
   if (!browserWs || browserWs.readyState !== WebSocket.OPEN) return false;
   browserWs.send(JSON.stringify(payload));
@@ -182,6 +204,37 @@ function sendBrowserMessage(payload: unknown): boolean {
 
 function sendBrowserResult(result: BrowserResult) {
   sendBrowserMessage(result);
+}
+
+function sameBrowserAuth(info: AuthInfo | null): boolean {
+  return !!info &&
+    !!configuredBrowserAuth &&
+    info.apiUrl === configuredBrowserAuth.apiUrl &&
+    info.token === configuredBrowserAuth.token;
+}
+
+function disconnectBrowserRelay(state: BrowserRelayStatus['state'] = 'not_configured', lastError?: string) {
+  browserConnectionSeq++;
+  configuredBrowserAuth = null;
+  browserReconnectAttempt = 0;
+  if (browserReconnectTimer) {
+    clearTimeout(browserReconnectTimer);
+    browserReconnectTimer = null;
+  }
+  if (browserPingTimer) {
+    clearInterval(browserPingTimer);
+    browserPingTimer = null;
+  }
+  const current = browserWs;
+  browserWs = null;
+  if (current) {
+    current.onopen = null;
+    current.onmessage = null;
+    current.onclose = null;
+    current.onerror = null;
+    try { current.close(); } catch {}
+  }
+  setBrowserRelayStatus(lastError ? { state, lastError } : { state });
 }
 
 function queueBrowserCommand<T>(tabId: number, fn: () => Promise<T>): Promise<T> {
@@ -196,13 +249,22 @@ function queueBrowserCommand<T>(tabId: number, fn: () => Promise<T>): Promise<T>
 async function connectBrowserRelay() {
   const seq = ++browserConnectionSeq;
   const info = await getAuthInfo();
+  if (seq !== browserConnectionSeq) return;
   if (!info) {
-    setBrowserRelayStatus({ state: 'not_configured' });
+    disconnectBrowserRelay('not_configured');
     return;
   }
+  const authState = await verifyStoredAuth(info);
+  if (seq !== browserConnectionSeq) return;
+  if (authState === 'unauthorized') {
+    await clearStoredAuth();
+    disconnectBrowserRelay('not_configured', 'token expired');
+    return;
+  }
+  configuredBrowserAuth = info;
   const wsUrl = browserRelayWsUrl(info.apiUrl, info.token);
   if (!wsUrl) {
-    setBrowserRelayStatus({ state: 'error', lastError: 'invalid browser relay URL' });
+    disconnectBrowserRelay('error', 'invalid browser relay URL');
     return;
   }
   if (browserWs) browserWs.close();
@@ -246,7 +308,22 @@ async function connectBrowserRelay() {
     const delays = [1000, 3000, 5000, 10000, 30000];
     const delay = delays[Math.min(browserReconnectAttempt++, delays.length - 1)];
     if (browserReconnectTimer) clearTimeout(browserReconnectTimer);
-    browserReconnectTimer = setTimeout(() => connectBrowserRelay(), delay);
+    browserReconnectTimer = setTimeout(async () => {
+      browserReconnectTimer = null;
+      const fresh = await getAuthInfo();
+      if (!fresh || !sameBrowserAuth(fresh)) {
+        disconnectBrowserRelay(fresh ? 'closed' : 'not_configured');
+        if (fresh) connectBrowserRelay();
+        return;
+      }
+      const authState = await verifyStoredAuth(fresh);
+      if (authState === 'unauthorized') {
+        await clearStoredAuth();
+        disconnectBrowserRelay('not_configured', 'token expired');
+        return;
+      }
+      connectBrowserRelay();
+    }, delay);
   };
   browserWs.onerror = () => {
     setBrowserRelayStatus({ state: 'error', lastError: 'browser relay websocket error' });
@@ -458,7 +535,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.storage.onChanged.addListener((changes, namespace) => {
   if (namespace === 'local' && (changes.apiUrl || changes.authToken || changes.authPort)) {
-    connectBrowserRelay();
+    getAuthInfo().then(info => {
+      if (info) connectBrowserRelay();
+      else disconnectBrowserRelay('not_configured');
+    });
   }
 });
 

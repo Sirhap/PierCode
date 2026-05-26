@@ -6,10 +6,11 @@ import (
 )
 
 type ToolRequest struct {
-	Name   string                 `json:"name"`
-	CallID string                 `json:"call_id,omitempty"`
-	Args   map[string]interface{} `json:"args"`
-	Reason string                 `json:"reason,omitempty"`
+	Name    string                 `json:"name"`
+	CallID  string                 `json:"call_id,omitempty"`
+	Args    map[string]interface{} `json:"args"`
+	Reason  string                 `json:"reason,omitempty"`
+	Profile string                 `json:"profile,omitempty"`
 }
 
 func (r *ToolRequest) UnmarshalJSON(data []byte) error {
@@ -20,6 +21,8 @@ func (r *ToolRequest) UnmarshalJSON(data []byte) error {
 		Args      map[string]interface{} `json:"args"`
 		Arguments map[string]interface{} `json:"arguments"`
 		Reason    string                 `json:"reason,omitempty"`
+		Profile   string                 `json:"profile,omitempty"`
+		Adapter   string                 `json:"adapter,omitempty"`
 	}
 	var v raw
 	if err := json.Unmarshal(data, &v); err != nil {
@@ -32,6 +35,11 @@ func (r *ToolRequest) UnmarshalJSON(data []byte) error {
 		r.CallID = v.CallIDAlt
 	}
 	r.Reason = v.Reason
+	if v.Profile != "" {
+		r.Profile = v.Profile
+	} else {
+		r.Profile = v.Adapter
+	}
 	if v.Args != nil {
 		r.Args = v.Args
 	} else {

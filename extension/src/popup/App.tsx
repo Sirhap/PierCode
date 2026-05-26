@@ -54,6 +54,27 @@ type BrowserRelayStatus = {
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
+function clearStoredAuth(): Promise<void> {
+  return new Promise(resolve => {
+    chrome.storage.local.remove(['authToken', 'apiUrl', 'authPort'], () => resolve())
+  })
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(fallback), ms)
+    promise
+      .then(value => {
+        clearTimeout(timer)
+        resolve(value)
+      })
+      .catch(() => {
+        clearTimeout(timer)
+        resolve(fallback)
+      })
+  })
+}
+
 export default function App() {
   const [status, setStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking')
   const [token, setToken] = useState('')
@@ -75,9 +96,12 @@ export default function App() {
   }, [toast])
 
   useEffect(() => {
-    chrome.storage.local.get(['authToken', 'apiUrl', 'autoSend', 'autoExecute', 'delayMin', 'delayMax'], (result) => {
-      if (result.authToken && result.apiUrl) {
-        checkConnection(result.apiUrl, result.authToken)
+    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'delayMin', 'delayMax'], (result) => {
+      const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
+      if (result.authToken && savedUrl) {
+        setStatus('checking')
+        setInfo('正在检查本地服务')
+        checkConnection(savedUrl, result.authToken)
       } else {
         setStatus('disconnected')
         setInfo('请输入认证 Token URL')
@@ -130,7 +154,8 @@ export default function App() {
     })
   }
 
-  const checkConnection = (url: string, authToken?: string) => {
+  const checkConnection = (url: string, authToken?: string, options?: { keepConnected?: boolean }) => {
+    if (!options?.keepConnected) setStatus('checking')
     fetch(`${url}/health`)
       .then(res => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -148,13 +173,15 @@ export default function App() {
         const stats = await statsRes.json()
         const backendClients = Number(stats.browser_clients || 0)
 
-        const result = await ensureContentScripts()
+        setStatus('connected')
+        setInfo('本地服务已连接，正在检查 AI 页面')
+
+        const result = await withTimeout(ensureContentScripts(), 3500, {})
         await wait(600)
-        const bridge = await getBridgeStatus()
-        const relay = await getBrowserRelayStatus()
+        const bridge = await withTimeout(getBridgeStatus(), 2500, {})
+        const relay = await withTimeout(getBrowserRelayStatus(), 1500, {})
         setBrowserRelay(relay)
 
-        setStatus('connected')
         const tabs = Number(bridge.tabs ?? result.tabs ?? 0)
         const loaded = Number(bridge.loaded ?? result.loaded ?? 0)
         const wsConnected = Number(bridge.wsConnected ?? result.wsConnected ?? 0)
@@ -175,6 +202,7 @@ export default function App() {
       .catch((error) => {
         setStatus('disconnected')
         if (error instanceof Error && error.message === 'unauthorized') {
+          clearStoredAuth()
           setReconfig(true)
           setInfo('Token 已失效，请重新输入当前 TUI 显示的认证 URL')
         } else {
@@ -213,8 +241,10 @@ export default function App() {
           chrome.storage.local.set({ authToken: tokenValue, apiUrl: baseUrl, authPort: port }, () => resolve())
         })
         setReconfig(false)
+        setStatus('connected')
+        setInfo('授权成功，正在检查 AI 页面')
         setToast({ msg: '✅ 授权成功，正在唤醒 AI 页面', type: 'success' })
-        checkConnection(baseUrl, tokenValue)
+        checkConnection(baseUrl, tokenValue, { keepConnected: true })
       } else {
         const reason = formatAuthFailure(res, data)
         setToast({ msg: `❌ Token 验证失败：${reason}`, type: 'error' })
@@ -261,7 +291,15 @@ export default function App() {
           <span className="text-xs text-gray-400">{statusText}</span>
           {status === 'connected' && (
             <button
-              onClick={() => { setReconfig(!reconfig); setToken('') }}
+              onClick={() => {
+                if (!reconfig) {
+                  clearStoredAuth()
+                  setStatus('disconnected')
+                  setInfo('请输入认证 Token URL')
+                }
+                setReconfig(!reconfig)
+                setToken('')
+              }}
               className="text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
             >
               {reconfig ? '取消' : '重新配置'}

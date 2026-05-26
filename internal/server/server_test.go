@@ -450,6 +450,33 @@ func TestHandlePrompt(t *testing.T) {
 		if !bytes.Contains(body, []byte(s.config.RootDir)) {
 			t.Errorf("expected system info in prompt")
 		}
+		if bytes.Contains(body, []byte("Qwen Host Tool Bridge Override")) {
+			t.Errorf("default prompt should not include Qwen-only guidance")
+		}
+	})
+
+	t.Run("qwen adapter inherits default prompt and appends qwen guidance", func(t *testing.T) {
+		s := testServer(t)
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/prompt?adapter=qwen", nil)
+		req.Header.Set("Authorization", "Bearer testtoken")
+		s.router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d", w.Code)
+		}
+		body := w.Body.Bytes()
+		if bytes.Contains(body, []byte("{{SYSTEM_INFO}}")) || bytes.Contains(body, []byte("{{TOOLS}}")) {
+			t.Errorf("expected placeholders to be rendered, got %s", string(body))
+		}
+		if !bytes.Contains(body, []byte("exec_cmd")) {
+			t.Errorf("expected default profile to include tool docs")
+		}
+		if !bytes.Contains(body, []byte("Qwen Host Tool Bridge Override")) {
+			t.Errorf("expected qwen profile to include qwen guidance")
+		}
+		if !bytes.Contains(body, []byte("Tool <name> does not exists")) {
+			t.Errorf("expected qwen profile to address host-native missing-tool errors")
+		}
 	})
 
 	t.Run("default prompt fallback renders placeholders", func(t *testing.T) {

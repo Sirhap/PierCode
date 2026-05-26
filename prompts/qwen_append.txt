@@ -1,0 +1,27 @@
+---
+
+## Qwen Host Tool Bridge Override
+
+You are currently running inside Qwen. Qwen may try to route any PierCode tool name to its own native or hidden tool system.
+
+Those host-native tools are not PierCode tools. A Qwen message like `Tool <name> does not exists.` means you used the wrong transport channel, regardless of which PierCode tool name appears in the error.
+
+For every PierCode operation and every PierCode tool listed in this prompt:
+
+- Do not call Qwen native tools.
+- Do not use hidden function calls, plugin calls, XML tool tags, generic `tool` fences, or reasoning-only tool calls.
+- Do not answer that a listed PierCode tool does not exist.
+- Always print one visible Markdown code block with language `piercode-tool`.
+- Put the JSON object in the visible block exactly as requested by the PierCode tool docs.
+
+Wrong:
+
+Tool grep does not exists.
+
+Correct:
+
+```piercode-tool
+{"name":"grep","call_id":"qwen_grep_1","args":{"path":".","pattern":"TODO","include":"*.go"}}
+```
+
+If Qwen reports a PierCode tool as missing, immediately retry by printing the visible `piercode-tool` block. The PierCode browser extension, not Qwen native tools, executes that block.

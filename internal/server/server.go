@@ -226,26 +226,25 @@ func (s *Server) handlePrompt(c *gin.Context) {
 	// 内、AI 通过 write_file 即可改写，等于把系统提示词控制权交给 AI。
 	// 改为只信任二进制内嵌的 DefaultPrompt（prompts/prompts.go 通过 //go:embed
 	// 提供），AI 无法改动。
-	content := s.config.DefaultPrompt
+	profile := s.resolveAIProfile(c)
+	content := profile.Prompt
 	if len(content) == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "init prompt not embedded"})
 		return
 	}
-	content = prompt.Render(content, rootDir, s.executor.ListTools())
-
-	skills := skill.LoadInfos(rootDir)
-	if len(skills) > 0 {
-		var sb strings.Builder
-		sb.WriteString("\n\n## 当前可用 Skills\n\n")
-		for _, sk := range skills {
-			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", sk.Name, sk.Description))
-		}
-		content = append(content, []byte(sb.String())...)
-	}
+	content = profile.Render(rootDir, s.executor.ListTools(), skill.LoadInfos(rootDir))
 
 	content = append(content, []byte("\n\n初始化回复：\n你好，我是 piercode，请问有什么可以帮你？")...)
 
 	c.String(http.StatusOK, string(content))
+}
+
+func (s *Server) resolveAIProfile(c *gin.Context) prompt.Profile {
+	profileID := c.Query("profile")
+	if profileID == "" {
+		profileID = c.Query("adapter")
+	}
+	return prompt.DefaultProfileRegistry(s.config.DefaultPrompt).Select(profileID)
 }
 
 func (s *Server) handleSetCWD(c *gin.Context) {
@@ -313,7 +312,7 @@ func (s *Server) handleSetCWD(c *gin.Context) {
 }
 
 func (s *Server) handleListTools(c *gin.Context) {
-	tools := s.executor.ListTools()
+	tools := s.resolveAIProfile(c).FilterTools(s.executor.ListTools())
 	c.JSON(http.StatusOK, gin.H{"tools": tools})
 }
 
@@ -701,7 +700,7 @@ type skillItem struct {
 }
 
 func (s *Server) handleListSkills(c *gin.Context) {
-	skills := skill.LoadInfos(s.config.GetRootDir())
+	skills := s.resolveAIProfile(c).FilterSkills(skill.LoadInfos(s.config.GetRootDir()))
 	items := make([]skillItem, 0, len(skills))
 	for _, sk := range skills {
 		items = append(items, skillItem{Name: sk.Name, Description: sk.Description})
