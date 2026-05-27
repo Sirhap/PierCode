@@ -270,3 +270,6 @@ func (f *fakeBrowserController) ReadConsole(context.Context, BrowserConsoleReque
 func (f *fakeBrowserController) ReadNetwork(context.Context, BrowserNetworkLogRequest) (string, error) {
 	return "", nil
 }
+func (f *fakeBrowserController) Cookies(context.Context, BrowserCookiesRequest) (BrowserCookiesResponse, error) {
+	return BrowserCookiesResponse{}, nil
+}

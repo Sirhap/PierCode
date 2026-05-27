@@ -370,6 +370,8 @@ async function handleNativeBrowserCommand(method: string, params: Record<string,
       return navigateTab(Number(params.tabId), String(params.url || ''));
     case 'screenshot':
       return takeScreenshot(Number(params.tabId));
+    case 'cookies':
+      return getCookies(params);
     default:
       throw new Error(`unknown PierCode browser method: ${method}`);
   }
@@ -579,6 +581,42 @@ async function takeScreenshot(tabId: number): Promise<unknown> {
   } catch (error) {
     return { success: false, error: String(error) };
   }
+}
+
+async function getCookies(params: Record<string, unknown>): Promise<unknown> {
+  const domain = typeof params.domain === 'string' ? params.domain.trim() : '';
+  const url = typeof params.url === 'string' ? params.url.trim() : '';
+  const includeValue = params.includeValue !== false;
+  const rawLimit = typeof params.limit === 'number' ? params.limit : 200;
+  const limit = Math.max(1, Math.min(1000, Math.floor(rawLimit)));
+
+  if (!domain && !url) {
+    throw new Error('cookie scope required: provide domain or url');
+  }
+
+  const details: chrome.cookies.GetAllDetails = {};
+  if (domain) details.domain = domain;
+  if (url) details.url = url;
+
+  const cookies = await chrome.cookies.getAll(details);
+  return {
+    cookies: cookies.slice(0, limit).map(cookie => ({
+      name: cookie.name,
+      value: includeValue ? cookie.value : undefined,
+      domain: cookie.domain,
+      path: cookie.path,
+      secure: cookie.secure,
+      httpOnly: cookie.httpOnly,
+      sameSite: cookie.sameSite,
+      session: cookie.session,
+      expirationDate: cookie.expirationDate,
+      storeId: cookie.storeId,
+    })),
+    count: Math.min(cookies.length, limit),
+    total: cookies.length,
+    truncated: cookies.length > limit,
+    includeValue,
+  };
 }
 
 async function listBrowserTabs(includeAiPages: boolean): Promise<{ tabs: ReturnType<typeof tabToDTO>[] }> {

@@ -159,6 +159,7 @@ type BrowserController interface {
 	FormInput(ctx context.Context, req BrowserFormInputRequest) (string, error)
 	ReadConsole(ctx context.Context, req BrowserConsoleRequest) (string, error)
 	ReadNetwork(ctx context.Context, req BrowserNetworkLogRequest) (string, error)
+	Cookies(ctx context.Context, req BrowserCookiesRequest) (BrowserCookiesResponse, error)
 }
 
 type BrowserTab struct {
@@ -368,6 +369,7 @@ type BrowserZoomRequest struct {
 	Height     *float64
 	SnapshotID string
 	CallID     string
+	OutputDir  string
 }
 
 type BrowserZoomResponse struct {
@@ -404,6 +406,34 @@ type BrowserNetworkLogRequest struct {
 	URLPattern string
 	Clear      bool
 	Limit      int
+}
+
+type BrowserCookiesRequest struct {
+	Domain       string
+	URL          string
+	IncludeValue bool
+	Limit        int
+}
+
+type BrowserCookie struct {
+	Name           string  `json:"name"`
+	Value          string  `json:"value,omitempty"`
+	Domain         string  `json:"domain"`
+	Path           string  `json:"path"`
+	Secure         bool    `json:"secure"`
+	HTTPOnly       bool    `json:"httpOnly"`
+	SameSite       string  `json:"sameSite,omitempty"`
+	Session        bool    `json:"session"`
+	ExpirationDate float64 `json:"expirationDate,omitempty"`
+	StoreID        string  `json:"storeId,omitempty"`
+}
+
+type BrowserCookiesResponse struct {
+	Cookies      []BrowserCookie `json:"cookies"`
+	Count        int             `json:"count"`
+	Total        int             `json:"total"`
+	Truncated    bool            `json:"truncated"`
+	IncludeValue bool            `json:"includeValue"`
 }
 
 // resolveAbsPath validates an absolute path against RootDir and common allowed roots (~/.claude, ~/.piercode, ~/.agent).

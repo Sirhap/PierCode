@@ -215,3 +215,62 @@ func NewBrowserNetworkTool() Tool {
 		},
 	}
 }
+
+func NewBrowserCookiesTool() Tool {
+	return &browserTool{
+		name:        "browser_cookies",
+		description: "Read browser cookies for a specific domain or URL. Cookie values are returned by default.",
+		parameters: map[string]string{
+			"domain":       "string (optional) - cookie domain scope, e.g. .example.com",
+			"url":          "string (optional) - URL scope for cookies, e.g. https://example.com",
+			"includeValue": "boolean (optional, default true) - include cookie values in output",
+			"limit":        "number (optional, default 200, max 1000) - maximum cookies to return",
+		},
+		validate: func(args map[string]interface{}) error {
+			if stringArg(args, "domain") == "" && stringArg(args, "url") == "" {
+				return fmt.Errorf("domain or url is required")
+			}
+			limit := intArgDefault(args, "limit", 200)
+			if limit > 1000 {
+				return fmt.Errorf("limit must be <= 1000")
+			}
+			return nil
+		},
+		execute: func(ctx *Context) (string, error) {
+			includeValue := true
+			if hasBoolArg(ctx.Args, "includeValue") {
+				includeValue = boolArg(ctx.Args, "includeValue")
+			}
+			resp, err := ctx.Browser.Cookies(ctx.Context, BrowserCookiesRequest{
+				Domain:       stringArg(ctx.Args, "domain"),
+				URL:          stringArg(ctx.Args, "url"),
+				IncludeValue: includeValue,
+				Limit:        intArgDefault(ctx.Args, "limit", 200),
+			})
+			if err != nil {
+				return "", err
+			}
+			if len(resp.Cookies) == 0 {
+				return "No cookies found", nil
+			}
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Cookies (%d", resp.Count))
+			if resp.Truncated {
+				sb.WriteString(fmt.Sprintf(" of %d, truncated", resp.Total))
+			}
+			sb.WriteString("):\n\n")
+			for _, c := range resp.Cookies {
+				sb.WriteString(fmt.Sprintf("- %s", c.Name))
+				if resp.IncludeValue {
+					sb.WriteString("=" + c.Value)
+				}
+				sb.WriteString(fmt.Sprintf(" domain=%s path=%s secure=%v httpOnly=%v session=%v", c.Domain, c.Path, c.Secure, c.HTTPOnly, c.Session))
+				if c.ExpirationDate > 0 {
+					sb.WriteString(fmt.Sprintf(" expires=%.0f", c.ExpirationDate))
+				}
+				sb.WriteByte('\n')
+			}
+			return strings.TrimSpace(sb.String()), nil
+		},
+	}
+}

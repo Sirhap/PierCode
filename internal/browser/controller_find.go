@@ -126,8 +126,11 @@ func (c *Controller) Zoom(ctx context.Context, req tool.BrowserZoomRequest) (too
 	if err != nil {
 		return tool.BrowserZoomResponse{}, fmt.Errorf("invalid screenshot base64: %w", err)
 	}
-	home, _ := os.UserHomeDir()
-	outputDir := filepath.Join(home, ".piercode", "screenshots")
+	outputDir := strings.TrimSpace(req.OutputDir)
+	if outputDir == "" {
+		home, _ := os.UserHomeDir()
+		outputDir = filepath.Join(home, ".piercode", "screenshots")
+	}
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return tool.BrowserZoomResponse{}, fmt.Errorf("failed to create screenshot dir: %w", err)
 	}
@@ -346,6 +349,38 @@ func (c *Controller) ReadNetwork(ctx context.Context, req tool.BrowserNetworkLog
 		sb.WriteString(fmt.Sprintf("%-4s %3s [%-10s] %s\n", r.Method, status, r.Type, r.URL))
 	}
 	return sb.String(), nil
+}
+
+func (c *Controller) Cookies(ctx context.Context, req tool.BrowserCookiesRequest) (tool.BrowserCookiesResponse, error) {
+	if strings.TrimSpace(req.Domain) == "" && strings.TrimSpace(req.URL) == "" {
+		return tool.BrowserCookiesResponse{}, fmt.Errorf("domain or url is required")
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	params, _ := json.Marshal(map[string]interface{}{
+		"domain":       strings.TrimSpace(req.Domain),
+		"url":          strings.TrimSpace(req.URL),
+		"includeValue": req.IncludeValue,
+		"limit":        limit,
+	})
+	raw, err := c.relay.SendCommand(ctx, Command{
+		Domain: "PierCode",
+		Method: "cookies",
+		Params: params,
+	}, defaultReadTimeout)
+	if err != nil {
+		return tool.BrowserCookiesResponse{}, err
+	}
+	var resp tool.BrowserCookiesResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return tool.BrowserCookiesResponse{}, fmt.Errorf("failed to parse cookies response: %w", err)
+	}
+	return resp, nil
 }
 
 func findElementsExpression(query string, maxResults int) string {

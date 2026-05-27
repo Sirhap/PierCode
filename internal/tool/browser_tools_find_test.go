@@ -239,6 +239,35 @@ func TestBrowserNetworkValidationAlwaysPasses(t *testing.T) {
 	}
 }
 
+// --- browser_cookies ---
+
+func TestBrowserCookiesValidationRequiresScope(t *testing.T) {
+	tool := NewBrowserCookiesTool()
+	if err := tool.Validate(map[string]interface{}{}); err == nil {
+		t.Fatal("expected missing domain/url to fail")
+	}
+	if err := tool.Validate(map[string]interface{}{"domain": "", "url": ""}); err == nil {
+		t.Fatal("expected empty domain/url to fail")
+	}
+}
+
+func TestBrowserCookiesValidationDomainOrURLPasses(t *testing.T) {
+	tool := NewBrowserCookiesTool()
+	if err := tool.Validate(map[string]interface{}{"domain": ".example.com"}); err != nil {
+		t.Fatalf("expected domain scope to pass: %v", err)
+	}
+	if err := tool.Validate(map[string]interface{}{"url": "https://example.com"}); err != nil {
+		t.Fatalf("expected URL scope to pass: %v", err)
+	}
+}
+
+func TestBrowserCookiesValidationLimitTooHighFails(t *testing.T) {
+	tool := NewBrowserCookiesTool()
+	if err := tool.Validate(map[string]interface{}{"domain": ".example.com", "limit": float64(1001)}); err == nil {
+		t.Fatal("expected limit > 1000 to fail")
+	}
+}
+
 // --- browser_click (extended) ---
 
 func TestBrowserClickValidationInvalidButtonFails(t *testing.T) {

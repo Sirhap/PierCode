@@ -52,6 +52,8 @@ func (c *Controller) HandleEvent(event Event) {
 	switch event.Event {
 	case "tab_removed":
 		c.tabs.ClearDefault(event.TabID)
+		c.events.ClearConsole(event.TabID)
+		c.events.ClearNetwork(event.TabID)
 	case "tab_updated":
 		tab := tool.BrowserTab{TabID: event.TabID, URL: event.URL, Title: event.Title}
 		c.tabs.Upsert(tab)
@@ -191,7 +193,7 @@ func (c *Controller) NavigateWithBeforeunload(ctx context.Context, tabID *int, r
 			if event.Type == "beforeunload" {
 				accept := beforeunloadPolicy == "accept"
 				params, _ := json.Marshal(map[string]interface{}{"accept": accept})
-				c.relay.SendCommand(context.Background(), Command{
+				c.relay.SendCommand(ctx, Command{
 					TabID:  &tab.TabID,
 					Domain: "Page",
 					Method: "handleJavaScriptDialog",

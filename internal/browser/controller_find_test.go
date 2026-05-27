@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -460,5 +462,58 @@ func TestReadNetworkReturnsBufferedRequests(t *testing.T) {
 	}
 	if !strings.Contains(out, "3") {
 		t.Fatalf("expected request count 3 in output, got %q", out)
+	}
+}
+
+func TestZoomRespectsOutputDir(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 109, URL: "https://example.com", Title: "Zoom OutputDir"}
+	var relay *RelayManager
+
+	imgBytes := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01}
+	imgBase64 := base64.StdEncoding.EncodeToString(imgBytes)
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "Runtime.evaluate":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"object","value":{"x":0,"y":0,"width":100,"height":100}}}`)})
+		case "Page.captureScreenshot":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(fmt.Sprintf(`{"data":"%s"}`, imgBase64))})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	outputDir := filepath.Join(t.TempDir(), "zoom-output")
+	defer os.RemoveAll(outputDir)
+
+	w := float64(100)
+	h := float64(100)
+	resp, err := controller.Zoom(context.Background(), tool.BrowserZoomRequest{
+		Selector: "#target",
+		Width:    &w,
+		Height:   &h,
+		CallID:   "zoom-outputdir",
+		OutputDir: outputDir,
+	})
+	if err != nil {
+		t.Fatalf("Zoom returned error: %v", err)
+	}
+	if resp.FilePath == "" {
+		t.Fatal("expected non-empty file path in response")
+	}
+	// Verify the file was written to the custom output directory
+	if !strings.HasPrefix(resp.FilePath, outputDir) {
+		t.Fatalf("expected file path to start with %q, got %q", outputDir, resp.FilePath)
+	}
+	// Verify the file exists
+	if _, err := os.Stat(resp.FilePath); os.IsNotExist(err) {
+		t.Fatalf("expected screenshot file to exist at %s", resp.FilePath)
 	}
 }

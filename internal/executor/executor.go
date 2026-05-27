@@ -129,6 +129,7 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserFormInputTool())
 	e.registry.Register(tool.NewBrowserConsoleTool())
 	e.registry.Register(tool.NewBrowserNetworkTool())
+	e.registry.Register(tool.NewBrowserCookiesTool())
 	return e
 }
 
