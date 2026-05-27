@@ -48,6 +48,15 @@ type Context struct {
 	// this to push a question_ask event and then wait for question_answer.
 	// Nil means broadcast is not available in this invocation.
 	Broadcast func(payload []byte)
+
+	// BroadcastToClient, if set, sends a JSON payload to one WebSocket client.
+	// Browser-page side effects such as uploading a screenshot attachment use
+	// this so multi-tab sessions do not receive the same attachment event.
+	BroadcastToClient func(clientID string, payload []byte) bool
+
+	// SourceClientID is the WebSocket client id of the AI page that initiated
+	// this tool call, when the call came through the browser extension.
+	SourceClientID string
 }
 
 // EffectiveRootDir returns the snapshot RootDir captured by the executor at
@@ -123,6 +132,7 @@ type BrowserController interface {
 	NewTab(ctx context.Context, url string) (BrowserTab, error)
 	UseTab(ctx context.Context, tabID int, reason, callID string) (BrowserTab, error)
 	Navigate(ctx context.Context, tabID *int, url, callID string) (BrowserTab, error)
+	NavigateWithBeforeunload(ctx context.Context, tabID *int, url, callID, beforeunloadPolicy string) (BrowserTab, error)
 	Snapshot(ctx context.Context, tabID *int, maxNodes int) (BrowserSnapshot, error)
 	Click(ctx context.Context, req BrowserClickRequest) (string, error)
 	Type(ctx context.Context, req BrowserTypeRequest) (string, error)
@@ -143,6 +153,12 @@ type BrowserController interface {
 	PDF(ctx context.Context, req BrowserPDFRequest) (BrowserPDFResponse, error)
 	Upload(ctx context.Context, req BrowserUploadRequest) (string, error)
 	HandleDialog(ctx context.Context, req BrowserHandleDialogRequest) (string, error)
+	Find(ctx context.Context, req BrowserFindRequest) ([]BrowserFindResult, error)
+	Zoom(ctx context.Context, req BrowserZoomRequest) (BrowserZoomResponse, error)
+	Resize(ctx context.Context, req BrowserResizeRequest) (string, error)
+	FormInput(ctx context.Context, req BrowserFormInputRequest) (string, error)
+	ReadConsole(ctx context.Context, req BrowserConsoleRequest) (string, error)
+	ReadNetwork(ctx context.Context, req BrowserNetworkLogRequest) (string, error)
 }
 
 type BrowserTab struct {
@@ -169,6 +185,8 @@ type BrowserClickRequest struct {
 	X          *float64
 	Y          *float64
 	SnapshotID string
+	Button     string // "left" (default), "right", "middle"
+	ClickCount int    // 1 (default), 2 (double), 3 (triple)
 	CallID     string
 }
 
@@ -325,6 +343,67 @@ type BrowserHandleDialogRequest struct {
 	PromptText     string
 	TimeoutSeconds int
 	CallID         string
+}
+
+type BrowserFindRequest struct {
+	TabID      *int
+	Query      string
+	MaxResults int
+}
+
+type BrowserFindResult struct {
+	Ref   string `json:"ref"`
+	Role  string `json:"role"`
+	Text  string `json:"text"`
+	Score int    `json:"score"`
+}
+
+type BrowserZoomRequest struct {
+	TabID      *int
+	Ref        string
+	Selector   string
+	X          *float64
+	Y          *float64
+	Width      *float64
+	Height     *float64
+	SnapshotID string
+	CallID     string
+}
+
+type BrowserZoomResponse struct {
+	Tab      BrowserTab
+	FilePath string
+	Bytes    int
+}
+
+type BrowserResizeRequest struct {
+	TabID  *int
+	Width  int
+	Height int
+}
+
+type BrowserFormInputRequest struct {
+	TabID      *int
+	Ref        string
+	Selector   string
+	SnapshotID string
+	Value      interface{}
+	CallID     string
+}
+
+type BrowserConsoleRequest struct {
+	TabID      *int
+	Pattern    string
+	OnlyErrors bool
+	Clear      bool
+	Limit      int
+}
+
+type BrowserNetworkLogRequest struct {
+	TabID      *int
+	URLPattern string
+	Clear      bool
+	Limit      int
 }
 
 // resolveAbsPath validates an absolute path against RootDir and common allowed roots (~/.claude, ~/.piercode, ~/.agent).

@@ -1,7 +1,9 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
 import { extractMonacoText, findQwenToolBody, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
-import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer } from './ws-linker';
+import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId } from './ws-linker';
+import { visualIndicator } from './visual-indicator';
+import { exposeAccessibilityTree, generateAccessibilityTree, getElementCoordinates, scrollToElement, clickElement, searchElements } from './accessibility-tree';
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
@@ -164,6 +166,7 @@ type StreamDoneHandler = (exitCode: number, status: string, errMsg: string, dura
 const streamChunkSubs = new Map<string, StreamChunkHandler>();
 const streamDoneSubs = new Map<string, StreamDoneHandler>();
 let streamDispatchersRegistered = false;
+let attachmentUploadDispatcherRegistered = false;
 
 function ensureStreamDispatchers() {
   if (streamDispatchersRegistered) return;
@@ -189,6 +192,138 @@ function ensureStreamDispatchers() {
   onBrowserApprovalAsk(msg => {
     showBrowserApprovalPopup(msg);
   });
+}
+
+interface AttachmentPayload {
+  name: string;
+  mimeType: string;
+  dataBase64: string;
+  bytes?: number;
+}
+
+function ensureAttachmentUploadDispatcher() {
+  if (attachmentUploadDispatcherRegistered) return;
+  attachmentUploadDispatcherRegistered = true;
+  onBrowserAttachmentUpload(async msg => {
+    try {
+      const payload = await fetchScreenshotAttachment(msg.path);
+      const file = new File([base64ToArrayBuffer(payload.dataBase64)], payload.name || msg.name || 'screenshot.jpg', {
+        type: payload.mimeType || msg.mimeType || 'image/jpeg',
+        lastModified: Date.now(),
+      });
+      await attachFileToCurrentChat(file);
+      sendBrowserAttachmentUploadResult(msg.call_id, true);
+      showToast(`截图已作为附件添加：${file.name}`, 3000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendBrowserAttachmentUploadResult(msg.call_id, false, message);
+      showToast(`截图附件上传失败：${message}`, 5000);
+    }
+  });
+}
+
+async function fetchScreenshotAttachment(path: string): Promise<AttachmentPayload> {
+  if (!checkContext(true)) throw new Error('扩展上下文已失效');
+  const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
+  if (!apiUrl) throw new Error('未配置 API 地址');
+  const headers: any = {};
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  const response = await bgFetch(`${apiEndpoint(apiUrl, '/attachments/screenshot')}?path=${encodeURIComponent(path)}`, { headers });
+  if (response.status === 401) throw new Error('认证失败');
+  if (!response.ok) throw new Error(response.body || `HTTP ${response.status}`);
+  const payload = JSON.parse(response.body) as AttachmentPayload;
+  if (!payload.dataBase64) throw new Error('截图数据为空');
+  return payload;
+}
+
+function base64ToArrayBuffer(data: string): ArrayBuffer {
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+async function attachFileToCurrentChat(file: File): Promise<void> {
+  await focusCurrentTabForSend();
+  const editor = querySelectorFirst(getSiteConfig().editor) as HTMLElement | null;
+  const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'))
+    .filter(input => !input.disabled && acceptsImageFile(input, file));
+
+  for (const input of prioritizeFileInputs(inputs, editor)) {
+    if (tryAssignFileInput(input, file)) return;
+  }
+  if (editor && dispatchClipboardFile(editor, file)) return;
+  if (editor && dispatchDropFile(editor, file)) return;
+  throw new Error('未找到可用的附件上传入口');
+}
+
+function acceptsImageFile(input: HTMLInputElement, file: File): boolean {
+  const accept = (input.getAttribute('accept') || '').trim().toLowerCase();
+  if (!accept) return true;
+  if (accept.includes('image/*')) return true;
+  if (accept.includes(file.type.toLowerCase())) return true;
+  const ext = file.name.toLowerCase().endsWith('.png') ? '.png' : '.jpg';
+  return accept.split(',').map(s => s.trim()).includes(ext);
+}
+
+function prioritizeFileInputs(inputs: HTMLInputElement[], editor: HTMLElement | null): HTMLInputElement[] {
+  if (!editor) return inputs;
+  const editorRect = editor.getBoundingClientRect();
+  return inputs.slice().sort((a, b) => {
+    const ar = a.getBoundingClientRect();
+    const br = b.getBoundingClientRect();
+    const ad = Math.abs(ar.top - editorRect.top) + Math.abs(ar.left - editorRect.left);
+    const bd = Math.abs(br.top - editorRect.top) + Math.abs(br.left - editorRect.left);
+    return ad - bd;
+  });
+}
+
+function tryAssignFileInput(input: HTMLInputElement, file: File): boolean {
+  try {
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'files')?.set;
+    if (setter) setter.call(input, transfer.files);
+    else input.files = transfer.files;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return !!input.files && input.files.length > 0;
+  } catch (error) {
+    console.warn('[PierCode] file input 附件注入失败:', error);
+    return false;
+  }
+}
+
+function dispatchClipboardFile(target: HTMLElement, file: File): boolean {
+  try {
+    target.focus();
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    transfer.setData('text/plain', file.name);
+    const event = new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    return true;
+  } catch (error) {
+    console.warn('[PierCode] paste 附件注入失败:', error);
+    return false;
+  }
+}
+
+function dispatchDropFile(target: HTMLElement, file: File): boolean {
+  try {
+    target.focus();
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    const events = ['dragenter', 'dragover', 'drop'];
+    for (const type of events) {
+      const event = new DragEvent(type, { dataTransfer: transfer, bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+    }
+    return true;
+  } catch (error) {
+    console.warn('[PierCode] drop 附件注入失败:', error);
+    return false;
+  }
 }
 
 const activeQuestionPopups = new Map<string, HTMLDivElement>();
@@ -538,6 +673,10 @@ if (!(window as any).__PIERCODE_LOADED__) {
   // Register WS dispatchers (tool_stream/done + question_ask/cancel) up
   // front so question popups can appear even before any ToolCard renders.
   ensureStreamDispatchers();
+  ensureAttachmentUploadDispatcher();
+
+  // 暴露无障碍树 API
+  exposeAccessibilityTree();
 
   if (!cfg.useObserver) {
     injectPageScript('injected.js');
@@ -562,6 +701,52 @@ if (!(window as any).__PIERCODE_LOADED__) {
   }
   if (document.body) mountInputListener();
   else document.addEventListener('DOMContentLoaded', mountInputListener);
+
+  // 监听来自background的消息
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg.type === 'HIDE_INDICATORS') {
+      visualIndicator.hideAllIndicators();
+      return false;
+    }
+
+    // 处理无障碍树相关请求
+    if (msg.type === 'GENERATE_SNAPSHOT') {
+      const { filter, maxDepth, maxChars, refId } = msg.params || {};
+      try {
+        const result = generateAccessibilityTree(filter, maxDepth, maxChars, refId);
+        sendResponse({ success: true, ...result });
+      } catch (error) {
+        sendResponse({ success: false, error: String(error) });
+      }
+      return true;
+    }
+
+    if (msg.type === 'GET_ELEMENT_COORDINATES') {
+      const coords = getElementCoordinates(msg.ref);
+      sendResponse(coords);
+      return false;
+    }
+
+    if (msg.type === 'SCROLL_TO_ELEMENT') {
+      const success = scrollToElement(msg.ref);
+      sendResponse({ success });
+      return false;
+    }
+
+    if (msg.type === 'CLICK_ELEMENT') {
+      const result = clickElement(msg.ref);
+      sendResponse(result);
+      return false;
+    }
+
+    if (msg.type === 'SEARCH_ELEMENTS') {
+      const results = searchElements(msg.query, msg.maxResults);
+      sendResponse({ results });
+      return false;
+    }
+
+    return false;
+  });
 }
 
 function hashStr(s: string): number {
@@ -767,14 +952,25 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
     execBtn.disabled = true;
     execBtn.textContent = '执行中...';
     subscribe();
+
+    // 显示可视化指示器
+    visualIndicator.showPulsingBorder();
+    visualIndicator.showStatusBadge('loading');
+
     try {
       const text = await executeToolCallRaw(data);
       if (text === null) {
         execBtn.textContent = '请刷新页面';
         unsubscribeStream();
+        visualIndicator.hideAllIndicators();
         return;
       }
       markExecuted(key);
+
+      // 显示完成状态
+      visualIndicator.showStatusBadge('completed');
+      setTimeout(() => visualIndicator.hideAllIndicators(), 1500);
+
       // For exec_cmd whose live stream already populated streamBox, don't
       // duplicate the full output in a second box — just append a small
       // separator and the insert-to-chat button. Non-stream tools (and
@@ -808,6 +1004,8 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
       execBtn.textContent = '❌ 执行失败';
       execBtn.disabled = false;
       unsubscribeStream();
+      visualIndicator.showStatusBadge('error');
+      setTimeout(() => visualIndicator.hideAllIndicators(), 2000);
     }
   };
 
@@ -945,6 +1143,11 @@ function startDOMObserver(_responseSelector: string) {
     if (batchExecuting) return;
     batchTimer = null;
     batchExecuting = true;
+
+    // 显示批量执行指示器
+    visualIndicator.showPulsingBorder();
+    visualIndicator.showStatusBadge('loading');
+
     try {
       while (pendingBatch.length > 0) {
         const batch = pendingBatch;
@@ -980,6 +1183,9 @@ function startDOMObserver(_responseSelector: string) {
       }
     } finally {
       batchExecuting = false;
+      // 隐藏批量执行指示器
+      visualIndicator.showStatusBadge('completed');
+      setTimeout(() => visualIndicator.hideAllIndicators(), 1500);
     }
 
     if (pendingBatch.length > 0) {
@@ -1452,7 +1658,7 @@ function apiEndpointForProfile(apiUrl: string, path: string): string {
 }
 
 function withPlatformProfile(toolCall: any): any {
-  return { ...toolCall, profile: platformProfile };
+  return { ...toolCall, profile: platformProfile, client_id: getPierCodeClientId() };
 }
 
 async function sendInitPrompt() {

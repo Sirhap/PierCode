@@ -1,6 +1,8 @@
 package tool
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -135,18 +137,24 @@ func NewBrowserNavigateTool() Tool {
 		name:        "browser_navigate",
 		description: "Navigate the controlled browser tab to an http/https URL. Creates a safe controlled tab if needed.",
 		parameters: map[string]string{
-			"url":   "string (required) - http/https URL or about:blank",
-			"tabId": "number (optional) - controlled tab id",
+			"url":                "string (required) - http/https URL or about:blank",
+			"beforeunloadPolicy": "string (optional, accept|dismiss|none, default none) - how to handle 'Leave site?' dialogs during navigation",
+			"tabId":              "number (optional) - controlled tab id",
 		},
 		validate: func(args map[string]interface{}) error {
 			if strings.TrimSpace(stringArg(args, "url")) == "" {
 				return fmt.Errorf("url is required")
 			}
+			policy := strings.ToLower(stringArg(args, "beforeunloadPolicy"))
+			if policy != "" && policy != "accept" && policy != "dismiss" && policy != "none" {
+				return fmt.Errorf("beforeunloadPolicy must be accept, dismiss, or none")
+			}
 			return nil
 		},
 		execute: func(ctx *Context) (string, error) {
 			tabID := optionalInt(ctx.Args, "tabId")
-			tab, err := ctx.Browser.Navigate(ctx.Context, tabID, stringArg(ctx.Args, "url"), stringArg(ctx.Args, "call_id"))
+			policy := stringArg(ctx.Args, "beforeunloadPolicy")
+			tab, err := ctx.Browser.NavigateWithBeforeunload(ctx.Context, tabID, stringArg(ctx.Args, "url"), stringArg(ctx.Args, "call_id"), policy)
 			if err != nil {
 				return "", err
 			}
@@ -181,17 +189,37 @@ func NewBrowserSnapshotTool() Tool {
 func NewBrowserClickTool() Tool {
 	return &browserTool{
 		name:        "browser_click",
-		description: "Click a browser page target by snapshot ref, selector, or coordinates after user approval",
+		description: "Click a browser page target by snapshot ref, selector, or coordinates after user approval. Supports right-click, double-click, and triple-click.",
 		parameters: map[string]string{
 			"ref":        "string (optional) - e.g. e0 from browser_snapshot",
 			"snapshotId": "string (required with ref) - snapshot id from browser_snapshot",
 			"selector":   "string (optional) - CSS selector fallback",
 			"x":          "number (optional) - x coordinate fallback",
 			"y":          "number (optional) - y coordinate fallback",
+			"button":     "string (optional, left|right|middle, default left) - mouse button",
+			"clickCount": "number (optional, 1|2|3, default 1) - number of clicks (2=double, 3=triple)",
 			"tabId":      "number (optional) - controlled tab id",
 		},
-		validate: validateClickTarget,
+		validate: func(args map[string]interface{}) error {
+			if err := validateClickTarget(args); err != nil {
+				return err
+			}
+			button := strings.ToLower(stringArg(args, "button"))
+			if button != "" && button != "left" && button != "right" && button != "middle" {
+				return fmt.Errorf("button must be left, right, or middle")
+			}
+			cc := intArgDefault(args, "clickCount", 1)
+			if cc < 1 || cc > 3 {
+				return fmt.Errorf("clickCount must be 1, 2, or 3")
+			}
+			return nil
+		},
 		execute: func(ctx *Context) (string, error) {
+			button := stringArg(ctx.Args, "button")
+			if button == "" {
+				button = "left"
+			}
+			clickCount := intArgDefault(ctx.Args, "clickCount", 1)
 			return ctx.Browser.Click(ctx.Context, BrowserClickRequest{
 				TabID:      optionalInt(ctx.Args, "tabId"),
 				Ref:        stringArg(ctx.Args, "ref"),
@@ -199,6 +227,8 @@ func NewBrowserClickTool() Tool {
 				X:          optionalFloat(ctx.Args, "x"),
 				Y:          optionalFloat(ctx.Args, "y"),
 				SnapshotID: stringArg(ctx.Args, "snapshotId"),
+				Button:     button,
+				ClickCount: clickCount,
 				CallID:     stringArg(ctx.Args, "call_id"),
 			})
 		},
@@ -256,6 +286,7 @@ func NewBrowserScreenshotTool() Tool {
 			"format":   "string (optional, jpeg|png, default jpeg)",
 			"quality":  "number (optional, default 70) - jpeg quality",
 			"fullPage": "boolean (optional, default false) - capture beyond viewport",
+			"attach":   "boolean (optional, default true when called from an AI page) - upload the screenshot as an attachment to the current AI chat page",
 		},
 		validate: func(args map[string]interface{}) error {
 			format := strings.ToLower(stringArg(args, "format"))
@@ -278,10 +309,74 @@ func NewBrowserScreenshotTool() Tool {
 			out := fmt.Sprintf("screenshot tabId=%d title=%q url=%q format=%s bytes=%d", shot.Tab.TabID, shot.Tab.Title, shot.Tab.URL, shot.Format, shot.Bytes)
 			if shot.FilePath != "" {
 				out += "\nSaved to: " + shot.FilePath
-				out += "\nThe screenshot is saved as an image file; do not paste it inline."
+				if shouldAttachScreenshot(ctx) {
+					status, attachErr := uploadScreenshotAttachment(ctx, shot)
+					if attachErr != nil {
+						out += "\nAttachment upload failed: " + attachErr.Error()
+					} else {
+						out += "\nAttachment upload: " + status
+					}
+				} else {
+					out += "\nThe screenshot is saved as an image file; do not paste it inline."
+				}
 			}
 			return out, nil
 		},
+	}
+}
+
+func shouldAttachScreenshot(ctx *Context) bool {
+	if ctx == nil || ctx.SourceClientID == "" || ctx.BroadcastToClient == nil {
+		return false
+	}
+	if ctx.Args != nil {
+		if v, ok := ctx.Args["attach"].(bool); ok {
+			return v
+		}
+	}
+	return true
+}
+
+func uploadScreenshotAttachment(ctx *Context, shot BrowserScreenshot) (string, error) {
+	callID := stringArg(ctx.Args, "call_id")
+	if callID == "" {
+		return "", fmt.Errorf("missing call_id for attachment upload")
+	}
+	mimeType := "image/jpeg"
+	if strings.EqualFold(shot.Format, "png") || strings.EqualFold(filepath.Ext(shot.FilePath), ".png") {
+		mimeType = "image/png"
+	}
+	ch, cleanup := PendingAttachmentUploads.Register(callID)
+	defer cleanup()
+	payload, err := json.Marshal(map[string]interface{}{
+		"type":     "browser_attachment_upload",
+		"call_id":  callID,
+		"path":     shot.FilePath,
+		"name":     filepath.Base(shot.FilePath),
+		"mimeType": mimeType,
+		"bytes":    shot.Bytes,
+	})
+	if err != nil {
+		return "", err
+	}
+	if !ctx.BroadcastToClient(ctx.SourceClientID, payload) {
+		return "", fmt.Errorf("source AI page is not connected")
+	}
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case result := <-ch:
+		if !result.OK {
+			if result.Error == "" {
+				result.Error = "AI page rejected attachment upload"
+			}
+			return "", errors.New(result.Error)
+		}
+		return "uploaded to current AI chat page", nil
+	case <-ctx.Context.Done():
+		return "", ctx.Context.Err()
+	case <-timer.C:
+		return "", fmt.Errorf("timed out waiting for AI page attachment upload")
 	}
 }
 

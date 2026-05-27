@@ -5,6 +5,7 @@ let reconnectTimer: number | null = null;
 let configuredApiUrl = '';
 let configuredToken = '';
 let connectionSeq = 0;
+const PAGE_CLIENT_ID = getOrCreateClientId();
 
 type BridgeState = 'not_configured' | 'connecting' | 'open' | 'closed' | 'error' | 'invalid_url';
 
@@ -59,17 +60,45 @@ export type BrowserApprovalAskMessage = {
   options?: string[];
 };
 
+export type BrowserAttachmentUploadMessage = {
+  type: 'browser_attachment_upload';
+  call_id: string;
+  path: string;
+  name: string;
+  mimeType: string;
+  bytes?: number;
+};
+
 type StreamHandler = (msg: ToolStreamMessage) => void;
 type DoneHandler = (msg: ToolDoneMessage) => void;
 type QuestionAskHandler = (msg: QuestionAskMessage) => void;
 type QuestionCancelHandler = (msg: QuestionCancelMessage) => void;
 type BrowserApprovalAskHandler = (msg: BrowserApprovalAskMessage) => void;
+type BrowserAttachmentUploadHandler = (msg: BrowserAttachmentUploadMessage) => void;
 
 const streamHandlers: StreamHandler[] = [];
 const doneHandlers: DoneHandler[] = [];
 const questionAskHandlers: QuestionAskHandler[] = [];
 const questionCancelHandlers: QuestionCancelHandler[] = [];
 const browserApprovalAskHandlers: BrowserApprovalAskHandler[] = [];
+const browserAttachmentUploadHandlers: BrowserAttachmentUploadHandler[] = [];
+
+function getOrCreateClientId(): string {
+  try {
+    const key = '__PIERCODE_CLIENT_ID__';
+    const existing = window.sessionStorage.getItem(key);
+    if (existing) return existing;
+    const id = `content-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    window.sessionStorage.setItem(key, id);
+    return id;
+  } catch {
+    return `content-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
+
+export function getPierCodeClientId(): string {
+  return PAGE_CLIENT_ID;
+}
 
 export function onToolStream(handler: StreamHandler): () => void {
   streamHandlers.push(handler);
@@ -129,6 +158,14 @@ async function getAuthInfo(): Promise<{ apiUrl: string; token: string } | null> 
       }
     });
   });
+}
+
+export function onBrowserAttachmentUpload(handler: BrowserAttachmentUploadHandler): () => void {
+  browserAttachmentUploadHandlers.push(handler);
+  return () => {
+    const idx = browserAttachmentUploadHandlers.indexOf(handler);
+    if (idx >= 0) browserAttachmentUploadHandlers.splice(idx, 1);
+  };
 }
 
 function clearStoredAuth(): Promise<void> {
@@ -191,6 +228,7 @@ function toWebSocketUrl(apiUrl: string, token: string): string | null {
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.pathname = "/ws";
     url.searchParams.set("token", token);
+    url.searchParams.set("id", PAGE_CLIENT_ID);
     url.searchParams.set("client", "content");
     url.searchParams.set("role", "ai-page");
     url.searchParams.set("provider", currentProvider());
@@ -449,6 +487,10 @@ function connectWebSocket(apiUrl: string, token: string) {
           for (const handler of browserApprovalAskHandlers.slice()) {
             try { handler(msg as BrowserApprovalAskMessage); } catch (e) { console.error(e); }
           }
+        } else if (msg.type === "browser_attachment_upload" && typeof msg.call_id === "string") {
+          for (const handler of browserAttachmentUploadHandlers.slice()) {
+            try { handler(msg as BrowserAttachmentUploadMessage); } catch (e) { console.error(e); }
+          }
         }
       } catch (e) {
         console.error("[PierCode] 解析 WebSocket 消息失败:", e);
@@ -687,4 +729,18 @@ function startConnection() {
       });
     }
   });
+}
+
+export function sendBrowserAttachmentUploadResult(callID: string, ok: boolean, error = ""): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn("[PierCode] WebSocket 未连接，无法发送 attachment upload result");
+    return false;
+  }
+  try {
+    ws.send(JSON.stringify({ type: "browser_attachment_upload_result", call_id: callID, ok, error }));
+    return true;
+  } catch (err) {
+    console.warn("[PierCode] attachment upload result 发送失败:", err);
+    return false;
+  }
 }

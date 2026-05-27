@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -555,6 +556,46 @@ func TestHandlePrompt(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestHandleScreenshotAttachment(t *testing.T) {
+	s := testServer(t)
+	rootDir := s.config.GetRootDir()
+	screenshotDir := filepath.Join(rootDir, ".piercode", "screenshots")
+	if err := os.MkdirAll(screenshotDir, 0o755); err != nil {
+		t.Fatalf("create screenshot dir: %v", err)
+	}
+	shotPath := filepath.Join(screenshotDir, "shot.png")
+	if err := os.WriteFile(shotPath, []byte("png-data"), 0o644); err != nil {
+		t.Fatalf("write screenshot: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/attachments/screenshot?path="+url.QueryEscape(shotPath), nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var payload map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["name"] != "shot.png" || payload["mimeType"] != "image/png" || payload["dataBase64"] != "cG5nLWRhdGE=" {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+
+	outside := filepath.Join(rootDir, "outside.png")
+	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/attachments/screenshot?path="+url.QueryEscape(outside), nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected outside path to be forbidden, got %d", w.Code)
+	}
 }
 
 func TestCORSOptions(t *testing.T) {

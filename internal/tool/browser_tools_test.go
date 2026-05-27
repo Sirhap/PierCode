@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +65,77 @@ func TestBrowserScreenshotSavesUnderWorkspaceAndDoesNotLeakDataURL(t *testing.T)
 	}
 }
 
+func TestBrowserScreenshotUploadsAttachmentToSourceClient(t *testing.T) {
+	root := t.TempDir()
+	fake := &fakeBrowserController{}
+	tool := NewBrowserScreenshotTool()
+	sent := false
+	result := tool.Execute(&Context{
+		Context: context.Background(),
+		Args: map[string]interface{}{
+			"format":  "png",
+			"call_id": "shot1",
+		},
+		RootDir:        root,
+		Browser:        fake,
+		SourceClientID: "client1",
+		BroadcastToClient: func(clientID string, payload []byte) bool {
+			if clientID != "client1" {
+				t.Fatalf("unexpected client id: %q", clientID)
+			}
+			var msg map[string]interface{}
+			if err := json.Unmarshal(payload, &msg); err != nil {
+				t.Fatalf("invalid attachment payload: %v", err)
+			}
+			if msg["type"] != "browser_attachment_upload" || msg["call_id"] != "shot1" {
+				t.Fatalf("unexpected attachment payload: %#v", msg)
+			}
+			sent = true
+			go PendingAttachmentUploads.Deliver("shot1", AttachmentUploadResult{OK: true})
+			return true
+		},
+	})
+	if result.Status != "success" {
+		t.Fatalf("expected success, got status=%s error=%s", result.Status, result.Error)
+	}
+	if !sent {
+		t.Fatal("expected attachment upload event")
+	}
+	if !strings.Contains(result.Output, "Attachment upload: uploaded to current AI chat page") {
+		t.Fatalf("missing upload success status: %s", result.Output)
+	}
+}
+
+func TestBrowserScreenshotAttachFalseSkipsAttachmentUpload(t *testing.T) {
+	root := t.TempDir()
+	fake := &fakeBrowserController{}
+	tool := NewBrowserScreenshotTool()
+	result := tool.Execute(&Context{
+		Context: context.Background(),
+		Args: map[string]interface{}{
+			"format":  "png",
+			"call_id": "shot2",
+			"attach":  false,
+		},
+		RootDir:        root,
+		Browser:        fake,
+		SourceClientID: "client1",
+		BroadcastToClient: func(string, []byte) bool {
+			t.Fatal("attachment upload should not be sent when attach=false")
+			return false
+		},
+	})
+	if result.Status != "success" {
+		t.Fatalf("expected success, got status=%s error=%s", result.Status, result.Error)
+	}
+	if strings.Contains(result.Output, "Attachment upload:") {
+		t.Fatalf("unexpected upload status: %s", result.Output)
+	}
+	if !strings.Contains(result.Output, "do not paste it inline") {
+		t.Fatalf("expected legacy saved-file guidance: %s", result.Output)
+	}
+}
+
 func TestBrowserUploadResolvesWorkspaceFiles(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "fixture.txt"), []byte("upload"), 0o644); err != nil {
@@ -107,6 +179,9 @@ func (f *fakeBrowserController) UseTab(context.Context, int, string, string) (Br
 	return BrowserTab{}, nil
 }
 func (f *fakeBrowserController) Navigate(context.Context, *int, string, string) (BrowserTab, error) {
+	return BrowserTab{}, nil
+}
+func (f *fakeBrowserController) NavigateWithBeforeunload(context.Context, *int, string, string, string) (BrowserTab, error) {
 	return BrowserTab{}, nil
 }
 func (f *fakeBrowserController) Snapshot(context.Context, *int, int) (BrowserSnapshot, error) {
@@ -175,5 +250,23 @@ func (f *fakeBrowserController) Upload(_ context.Context, req BrowserUploadReque
 	return "", nil
 }
 func (f *fakeBrowserController) HandleDialog(context.Context, BrowserHandleDialogRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) Find(context.Context, BrowserFindRequest) ([]BrowserFindResult, error) {
+	return nil, nil
+}
+func (f *fakeBrowserController) Zoom(context.Context, BrowserZoomRequest) (BrowserZoomResponse, error) {
+	return BrowserZoomResponse{}, nil
+}
+func (f *fakeBrowserController) Resize(context.Context, BrowserResizeRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) FormInput(context.Context, BrowserFormInputRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) ReadConsole(context.Context, BrowserConsoleRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) ReadNetwork(context.Context, BrowserNetworkLogRequest) (string, error) {
 	return "", nil
 }

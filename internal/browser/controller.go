@@ -154,6 +154,73 @@ func (c *Controller) Navigate(ctx context.Context, tabID *int, rawURL, callID st
 	return next, nil
 }
 
+func (c *Controller) NavigateWithBeforeunload(ctx context.Context, tabID *int, rawURL, callID, beforeunloadPolicy string) (tool.BrowserTab, error) {
+	if beforeunloadPolicy == "" || beforeunloadPolicy == "none" {
+		return c.Navigate(ctx, tabID, rawURL, callID)
+	}
+	if err := c.policy.CheckNavigate(rawURL); err != nil {
+		return tool.BrowserTab{}, err
+	}
+	tab, err := c.ensureTab(ctx, tabID)
+	if err != nil {
+		return tool.BrowserTab{}, err
+	}
+	oldOrigin := originOf(tab.URL)
+	newOrigin := originOf(rawURL)
+	if oldOrigin != "" && newOrigin != "" && oldOrigin != newOrigin {
+		if err := c.ask(ctx, callID, "导航到新域名", tab, rawURL, "即将把受控标签页导航到新的 origin。"); err != nil {
+			return tool.BrowserTab{}, err
+		}
+	}
+	if _, err := c.relay.SendCommand(ctx, Command{
+		TabID:  &tab.TabID,
+		Domain: "Page",
+		Method: "enable",
+		Params: json.RawMessage(`{}`),
+	}, defaultReadTimeout); err != nil {
+		return tool.BrowserTab{}, err
+	}
+
+	// Set up beforeunload dialog handler
+	navCallID := fmt.Sprintf("nav_bu_%d", time.Now().UnixNano())
+	dialogCh := c.events.WaitForDialog(navCallID, tab.TabID, 5*time.Second)
+	go func() {
+		defer c.events.RemoveDialog(navCallID)
+		select {
+		case event := <-dialogCh:
+			if event.Type == "beforeunload" {
+				accept := beforeunloadPolicy == "accept"
+				params, _ := json.Marshal(map[string]interface{}{"accept": accept})
+				c.relay.SendCommand(context.Background(), Command{
+					TabID:  &tab.TabID,
+					Domain: "Page",
+					Method: "handleJavaScriptDialog",
+					Params: params,
+				}, defaultActionTimeout)
+			}
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	params, _ := json.Marshal(map[string]string{"url": rawURL})
+	if _, err := c.relay.SendCommand(ctx, Command{
+		TabID:  &tab.TabID,
+		Domain: "Page",
+		Method: "navigate",
+		Params: params,
+	}, defaultNavigateTimeout); err != nil {
+		return tool.BrowserTab{}, err
+	}
+	c.tabs.MarkStale(tab.TabID)
+	next, err := c.getTab(ctx, tab.TabID)
+	if err != nil {
+		return tool.BrowserTab{}, err
+	}
+	next.Controlled = true
+	c.tabs.SetDefault(next)
+	return next, nil
+}
+
 func (c *Controller) Snapshot(ctx context.Context, tabID *int, maxNodes int) (tool.BrowserSnapshot, error) {
 	tab, err := c.ensureTab(ctx, tabID)
 	if err != nil {
@@ -198,14 +265,32 @@ func (c *Controller) Click(ctx context.Context, req tool.BrowserClickRequest) (s
 	if c.policy.IsSensitive(tab) {
 		return "", fmt.Errorf("browser_click refused on sensitive payment/financial page")
 	}
-	if err := c.ask(ctx, req.CallID, "点击页面元素", tab, target, "点击会改变页面状态或触发网页操作。"); err != nil {
+	button := req.Button
+	if button == "" {
+		button = "left"
+	}
+	clickCount := req.ClickCount
+	if clickCount <= 0 {
+		clickCount = 1
+	}
+	action := "clicked"
+	if button == "right" {
+		action = "right-clicked"
+	}
+	if clickCount == 2 {
+		action = "double-clicked"
+	}
+	if clickCount == 3 {
+		action = "triple-clicked"
+	}
+	if err := c.ask(ctx, req.CallID, action+" 页面元素", tab, target, action+" 可能触发页面操作。"); err != nil {
 		return "", err
 	}
-	if err := c.dispatchClick(ctx, tab.TabID, x, y); err != nil {
+	if err := c.dispatchClick(ctx, tab.TabID, x, y, button, clickCount); err != nil {
 		return "", err
 	}
 	c.tabs.MarkStale(tab.TabID)
-	return fmt.Sprintf("clicked %s at %.0f,%.0f in tabId=%d", target, x, y, tab.TabID), nil
+	return fmt.Sprintf("%s %s at %.0f,%.0f in tabId=%d", action, target, x, y, tab.TabID), nil
 }
 
 func (c *Controller) Type(ctx context.Context, req tool.BrowserTypeRequest) (string, error) {
@@ -222,7 +307,7 @@ func (c *Controller) Type(ctx context.Context, req tool.BrowserTypeRequest) (str
 	if err := c.ask(ctx, req.CallID, "输入文本", tab, target, "输入会修改网页表单内容。"); err != nil {
 		return "", err
 	}
-	if err := c.dispatchClick(ctx, tab.TabID, x, y); err != nil {
+	if err := c.dispatchClick(ctx, tab.TabID, x, y, "left", 1); err != nil {
 		return "", err
 	}
 	if req.Clear {
@@ -457,20 +542,35 @@ func (c *Controller) boxModelBounds(ctx context.Context, tabID int, backendID in
 	return &Bounds{X: minX, Y: minY, Width: maxX - minX, Height: maxY - minY}, nil
 }
 
-func (c *Controller) dispatchClick(ctx context.Context, tabID int, x, y float64) error {
+func (c *Controller) dispatchClick(ctx context.Context, tabID int, x, y float64, button string, clickCount int) error {
+	if button == "" {
+		button = "left"
+	}
+	if clickCount <= 0 {
+		clickCount = 1
+	}
+	buttons := 0
+	switch button {
+	case "left":
+		buttons = 1
+	case "right":
+		buttons = 2
+	case "middle":
+		buttons = 4
+	}
 	for _, typ := range []string{"mousePressed", "mouseReleased"} {
 		params, _ := json.Marshal(map[string]interface{}{
 			"type":   typ,
 			"x":      x,
 			"y":      y,
-			"button": "left",
+			"button": button,
 			"buttons": func() int {
 				if typ == "mousePressed" {
-					return 1
+					return buttons
 				}
 				return 0
 			}(),
-			"clickCount": 1,
+			"clickCount": clickCount,
 		})
 		if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: params}, defaultActionTimeout); err != nil {
 			return err

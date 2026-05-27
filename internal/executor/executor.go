@@ -24,11 +24,12 @@ type Executor struct {
 	// goroutines) and written from SetLogger at startup or when the TUI
 	// reconfigures. atomic.Pointer keeps the read path lock-free and
 	// race-free without forcing every caller through a mutex.
-	logger    atomic.Value // stores logsink.Sink
-	tasks     *TaskManager
-	broadcast atomic.Pointer[func([]byte)]
-	browserMu sync.RWMutex
-	browser   tool.BrowserController
+	logger            atomic.Value // stores logsink.Sink
+	tasks             *TaskManager
+	broadcast         atomic.Pointer[func([]byte)]
+	broadcastToClient atomic.Pointer[func(string, []byte) bool]
+	browserMu         sync.RWMutex
+	browser           tool.BrowserController
 }
 
 // SetLogger sets the event sink for real-time feedback. Safe to call
@@ -55,6 +56,14 @@ func (e *Executor) SetBroadcaster(fn func([]byte)) {
 		return
 	}
 	e.broadcast.Store(&fn)
+}
+
+func (e *Executor) SetClientBroadcaster(fn func(string, []byte) bool) {
+	if fn == nil {
+		e.broadcastToClient.Store(nil)
+		return
+	}
+	e.broadcastToClient.Store(&fn)
 }
 
 func (e *Executor) SetBrowserController(controller tool.BrowserController) {
@@ -114,6 +123,12 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserPDFTool())
 	e.registry.Register(tool.NewBrowserUploadTool())
 	e.registry.Register(tool.NewBrowserHandleDialogTool())
+	e.registry.Register(tool.NewBrowserFindTool())
+	e.registry.Register(tool.NewBrowserZoomTool())
+	e.registry.Register(tool.NewBrowserResizeTool())
+	e.registry.Register(tool.NewBrowserFormInputTool())
+	e.registry.Register(tool.NewBrowserConsoleTool())
+	e.registry.Register(tool.NewBrowserNetworkTool())
 	return e
 }
 
@@ -187,6 +202,10 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	if bp := e.broadcast.Load(); bp != nil {
 		toolCtx.Broadcast = *bp
 	}
+	if bp := e.broadcastToClient.Load(); bp != nil {
+		toolCtx.BroadcastToClient = *bp
+	}
+	toolCtx.SourceClientID = req.SourceClientID
 
 	unlock := e.lockForTool(req.Name)
 	result := t.Execute(toolCtx)

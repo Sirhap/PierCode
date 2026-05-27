@@ -119,6 +119,32 @@ func (m *WSManager) RegisterWithMeta(conn *websocket.Conn, meta WSClientMeta) {
 	go m.writePump(cc)
 }
 
+func (m *WSManager) SendToID(id string, message []byte) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	var failed []*clientConn
+	sent := false
+	m.clientsMu.RLock()
+	for cc := range m.clients {
+		if cc.id != id {
+			continue
+		}
+		select {
+		case cc.send <- message:
+			sent = true
+		default:
+			failed = append(failed, cc)
+		}
+	}
+	m.clientsMu.RUnlock()
+	for _, cc := range failed {
+		m.unregisterClient(cc)
+	}
+	return sent
+}
+
 // ClientCount returns the number of currently connected browser extensions.
 func (m *WSManager) ClientCount() int {
 	m.clientsMu.RLock()

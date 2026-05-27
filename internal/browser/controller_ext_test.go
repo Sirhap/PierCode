@@ -27,6 +27,8 @@ func TestHandleDialogAcceptsRelayedJavaScriptDialog(t *testing.T) {
 		case "Page.enable":
 			go func() {
 				relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+				// Small delay to ensure HandleDialog has called WaitForDialog before event arrives
+				time.Sleep(10 * time.Millisecond)
 				controller.HandleEvent(dialogEvent(tab.TabID, "prompt", "Name?"))
 			}()
 		case "Page.handleJavaScriptDialog":

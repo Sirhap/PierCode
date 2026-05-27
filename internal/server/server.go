@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,6 +71,9 @@ func New(config *types.Config) *Server {
 	// the tool layer.
 	s.executor.SetBroadcaster(func(payload []byte) {
 		s.ws.Send(payload)
+	})
+	s.executor.SetClientBroadcaster(func(clientID string, payload []byte) bool {
+		return s.ws.SendToID(clientID, payload)
 	})
 
 	// Wire background task events into the WebSocket broadcast channel so any
@@ -161,6 +165,7 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/stats", s.handleStats)
 	s.router.GET("/skills", s.handleListSkills)
 	s.router.GET("/files", s.handleListFiles)
+	s.router.GET("/attachments/screenshot", s.handleScreenshotAttachment)
 	s.router.GET("/tasks", s.handleListTasks)
 	s.router.GET("/tasks/:id", s.handleGetTask)
 	s.router.POST("/tasks/:id/stop", s.handleStopTask)
@@ -406,9 +411,10 @@ func (s *Server) handleWS(c *gin.Context) {
 	log.Println("[PierCode] ✅ 扩展已连接 WebSocket")
 
 	provider := browserProviderFromRequest(c.Request)
+	id := strings.TrimSpace(c.Query("id"))
 	role := strings.TrimSpace(c.Query("role"))
 	client := strings.TrimSpace(c.Query("client"))
-	s.ws.RegisterWithMeta(conn, WSClientMeta{Provider: provider, Role: role, Client: client})
+	s.ws.RegisterWithMeta(conn, WSClientMeta{ID: id, Provider: provider, Role: role, Client: client})
 	count := s.ws.ClientCount()
 	s.logTUI("system", "BROWSER", "success", fmt.Sprintf("浏览器扩展已连接 (%d)", count))
 	if s.logger != nil {
@@ -476,6 +482,7 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 		Error      string          `json:"error"`
 		ApprovalID string          `json:"approval_id"`
 		Approved   bool            `json:"approved"`
+		OK         bool            `json:"ok"`
 		Event      string          `json:"event"`
 		TabID      int             `json:"tabId"`
 		URL        string          `json:"url"`
@@ -541,6 +548,11 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 				Reason:     msg.Reason,
 			})
 		}
+	case "browser_attachment_upload_result":
+		tool.PendingAttachmentUploads.Deliver(msg.CallID, tool.AttachmentUploadResult{
+			OK:    msg.OK,
+			Error: msg.Error,
+		})
 	case "browser_event":
 		if s.browser != nil {
 			s.browser.HandleEvent(browser.Event{
@@ -753,6 +765,49 @@ func (s *Server) handleListFiles(c *gin.Context) {
 		return nil
 	})
 	c.JSON(http.StatusOK, gin.H{"files": files})
+}
+
+func (s *Server) handleScreenshotAttachment(c *gin.Context) {
+	rawPath := strings.TrimSpace(c.Query("path"))
+	if rawPath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+	screenshotDir := filepath.Join(s.config.GetRootDir(), ".piercode", "screenshots")
+	safePath, err := security.SafeAbsPath(rawPath, screenshotDir)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "path outside screenshot directory"})
+		return
+	}
+	info, err := os.Stat(safePath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "screenshot not found"})
+		return
+	}
+	if info.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is a directory"})
+		return
+	}
+	if info.Size() > 20*1024*1024 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "screenshot is too large"})
+		return
+	}
+	data, err := os.ReadFile(safePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read screenshot"})
+		return
+	}
+	ext := strings.ToLower(filepath.Ext(safePath))
+	mimeType := "image/jpeg"
+	if ext == ".png" {
+		mimeType = "image/png"
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"name":       filepath.Base(safePath),
+		"mimeType":   mimeType,
+		"dataBase64": base64.StdEncoding.EncodeToString(data),
+		"bytes":      len(data),
+	})
 }
 
 func (s *Server) handleListTasks(c *gin.Context) {

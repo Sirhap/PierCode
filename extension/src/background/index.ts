@@ -360,8 +360,224 @@ async function handleNativeBrowserCommand(method: string, params: Record<string,
       return tabToDTO(await chrome.tabs.get(Number(params.tabId)));
     case 'resolveSelectorRect':
       return resolveSelectorRect(Number(params.tabId), String(params.selector || ''));
+    case 'snapshot':
+      return getAccessibilitySnapshot(Number(params.tabId), params);
+    case 'click':
+      return clickElementInTab(Number(params.tabId), String(params.ref || ''));
+    case 'type':
+      return typeInElement(Number(params.tabId), String(params.ref || ''), String(params.text || ''));
+    case 'navigate':
+      return navigateTab(Number(params.tabId), String(params.url || ''));
+    case 'screenshot':
+      return takeScreenshot(Number(params.tabId));
     default:
       throw new Error(`unknown PierCode browser method: ${method}`);
+  }
+}
+
+// 获取无障碍树快照
+async function getAccessibilitySnapshot(tabId: number, params: Record<string, unknown>): Promise<unknown> {
+  if (!tabId) throw new Error('tabId is required for snapshot');
+
+  const filter = (params.filter as string) || 'interactive';
+  const maxDepth = (params.maxDepth as number) || 15;
+  const maxChars = (params.maxChars as number) || 50000;
+  const refId = params.refId as string | undefined;
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (filter, maxDepth, maxChars, refId) => {
+        const tree = (window as any).__piercodeAccessibilityTree;
+        if (!tree) {
+          return { error: 'Accessibility tree not available. Page may not have loaded.' };
+        }
+        return tree.generate(filter, maxDepth, maxChars, refId);
+      },
+      args: [filter, maxDepth, maxChars, refId]
+    });
+
+    const result = results[0]?.result;
+    if (!result) {
+      return { error: 'Failed to generate accessibility tree' };
+    }
+
+    if (result.error) {
+      return { error: result.error };
+    }
+
+    return {
+      tree: result.tree,
+      elementCount: result.elementCount,
+      truncated: result.truncated
+    };
+  } catch (error) {
+    return { error: String(error) };
+  }
+}
+
+// 点击元素
+async function clickElementInTab(tabId: number, ref: string): Promise<unknown> {
+  if (!tabId) throw new Error('tabId is required');
+  if (!ref) throw new Error('ref is required');
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (ref) => {
+        const tree = (window as any).__piercodeAccessibilityTree;
+        if (!tree) {
+          return { success: false, error: 'Accessibility tree not available' };
+        }
+
+        // 先滚动到元素
+        tree.scrollToElement(ref);
+
+        // 获取元素坐标
+        const coords = tree.getElementCoordinates(ref);
+        if (!coords) {
+          return { success: false, error: `Element not found: ${ref}` };
+        }
+
+        // 点击元素
+        const element = tree.getElementByRef(ref);
+        if (element) {
+          element.click();
+          return { success: true, x: coords.x, y: coords.y };
+        }
+
+        return { success: false, error: `Element not found: ${ref}` };
+      },
+      args: [ref]
+    });
+
+    return results[0]?.result || { success: false, error: 'Script execution failed' };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+}
+
+// 在元素中输入文本
+async function typeInElement(tabId: number, ref: string, text: string): Promise<unknown> {
+  if (!tabId) throw new Error('tabId is required');
+  if (!ref) throw new Error('ref is required');
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (ref, text) => {
+        const tree = (window as any).__piercodeAccessibilityTree;
+        if (!tree) {
+          return { success: false, error: 'Accessibility tree not available' };
+        }
+
+        const element = tree.getElementByRef(ref);
+        if (!element) {
+          return { success: false, error: `Element not found: ${ref}` };
+        }
+
+        // 滚动到元素
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        // 聚焦元素
+        element.focus();
+
+        // 根据元素类型设置值
+        const tag = element.tagName.toLowerCase();
+        if (tag === 'input' || tag === 'textarea') {
+          // 使用原生 setter 设置值
+          const nativeSetter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value'
+          )?.set || Object.getOwnPropertyDescriptor(
+            window.HTMLTextAreaElement.prototype, 'value'
+          )?.set;
+
+          if (nativeSetter) {
+            nativeSetter.call(element, text);
+          } else {
+            (element as HTMLInputElement).value = text;
+          }
+
+          // 触发事件
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (element.isContentEditable) {
+          // contenteditable 元素
+          element.textContent = text;
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+        } else {
+          return { success: false, error: `Element is not an input: ${tag}` };
+        }
+
+        return { success: true, value: text };
+      },
+      args: [ref, text]
+    });
+
+    return results[0]?.result || { success: false, error: 'Script execution failed' };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+}
+
+// 导航到 URL
+async function navigateTab(tabId: number, url: string): Promise<unknown> {
+  if (!tabId) throw new Error('tabId is required');
+  if (!url) throw new Error('url is required');
+
+  try {
+    // 检查 URL 是否安全
+    const dangerousProtocols = ['javascript:', 'data:', 'vbscript:'];
+    const lowerUrl = url.toLowerCase();
+    if (dangerousProtocols.some(p => lowerUrl.startsWith(p))) {
+      return { success: false, error: `Blocked dangerous protocol: ${url.split(':')[0]}` };
+    }
+
+    // 如果没有协议，添加 https://
+    if (!url.match(/^https?:\/\//i)) {
+      url = 'https://' + url;
+    }
+
+    await chrome.tabs.update(tabId, { url });
+
+    // 等待页面加载
+    await waitForTabComplete(tabId, 30000);
+
+    const tab = await chrome.tabs.get(tabId);
+    return {
+      success: true,
+      url: tab.url,
+      title: tab.title
+    };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+}
+
+// 截图
+async function takeScreenshot(tabId: number): Promise<unknown> {
+  if (!tabId) throw new Error('tabId is required');
+
+  try {
+    await ensureAttached(tabId);
+
+    const result = await chrome.debugger.sendCommand(
+      { tabId },
+      'Page.captureScreenshot',
+      { format: 'png', quality: 80 }
+    );
+
+    if (!result) {
+      return { success: false, error: 'Screenshot failed' };
+    }
+
+    return {
+      success: true,
+      data: (result as any).data,
+      format: 'png'
+    };
+  } catch (error) {
+    return { success: false, error: String(error) };
   }
 }
 
@@ -502,6 +718,27 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .then(sendResponse)
       .catch(error => sendResponse({ ok: false, error: String(error) }));
     return true;
+  }
+  if (msg.type === 'STOP_BROWSER_OPERATION') {
+    // 停止当前浏览器操作：detach所有调试器
+    console.log('[PierCode] Stopping browser operations...');
+    const detachedTabs = Array.from(attachedTabs);
+    for (const tabId of detachedTabs) {
+      try {
+        chrome.debugger.detach({ tabId });
+      } catch {}
+    }
+    attachedTabs.clear();
+    // 通知所有content script隐藏指示器
+    chrome.tabs.query({ url: AI_PAGE_URLS }, tabs => {
+      for (const tab of tabs) {
+        if (tab.id) {
+          chrome.tabs.sendMessage(tab.id, { type: 'HIDE_INDICATORS' }).catch(() => {});
+        }
+      }
+    });
+    sendResponse({ success: true, detachedCount: detachedTabs.length });
+    return false;
   }
   return false;
 });
