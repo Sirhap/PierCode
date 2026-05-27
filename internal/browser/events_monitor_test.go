@@ -248,9 +248,11 @@ func TestNetworkResponseUpdatesStatusCode(t *testing.T) {
 	// Send response
 	respParams, _ := json.Marshal(map[string]interface{}{
 		"requestId": "req-1",
+		"timestamp": float64(1000.15),
 		"response": map[string]interface{}{
-			"status":   200,
-			"mimeType": "application/json",
+			"status":     200,
+			"statusText": "OK",
+			"mimeType":   "application/json",
 		},
 	})
 	bus.HandleEvent(Event{
@@ -266,6 +268,63 @@ func TestNetworkResponseUpdatesStatusCode(t *testing.T) {
 	}
 	if reqs[0].StatusCode != 200 {
 		t.Fatalf("expected statusCode 200, got %d", reqs[0].StatusCode)
+	}
+	if reqs[0].StatusText != "OK" {
+		t.Fatalf("expected statusText OK, got %s", reqs[0].StatusText)
+	}
+	if reqs[0].Duration < 140 || reqs[0].Duration > 160 {
+		t.Fatalf("expected duration ~150ms, got %f", reqs[0].Duration)
+	}
+}
+
+func TestNetworkResponseDurationCalculation(t *testing.T) {
+	bus := NewEventBus()
+	// Send request at timestamp 500.0
+	reqParams, _ := json.Marshal(map[string]interface{}{
+		"requestId": "req-dur",
+		"request": map[string]interface{}{
+			"url":    "https://example.com/slow",
+			"method": "POST",
+		},
+		"type":      "XHR",
+		"timestamp": float64(500),
+	})
+	bus.HandleEvent(Event{
+		Type:   "browser_event",
+		Event:  "Network.requestWillBeSent",
+		TabID:  1,
+		Params: reqParams,
+	})
+
+	// Send response at timestamp 502.5 (2500ms later)
+	respParams, _ := json.Marshal(map[string]interface{}{
+		"requestId": "req-dur",
+		"timestamp": float64(502.5),
+		"response": map[string]interface{}{
+			"status":     404,
+			"statusText": "Not Found",
+			"mimeType":   "text/html",
+		},
+	})
+	bus.HandleEvent(Event{
+		Type:   "browser_event",
+		Event:  "Network.responseReceived",
+		TabID:  1,
+		Params: respParams,
+	})
+
+	reqs := bus.GetNetworkRequests(1, NetworkFilter{})
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(reqs))
+	}
+	if reqs[0].StatusCode != 404 {
+		t.Fatalf("expected statusCode 404, got %d", reqs[0].StatusCode)
+	}
+	if reqs[0].StatusText != "Not Found" {
+		t.Fatalf("expected statusText Not Found, got %s", reqs[0].StatusText)
+	}
+	if reqs[0].Duration < 2490 || reqs[0].Duration > 2510 {
+		t.Fatalf("expected duration ~2500ms, got %f", reqs[0].Duration)
 	}
 }
 
@@ -328,6 +387,81 @@ func TestNetworkClear(t *testing.T) {
 	reqs := bus.GetNetworkRequests(1, NetworkFilter{})
 	if len(reqs) != 0 {
 		t.Fatalf("expected 0 requests after clear, got %d", len(reqs))
+	}
+}
+
+func TestDomainTrackingInitiallyFalse(t *testing.T) {
+	bus := NewEventBus()
+	if bus.IsDomainEnabled(1, "Runtime") {
+		t.Fatal("expected domain not enabled initially")
+	}
+	if bus.IsDomainEnabled(1, "Network") {
+		t.Fatal("expected domain not enabled initially")
+	}
+}
+
+func TestDomainTrackingMarkAndCheck(t *testing.T) {
+	bus := NewEventBus()
+	bus.MarkDomainEnabled(1, "Runtime")
+	if !bus.IsDomainEnabled(1, "Runtime") {
+		t.Fatal("expected Runtime enabled after marking")
+	}
+	if bus.IsDomainEnabled(1, "Network") {
+		t.Fatal("expected Network still not enabled")
+	}
+	if bus.IsDomainEnabled(2, "Runtime") {
+		t.Fatal("expected Runtime not enabled for different tab")
+	}
+}
+
+func TestDomainTrackingMultipleDomains(t *testing.T) {
+	bus := NewEventBus()
+	bus.MarkDomainEnabled(1, "Runtime")
+	bus.MarkDomainEnabled(1, "Network")
+	bus.MarkDomainEnabled(1, "Page")
+	if !bus.IsDomainEnabled(1, "Runtime") {
+		t.Fatal("expected Runtime enabled")
+	}
+	if !bus.IsDomainEnabled(1, "Network") {
+		t.Fatal("expected Network enabled")
+	}
+	if !bus.IsDomainEnabled(1, "Page") {
+		t.Fatal("expected Page enabled")
+	}
+}
+
+func TestDomainTrackingClearOnTabRemoval(t *testing.T) {
+	bus := NewEventBus()
+	bus.MarkDomainEnabled(1, "Runtime")
+	bus.MarkDomainEnabled(1, "Network")
+	bus.ClearDomainTracking(1)
+	if bus.IsDomainEnabled(1, "Runtime") {
+		t.Fatal("expected Runtime cleared after tab removal")
+	}
+	if bus.IsDomainEnabled(1, "Network") {
+		t.Fatal("expected Network cleared after tab removal")
+	}
+}
+
+func TestDomainTrackingClearOnlyAffectsTargetTab(t *testing.T) {
+	bus := NewEventBus()
+	bus.MarkDomainEnabled(1, "Runtime")
+	bus.MarkDomainEnabled(2, "Runtime")
+	bus.ClearDomainTracking(1)
+	if bus.IsDomainEnabled(1, "Runtime") {
+		t.Fatal("expected tab 1 cleared")
+	}
+	if !bus.IsDomainEnabled(2, "Runtime") {
+		t.Fatal("expected tab 2 still enabled")
+	}
+}
+
+func TestDomainTrackingIdempotentMark(t *testing.T) {
+	bus := NewEventBus()
+	bus.MarkDomainEnabled(1, "Runtime")
+	bus.MarkDomainEnabled(1, "Runtime")
+	if !bus.IsDomainEnabled(1, "Runtime") {
+		t.Fatal("expected Runtime still enabled after double mark")
 	}
 }
 

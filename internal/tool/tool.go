@@ -281,6 +281,7 @@ type BrowserSelectRequest struct {
 	Selector   string
 	SnapshotID string
 	Value      string
+	By         string // "value" (default), "label", or "index"
 	CallID     string
 }
 

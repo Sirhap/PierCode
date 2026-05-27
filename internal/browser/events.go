@@ -30,6 +30,8 @@ type NetworkRequest struct {
 	URL        string
 	Type       string
 	StatusCode int
+	StatusText string
+	Duration   float64
 	Timestamp  float64
 }
 
@@ -53,18 +55,50 @@ const maxConsolePerTab = 1000
 const maxNetworkPerTab = 500
 
 type EventBus struct {
-	mu       sync.RWMutex
-	dialogs  map[string]dialogWaiter
-	console  map[int][]ConsoleMessage
-	network  map[int][]NetworkRequest
+	mu             sync.RWMutex
+	dialogs        map[string]dialogWaiter
+	console        map[int][]ConsoleMessage
+	network        map[int][]NetworkRequest
+	enabledDomains map[int]map[string]bool // tabID → domain → enabled
 }
 
 func NewEventBus() *EventBus {
 	return &EventBus{
-		dialogs: make(map[string]dialogWaiter),
-		console: make(map[int][]ConsoleMessage),
-		network: make(map[int][]NetworkRequest),
+		dialogs:        make(map[string]dialogWaiter),
+		console:        make(map[int][]ConsoleMessage),
+		network:        make(map[int][]NetworkRequest),
+		enabledDomains: make(map[int]map[string]bool),
 	}
+}
+
+// IsDomainEnabled reports whether the given CDP domain has already been
+// enabled for the specified tab, so callers can skip redundant enable calls.
+func (b *EventBus) IsDomainEnabled(tabID int, domain string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	dm, ok := b.enabledDomains[tabID]
+	return ok && dm[domain]
+}
+
+// MarkDomainEnabled records that the given CDP domain is now enabled for
+// the specified tab.  Call this after a successful CDP *.enable command.
+func (b *EventBus) MarkDomainEnabled(tabID int, domain string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	dm, ok := b.enabledDomains[tabID]
+	if !ok {
+		dm = make(map[string]bool)
+		b.enabledDomains[tabID] = dm
+	}
+	dm[domain] = true
+}
+
+// ClearDomainTracking removes all domain tracking for the given tab.
+// Call this when a tab is removed or navigated to a new page.
+func (b *EventBus) ClearDomainTracking(tabID int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.enabledDomains, tabID)
 }
 
 func (b *EventBus) HandleEvent(event Event) {
@@ -219,10 +253,12 @@ func (b *EventBus) handleRequestWillBeSent(event Event) {
 
 func (b *EventBus) handleResponseReceived(event Event) {
 	var params struct {
-		RequestID string `json:"requestId"`
+		RequestID string  `json:"requestId"`
+		Timestamp float64 `json:"timestamp"`
 		Response  struct {
-			Status   int    `json:"status"`
-			MimeType string `json:"mimeType"`
+			Status     int    `json:"status"`
+			StatusText string `json:"statusText"`
+			MimeType   string `json:"mimeType"`
 		} `json:"response"`
 	}
 	if len(event.Params) > 0 {
@@ -234,6 +270,10 @@ func (b *EventBus) handleResponseReceived(event Event) {
 	for i := len(requests) - 1; i >= 0; i-- {
 		if requests[i].RequestID == params.RequestID && requests[i].StatusCode == 0 {
 			requests[i].StatusCode = params.Response.Status
+			requests[i].StatusText = params.Response.StatusText
+			if params.Timestamp > 0 && requests[i].Timestamp > 0 {
+				requests[i].Duration = (params.Timestamp - requests[i].Timestamp) * 1000
+			}
 			break
 		}
 	}

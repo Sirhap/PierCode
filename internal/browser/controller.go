@@ -54,6 +54,7 @@ func (c *Controller) HandleEvent(event Event) {
 		c.tabs.ClearDefault(event.TabID)
 		c.events.ClearConsole(event.TabID)
 		c.events.ClearNetwork(event.TabID)
+		c.events.ClearDomainTracking(event.TabID)
 	case "tab_updated":
 		tab := tool.BrowserTab{TabID: event.TabID, URL: event.URL, Title: event.Title}
 		c.tabs.Upsert(tab)

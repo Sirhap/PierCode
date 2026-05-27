@@ -204,14 +204,29 @@ func (c *Controller) Select(ctx context.Context, req tool.BrowserSelectRequest) 
 	if err := c.ask(ctx, req.CallID, "选择下拉选项", tab, target, "选择会修改页面表单值。"); err != nil {
 		return "", err
 	}
-	fn := `function(value) {
+	by := strings.ToLower(strings.TrimSpace(req.By))
+	if by == "" {
+		by = "value"
+	}
+	fn := `function(value, by) {
   if (!(this instanceof HTMLSelectElement)) throw new Error('Target is not a select element');
-  var setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
-  if (setter) setter.call(this, value);
-  else this.value = value;
+  if (by === 'label') {
+    for (var i = 0; i < this.options.length; i++) {
+      if (this.options[i].text === String(value)) {
+        this.selectedIndex = i;
+        break;
+      }
+    }
+  } else if (by === 'index') {
+    this.selectedIndex = parseInt(value, 10);
+  } else {
+    var setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+    if (setter) setter.call(this, value);
+    else this.value = value;
+  }
   this.dispatchEvent(new Event('input', {bubbles: true}));
   this.dispatchEvent(new Event('change', {bubbles: true}));
-  return {selected: this.value};
+  return {selected: this.value, selectedIndex: this.selectedIndex};
 }`
 	if req.Ref != "" {
 		objectID, release, err := c.resolveRefObject(ctx, tab.TabID, req.SnapshotID, req.Ref)
@@ -219,14 +234,14 @@ func (c *Controller) Select(ctx context.Context, req tool.BrowserSelectRequest) 
 			return "", err
 		}
 		defer release()
-		if _, err := c.callFunctionOnObject(ctx, tab.TabID, objectID, fn, []interface{}{req.Value}); err != nil {
+		if _, err := c.callFunctionOnObject(ctx, tab.TabID, objectID, fn, []interface{}{req.Value, by}); err != nil {
 			return "", err
 		}
 	} else {
 		expression := `(function() {
   var el = document.querySelector(` + jsString(req.Selector) + `);
   if (!el) throw new Error('Element not found: ' + ` + jsString(req.Selector) + `);
-  return (` + fn + `).call(el, ` + jsString(req.Value) + `);
+  return (` + fn + `).call(el, ` + jsString(req.Value) + `, ` + jsString(by) + `);
 })()`
 		if _, err := c.runtimeEvaluate(ctx, tab.TabID, expression, false, defaultActionTimeout, true); err != nil {
 			return "", err

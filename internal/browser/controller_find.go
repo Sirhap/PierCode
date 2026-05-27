@@ -270,13 +270,16 @@ func (c *Controller) ReadConsole(ctx context.Context, req tool.BrowserConsoleReq
 	if err != nil {
 		return "", err
 	}
-	if _, err := c.relay.SendCommand(ctx, Command{
-		TabID:  &tab.TabID,
-		Domain: "Runtime",
-		Method: "enable",
-		Params: json.RawMessage(`{}`),
-	}, defaultReadTimeout); err != nil {
-		return "", err
+	if !c.events.IsDomainEnabled(tab.TabID, "Runtime") {
+		if _, err := c.relay.SendCommand(ctx, Command{
+			TabID:  &tab.TabID,
+			Domain: "Runtime",
+			Method: "enable",
+			Params: json.RawMessage(`{}`),
+		}, defaultReadTimeout); err != nil {
+			return "", err
+		}
+		c.events.MarkDomainEnabled(tab.TabID, "Runtime")
 	}
 
 	filter := ConsoleFilter{
@@ -312,13 +315,16 @@ func (c *Controller) ReadNetwork(ctx context.Context, req tool.BrowserNetworkLog
 	if err != nil {
 		return "", err
 	}
-	if _, err := c.relay.SendCommand(ctx, Command{
-		TabID:  &tab.TabID,
-		Domain: "Network",
-		Method: "enable",
-		Params: json.RawMessage(`{}`),
-	}, defaultReadTimeout); err != nil {
-		return "", err
+	if !c.events.IsDomainEnabled(tab.TabID, "Network") {
+		if _, err := c.relay.SendCommand(ctx, Command{
+			TabID:  &tab.TabID,
+			Domain: "Network",
+			Method: "enable",
+			Params: json.RawMessage(`{}`),
+		}, defaultReadTimeout); err != nil {
+			return "", err
+		}
+		c.events.MarkDomainEnabled(tab.TabID, "Network")
 	}
 
 	filter := NetworkFilter{
@@ -346,7 +352,19 @@ func (c *Controller) ReadNetwork(ctx context.Context, req tool.BrowserNetworkLog
 		if r.StatusCode > 0 {
 			status = fmt.Sprintf("%d", r.StatusCode)
 		}
-		sb.WriteString(fmt.Sprintf("%-4s %3s [%-10s] %s\n", r.Method, status, r.Type, r.URL))
+		statusText := r.StatusText
+		if statusText == "" && r.StatusCode > 0 {
+			statusText = ""
+		}
+		duration := ""
+		if r.Duration > 0 {
+			duration = fmt.Sprintf(" %dms", int(r.Duration))
+		}
+		if statusText != "" {
+			sb.WriteString(fmt.Sprintf("%-4s %3s %-12s [%-10s] %s%s\n", r.Method, status, statusText, r.Type, r.URL, duration))
+		} else {
+			sb.WriteString(fmt.Sprintf("%-4s %3s %-12s [%-10s] %s%s\n", r.Method, status, "", r.Type, r.URL, duration))
+		}
 	}
 	return sb.String(), nil
 }

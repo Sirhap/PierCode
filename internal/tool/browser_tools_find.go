@@ -9,7 +9,7 @@ import (
 func NewBrowserFindTool() Tool {
 	return &browserTool{
 		name:        "browser_find",
-		description: "Search page elements by keyword matching against text, aria-label, title, and role. Returns scored results.",
+		description: "Search page elements by keyword matching against text, aria-label, title, and role. Returns scored results with CSS selectors. Use the 'ref' field as the 'selector' parameter in browser_click/browser_hover/browser_type.",
 		parameters: map[string]string{
 			"query":      "string (required) - keywords to search for",
 			"maxResults": "number (optional, default 20) - maximum results to return",
@@ -36,7 +36,7 @@ func NewBrowserFindTool() Tool {
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("Found %d matching elements:\n\n", len(results)))
 			for i, r := range results {
-				sb.WriteString(fmt.Sprintf("%d. [%s] %s - %q (score: %d)\n", i+1, r.Ref, r.Role, r.Text, r.Score))
+				sb.WriteString(fmt.Sprintf("%d. [selector: %s] %s - %q (score: %d)\n", i+1, r.Ref, r.Role, r.Text, r.Score))
 			}
 			return sb.String(), nil
 		},

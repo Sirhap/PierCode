@@ -186,17 +186,22 @@ func NewBrowserGetContentTool() Tool {
 func NewBrowserSelectTool() Tool {
 	return &browserTool{
 		name:        "browser_select",
-		description: "Select an option in a browser <select> element after user approval.",
+		description: "Select an option in a browser <select> element after user approval. Supports selection by value, label (visible text), or index.",
 		parameters: map[string]string{
 			"ref":        "string (optional) - target ref from browser_snapshot",
 			"snapshotId": "string (required with ref) - snapshot id from browser_snapshot",
 			"selector":   "string (optional) - CSS selector fallback",
-			"value":      "string (required) - option value to select",
+			"value":      "string (required) - option value, label text, or index to select",
+			"by":         "string (optional, value|label|index, default value) - how to match the option",
 			"tabId":      "number (optional) - controlled tab id",
 		},
 		validate: func(args map[string]interface{}) error {
 			if stringArg(args, "value") == "" {
 				return fmt.Errorf("value is required")
+			}
+			by := strings.ToLower(stringArg(args, "by"))
+			if by != "" && by != "value" && by != "label" && by != "index" {
+				return fmt.Errorf("by must be value, label, or index")
 			}
 			return validateElementTarget(args)
 		},
@@ -207,6 +212,7 @@ func NewBrowserSelectTool() Tool {
 				Selector:   stringArg(ctx.Args, "selector"),
 				SnapshotID: stringArg(ctx.Args, "snapshotId"),
 				Value:      stringArg(ctx.Args, "value"),
+				By:         stringArg(ctx.Args, "by"),
 				CallID:     stringArg(ctx.Args, "call_id"),
 			})
 		},
