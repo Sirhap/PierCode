@@ -1,0 +1,272 @@
+# PierCode Browser Automation Tools - Complete Inventory
+
+Last Updated: 2026-05-28
+
+## EXECUTIVE SUMMARY
+
+PierCode implements 31 browser automation tools organized across 3 Go files:
+- internal/tool/browser_tools.go (8 tools)
+- internal/tool/browser_tools_ext.go (16 tools)
+- internal/tool/browser_tools_find.go (7 tools)
+
+Backed by Chrome DevTools Protocol (CDP) operations and Chrome extension relay.
+
+## TOOL INVENTORY BY CATEGORY
+
+### 1. TAB MANAGEMENT (4 tools)
+
+1. browser_tabs - List available browser tabs
+2. browser_new_tab - Create new background tab
+3. browser_use_tab - Select existing tab as controlled
+
+### 2. NAVIGATION (5 tools)
+
+4. browser_navigate - Navigate to URL
+5. browser_go_back - History back
+6. browser_go_forward - History forward
+7. browser_reload - Reload page
+
+### 3. CLICKING & POINTING (3 tools)
+
+8. browser_click - Click element
+9. browser_hover - Hover element
+10. browser_drag - Drag element
+
+### 4. TEXT INPUT (2 tools)
+
+11. browser_type - Type text
+12. browser_form_input - Set form values
+
+### 5. FORM CONTROLS (2 tools)
+
+13. browser_select - Select dropdown option
+14. browser_upload - Upload files
+
+### 6. KEYBOARD & DIALOGS (2 tools)
+
+15. browser_press_key - Press key/shortcut
+16. browser_handle_dialog - Handle alert/confirm/prompt
+
+### 7. SNAPSHOTS & SCREENSHOTS (3 tools)
+
+17. browser_snapshot - Get accessibility tree
+18. browser_screenshot - Capture screenshot
+19. browser_zoom - Capture region
+
+### 8. CONTENT EXTRACTION (2 tools)
+
+20. browser_get_content - Extract text/HTML/structured
+21. browser_find - Search elements by keyword
+
+### 9. DEBUGGING & LOGS (3 tools)
+
+22. browser_console - Read console messages
+23. browser_network - Read network requests
+24. browser_cookies - Read cookies
+
+### 10. WAIT CONDITIONS (2 tools)
+
+25. browser_wait - Wait for selector/load state
+26. browser_wait_for_function - Wait for JS condition
+
+### 11. ADVANCED INTERACTION (3 tools)
+
+27. browser_scroll - Scroll page/element
+28. browser_focus - Focus element
+29. browser_evaluate - Execute JavaScript
+
+### 12. EXPORT & UTILITY (2 tools)
+
+30. browser_pdf - Export to PDF
+31. browser_resize - Resize window
+
+## CDP DOMAINS USED
+
+Page - Navigation, screenshots, PDF, dialogs
+Input - Clicking, typing, keyboard, scrolling
+Runtime - JS evaluation, form input, content extraction
+Accessibility - Accessibility tree snapshots
+DOM - Element bounds, scrolling, file upload
+Network - Network request logging
+Browser - Window resizing
+PierCode - Native extension methods
+
+## EVENTS HANDLED
+
+CDP Events:
+- Page.javascriptDialogOpening
+- Runtime.consoleAPICalled
+- Runtime.exceptionThrown
+- Network.requestWillBeSent
+- Network.responseReceived
+
+Tab Lifecycle:
+- tab_removed
+- tab_updated
+- debugger_detached
+
+## SECURITY FEATURES
+
+Approval-Required: 13 tools
+Sensitive-Page Blocked: 11 tools
+URL Policy: Blocks javascript:, data:, vbscript: protocols
+
+## STATISTICS
+
+Total Tools: 31
+Tool Files: 3
+Controller Files: 3
+CDP Domains: 8
+Events Handled: 8
+
+================================================================================
+DETAILED TOOL REFERENCE (31 TOOLS)
+================================================================================
+
+TOOLS 1-7: Tab Management & Navigation
+  1. browser_tabs - List tabs (PierCode.listTabs)
+  2. browser_new_tab - Create tab (PierCode.createTab)
+  3. browser_use_tab - Select tab (PierCode.getTab, approval required)
+  4. browser_navigate - Navigate URL (Page.navigate, approval for cross-origin)
+  5. browser_go_back - History back (Page.navigateToHistoryEntry)
+  6. browser_go_forward - History forward (Page.navigateToHistoryEntry)
+  7. browser_reload - Reload (Page.reload)
+
+TOOLS 8-10: Clicking & Pointing
+  8. browser_click - Click element (Input.dispatchMouseEvent, approval required)
+  9. browser_hover - Hover element (Input.dispatchMouseEvent, approval required)
+  10. browser_drag - Drag element (Input.dispatchMouseEvent, approval required)
+
+TOOLS 11-14: Text Input & Form Controls
+  11. browser_type - Type text (Input.insertText, approval required)
+  12. browser_form_input - Set form values (Runtime.evaluate, approval required)
+  13. browser_select - Select dropdown (Runtime.callFunctionOn, approval required)
+  14. browser_upload - Upload files (DOM.setFileInputFiles, approval required)
+
+TOOLS 15-16: Keyboard & Dialogs
+  15. browser_press_key - Press key (Input.dispatchKeyEvent, approval required)
+  16. browser_handle_dialog - Handle dialog (Page.handleJavaScriptDialog, approval required)
+
+TOOLS 17-19: Snapshots & Screenshots
+  17. browser_snapshot - Get accessibility tree (Accessibility.getFullAXTree)
+  18. browser_screenshot - Capture screenshot (Page.captureScreenshot)
+  19. browser_zoom - Capture region (Page.captureScreenshot with clip)
+
+TOOLS 20-21: Content Extraction
+  20. browser_get_content - Extract content (Runtime.evaluate)
+  21. browser_find - Search elements (Runtime.evaluate)
+
+TOOLS 22-24: Debugging & Logs
+  22. browser_console - Read console (Runtime.enable, events)
+  23. browser_network - Read network (Network.enable, events)
+  24. browser_cookies - Read cookies (PierCode.cookies)
+
+TOOLS 25-26: Wait Conditions
+  25. browser_wait - Wait for selector/load (Runtime.evaluate, polling)
+  26. browser_wait_for_function - Wait for JS (Runtime.evaluate, polling)
+
+TOOLS 27-29: Advanced Interaction
+  27. browser_scroll - Scroll page (Runtime.evaluate or Input.dispatchMouseEvent)
+  28. browser_focus - Focus element (Runtime.callFunctionOn)
+  29. browser_evaluate - Execute JS (Runtime.evaluate, approval required)
+
+TOOLS 30-31: Export & Utility
+  30. browser_pdf - Export PDF (Page.printToPDF)
+  31. browser_resize - Resize window (Browser.setWindowBounds)
+
+================================================================================
+CDP DOMAINS (8 TOTAL)
+================================================================================
+
+Page: navigate, reload, captureScreenshot, printToPDF, handleJavaScriptDialog
+Input: dispatchMouseEvent, dispatchKeyEvent, insertText
+Runtime: evaluate, callFunctionOn, releaseObject
+Accessibility: getFullAXTree
+DOM: getBoxModel, scrollIntoViewIfNeeded, resolveNode, setFileInputFiles
+Network: enable
+Browser: getWindowForTarget, setWindowBounds
+PierCode: listTabs, createTab, getTab, resolveSelectorRect, cookies
+
+================================================================================
+EVENTS HANDLED (8 TOTAL)
+================================================================================
+
+CDP Events:
+  - Page.javascriptDialogOpening (dialogs)
+  - Runtime.consoleAPICalled (console)
+  - Runtime.exceptionThrown (exceptions)
+  - Network.requestWillBeSent (requests)
+  - Network.responseReceived (responses)
+
+Tab Lifecycle:
+  - tab_removed (tab closed)
+  - tab_updated (URL/title changed)
+  - debugger_detached (CDP detached)
+
+================================================================================
+SECURITY SUMMARY
+================================================================================
+
+Approval-Required (13): click, hover, drag, type, form_input, select, upload,
+  handle_dialog, press_key, evaluate, zoom, navigate (cross-origin), use_tab
+
+Sensitive-Page Blocked (11): click, hover, drag, type, form_input, select,
+  upload, handle_dialog, press_key, evaluate, zoom
+
+URL Policy: Blocks javascript:, data:, vbscript: protocols
+
+Keyboard Blocked: Alt+F4, Ctrl+Alt+Del, Windows key
+
+================================================================================
+STATISTICS
+================================================================================
+
+Total Tools: 31
+Tool Files: 3 (browser_tools.go, browser_tools_ext.go, browser_tools_find.go)
+Controller Files: 3 (controller.go, controller_ext.go, controller_find.go)
+CDP Domains: 8
+Events: 8
+Approval-Required: 13 tools
+Sensitive-Page Blocked: 11 tools
+
+Distribution:
+  Tab Management: 4 (13%)
+  Navigation: 5 (16%)
+  Clicking & Pointing: 3 (10%)
+  Text Input: 2 (6%)
+  Form Controls: 2 (6%)
+  Keyboard & Dialogs: 2 (6%)
+  Snapshots & Screenshots: 3 (10%)
+  Content Extraction: 2 (6%)
+  Debugging & Logs: 3 (10%)
+  Wait Conditions: 2 (6%)
+  Advanced Interaction: 3 (10%)
+  Export & Utility: 2 (6%)
+
+================================================================================
+KEY CAPABILITIES
+================================================================================
+
+✅ 31 distinct browser automation tools
+✅ Full Chrome DevTools Protocol support
+✅ Accessibility-first with snapshot refs
+✅ React/Vue compatible via native setters
+✅ Event-driven console/network/dialog capture
+✅ Approval workflow for sensitive operations
+✅ Cross-origin navigation with user consent
+✅ File upload with fallback methods
+✅ PDF export with format options
+✅ Region capture (zoom) for detailed inspection
+✅ Keyboard shortcuts with modifier support
+✅ Drag & drop with interpolation
+✅ Wait conditions with polling
+✅ JavaScript evaluation with error handling
+✅ Network/console logging with filtering
+✅ Cookie management and inspection
+✅ Window resizing and viewport control
+✅ History navigation (back/forward)
+✅ Dialog handling (alert/confirm/prompt)
+✅ Content extraction (text/HTML/structured)
+
+================================================================================
+
