@@ -211,14 +211,24 @@ func (c *Controller) Select(ctx context.Context, req tool.BrowserSelectRequest) 
 	fn := `function(value, by) {
   if (!(this instanceof HTMLSelectElement)) throw new Error('Target is not a select element');
   if (by === 'label') {
+    var found = false;
     for (var i = 0; i < this.options.length; i++) {
       if (this.options[i].text === String(value)) {
         this.selectedIndex = i;
+        found = true;
         break;
       }
     }
+    if (!found) {
+      var labels = [];
+      for (var j = 0; j < this.options.length; j++) labels.push(this.options[j].text);
+      throw new Error('No option with label "' + value + '". Available: ' + labels.join(', '));
+    }
   } else if (by === 'index') {
-    this.selectedIndex = parseInt(value, 10);
+    var idx = parseInt(value, 10);
+    if (isNaN(idx)) throw new Error('Invalid index: ' + value);
+    if (idx < 0 || idx >= this.options.length) throw new Error('Index ' + idx + ' out of range (0-' + (this.options.length - 1) + ')');
+    this.selectedIndex = idx;
   } else {
     var setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
     if (setter) setter.call(this, value);
@@ -960,39 +970,30 @@ func waitLoadStateExpression(loadState string, timeout time.Duration) string {
 func waitForFunctionExpression(expression string, timeout time.Duration) string {
 	return `(function() {
   "use strict";
-  var _fetch = window.fetch;
-  var _open = XMLHttpRequest.prototype.open;
   var expr = ` + jsString(expression) + `;
   function serialize(value) {
     if (value === undefined) return JSON.stringify({type: 'undefined'});
     try { return JSON.stringify({type: typeof value, value: value}); }
     catch (e) { return JSON.stringify({type: typeof value, value: String(value)}); }
   }
-  try {
-    return new Promise((resolve, reject) => {
-      var deadline = Date.now() + ` + fmt.Sprintf("%d", timeout.Milliseconds()) + `;
-      var check = () => {
-        try {
-          var result = (new Function('return (' + expr + ')'))();
-          if (result) resolve(serialize(result));
-          else if (Date.now() > deadline) reject(new Error('Timeout waiting for condition'));
-          else setTimeout(check, 50);
-        } catch(e) { reject(e); }
-      };
-      check();
-    });
-  } finally {
-    window.fetch = _fetch;
-    XMLHttpRequest.prototype.open = _open;
-  }
+  return new Promise((resolve, reject) => {
+    var deadline = Date.now() + ` + fmt.Sprintf("%d", timeout.Milliseconds()) + `;
+    var check = () => {
+      try {
+        var result = (new Function('return (' + expr + ')'))();
+        if (result) resolve(serialize(result));
+        else if (Date.now() > deadline) reject(new Error('Timeout waiting for condition'));
+        else setTimeout(check, 50);
+      } catch(e) { reject(e); }
+    };
+    check();
+  });
 })()`
 }
 
 func evaluateExpression(expression string) string {
 	return `(function() {
   "use strict";
-  var _fetch = window.fetch;
-  var _open = XMLHttpRequest.prototype.open;
   function serialize(value) {
     if (value === undefined) return JSON.stringify({type: 'undefined'});
     if (value === null) return JSON.stringify({type: 'null', value: null});
@@ -1010,9 +1011,6 @@ func evaluateExpression(expression string) string {
     return serialize(__result);
   } catch(e) {
     return JSON.stringify({type: 'error', value: e && e.message ? e.message : String(e)});
-  } finally {
-    window.fetch = _fetch;
-    XMLHttpRequest.prototype.open = _open;
   }
 })()`
 }

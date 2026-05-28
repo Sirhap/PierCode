@@ -62,6 +62,7 @@ func (c *Controller) HandleEvent(event Event) {
 		// Extension's chrome.debugger was detached (e.g. user opened DevTools).
 		// All CDP state (DOM, Accessibility) for this tab is now invalid.
 		c.tabs.MarkStale(event.TabID)
+		c.events.ClearDomainTracking(event.TabID)
 	}
 }
 

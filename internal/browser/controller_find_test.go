@@ -108,8 +108,18 @@ func TestResizeSendsWindowBounds(t *testing.T) {
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
 		}
+		if cmd.TabID == nil || *cmd.TabID != tab.TabID {
+			t.Fatalf("expected Browser command to include tabId %d, got %#v", tab.TabID, cmd.TabID)
+		}
 		switch cmd.Domain + "." + cmd.Method {
 		case "Browser.getWindowForTarget":
+			var params map[string]interface{}
+			if err := json.Unmarshal(cmd.Params, &params); err != nil {
+				t.Fatalf("invalid getWindowForTarget params: %v", err)
+			}
+			if _, ok := params["targetId"]; ok {
+				t.Fatalf("expected getWindowForTarget to use current debugger target, got params %#v", params)
+			}
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"windowId":42}`)})
 		case "Browser.setWindowBounds":
 			if err := json.Unmarshal(cmd.Params, &capturedBounds); err != nil {
@@ -200,6 +210,49 @@ func TestFormInputCheckbox(t *testing.T) {
 	}
 	if !strings.Contains(capturedExpression, "checkbox") {
 		t.Fatalf("expected expression to contain checkbox logic, got %q", capturedExpression)
+	}
+}
+
+func TestFormInputCheckboxPreservesBooleanFalse(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 116, URL: "https://example.com/form", Title: "Form"}
+	var relay *RelayManager
+	var capturedExpression string
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "Runtime.evaluate":
+			var params struct {
+				Expression string `json:"expression"`
+			}
+			if err := json.Unmarshal(cmd.Params, &params); err != nil {
+				t.Fatalf("invalid evaluate params: %v", err)
+			}
+			capturedExpression = params.Expression
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"object","value":{"type":"checkbox","checked":false}}}`)})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	if _, err := controller.FormInput(context.Background(), tool.BrowserFormInputRequest{
+		Selector: "#cb",
+		Value:    false,
+		CallID:   "form-checkbox-false",
+	}); err != nil {
+		t.Fatalf("FormInput returned error: %v", err)
+	}
+	if !strings.Contains(capturedExpression, ".call(el, false)") {
+		t.Fatalf("expected boolean false literal in expression, got %q", capturedExpression)
+	}
+	if strings.Contains(capturedExpression, ".call(el, \"false\")") {
+		t.Fatalf("expected false not to be stringified, got %q", capturedExpression)
 	}
 }
 
@@ -465,6 +518,75 @@ func TestReadNetworkReturnsBufferedRequests(t *testing.T) {
 	}
 }
 
+func TestReadNetworkFormatsStatusTextAndDuration(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 115, URL: "https://example.com", Title: "Network Format"}
+	var relay *RelayManager
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "Network.enable":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	// Buffer a request
+	reqParams, _ := json.Marshal(map[string]interface{}{
+		"requestId": "req-fmt",
+		"request": map[string]interface{}{
+			"url":    "https://example.com/api",
+			"method": "GET",
+		},
+		"type":      "XHR",
+		"timestamp": float64(1000),
+	})
+	controller.HandleEvent(Event{
+		Type:   "browser_event",
+		Event:  "Network.requestWillBeSent",
+		TabID:  tab.TabID,
+		Params: reqParams,
+	})
+
+	// Buffer the response with statusText and timestamp for duration calculation
+	respParams, _ := json.Marshal(map[string]interface{}{
+		"requestId": "req-fmt",
+		"timestamp": float64(1000.25),
+		"response": map[string]interface{}{
+			"status":     200,
+			"statusText": "OK",
+			"mimeType":   "application/json",
+		},
+	})
+	controller.HandleEvent(Event{
+		Type:   "browser_event",
+		Event:  "Network.responseReceived",
+		TabID:  tab.TabID,
+		Params: respParams,
+	})
+
+	out, err := controller.ReadNetwork(context.Background(), tool.BrowserNetworkLogRequest{Limit: 10})
+	if err != nil {
+		t.Fatalf("ReadNetwork returned error: %v", err)
+	}
+	if !strings.Contains(out, "OK") {
+		t.Fatalf("expected statusText 'OK' in output, got %q", out)
+	}
+	if !strings.Contains(out, "200") {
+		t.Fatalf("expected status code 200 in output, got %q", out)
+	}
+	if !strings.Contains(out, "ms") {
+		t.Fatalf("expected duration 'ms' in output, got %q", out)
+	}
+}
+
 func TestZoomRespectsOutputDir(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 109, URL: "https://example.com", Title: "Zoom OutputDir"}
 	var relay *RelayManager
@@ -496,10 +618,10 @@ func TestZoomRespectsOutputDir(t *testing.T) {
 	w := float64(100)
 	h := float64(100)
 	resp, err := controller.Zoom(context.Background(), tool.BrowserZoomRequest{
-		Selector: "#target",
-		Width:    &w,
-		Height:   &h,
-		CallID:   "zoom-outputdir",
+		Selector:  "#target",
+		Width:     &w,
+		Height:    &h,
+		CallID:    "zoom-outputdir",
 		OutputDir: outputDir,
 	})
 	if err != nil {

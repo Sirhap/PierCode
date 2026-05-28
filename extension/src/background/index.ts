@@ -11,6 +11,8 @@ const AI_PAGE_URLS = [
   '*://*.kimi.com/*',
   '*://claude.ai/*',
   '*://*.claude.ai/*',
+  '*://free.easychat.top/*',
+  '*://aistudio.xiaomimimo.com/*',
   '*://chatgpt.com/*',
   '*://*.chatgpt.com/*',
   '*://chat.openai.com/*'
@@ -75,6 +77,10 @@ const attachedTabs = new Set<number>();
 const perTabQueues = new Map<number, Promise<unknown>>();
 const DEBUGGER_EVENTS_TO_RELAY = new Set([
   'Page.javascriptDialogOpening',
+  'Runtime.consoleAPICalled',
+  'Runtime.exceptionThrown',
+  'Network.requestWillBeSent',
+  'Network.responseReceived',
 ]);
 
 async function probeBridge(tabId: number): Promise<BridgeProbe> {

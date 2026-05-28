@@ -302,7 +302,8 @@ func isReadOnlyTool(name string) bool {
 	case "read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question",
 		"todo_read", "task_list", "task_output", "browser_tabs", "browser_snapshot",
 		"browser_screenshot", "browser_wait", "browser_wait_for_function", "browser_get_content",
-		"browser_pdf":
+		"browser_pdf", "browser_cookies", "browser_console", "browser_network",
+		"browser_find":
 		return true
 	default:
 		return false

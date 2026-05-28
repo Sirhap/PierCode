@@ -146,8 +146,9 @@ func (c *Controller) Resize(ctx context.Context, req tool.BrowserResizeRequest) 
 	if err != nil {
 		return "", err
 	}
-	getWinParams, _ := json.Marshal(map[string]interface{}{"targetId": tab.TabID})
+	getWinParams, _ := json.Marshal(map[string]interface{}{})
 	raw, err := c.relay.SendCommand(ctx, Command{
+		TabID:  &tab.TabID,
 		Domain: "Browser",
 		Method: "getWindowForTarget",
 		Params: getWinParams,
@@ -172,6 +173,7 @@ func (c *Controller) Resize(ctx context.Context, req tool.BrowserResizeRequest) 
 		},
 	})
 	if _, err := c.relay.SendCommand(ctx, Command{
+		TabID:  &tab.TabID,
 		Domain: "Browser",
 		Method: "setWindowBounds",
 		Params: boundsParams,
@@ -252,10 +254,14 @@ func (c *Controller) FormInput(ctx context.Context, req tool.BrowserFormInputReq
 			return "", err
 		}
 	} else {
+		valueJSON, err := json.Marshal(req.Value)
+		if err != nil {
+			return "", fmt.Errorf("failed to serialize form input value: %w", err)
+		}
 		expression := `(function() {
   var el = document.querySelector(` + jsString(req.Selector) + `);
   if (!el) throw new Error('Element not found: ' + ` + jsString(req.Selector) + `);
-  return (` + fn + `).call(el, ` + jsString(fmt.Sprintf("%v", req.Value)) + `);
+  return (` + fn + `).call(el, ` + string(valueJSON) + `);
 })()`
 		if _, err := c.runtimeEvaluate(ctx, tab.TabID, expression, false, defaultActionTimeout, true); err != nil {
 			return "", err
@@ -352,19 +358,11 @@ func (c *Controller) ReadNetwork(ctx context.Context, req tool.BrowserNetworkLog
 		if r.StatusCode > 0 {
 			status = fmt.Sprintf("%d", r.StatusCode)
 		}
-		statusText := r.StatusText
-		if statusText == "" && r.StatusCode > 0 {
-			statusText = ""
-		}
 		duration := ""
 		if r.Duration > 0 {
 			duration = fmt.Sprintf(" %dms", int(r.Duration))
 		}
-		if statusText != "" {
-			sb.WriteString(fmt.Sprintf("%-4s %3s %-12s [%-10s] %s%s\n", r.Method, status, statusText, r.Type, r.URL, duration))
-		} else {
-			sb.WriteString(fmt.Sprintf("%-4s %3s %-12s [%-10s] %s%s\n", r.Method, status, "", r.Type, r.URL, duration))
-		}
+		sb.WriteString(fmt.Sprintf("%-4s %3s %-12s [%-10s] %s%s\n", r.Method, status, r.StatusText, r.Type, r.URL, duration))
 	}
 	return sb.String(), nil
 }

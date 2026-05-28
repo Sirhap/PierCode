@@ -118,6 +118,31 @@ func TestHandleEventTabRemovedClearsEventBusBuffers(t *testing.T) {
 	}
 }
 
+func TestDebuggerDetachedClearsDomainTracking(t *testing.T) {
+	controller := NewController(NewRelayManager(func([]byte) bool { return false }), func([]byte) {})
+
+	const tabID = 77
+	controller.events.MarkDomainEnabled(tabID, "Runtime")
+	controller.events.MarkDomainEnabled(tabID, "Network")
+
+	if !controller.events.IsDomainEnabled(tabID, "Runtime") {
+		t.Fatal("expected Runtime domain to be marked enabled")
+	}
+
+	controller.HandleEvent(Event{
+		Type:  "browser_event",
+		Event: "debugger_detached",
+		TabID: tabID,
+	})
+
+	if controller.events.IsDomainEnabled(tabID, "Runtime") {
+		t.Fatal("expected Runtime domain tracking cleared after debugger_detached")
+	}
+	if controller.events.IsDomainEnabled(tabID, "Network") {
+		t.Fatal("expected Network domain tracking cleared after debugger_detached")
+	}
+}
+
 func TestNavigateWithBeforeunloadUsesParentContext(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 60, URL: "https://old.example.com", Title: "Old"}
 	var controller *Controller

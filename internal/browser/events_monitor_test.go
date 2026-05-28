@@ -498,3 +498,25 @@ func TestExceptionEventBufferedAsConsole(t *testing.T) {
 		t.Fatalf("expected timestamp 1234567890, got %f", msg.Timestamp)
 	}
 }
+
+func TestGetConsoleMessagesInvalidRegexReturnsNil(t *testing.T) {
+	bus := NewEventBus()
+	params, _ := json.Marshal(map[string]interface{}{
+		"type": "log",
+		"args": []map[string]interface{}{
+			{"type": "string", "value": "hello"},
+		},
+		"timestamp": float64(1000),
+	})
+	bus.HandleEvent(Event{
+		Type:   "browser_event",
+		Event:  "Runtime.consoleAPICalled",
+		TabID:  1,
+		Params: params,
+	})
+
+	result := bus.GetConsoleMessages(1, ConsoleFilter{Pattern: "[invalid"})
+	if result != nil {
+		t.Fatalf("expected nil for invalid regex, got %v", result)
+	}
+}

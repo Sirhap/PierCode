@@ -288,7 +288,11 @@ func (b *EventBus) GetConsoleMessages(tabID int, filter ConsoleFilter) []Console
 	var result []ConsoleMessage
 	var re *regexp.Regexp
 	if filter.Pattern != "" {
-		re, _ = regexp.Compile(filter.Pattern)
+		var err error
+		re, err = regexp.Compile(filter.Pattern)
+		if err != nil {
+			return nil
+		}
 	}
 
 	for _, msg := range messages {

@@ -207,3 +207,236 @@ func newApprovedController(relay *RelayManager) *Controller {
 	})
 	return controller
 }
+
+func TestSelectByLabelExpressionContainsValidation(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 80, URL: "https://example.com/select", Title: "Select"}
+	var capturedExpr string
+	var relay *RelayManager
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "Runtime.evaluate":
+			var params struct {
+				Expression string `json:"expression"`
+			}
+			if err := json.Unmarshal(cmd.Params, &params); err != nil {
+				t.Fatalf("invalid evaluate params: %v", err)
+			}
+			capturedExpr = params.Expression
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"object","value":{"selected":"opt1","selectedIndex":0}}}`)})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	_, err := controller.Select(context.Background(), tool.BrowserSelectRequest{
+		Selector: "#myselect",
+		Value:    "Option A",
+		By:       "label",
+		CallID:   "select-label-test",
+	})
+	if err != nil {
+		t.Fatalf("Select returned error: %v", err)
+	}
+	if capturedExpr == "" {
+		t.Fatal("expected JS expression to be captured")
+	}
+	if !strings.Contains(capturedExpr, "by === 'label'") {
+		t.Fatalf("expected label validation in expression, got: %s", capturedExpr)
+	}
+	if !strings.Contains(capturedExpr, "No option with label") {
+		t.Fatalf("expected label mismatch error message in expression, got: %s", capturedExpr)
+	}
+}
+
+func TestSelectByIndexExpressionContainsValidation(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 81, URL: "https://example.com/select", Title: "Select"}
+	var capturedExpr string
+	var relay *RelayManager
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "Runtime.evaluate":
+			var params struct {
+				Expression string `json:"expression"`
+			}
+			if err := json.Unmarshal(cmd.Params, &params); err != nil {
+				t.Fatalf("invalid evaluate params: %v", err)
+			}
+			capturedExpr = params.Expression
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"object","value":{"selected":"opt2","selectedIndex":1}}}`)})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	_, err := controller.Select(context.Background(), tool.BrowserSelectRequest{
+		Selector: "#myselect",
+		Value:    "1",
+		By:       "index",
+		CallID:   "select-index-test",
+	})
+	if err != nil {
+		t.Fatalf("Select returned error: %v", err)
+	}
+	if capturedExpr == "" {
+		t.Fatal("expected JS expression to be captured")
+	}
+	if !strings.Contains(capturedExpr, "by === 'index'") {
+		t.Fatalf("expected index validation in expression, got: %s", capturedExpr)
+	}
+	if !strings.Contains(capturedExpr, "isNaN") {
+		t.Fatalf("expected NaN check in expression, got: %s", capturedExpr)
+	}
+	if !strings.Contains(capturedExpr, "out of range") {
+		t.Fatalf("expected bounds check in expression, got: %s", capturedExpr)
+	}
+}
+
+func TestSelectByLabelMismatchPropagatesError(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 82, URL: "https://example.com/select", Title: "Select"}
+	var relay *RelayManager
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "Runtime.evaluate":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: false, Error: `No option with label "Nonexistent". Available: Option A, Option B`})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	_, err := controller.Select(context.Background(), tool.BrowserSelectRequest{
+		Selector: "#myselect",
+		Value:    "Nonexistent",
+		By:       "label",
+		CallID:   "select-label-err",
+	})
+	if err == nil {
+		t.Fatal("expected error for label mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "Nonexistent") {
+		t.Fatalf("expected error to mention the label, got: %v", err)
+	}
+}
+
+func TestSelectByIndexOutOfBoundsPropagatesError(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 83, URL: "https://example.com/select", Title: "Select"}
+	var relay *RelayManager
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "Runtime.evaluate":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: false, Error: "Index 99 out of range (0-2)"})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	_, err := controller.Select(context.Background(), tool.BrowserSelectRequest{
+		Selector: "#myselect",
+		Value:    "99",
+		By:       "index",
+		CallID:   "select-index-err",
+	})
+	if err == nil {
+		t.Fatal("expected error for out-of-bounds index, got nil")
+	}
+	if !strings.Contains(err.Error(), "out of range") {
+		t.Fatalf("expected error to mention range, got: %v", err)
+	}
+}
+
+func TestSelectByDefaultUsesValue(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 84, URL: "https://example.com/select", Title: "Select"}
+	var capturedExpr string
+	var relay *RelayManager
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "Runtime.evaluate":
+			var params struct {
+				Expression string `json:"expression"`
+			}
+			_ = json.Unmarshal(cmd.Params, &params)
+			capturedExpr = params.Expression
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"object","value":{"selected":"opt1","selectedIndex":0}}}`)})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	_, err := controller.Select(context.Background(), tool.BrowserSelectRequest{
+		Selector: "#myselect",
+		Value:    "opt1",
+		CallID:   "select-default-test",
+	})
+	if err != nil {
+		t.Fatalf("Select returned error: %v", err)
+	}
+	// The JS function always contains all branches, but the by parameter should default to "value"
+	if !strings.Contains(capturedExpr, `"opt1", "value"`) {
+		t.Fatalf("expected default 'value' as by parameter in expression, got: %s", capturedExpr)
+	}
+}
+
+func TestEvaluateExpressionNoDeadFetchXHRCode(t *testing.T) {
+	expr := evaluateExpression("document.title")
+	if strings.Contains(expr, "_fetch") {
+		t.Fatal("evaluateExpression should not contain _fetch save/restore dead code")
+	}
+	if strings.Contains(expr, "_open") {
+		t.Fatal("evaluateExpression should not contain _open save/restore dead code")
+	}
+	if strings.Contains(expr, "XMLHttpRequest") {
+		t.Fatal("evaluateExpression should not reference XMLHttpRequest")
+	}
+}
+
+func TestWaitForFunctionExpressionNoDeadFetchXHRCode(t *testing.T) {
+	expr := waitForFunctionExpression("document.readyState === 'complete'", 5*time.Second)
+	if strings.Contains(expr, "_fetch") {
+		t.Fatal("waitForFunctionExpression should not contain _fetch save/restore dead code")
+	}
+	if strings.Contains(expr, "_open") {
+		t.Fatal("waitForFunctionExpression should not contain _open save/restore dead code")
+	}
+	if strings.Contains(expr, "XMLHttpRequest") {
+		t.Fatal("waitForFunctionExpression should not reference XMLHttpRequest")
+	}
+}

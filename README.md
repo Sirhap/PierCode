@@ -123,6 +123,7 @@ go build -o piercode.exe ./cmd/server
 | `browser_navigate` / `browser_snapshot` | 导航受控标签页并读取可访问性树快照；页面理解优先使用 snapshot refs |
 | `browser_click` / `browser_type` | 经用户确认后点击或输入；操作后旧 snapshot refs 视为失效 |
 | `browser_screenshot` | 截取受控标签页截图并保存到工作区 `.piercode/screenshots` |
+| `browser_cookies` | 按指定 domain 或 URL 读取 Cookie；Cookie 值默认返回，调用前应确认确实需要 |
 
 `/prompt` 会根据当前工作目录和已注册工具动态渲染初始化提示词。
 
@@ -155,7 +156,7 @@ PierCode 可以通过 Chrome 扩展的 background service worker 使用 `chrome.
 - `browser_click`、`browser_type`、`browser_upload`、`browser_evaluate` 等会改变页面或读取/执行页面脚本的工具会弹出确认面板，用户拒绝时工具失败；点击、输入、上传、导航后旧 snapshot refs 视为失效，需要重新 snapshot。
 - `browser_screenshot` 只在视觉布局、图片、图表或渲染外观重要时使用，截图保存为工作区 `.piercode/screenshots` 下的图片文件，不把图片数据内联回对话。
 - 拒绝 `file:`、`chrome:`、`chrome-extension:`、`javascript:`、`data:` 等高风险导航。
-- 不提供 Cookie、localStorage 或 sessionStorage 专用读取工具；`browser_evaluate` 属于审批工具，只应在明确需要页面内表达式时使用。
+- `browser_cookies` 必须指定 domain 或 URL，避免无范围导出 Cookie；不提供 localStorage 或 sessionStorage 专用读取工具。`browser_evaluate` 属于审批工具，只应在明确需要页面内表达式时使用。
 
 手工验收建议：
 
