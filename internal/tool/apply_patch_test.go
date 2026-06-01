@@ -355,3 +355,62 @@ func TestDetectCRLF(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyPatchFuzzyIndentFallback(t *testing.T) {
+	t.Run("matches despite indentation difference", func(t *testing.T) {
+		cfg := testConfig(t)
+		p := filepath.Join(cfg.RootDir, "f.go")
+		// 文件用 tab 缩进
+		os.WriteFile(p, []byte("func f() {\n\treturn 1\n}\n"), 0644)
+		// 补丁上下文用空格缩进(模型常见偏差)
+		res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+			"patch": strings.Join([]string{
+				"*** Begin Patch",
+				"*** Update File: f.go",
+				"@@",
+				"    return 1",
+				"+\t// added",
+				"*** End Patch",
+			}, "\n"),
+		}))
+		if res.Status != "success" {
+			t.Fatalf("fuzzy fallback should succeed: %s", res.Error)
+		}
+		got, _ := os.ReadFile(p)
+		if !strings.Contains(string(got), "// added") {
+			t.Fatalf("expected added line, got %q", got)
+		}
+	})
+
+	t.Run("rejects ambiguous trimmed match", func(t *testing.T) {
+		cfg := testConfig(t)
+		p := filepath.Join(cfg.RootDir, "f.txt")
+		// "x" 两处, 缩进不同但 trim 后都等于 "x"
+		os.WriteFile(p, []byte("\tx\n    x\n"), 0644)
+		res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+			"patch": strings.Join([]string{
+				"*** Begin Patch", "*** Update File: f.txt", "@@", "x", "+y", "*** End Patch",
+			}, "\n"),
+		}))
+		if res.Status != "error" {
+			t.Fatalf("ambiguous trimmed match should fail, got %s", res.Status)
+		}
+	})
+
+	t.Run("exact match still preferred and unaffected", func(t *testing.T) {
+		cfg := testConfig(t)
+		p := filepath.Join(cfg.RootDir, "f.txt")
+		os.WriteFile(p, []byte("alpha\nbeta\n"), 0644)
+		res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+			"patch": strings.Join([]string{
+				"*** Begin Patch", "*** Update File: f.txt", "@@", "-beta", "+BETA", "*** End Patch",
+			}, "\n"),
+		}))
+		if res.Status != "success" {
+			t.Fatalf("exact match failed: %s", res.Error)
+		}
+		if got, _ := os.ReadFile(p); string(got) != "alpha\nBETA\n" {
+			t.Fatalf("unexpected: %q", got)
+		}
+	})
+}

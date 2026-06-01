@@ -500,9 +500,17 @@ func applyPatchHunk(content string, hunk patchHunk) (string, int, int, error) {
 	lines, style := splitContentLines(content)
 	idx, count := findLineRun(lines, hunk.oldLines)
 	if count == 0 {
-		return "", 0, 0, errors.New("hunk context not found")
-	}
-	if count > 1 {
+		// Exact whole-line match failed. Fall back to comparing lines with
+		// leading/trailing whitespace trimmed, which absorbs indentation
+		// differences in the patch the model produced. Only accept it when the
+		// trimmed match is unique, so we never guess between candidates.
+		tIdx, tCount := findLineRunTrimmed(lines, hunk.oldLines)
+		if tCount == 1 {
+			idx = tIdx
+		} else {
+			return "", 0, 0, errors.New("hunk context not found")
+		}
+	} else if count > 1 {
 		return "", 0, 0, errors.New("hunk context is ambiguous; add more surrounding context")
 	}
 
@@ -542,6 +550,40 @@ func linesEqual(a, b []string) bool {
 	}
 	for i := range a {
 		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// findLineRunTrimmed is like findLineRun but compares lines after trimming
+// leading/trailing whitespace, so a hunk whose indentation differs from the
+// file still matches. Used only as a fallback when the exact match fails.
+func findLineRunTrimmed(lines, run []string) (firstIdx, count int) {
+	firstIdx = -1
+	if len(run) == 0 || len(run) > len(lines) {
+		return -1, 0
+	}
+	for i := 0; i+len(run) <= len(lines); {
+		if linesEqualTrimmed(lines[i:i+len(run)], run) {
+			if firstIdx == -1 {
+				firstIdx = i
+			}
+			count++
+			i += len(run)
+			continue
+		}
+		i++
+	}
+	return firstIdx, count
+}
+
+func linesEqualTrimmed(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if strings.TrimSpace(a[i]) != strings.TrimSpace(b[i]) {
 			return false
 		}
 	}
