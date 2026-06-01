@@ -101,29 +101,17 @@ func TestFindEmptyQueryReturnsEmpty(t *testing.T) {
 func TestResizeSendsWindowBounds(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 103, URL: "https://example.com", Title: "Resize Page"}
 	var relay *RelayManager
-	var capturedBounds map[string]interface{}
+	var capturedParams map[string]interface{}
 
 	relay = NewRelayManager(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
 		}
-		if cmd.TabID == nil || *cmd.TabID != tab.TabID {
-			t.Fatalf("expected Browser command to include tabId %d, got %#v", tab.TabID, cmd.TabID)
-		}
 		switch cmd.Domain + "." + cmd.Method {
-		case "Browser.getWindowForTarget":
-			var params map[string]interface{}
-			if err := json.Unmarshal(cmd.Params, &params); err != nil {
-				t.Fatalf("invalid getWindowForTarget params: %v", err)
-			}
-			if _, ok := params["targetId"]; ok {
-				t.Fatalf("expected getWindowForTarget to use current debugger target, got params %#v", params)
-			}
-			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"windowId":42}`)})
-		case "Browser.setWindowBounds":
-			if err := json.Unmarshal(cmd.Params, &capturedBounds); err != nil {
-				t.Fatalf("invalid setWindowBounds params: %v", err)
+		case "PierCode.resizeWindow":
+			if err := json.Unmarshal(cmd.Params, &capturedParams); err != nil {
+				t.Fatalf("invalid resizeWindow params: %v", err)
 			}
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
 		default:
@@ -144,22 +132,17 @@ func TestResizeSendsWindowBounds(t *testing.T) {
 	if !strings.Contains(out, "1280") || !strings.Contains(out, "720") {
 		t.Fatalf("expected dimensions in output, got %q", out)
 	}
-	if capturedBounds == nil {
-		t.Fatal("expected Browser.setWindowBounds to be called")
+	if capturedParams == nil {
+		t.Fatal("expected PierCode.resizeWindow to be called")
 	}
-	windowID, ok := capturedBounds["windowId"].(float64)
-	if !ok || windowID != 42 {
-		t.Fatalf("expected windowId 42, got %#v", capturedBounds["windowId"])
+	if tabID, ok := capturedParams["tabId"].(float64); !ok || int(tabID) != tab.TabID {
+		t.Fatalf("expected tabId %d, got %#v", tab.TabID, capturedParams["tabId"])
 	}
-	bounds, ok := capturedBounds["bounds"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected bounds map, got %#v", capturedBounds["bounds"])
+	if capturedParams["width"].(float64) != 1280 {
+		t.Fatalf("expected width 1280, got %v", capturedParams["width"])
 	}
-	if bounds["width"].(float64) != 1280 {
-		t.Fatalf("expected width 1280, got %v", bounds["width"])
-	}
-	if bounds["height"].(float64) != 720 {
-		t.Fatalf("expected height 720, got %v", bounds["height"])
+	if capturedParams["height"].(float64) != 720 {
+		t.Fatalf("expected height 720, got %v", capturedParams["height"])
 	}
 }
 
@@ -380,6 +363,69 @@ func TestZoomCapturesRegion(t *testing.T) {
 	}
 	if screenshotParams.Clip.Y != 20 {
 		t.Fatalf("expected clip y 20, got %f", screenshotParams.Clip.Y)
+	}
+}
+
+func TestZoomCapturesRefRegion(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 110, URL: "https://example.com", Title: "Zoom Ref Page"}
+	var relay *RelayManager
+	var screenshotParams struct {
+		Clip struct {
+			X      float64 `json:"x"`
+			Y      float64 `json:"y"`
+			Width  float64 `json:"width"`
+			Height float64 `json:"height"`
+		} `json:"clip"`
+	}
+
+	imgBytes := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01}
+	imgBase64 := base64.StdEncoding.EncodeToString(imgBytes)
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "Page.captureScreenshot":
+			if err := json.Unmarshal(cmd.Params, &screenshotParams); err != nil {
+				t.Fatalf("invalid screenshot params: %v", err)
+			}
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(fmt.Sprintf(`{"data":"%s"}`, imgBase64))})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+	controller.tabs.StoreSnapshot(tab, "snap_zoom", []RefTarget{{
+		Ref:    "e0",
+		Role:   "button",
+		Name:   "Target",
+		Bounds: &Bounds{X: 33, Y: 44, Width: 111, Height: 222},
+	}})
+
+	w := float64(50)
+	h := float64(60)
+	resp, err := controller.Zoom(context.Background(), tool.BrowserZoomRequest{
+		Ref:        "e0",
+		SnapshotID: "snap_zoom",
+		Width:      &w,
+		Height:     &h,
+		CallID:     "zoom-ref-test",
+	})
+	if err != nil {
+		t.Fatalf("Zoom returned error: %v", err)
+	}
+	if resp.FilePath == "" {
+		t.Fatal("expected non-empty file path in response")
+	}
+	if screenshotParams.Clip.X != 33 || screenshotParams.Clip.Y != 44 {
+		t.Fatalf("expected clip origin 33,44, got %f,%f", screenshotParams.Clip.X, screenshotParams.Clip.Y)
+	}
+	if screenshotParams.Clip.Width != 50 || screenshotParams.Clip.Height != 60 {
+		t.Fatalf("expected clip size 50x60, got %fx%f", screenshotParams.Clip.Width, screenshotParams.Clip.Height)
 	}
 }
 

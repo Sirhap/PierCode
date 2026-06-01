@@ -130,6 +130,9 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserConsoleTool())
 	e.registry.Register(tool.NewBrowserNetworkTool())
 	e.registry.Register(tool.NewBrowserCookiesTool())
+	e.registry.Register(tool.NewBrowserFinalizeTabsTool())
+	e.registry.Register(tool.NewBrowserViewportTool())
+	e.registry.Register(tool.NewBrowserDownloadsTool())
 	return e
 }
 
@@ -234,8 +237,14 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	// 路径在 sandbox 内，AI 用 write_file 即可改写，从而永久篡改自己的系统
 	// 提示词。改为只信任二进制内嵌的 DefaultPrompt（prompts/prompts.go 通过
 	// //go:embed 提供）。
-	n := e.callCount.Add(1)
-	e.appendPromptGuidance(resp, n, req.Profile)
+	// Only inject operating reminders when the call originates from an AI
+	// client (SourceClientID is set). Direct /exec API calls from the TUI,
+	// CLI, or E2E tests should return clean tool output without prompt
+	// guidance appended.
+	if req.SourceClientID != "" {
+		n := e.callCount.Add(1)
+		e.appendPromptGuidance(resp, n, req.Profile)
+	}
 
 	return resp
 }

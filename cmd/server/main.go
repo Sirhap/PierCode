@@ -29,6 +29,7 @@ func main() {
 	showToken := flag.Bool("show-token", true, "在终端打印本次启动的认证 URL（含临时 token）。设 --show-token=false 可隐藏，隐藏后需重启并显示 token 才能重新授权")
 	allowedOrigins := flag.String("allowed-origins", "", "允许的 CORS/WS Origin 白名单（逗号分隔），默认仅放行 chrome-extension:// 与 127.0.0.1")
 	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 piercode 进程占用，强制结束该进程")
+	fixedToken := flag.String("token", "", "使用固定的认证 token（而非随机生成），方便扩展重启后自动重连")
 	flag.Parse()
 
 	absDir, err := filepath.Abs(*dir)
@@ -57,9 +58,15 @@ func main() {
 	}
 	ln.Close()
 
-	token, err := security.NewSessionToken()
-	if err != nil {
-		log.Fatal(err)
+	var token string
+	if *fixedToken != "" {
+		token = *fixedToken
+	} else {
+		var err error
+		token, err = security.NewSessionToken()
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	var origins []string

@@ -273,3 +273,16 @@ func (f *fakeBrowserController) ReadNetwork(context.Context, BrowserNetworkLogRe
 func (f *fakeBrowserController) Cookies(context.Context, BrowserCookiesRequest) (BrowserCookiesResponse, error) {
 	return BrowserCookiesResponse{}, nil
 }
+func (f *fakeBrowserController) FinalizeTabs(context.Context, BrowserFinalizeTabsRequest) (BrowserFinalizeTabsResponse, error) {
+	return BrowserFinalizeTabsResponse{}, nil
+}
+func (f *fakeBrowserController) Viewport(context.Context, BrowserViewportRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) Downloads(context.Context, BrowserDownloadsRequest) (BrowserDownloadsResponse, error) {
+	return BrowserDownloadsResponse{
+		Downloads: []BrowserDownload{{ID: "1", State: "complete", Filename: "report.pdf"}},
+		Count:     1,
+		Total:     1,
+	}, nil
+}

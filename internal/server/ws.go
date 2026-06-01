@@ -17,6 +17,7 @@ import (
 const (
 	wsClientQueueSize = 64
 	wsWriteTimeout    = 5 * time.Second
+	wsReadTimeout     = 60 * time.Second
 )
 
 // clientConn wraps one WebSocket connection. Its writePump is the only

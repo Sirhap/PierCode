@@ -60,6 +60,12 @@ export type BrowserApprovalAskMessage = {
   options?: string[];
 };
 
+export type BrowserApprovalDoneMessage = {
+  type: 'browser_approval_done';
+  approval_id: string;
+  call_id?: string;
+};
+
 export type BrowserAttachmentUploadMessage = {
   type: 'browser_attachment_upload';
   call_id: string;
@@ -74,6 +80,7 @@ type DoneHandler = (msg: ToolDoneMessage) => void;
 type QuestionAskHandler = (msg: QuestionAskMessage) => void;
 type QuestionCancelHandler = (msg: QuestionCancelMessage) => void;
 type BrowserApprovalAskHandler = (msg: BrowserApprovalAskMessage) => void;
+type BrowserApprovalDoneHandler = (msg: BrowserApprovalDoneMessage) => void;
 type BrowserAttachmentUploadHandler = (msg: BrowserAttachmentUploadMessage) => void;
 
 const streamHandlers: StreamHandler[] = [];
@@ -81,7 +88,9 @@ const doneHandlers: DoneHandler[] = [];
 const questionAskHandlers: QuestionAskHandler[] = [];
 const questionCancelHandlers: QuestionCancelHandler[] = [];
 const browserApprovalAskHandlers: BrowserApprovalAskHandler[] = [];
+const browserApprovalDoneHandlers: BrowserApprovalDoneHandler[] = [];
 const browserAttachmentUploadHandlers: BrowserAttachmentUploadHandler[] = [];
+const answeredBrowserApprovals = new Set<string>();
 
 function getOrCreateClientId(): string {
   try {
@@ -137,6 +146,14 @@ export function onBrowserApprovalAsk(handler: BrowserApprovalAskHandler): () => 
   return () => {
     const idx = browserApprovalAskHandlers.indexOf(handler);
     if (idx >= 0) browserApprovalAskHandlers.splice(idx, 1);
+  };
+}
+
+export function onBrowserApprovalDone(handler: BrowserApprovalDoneHandler): () => void {
+  browserApprovalDoneHandlers.push(handler);
+  return () => {
+    const idx = browserApprovalDoneHandlers.indexOf(handler);
+    if (idx >= 0) browserApprovalDoneHandlers.splice(idx, 1);
   };
 }
 
@@ -487,6 +504,10 @@ function connectWebSocket(apiUrl: string, token: string) {
           for (const handler of browserApprovalAskHandlers.slice()) {
             try { handler(msg as BrowserApprovalAskMessage); } catch (e) { console.error(e); }
           }
+        } else if (msg.type === "browser_approval_done" && typeof msg.approval_id === "string") {
+          for (const handler of browserApprovalDoneHandlers.slice()) {
+            try { handler(msg as BrowserApprovalDoneMessage); } catch (e) { console.error(e); }
+          }
         } else if (msg.type === "browser_attachment_upload" && typeof msg.call_id === "string") {
           for (const handler of browserAttachmentUploadHandlers.slice()) {
             try { handler(msg as BrowserAttachmentUploadMessage); } catch (e) { console.error(e); }
@@ -686,8 +707,10 @@ export function sendBrowserApprovalAnswer(approvalID: string, approved: boolean,
     console.warn("[PierCode] WebSocket 未连接，无法发送 browser approval");
     return false;
   }
+  if (answeredBrowserApprovals.has(approvalID)) return true;
   try {
     ws.send(JSON.stringify({ type: "browser_approval_answer", approval_id: approvalID, approved, reason }));
+    answeredBrowserApprovals.add(approvalID);
     return true;
   } catch (error) {
     console.warn("[PierCode] browser_approval_answer 发送失败:", error);

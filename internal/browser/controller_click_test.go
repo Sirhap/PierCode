@@ -158,11 +158,159 @@ func TestDispatchClickMiddleButton(t *testing.T) {
 	}
 }
 
+func TestDispatchDragUsesMinimalMouseSequence(t *testing.T) {
+	var commands []Command
+	var relay *RelayManager
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		commands = append(commands, cmd)
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		return true
+	})
+	controller := NewController(relay, func([]byte) {})
+
+	if err := controller.dispatchDrag(context.Background(), 1, Point{X: 10, Y: 20}, Point{X: 100, Y: 120}); err != nil {
+		t.Fatalf("dispatchDrag returned error: %v", err)
+	}
+	if len(commands) != 5 {
+		t.Fatalf("expected 5 drag commands, got %d", len(commands))
+	}
+	var first, last map[string]interface{}
+	if err := json.Unmarshal(commands[0].Params, &first); err != nil {
+		t.Fatalf("unmarshal first drag params: %v", err)
+	}
+	if err := json.Unmarshal(commands[4].Params, &last); err != nil {
+		t.Fatalf("unmarshal last drag params: %v", err)
+	}
+	if first["type"] != "mouseMoved" || first["button"] != "none" {
+		t.Fatalf("unexpected first drag event: %#v", first)
+	}
+	if last["type"] != "mouseReleased" || last["buttons"] != float64(0) {
+		t.Fatalf("unexpected last drag event: %#v", last)
+	}
+}
+
+func TestBrowserTypeVerifiesTextLanded(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 61, URL: "https://example.com/orders", Title: "Orders", Controlled: true}
+	var sawInsert bool
+	var sawVerify bool
+	var controller *Controller
+	var relay *RelayManager
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "PierCode.getTab":
+			data, _ := json.Marshal(tab)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		case "PierCode.resolveSelectorRect":
+			data, _ := json.Marshal(Bounds{X: 10, Y: 20, Width: 100, Height: 30})
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		case "Input.dispatchMouseEvent", "Input.dispatchKeyEvent":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		case "Input.insertText":
+			sawInsert = true
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		case "Runtime.evaluate":
+			if !sawInsert {
+				t.Fatal("verification ran before Input.insertText")
+			}
+			sawVerify = true
+			data := json.RawMessage(`{"result":{"type":"object","value":{"ok":true,"changed":true,"before":"","after":"Grace Hopper","type":"input"}}}`)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+
+	controller = NewController(relay, func(payload []byte) {
+		var ask ApprovalAsk
+		if err := json.Unmarshal(payload, &ask); err != nil {
+			t.Fatalf("invalid approval payload: %v", err)
+		}
+		go controller.DeliverApproval(ApprovalAnswer{ApprovalID: ask.ApprovalID, Approved: true})
+	})
+	controller.tabs.SetDefault(tab)
+
+	out, err := controller.Type(context.Background(), tool.BrowserTypeRequest{
+		TabID:    intPtr(tab.TabID),
+		Selector: "#search",
+		Text:     "Grace Hopper",
+		Clear:    true,
+		CallID:   "type-verify",
+	})
+	if err != nil {
+		t.Fatalf("Type returned error: %v", err)
+	}
+	if !sawVerify {
+		t.Fatal("expected Type to verify the target value after insertText")
+	}
+	if out == "" {
+		t.Fatal("expected non-empty output")
+	}
+}
+
+func TestBrowserTypeFailsWhenTextDoesNotLand(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 62, URL: "https://example.com/orders", Title: "Orders", Controlled: true}
+	var controller *Controller
+	var relay *RelayManager
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "PierCode.getTab":
+			data, _ := json.Marshal(tab)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		case "PierCode.resolveSelectorRect":
+			data, _ := json.Marshal(Bounds{X: 10, Y: 20, Width: 100, Height: 30})
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		case "Input.dispatchMouseEvent", "Input.dispatchKeyEvent", "Input.insertText":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		case "Runtime.evaluate":
+			data := json.RawMessage(`{"result":{"type":"object","value":{"ok":false,"changed":true,"before":"","after":"","type":"input"}}}`)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+
+	controller = NewController(relay, func(payload []byte) {
+		var ask ApprovalAsk
+		if err := json.Unmarshal(payload, &ask); err != nil {
+			t.Fatalf("invalid approval payload: %v", err)
+		}
+		go controller.DeliverApproval(ApprovalAnswer{ApprovalID: ask.ApprovalID, Approved: true})
+	})
+	controller.tabs.SetDefault(tab)
+
+	_, err := controller.Type(context.Background(), tool.BrowserTypeRequest{
+		TabID:    intPtr(tab.TabID),
+		Selector: "#search",
+		Text:     "Grace Hopper",
+		Clear:    true,
+		CallID:   "type-fail",
+	})
+	if err == nil {
+		t.Fatal("expected Type to fail when verification reports the text is absent")
+	}
+}
+
 func TestNavigateWithBeforeunloadAccept(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 50, URL: "https://old.example.com", Title: "Old"}
 	var controller *Controller
 	var relay *RelayManager
-	var dialogHandled map[string]interface{}
+	dialogHandled := make(chan map[string]interface{}, 1)
 
 	relay = NewRelayManager(func(payload []byte) bool {
 		var cmd Command
@@ -197,7 +345,10 @@ func TestNavigateWithBeforeunloadAccept(t *testing.T) {
 			if err := json.Unmarshal(cmd.Params, &params); err != nil {
 				t.Fatalf("invalid dialog params: %v", err)
 			}
-			dialogHandled = params
+			select {
+			case dialogHandled <- params:
+			default:
+			}
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
@@ -222,22 +373,14 @@ func TestNavigateWithBeforeunloadAccept(t *testing.T) {
 		t.Fatalf("expected tabID %d, got %d", tab.TabID, result.TabID)
 	}
 
-	// Wait for the goroutine to send the dialog command
-	deadline := time.After(2 * time.Second)
-	for {
-		if dialogHandled != nil {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("expected Page.handleJavaScriptDialog command to be sent")
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
+	var params map[string]interface{}
+	select {
+	case params = <-dialogHandled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected Page.handleJavaScriptDialog command to be sent")
 	}
-
-	if dialogHandled["accept"] != true {
-		t.Fatalf("expected accept=true, got %#v", dialogHandled["accept"])
+	if params["accept"] != true {
+		t.Fatalf("expected accept=true, got %#v", params["accept"])
 	}
 }
 
@@ -245,7 +388,7 @@ func TestNavigateWithBeforeunloadDismiss(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 51, URL: "https://old.example.com", Title: "Old"}
 	var controller *Controller
 	var relay *RelayManager
-	var dialogHandled map[string]interface{}
+	dialogHandled := make(chan map[string]interface{}, 1)
 
 	relay = NewRelayManager(func(payload []byte) bool {
 		var cmd Command
@@ -278,7 +421,10 @@ func TestNavigateWithBeforeunloadDismiss(t *testing.T) {
 			if err := json.Unmarshal(cmd.Params, &params); err != nil {
 				t.Fatalf("invalid dialog params: %v", err)
 			}
-			dialogHandled = params
+			select {
+			case dialogHandled <- params:
+			default:
+			}
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
@@ -303,21 +449,14 @@ func TestNavigateWithBeforeunloadDismiss(t *testing.T) {
 		t.Fatalf("expected tabID %d, got %d", tab.TabID, result.TabID)
 	}
 
-	deadline := time.After(2 * time.Second)
-	for {
-		if dialogHandled != nil {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("expected Page.handleJavaScriptDialog command to be sent")
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
+	var params map[string]interface{}
+	select {
+	case params = <-dialogHandled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected Page.handleJavaScriptDialog command to be sent")
 	}
-
-	if dialogHandled["accept"] != false {
-		t.Fatalf("expected accept=false, got %#v", dialogHandled["accept"])
+	if params["accept"] != false {
+		t.Fatalf("expected accept=false, got %#v", params["accept"])
 	}
 }
 

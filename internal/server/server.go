@@ -429,6 +429,10 @@ func (s *Server) handleWS(c *gin.Context) {
 		}
 	}()
 
+	// 设置读超时，检测 MV3 service worker 休眠后的僵死连接。
+	// 扩展每 20 秒发送 browser_ping，60 秒超时 = 3 倍 ping 间隔。
+	_ = conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
+
 	// 保持连接，处理可能的客户端消息（目前仅广播，不处理客户端发送）
 	for {
 		_, payload, err := conn.ReadMessage()
@@ -438,6 +442,8 @@ func (s *Server) handleWS(c *gin.Context) {
 			}
 			break
 		}
+		// 每次收到消息后刷新读超时
+		_ = conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 		s.handleWSClientMessage(payload)
 	}
 }

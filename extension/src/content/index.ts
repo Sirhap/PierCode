@@ -1,7 +1,7 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
 import { extractMonacoText, findQwenToolBody, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
-import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId } from './ws-linker';
+import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId } from './ws-linker';
 import { visualIndicator } from './visual-indicator';
 import { exposeAccessibilityTree, generateAccessibilityTree, getElementCoordinates, scrollToElement, clickElement, searchElements } from './accessibility-tree';
 
@@ -180,6 +180,7 @@ function ensureStreamDispatchers() {
   onToolDone(msg => {
     const id = msg.call_id || msg.task_id;
     if (!id) return;
+    dismissBrowserApprovalPopupForCall(id);
     const handler = streamDoneSubs.get(id);
     if (handler) handler(msg.exit_code, msg.status, msg.error || '', msg.duration_ms);
   });
@@ -191,6 +192,9 @@ function ensureStreamDispatchers() {
   });
   onBrowserApprovalAsk(msg => {
     showBrowserApprovalPopup(msg);
+  });
+  onBrowserApprovalDone(msg => {
+    dismissBrowserApprovalPopup(msg.approval_id, msg.call_id);
   });
 }
 
@@ -357,6 +361,7 @@ function dismissRemoteQuestionPopup(callID: string) {
 
 function showBrowserApprovalPopup(msg: {
   approval_id: string;
+  call_id?: string;
   action: string;
   tab?: { tabId?: number; title?: string; url?: string };
   target: string;
@@ -364,6 +369,7 @@ function showBrowserApprovalPopup(msg: {
 }) {
   const existing = activeBrowserApprovalPopups.get(msg.approval_id);
   if (existing) existing.remove();
+  if (msg.call_id) dismissBrowserApprovalPopupForCall(msg.call_id);
   const tabLine = msg.tab
     ? `tabId=${msg.tab.tabId ?? ''}\n标题：${msg.tab.title || '(untitled)'}\nURL：${msg.tab.url || '(unknown)'}`
     : '目标标签页未知';
@@ -389,7 +395,25 @@ function showBrowserApprovalPopup(msg: {
     },
   });
   panel.dataset.piercodeBrowserApprovalId = msg.approval_id;
+  if (msg.call_id) panel.dataset.piercodeBrowserApprovalCallId = msg.call_id;
   activeBrowserApprovalPopups.set(msg.approval_id, panel);
+}
+
+function dismissBrowserApprovalPopupForCall(callID: string) {
+  for (const [approvalID, el] of activeBrowserApprovalPopups) {
+    if (el.dataset.piercodeBrowserApprovalCallId !== callID) continue;
+    el.remove();
+    activeBrowserApprovalPopups.delete(approvalID);
+  }
+}
+
+function dismissBrowserApprovalPopup(approvalID: string, callID?: string) {
+  const el = activeBrowserApprovalPopups.get(approvalID);
+  if (el) {
+    el.remove();
+    activeBrowserApprovalPopups.delete(approvalID);
+  }
+  if (callID) dismissBrowserApprovalPopupForCall(callID);
 }
 
 type InlineQuestionPanelOptions = {

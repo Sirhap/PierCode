@@ -38,6 +38,7 @@ type TabRegistry struct {
 	snapshots map[int][]*snapshotCache
 	// [Fixed by mimo-v2.5-pro: track AI page approval state from browser_use_tab]
 	approved map[int]bool
+	tracking map[int]string
 }
 
 func NewTabRegistry() *TabRegistry {
@@ -45,6 +46,7 @@ func NewTabRegistry() *TabRegistry {
 		tabs:      make(map[int]tool.BrowserTab),
 		snapshots: make(map[int][]*snapshotCache),
 		approved:  make(map[int]bool),
+		tracking:  make(map[int]string),
 	}
 }
 
@@ -53,6 +55,7 @@ func (r *TabRegistry) SetDefault(tab tool.BrowserTab) {
 	defer r.mu.Unlock()
 	id := tab.TabID
 	tab.Controlled = true
+	tab = r.enrichLocked(tab)
 	r.defaultID = &id
 	r.tabs[id] = tab
 }
@@ -66,6 +69,7 @@ func (r *TabRegistry) ClearDefault(tabID int) {
 	delete(r.tabs, tabID)
 	delete(r.snapshots, tabID)
 	delete(r.approved, tabID)
+	delete(r.tracking, tabID)
 }
 
 // MarkApproved records that a tab has been explicitly approved for AI automation
@@ -92,6 +96,7 @@ func (r *TabRegistry) DefaultTab() (tool.BrowserTab, bool) {
 		return tool.BrowserTab{}, false
 	}
 	tab, ok := r.tabs[*r.defaultID]
+	tab = r.enrichLocked(tab)
 	return tab, ok
 }
 
@@ -101,7 +106,57 @@ func (r *TabRegistry) Upsert(tab tool.BrowserTab) tool.BrowserTab {
 	if r.defaultID != nil && *r.defaultID == tab.TabID {
 		tab.Controlled = true
 	}
+	tab = r.enrichLocked(tab)
 	r.tabs[tab.TabID] = tab
+	return tab
+}
+
+func (r *TabRegistry) MarkCreated(tabID int) {
+	r.markTracked(tabID, "created")
+}
+
+func (r *TabRegistry) MarkClaimed(tabID int) {
+	r.markTracked(tabID, "claimed")
+}
+
+func (r *TabRegistry) markTracked(tabID int, source string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tracking[tabID] = source
+	if tab, ok := r.tabs[tabID]; ok {
+		tab.Tracked = true
+		tab.TrackSource = source
+		r.tabs[tabID] = tab
+	}
+}
+
+func (r *TabRegistry) TrackingSource(tabID int) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.tracking[tabID]
+}
+
+func (r *TabRegistry) Release(tabID int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.defaultID != nil && *r.defaultID == tabID {
+		r.defaultID = nil
+	}
+	delete(r.tracking, tabID)
+	delete(r.approved, tabID)
+	if tab, ok := r.tabs[tabID]; ok {
+		tab.Controlled = false
+		tab.Tracked = false
+		tab.TrackSource = ""
+		r.tabs[tabID] = tab
+	}
+}
+
+func (r *TabRegistry) enrichLocked(tab tool.BrowserTab) tool.BrowserTab {
+	if source := r.tracking[tab.TabID]; source != "" {
+		tab.Tracked = true
+		tab.TrackSource = source
+	}
 	return tab
 }
 

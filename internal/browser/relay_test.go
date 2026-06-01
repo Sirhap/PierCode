@@ -8,22 +8,15 @@ import (
 )
 
 func TestRelayManagerSendCommandDeliversResult(t *testing.T) {
-	var sent Command
-	relay := NewRelayManager(func(payload []byte) bool {
+	var relay *RelayManager
+	relay = NewRelayManager(func(payload []byte) bool {
+		var sent Command
 		if err := json.Unmarshal(payload, &sent); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
 		}
+		relay.DeliverResult(Result{ID: sent.ID, Success: true, Data: json.RawMessage(`{"ok":true}`)})
 		return true
 	})
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for sent.ID == "" {
-			time.Sleep(time.Millisecond)
-		}
-		relay.DeliverResult(Result{ID: sent.ID, Success: true, Data: json.RawMessage(`{"ok":true}`)})
-	}()
 
 	raw, err := relay.SendCommand(context.Background(), Command{Domain: "PierCode", Method: "listTabs"}, time.Second)
 	if err != nil {
@@ -32,7 +25,6 @@ func TestRelayManagerSendCommandDeliversResult(t *testing.T) {
 	if string(raw) != `{"ok":true}` {
 		t.Fatalf("unexpected result: %s", raw)
 	}
-	<-done
 }
 
 func TestRelayManagerNoRelay(t *testing.T) {

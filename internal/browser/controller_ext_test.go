@@ -79,6 +79,46 @@ func TestHandleDialogAcceptsRelayedJavaScriptDialog(t *testing.T) {
 	}
 }
 
+func TestHandleDialogDoesNotMissDialogDuringPageEnable(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 81, URL: "https://example.com/dialog", Title: "Dialog"}
+	var controller *Controller
+	var relay *RelayManager
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "Page.enable":
+			go func() {
+				controller.HandleEvent(dialogEvent(tab.TabID, "alert", "Already open"))
+				relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+			}()
+		case "Page.handleJavaScriptDialog":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+
+	controller = newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	out, err := controller.HandleDialog(context.Background(), tool.BrowserHandleDialogRequest{
+		Action:         "accept",
+		TimeoutSeconds: 1,
+		CallID:         "dialog-enable-race",
+	})
+	if err != nil {
+		t.Fatalf("HandleDialog returned error: %v", err)
+	}
+	if !strings.Contains(out, "Already open") {
+		t.Fatalf("expected dialog message in output, got %q", out)
+	}
+}
+
 func TestUploadUsesCDPSetFileInputFiles(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "upload.txt")
 	if err := os.WriteFile(filePath, []byte("upload-data"), 0o644); err != nil {

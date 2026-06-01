@@ -58,7 +58,7 @@ func NewBrowserTabsTool() Tool {
 			}
 			var controlled, other []string
 			for _, tab := range tabs {
-				line := fmt.Sprintf("- tabId=%d title=%q url=%q controlled=%v", tab.TabID, tab.Title, tab.URL, tab.Controlled)
+				line := fmt.Sprintf("- tabId=%d title=%q url=%q controlled=%v tracked=%v source=%q", tab.TabID, tab.Title, tab.URL, tab.Controlled, tab.Tracked, tab.TrackSource)
 				if tab.Controlled {
 					controlled = append(controlled, line)
 				} else {

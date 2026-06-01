@@ -457,6 +457,13 @@ func (c *Controller) HandleDialog(ctx context.Context, req tool.BrowserHandleDia
 	if err := c.ask(ctx, req.CallID, "处理页面弹窗", tab, req.Action, "接受或关闭 JavaScript 弹窗会继续页面脚本执行。"); err != nil {
 		return "", err
 	}
+	timeout := clampSeconds(req.TimeoutSeconds, 5, 60)
+	callID := req.CallID
+	if callID == "" {
+		callID = fmt.Sprintf("dialog_%d", time.Now().UnixNano())
+	}
+	ch := c.events.WaitForDialog(callID, tab.TabID, timeout)
+	defer c.events.RemoveDialog(callID)
 	if _, err := c.relay.SendCommand(ctx, Command{
 		TabID:  &tab.TabID,
 		Domain: "Page",
@@ -465,13 +472,6 @@ func (c *Controller) HandleDialog(ctx context.Context, req tool.BrowserHandleDia
 	}, defaultReadTimeout); err != nil {
 		return "", err
 	}
-	timeout := clampSeconds(req.TimeoutSeconds, 5, 60)
-	callID := req.CallID
-	if callID == "" {
-		callID = fmt.Sprintf("dialog_%d", time.Now().UnixNano())
-	}
-	ch := c.events.WaitForDialog(callID, tab.TabID, timeout)
-	defer c.events.RemoveDialog(callID)
 	select {
 	case event := <-ch:
 		params := map[string]interface{}{"accept": strings.EqualFold(req.Action, "accept")}
@@ -849,30 +849,18 @@ func (c *Controller) dispatchMouseWheel(ctx context.Context, tabID int, dx, dy f
 }
 
 func (c *Controller) dispatchDrag(ctx context.Context, tabID int, from, to Point) error {
+	mid := Point{X: (from.X + to.X) / 2, Y: (from.Y + to.Y) / 2}
 	events := []map[string]interface{}{
 		{"type": "mouseMoved", "x": from.X, "y": from.Y, "button": "none"},
 		{"type": "mousePressed", "x": from.X, "y": from.Y, "button": "left", "buttons": 1},
-		{"type": "mouseMoved", "x": from.X + 1, "y": from.Y + 1, "button": "left", "buttons": 1},
-	}
-	for _, point := range interpolate(from, to, 10) {
-		events = append(events, map[string]interface{}{"type": "mouseMoved", "x": point.X, "y": point.Y, "button": "left", "buttons": 1})
-	}
-	events = append(events,
-		map[string]interface{}{"type": "mouseMoved", "x": to.X, "y": to.Y, "button": "left", "buttons": 1},
+		{"type": "mouseMoved", "x": mid.X, "y": mid.Y, "button": "left", "buttons": 1},
 		map[string]interface{}{"type": "mouseMoved", "x": to.X, "y": to.Y, "button": "left", "buttons": 1},
 		map[string]interface{}{"type": "mouseReleased", "x": to.X, "y": to.Y, "button": "left", "buttons": 0},
-	)
-	for i, event := range events {
+	}
+	for _, event := range events {
 		params, _ := json.Marshal(event)
 		if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: params}, defaultActionTimeout); err != nil {
 			return err
-		}
-		if i >= 2 && i < len(events)-1 {
-			select {
-			case <-time.After(16 * time.Millisecond):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
 		}
 	}
 	return nil

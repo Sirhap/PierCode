@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
@@ -10,6 +10,7 @@ const smokeDir = join(repoRoot, '.piercode', 'smoke');
 const extensionDir = join(repoRoot, 'extension', 'dist');
 const serverExe = join(smokeDir, process.platform === 'win32' ? 'piercode-smoke-server.exe' : 'piercode-smoke-server');
 const uploadFixture = join(smokeDir, 'upload-fixture.txt');
+const pdfOutput = join(smokeDir, 'browser-smoke.pdf');
 const profileDir = join(smokeDir, 'chrome-profile');
 
 const chromeCandidates = process.platform === 'win32'
@@ -31,7 +32,7 @@ const chromePath = chromeCandidates.find(path => path && existsSync(path));
 if (!chromePath) {
   throw new Error('Chrome executable not found. Set CHROME_PATH to run the browser smoke test.');
 }
-if (!existsSync(join(extensionDir, 'background.js'))) {
+if (!existsSync(join(extensionDir, 'background.js')) && !existsSync(join(extensionDir, 'service_worker.js'))) {
   throw new Error('extension/dist is missing. Run `cd extension && npm run build` first.');
 }
 
@@ -44,6 +45,14 @@ const debugPort = await freePort();
 const pagePort = await freePort();
 
 const pageServer = createServer((req, res) => {
+  if (req.url === '/download') {
+    res.writeHead(200, {
+      'content-type': 'text/plain; charset=utf-8',
+      'content-disposition': 'attachment; filename="piercode-smoke-report.txt"',
+    });
+    res.end('PierCode browser smoke download\n');
+    return;
+  }
   if (req.url !== '/') {
     res.writeHead(404).end('not found');
     return;
@@ -52,14 +61,54 @@ const pageServer = createServer((req, res) => {
   res.end(`<!doctype html>
 <meta charset="utf-8">
 <title>PierCode browser smoke</title>
-<input id="file" type="file">
-<button id="alertButton" onclick="alert('piercode smoke alert')">alert</button>
-<div id="fileStatus">empty</div>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 32px; }
+  main { max-width: 760px; }
+  #dragSource, #dropTarget {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 160px;
+    height: 80px;
+    margin: 12px 20px 12px 0;
+    border: 2px solid #334155;
+    user-select: none;
+  }
+  #dragSource { background: #dbeafe; cursor: grab; }
+  #dropTarget { background: #dcfce7; }
+</style>
+<main>
+  <h1>PierCode browser smoke report</h1>
+  <label>Upload receipt <input id="file" type="file"></label>
+  <button id="alertButton" onclick="alert('piercode smoke alert')">Show alert</button>
+  <a id="downloadLink" href="/download" download>Download report</a>
+  <div id="dragSource">Drag invoice</div>
+  <div id="dropTarget">Drop approved</div>
+  <p id="fileStatus">empty</p>
+  <p id="dragStatus">not dropped</p>
+  <p id="viewportStatus">viewport unknown</p>
+</main>
 <script>
   document.getElementById('file').addEventListener('change', event => {
     const files = Array.from(event.target.files || []);
     document.getElementById('fileStatus').textContent = files.map(file => file.name + ':' + file.size).join(',');
   });
+  const source = document.getElementById('dragSource');
+  const target = document.getElementById('dropTarget');
+  let dragging = false;
+  source.addEventListener('mousedown', () => { dragging = true; });
+  window.addEventListener('mouseup', event => {
+    if (!dragging) return;
+    dragging = false;
+    const rect = target.getBoundingClientRect();
+    const inside = event.clientX >= rect.left && event.clientX <= rect.right &&
+      event.clientY >= rect.top && event.clientY <= rect.bottom;
+    document.getElementById('dragStatus').textContent = inside ? 'invoice dropped' : 'missed drop';
+  });
+  window.addEventListener('resize', () => {
+    document.getElementById('viewportStatus').textContent = window.innerWidth + 'x' + window.innerHeight;
+  });
+  document.getElementById('viewportStatus').textContent = window.innerWidth + 'x' + window.innerHeight;
 </script>`);
 });
 await listen(pageServer, pagePort);
@@ -92,20 +141,45 @@ const chrome = spawn(chromePath, [
 
 try {
   const worker = await waitForExtensionWorker(debugPort);
-  await cdpEvaluate(worker.webSocketDebuggerUrl, `chrome.storage.local.set(${JSON.stringify({
-    apiUrl: `http://127.0.0.1:${serverPort}`,
-    authToken: token,
-    authPort: serverPort,
-  })})`);
+  const extensionId = String(worker.url || '').match(/^chrome-extension:\/\/([^/]+)\//)?.[1];
+  if (!extensionId) throw new Error(`could not determine extension id from ${worker.url}`);
+  const configURL = `chrome-extension://${extensionId}/configure.html?apiUrl=${encodeURIComponent(`http://127.0.0.1:${serverPort}`)}&token=${encodeURIComponent(token)}`;
+  const configTarget = await openExtensionPage(debugPort, configURL);
+  await waitForExtensionConfigured(configTarget.webSocketDebuggerUrl);
   await waitForStats(serverPort, token, stats => Number(stats.browser_relays || 0) > 0);
 
   const pageURL = `http://127.0.0.1:${pagePort}/`;
   await execTool(serverPort, token, 'browser_new_tab', { url: pageURL });
   await execTool(serverPort, token, 'browser_wait', { selector: '#file', state: 'attached', timeout: 10 });
+
+  await execTool(serverPort, token, 'browser_viewport', { width: 390, height: 844 });
+  const viewport = await execTool(serverPort, token, 'browser_get_content', { selector: '#viewportStatus' });
+  if (!String(viewport.output || '').includes('390')) {
+    throw new Error(`viewport status did not reflect mobile width: ${JSON.stringify(viewport)}`);
+  }
+  await execTool(serverPort, token, 'browser_viewport', { reset: true });
+
   const upload = await execTool(serverPort, token, 'browser_upload', { selector: '#file', paths: [uploadFixture] });
   const content = await execTool(serverPort, token, 'browser_get_content', { selector: '#fileStatus' });
   if (!String(content.output || '').includes('upload-fixture.txt')) {
     throw new Error(`upload status did not include fixture name: ${JSON.stringify(content)}`);
+  }
+
+  const drag = await execTool(serverPort, token, 'browser_drag', { fromSelector: '#dragSource', toSelector: '#dropTarget' });
+  const dragStatus = await execTool(serverPort, token, 'browser_get_content', { selector: '#dragStatus' });
+  if (!String(dragStatus.output || '').includes('invoice dropped')) {
+    throw new Error(`drag status did not show successful drop: ${JSON.stringify(dragStatus)}`);
+  }
+
+  const pdf = await execTool(serverPort, token, 'browser_pdf', { outputPath: pdfOutput, format: 'A4' });
+  if (!existsSync(pdfOutput) || statSync(pdfOutput).size < 1000) {
+    throw new Error(`PDF was not written or is too small: ${pdfOutput}`);
+  }
+
+  await execTool(serverPort, token, 'browser_click', { selector: '#downloadLink' });
+  const downloads = await execTool(serverPort, token, 'browser_downloads', { state: 'complete', limit: 10 });
+  if (!String(downloads.output || '').includes('piercode-smoke-report.txt')) {
+    throw new Error(`download history did not include smoke report: ${JSON.stringify(downloads)}`);
   }
 
   await execTool(serverPort, token, 'browser_evaluate', {
@@ -120,6 +194,11 @@ try {
     pageURL,
     upload: upload.output,
     fileStatus: content.output,
+    viewport: viewport.output,
+    drag: drag.output,
+    dragStatus: dragStatus.output,
+    pdf: pdf.output,
+    downloads: downloads.output,
     dialog: dialog.output,
   }, null, 2));
 } finally {
@@ -130,6 +209,7 @@ try {
   await rmRetry(profileDir);
   await rmRetry(serverExe);
   await rmRetry(uploadFixture);
+  await rmRetry(pdfOutput);
 }
 
 function runChecked(command, args, cwd) {
@@ -206,13 +286,51 @@ async function waitForExtensionWorker(debugPort) {
       last = await response.json();
       const worker = last.find(target =>
         target.type === 'service_worker' &&
-        /^chrome-extension:\/\/[^/]+\/background\.js$/.test(String(target.url || ''))
+        /^chrome-extension:\/\/[^/]+\/(?:background|service_worker)\.js$/.test(String(target.url || ''))
       );
       if (worker && worker.webSocketDebuggerUrl) return worker;
     } catch {}
     await sleep(250);
   }
   throw new Error(`timed out waiting for extension service worker; targets=${JSON.stringify(last)}`);
+}
+
+async function openExtensionPage(debugPort, url) {
+  const target = url.replaceAll('&', '%26');
+  try {
+    await fetch(`http://127.0.0.1:${debugPort}/json/new?${target}`, { method: 'PUT' });
+  } catch {
+    await fetch(`http://127.0.0.1:${debugPort}/json/new?${target}`).catch(() => {});
+  }
+  const deadline = Date.now() + 10000;
+  let last = [];
+  while (Date.now() < deadline) {
+    const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
+    last = await response.json();
+    const target = last.find(item => item.type === 'page' && String(item.url || '').startsWith(url));
+    if (target?.webSocketDebuggerUrl) return target;
+    await sleep(250);
+  }
+  throw new Error(`timed out waiting for extension page; targets=${JSON.stringify(last)}`);
+}
+
+async function waitForExtensionConfigured(wsURL) {
+  const deadline = Date.now() + 10000;
+  let last;
+  while (Date.now() < deadline) {
+    last = await cdpEvaluate(wsURL, `({
+      href: location.href,
+      readyState: document.readyState,
+      done: window.__PIERCODE_CONFIG_DONE__ ?? null,
+      status: document.getElementById("status")?.textContent ?? null
+    })`);
+    if (last?.done === true || String(last?.status || '').startsWith('Configured:')) return;
+    if (last?.done === 'error' || String(last?.status || '').includes('Missing params')) {
+      throw new Error(`extension configure page failed: ${last}`);
+    }
+    await sleep(250);
+  }
+  throw new Error(`timed out waiting for extension configuration; last=${JSON.stringify(last)}`);
 }
 
 async function cdpEvaluate(wsURL, expression) {

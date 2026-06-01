@@ -1,4 +1,13 @@
 import { browserRelayWsUrl, isAiPageUrl } from './browser-relay-utils';
+import {
+  DOWNLOAD_STORAGE_KEY,
+  MAX_DOWNLOAD_RECORDS,
+  DownloadRecord,
+  applyDownloadDelta,
+  downloadItemToRecord,
+  filterDownloadRecords,
+  upsertDownloadRecord,
+} from './downloads';
 
 const AI_PAGE_URLS = [
   '*://*.gemini.google.com/*',
@@ -255,6 +264,10 @@ function queueBrowserCommand<T>(tabId: number, fn: () => Promise<T>): Promise<T>
   return next;
 }
 
+function shouldBypassTabQueue(msg: BrowserCommand): boolean {
+  return msg.domain === 'Page' && msg.method === 'handleJavaScriptDialog';
+}
+
 async function connectBrowserRelay() {
   const seq = ++browserConnectionSeq;
   const info = await getAuthInfo();
@@ -285,7 +298,7 @@ async function connectBrowserRelay() {
     setBrowserRelayStatus({ state: 'open' });
     sendBrowserMessage({
       type: 'browser_hello',
-      capabilities: ['cdp', 'tabs', 'selectorRect', 'debuggerEvents'],
+      capabilities: ['cdp', 'tabs', 'selectorRect', 'debuggerEvents', 'downloads'],
       version: chrome.runtime.getManifest().version,
     });
     if (browserPingTimer) clearInterval(browserPingTimer);
@@ -298,7 +311,10 @@ async function connectBrowserRelay() {
       const msg = JSON.parse(event.data) as BrowserCommand;
       if (msg.type === 'browser_cmd') {
         const key = typeof msg.tabId === 'number' ? msg.tabId : 0;
-        queueBrowserCommand(key, () => handleBrowserCommand(msg))
+        const run = shouldBypassTabQueue(msg)
+          ? handleBrowserCommand(msg)
+          : queueBrowserCommand(key, () => handleBrowserCommand(msg));
+        run
           .then(data => sendBrowserResult({ type: 'browser_result', id: msg.id, success: true, data }))
           .catch(error => sendBrowserResult({ type: 'browser_result', id: msg.id, success: false, error: errorMessage(error) }));
       }
@@ -349,7 +365,16 @@ async function handleBrowserCommand(msg: BrowserCommand): Promise<unknown> {
     throw new Error('tabId is required for CDP browser commands');
   }
   await ensureAttached(msg.tabId);
-  const result = await chrome.debugger.sendCommand({ tabId: msg.tabId }, `${msg.domain}.${msg.method}`, params);
+  if (msg.domain === 'Input') {
+    await activateTabForInput(msg.tabId);
+  }
+  // 给 CDP 命令加超时，防止扩展 relay 卡死
+  const cmdTimeout = Math.max(msg.timeoutMs || 30000, 10000);
+  const sendPromise = chrome.debugger.sendCommand({ tabId: msg.tabId }, `${msg.domain}.${msg.method}`, params);
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`CDP command ${msg.domain}.${msg.method} timed out after ${cmdTimeout}ms`)), cmdTimeout)
+  );
+  const result = await Promise.race([sendPromise, timeoutPromise]);
   if (msg.domain === 'Page' && msg.method === 'navigate') {
     await waitForTabComplete(msg.tabId, navigationLoadWaitMs(msg.timeoutMs));
   }
@@ -378,6 +403,14 @@ async function handleNativeBrowserCommand(method: string, params: Record<string,
       return takeScreenshot(Number(params.tabId));
     case 'cookies':
       return getCookies(params);
+    case 'finalizeTabs':
+      return finalizeTabs(params);
+    case 'downloads':
+      return getRecentDownloads(params);
+    case 'viewport':
+      return setViewportOverride(params);
+    case 'resizeWindow':
+      return resizeWindow(params);
     default:
       throw new Error(`unknown PierCode browser method: ${method}`);
   }
@@ -625,6 +658,134 @@ async function getCookies(params: Record<string, unknown>): Promise<unknown> {
   };
 }
 
+async function finalizeTabs(params: Record<string, unknown>): Promise<unknown> {
+  const closeTabIds = arrayOfPositiveInts(params.closeTabIds);
+  const closed: number[] = [];
+  const skipped: string[] = [];
+
+  for (const tabId of closeTabIds) {
+    try {
+      if (attachedTabs.has(tabId)) {
+        try { await chrome.debugger.detach({ tabId }); } catch {}
+        attachedTabs.delete(tabId);
+      }
+      await chrome.tabs.remove(tabId);
+      perTabQueues.delete(tabId);
+      if (controlledTabId === tabId) controlledTabId = null;
+      closed.push(tabId);
+    } catch (error) {
+      skipped.push(`tabId=${tabId} close failed: ${errorMessage(error)}`);
+    }
+  }
+
+  if (closed.length > 0) {
+    setBrowserRelayStatus({ state: browserWs?.readyState === WebSocket.OPEN ? 'open' : 'closed' });
+  }
+  return { closed, skipped };
+}
+
+async function setViewportOverride(params: Record<string, unknown>): Promise<unknown> {
+  const tabId = Number(params.tabId);
+  if (!Number.isInteger(tabId) || tabId <= 0) throw new Error('tabId is required');
+  await ensureAttached(tabId);
+  if (params.reset === true) {
+    await chrome.debugger.sendCommand({ tabId }, 'Emulation.clearDeviceMetricsOverride', {});
+    return {};
+  }
+  const width = Number(params.width);
+  const height = Number(params.height);
+  if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+    throw new Error('width and height are required');
+  }
+  await chrome.debugger.sendCommand({ tabId }, 'Emulation.setDeviceMetricsOverride', {
+    width,
+    height,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  return {};
+}
+
+async function resizeWindow(params: Record<string, unknown>): Promise<unknown> {
+  const tabId = Number(params.tabId);
+  const width = Number(params.width);
+  const height = Number(params.height);
+  if (!Number.isInteger(tabId) || tabId <= 0) throw new Error('tabId is required');
+  if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+    throw new Error('width and height are required');
+  }
+  const tab = await chrome.tabs.get(tabId);
+  if (typeof tab.windowId !== 'number') throw new Error('tab windowId is unavailable');
+  await chrome.windows.update(tab.windowId, { width, height });
+  return {};
+}
+
+async function getRecentDownloads(params: Record<string, unknown>): Promise<unknown> {
+  const records = await loadDownloadRecords();
+  const queriedRecords = await queryRecentDownloads().catch(() => []);
+  const merged = queriedRecords.reduce(
+    (acc, record) => upsertDownloadRecord(acc, record),
+    records,
+  );
+  if (queriedRecords.length > 0) await saveDownloadRecords(merged);
+  const limit = typeof params.limit === 'number' ? params.limit : 20;
+  const state = typeof params.state === 'string' ? params.state : 'all';
+  return filterDownloadRecords(merged, state, limit);
+}
+
+async function queryRecentDownloads(): Promise<DownloadRecord[]> {
+  const items = await chrome.downloads.search({
+    orderBy: ['-startTime'],
+    limit: MAX_DOWNLOAD_RECORDS,
+  });
+  return items.map(item => downloadItemToRecord(item));
+}
+
+function arrayOfPositiveInts(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const item of raw) {
+    const value = Number(item);
+    if (!Number.isInteger(value) || value <= 0 || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+async function loadDownloadRecords(): Promise<DownloadRecord[]> {
+  const result = await chrome.storage.local.get(DOWNLOAD_STORAGE_KEY);
+  const records = result[DOWNLOAD_STORAGE_KEY];
+  return Array.isArray(records) ? records.filter(isDownloadRecord) : [];
+}
+
+async function saveDownloadRecords(records: DownloadRecord[]): Promise<void> {
+  await chrome.storage.local.set({ [DOWNLOAD_STORAGE_KEY]: records });
+}
+
+function isDownloadRecord(value: unknown): value is DownloadRecord {
+  return !!value && typeof value === 'object' &&
+    typeof (value as DownloadRecord).id === 'string' &&
+    typeof (value as DownloadRecord).state === 'string';
+}
+
+async function recordDownloadCreated(item: chrome.downloads.DownloadItem): Promise<void> {
+  const records = await loadDownloadRecords();
+  await saveDownloadRecords(upsertDownloadRecord(records, downloadItemToRecord(item)));
+}
+
+async function recordDownloadChanged(delta: chrome.downloads.DownloadDelta): Promise<void> {
+  const records = await loadDownloadRecords();
+  const id = String(delta.id);
+  const existing = records.find(item => item.id === id) || {
+    id,
+    state: 'in_progress' as const,
+    startedAt: new Date().toISOString(),
+  };
+  await saveDownloadRecords(upsertDownloadRecord(records, applyDownloadDelta(existing, delta)));
+}
+
 async function listBrowserTabs(includeAiPages: boolean): Promise<{ tabs: ReturnType<typeof tabToDTO>[] }> {
   const tabs = await chrome.tabs.query({});
   return {
@@ -646,8 +807,13 @@ async function createControlledTab(url: string) {
 
 async function ensureAttached(tabId: number) {
   if (attachedTabs.has(tabId)) return;
+  // chrome-extension:// 和某些特殊页面无法 attach debugger，加超时避免卡死
+  const attachPromise = chrome.debugger.attach({ tabId }, '1.3');
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`debugger attach timed out for tab ${tabId}`)), 8000)
+  );
   try {
-    await chrome.debugger.attach({ tabId }, '1.3');
+    await Promise.race([attachPromise, timeoutPromise]);
     attachedTabs.add(tabId);
   } catch (error) {
     if (errorMessage(error).includes('Another debugger is already attached')) {
@@ -663,12 +829,21 @@ async function ensureAttached(tabId: number) {
   }
 }
 
+async function activateTabForInput(tabId: number): Promise<void> {
+  const tab = await chrome.tabs.get(tabId);
+  if (typeof tab.windowId === 'number') {
+    await chrome.windows.update(tab.windowId, { focused: true }).catch(() => undefined);
+  }
+  await chrome.tabs.update(tabId, { active: true });
+}
+
 async function resolveSelectorRect(tabId: number, selector: string) {
   if (!selector) throw new Error('selector is required');
   await ensureAttached(tabId);
   const expression = `(() => {
     const el = document.querySelector(${JSON.stringify(selector)});
     if (!el) return null;
+    el.scrollIntoView({ block: 'center', inline: 'center' });
     const rect = el.getBoundingClientRect();
     return {x: rect.left, y: rect.top, width: rect.width, height: rect.height};
   })()`;
@@ -828,6 +1003,18 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       title: tab.title || '',
     });
   }
+});
+
+chrome.downloads.onCreated.addListener(item => {
+  recordDownloadCreated(item).catch(error => {
+    console.warn('[PierCode] failed to record download:', error);
+  });
+});
+
+chrome.downloads.onChanged.addListener(delta => {
+  recordDownloadChanged(delta).catch(error => {
+    console.warn('[PierCode] failed to update download:', error);
+  });
 });
 
 chrome.storage.onChanged.addListener((changes, namespace) => {

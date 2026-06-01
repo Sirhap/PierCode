@@ -171,7 +171,7 @@ export default function App() {
         if (statsRes.status === 401) throw new Error('unauthorized')
         if (!statsRes.ok) throw new Error(`stats HTTP ${statsRes.status}`)
         const stats = await statsRes.json()
-        const backendClients = Number(stats.browser_clients || 0)
+        const backendClients = Math.max(0, Number(stats.browser_clients || 0) - Number(stats.browser_relays || 0))
 
         setStatus('connected')
         setInfo('本地服务已连接，正在检查 AI 页面')

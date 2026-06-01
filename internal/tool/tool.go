@@ -160,14 +160,19 @@ type BrowserController interface {
 	ReadConsole(ctx context.Context, req BrowserConsoleRequest) (string, error)
 	ReadNetwork(ctx context.Context, req BrowserNetworkLogRequest) (string, error)
 	Cookies(ctx context.Context, req BrowserCookiesRequest) (BrowserCookiesResponse, error)
+	FinalizeTabs(ctx context.Context, req BrowserFinalizeTabsRequest) (BrowserFinalizeTabsResponse, error)
+	Viewport(ctx context.Context, req BrowserViewportRequest) (string, error)
+	Downloads(ctx context.Context, req BrowserDownloadsRequest) (BrowserDownloadsResponse, error)
 }
 
 type BrowserTab struct {
-	TabID      int    `json:"tabId"`
-	URL        string `json:"url"`
-	Title      string `json:"title"`
-	Active     bool   `json:"active"`
-	Controlled bool   `json:"controlled"`
+	TabID       int    `json:"tabId"`
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	Active      bool   `json:"active"`
+	Controlled  bool   `json:"controlled"`
+	Tracked     bool   `json:"tracked,omitempty"`
+	TrackSource string `json:"trackSource,omitempty"`
 }
 
 type BrowserSnapshot struct {
@@ -435,6 +440,50 @@ type BrowserCookiesResponse struct {
 	Total        int             `json:"total"`
 	Truncated    bool            `json:"truncated"`
 	IncludeValue bool            `json:"includeValue"`
+}
+
+type BrowserFinalizeTabsRequest struct {
+	CloseTabIDs      []int
+	ReleaseTabIDs    []int
+	CloseClaimedTabs bool
+	CallID           string
+}
+
+type BrowserFinalizeTabsResponse struct {
+	Closed   []int    `json:"closed"`
+	Released []int    `json:"released"`
+	Skipped  []string `json:"skipped,omitempty"`
+}
+
+type BrowserViewportRequest struct {
+	TabID  *int
+	Width  int
+	Height int
+	Reset  bool
+}
+
+type BrowserDownloadsRequest struct {
+	Limit int
+	State string
+}
+
+type BrowserDownload struct {
+	ID            string `json:"id"`
+	URL           string `json:"url,omitempty"`
+	Filename      string `json:"filename,omitempty"`
+	State         string `json:"state"`
+	Error         string `json:"error,omitempty"`
+	BytesReceived int64  `json:"bytesReceived,omitempty"`
+	TotalBytes    int64  `json:"totalBytes,omitempty"`
+	StartedAt     string `json:"startedAt,omitempty"`
+	EndedAt       string `json:"endedAt,omitempty"`
+}
+
+type BrowserDownloadsResponse struct {
+	Downloads []BrowserDownload `json:"downloads"`
+	Count     int               `json:"count"`
+	Total     int               `json:"total"`
+	Truncated bool              `json:"truncated"`
 }
 
 // resolveAbsPath validates an absolute path against RootDir and common allowed roots (~/.claude, ~/.piercode, ~/.agent).

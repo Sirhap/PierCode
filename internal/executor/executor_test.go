@@ -72,11 +72,81 @@ func TestExecutor(t *testing.T) {
 		}
 	})
 
+	t.Run("background task user flow lists output and stops", func(t *testing.T) {
+		skipOnWindows(t)
+		e := New(testConfig(t))
+		resp := e.Execute(context.Background(), &types.ToolRequest{
+			Name:   "exec_cmd",
+			CallID: "bg-user-flow",
+			Args: map[string]interface{}{
+				"command":    "printf 'server ready\\n'; sleep 30",
+				"background": true,
+			},
+		})
+		if resp.Status != "running" {
+			t.Fatalf("expected running background task, got %s: %s", resp.Status, resp.Error)
+		}
+		taskID := extractBackgroundTaskID(t, resp.Output)
+
+		var output *types.ToolResponse
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			output = e.Execute(context.Background(), &types.ToolRequest{
+				Name: "task_output",
+				Args: map[string]interface{}{"task_id": taskID, "stream": "stdout"},
+			})
+			if output.Status == "success" && strings.Contains(output.Output, "server ready") {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if output == nil || !strings.Contains(output.Output, "server ready") {
+			t.Fatalf("expected task_output to show user-visible stdout, got %#v", output)
+		}
+
+		stop := e.Execute(context.Background(), &types.ToolRequest{
+			Name: "task_stop",
+			Args: map[string]interface{}{"task_id": taskID},
+		})
+		if stop.Status != "success" {
+			t.Fatalf("expected task_stop success, got %s: %s", stop.Status, stop.Error)
+		}
+
+		select {
+		case <-e.Tasks().Get(taskID).Done():
+		case <-time.After(3 * time.Second):
+			t.Fatal("background task did not stop")
+		}
+
+		list := e.Execute(context.Background(), &types.ToolRequest{
+			Name: "task_list",
+			Args: map[string]interface{}{},
+		})
+		if list.Status != "success" {
+			t.Fatalf("expected task_list success, got %s: %s", list.Status, list.Error)
+		}
+		if !strings.Contains(list.Output, taskID) {
+			t.Fatalf("expected stopped task in task_list output, got %q", list.Output)
+		}
+		if strings.Contains(list.Output, "["+taskID+"]  [running]") {
+			t.Fatalf("expected task to no longer be running after task_stop, got %q", list.Output)
+		}
+	})
+
 	t.Run("list tools returns all registered tools", func(t *testing.T) {
 		e := New(testConfig(t))
 		tools := e.ListTools()
 		if len(tools) == 0 {
 			t.Error("expected tools to be registered")
+		}
+		seen := map[string]bool{}
+		for _, info := range tools {
+			seen[info.Name] = true
+		}
+		for _, want := range []string{"browser_finalize_tabs", "browser_viewport", "browser_downloads"} {
+			if !seen[want] {
+				t.Fatalf("expected %s to be registered", want)
+			}
 		}
 	})
 
@@ -114,13 +184,29 @@ func TestExecutor(t *testing.T) {
 	})
 }
 
+func extractBackgroundTaskID(t *testing.T, output string) string {
+	t.Helper()
+	const marker = "backgrounded as task "
+	start := strings.Index(output, marker)
+	if start < 0 {
+		t.Fatalf("background task marker missing from output: %q", output)
+	}
+	rest := output[start+len(marker):]
+	end := strings.Index(rest, " ")
+	if end < 0 {
+		t.Fatalf("background task id terminator missing from output: %q", output)
+	}
+	return strings.TrimSpace(rest[:end])
+}
+
 func TestExecutorPromptGuidance(t *testing.T) {
-	t.Run("tool responses include operating reminder", func(t *testing.T) {
+	t.Run("tool responses include operating reminder when called from AI client", func(t *testing.T) {
 		e := New(testConfig(t))
 		resp := e.Execute(context.Background(), &types.ToolRequest{
-			Name:   "list_dir",
-			CallID: "list1a",
-			Args:   map[string]interface{}{"path": "."},
+			Name:           "list_dir",
+			CallID:         "list1a",
+			Args:           map[string]interface{}{"path": "."},
+			SourceClientID: "ai-page-1",
 		})
 		for _, want := range []string{"[系统提示]", "piercode-tool", "sandbox", "piercode-*", "测试或明确证据"} {
 			if !strings.Contains(resp.Output, want) {
@@ -129,14 +215,15 @@ func TestExecutorPromptGuidance(t *testing.T) {
 		}
 	})
 
-	t.Run("every fifth tool response asks for task checkpoint", func(t *testing.T) {
+	t.Run("every fifth tool response asks for task checkpoint when called from AI client", func(t *testing.T) {
 		e := New(testConfig(t))
 		var resp *types.ToolResponse
 		for i := 0; i < 5; i++ {
 			resp = e.Execute(context.Background(), &types.ToolRequest{
-				Name:   "list_dir",
-				CallID: "list5a",
-				Args:   map[string]interface{}{"path": "."},
+				Name:           "list_dir",
+				CallID:         "list5a",
+				Args:           map[string]interface{}{"path": "."},
+				SourceClientID: "ai-page-1",
 			})
 		}
 		for _, want := range []string{"[任务状态快照提示]", "已改文件", "验证结果", "todo_write"} {
@@ -146,16 +233,32 @@ func TestExecutorPromptGuidance(t *testing.T) {
 		}
 	})
 
-	t.Run("every twentieth tool response reinjects embedded prompt", func(t *testing.T) {
+	t.Run("direct API calls get clean output without prompt guidance", func(t *testing.T) {
+		e := New(testConfig(t))
+		resp := e.Execute(context.Background(), &types.ToolRequest{
+			Name:   "list_dir",
+			CallID: "direct1",
+			Args:   map[string]interface{}{"path": "."},
+		})
+		if strings.Contains(resp.Output, "[系统提示]") {
+			t.Fatalf("direct API call should not have operating reminder, got %q", resp.Output)
+		}
+		if strings.Contains(resp.Output, "[任务状态快照提示]") {
+			t.Fatalf("direct API call should not have checkpoint reminder, got %q", resp.Output)
+		}
+	})
+
+	t.Run("every twentieth tool response reinjects embedded prompt when called from AI client", func(t *testing.T) {
 		cfg := testConfig(t)
 		cfg.DefaultPrompt = []byte("system {{SYSTEM_INFO}}\noperations {{TOOLS}}")
 		e := New(cfg)
 		var resp *types.ToolResponse
 		for i := 0; i < 20; i++ {
 			resp = e.Execute(context.Background(), &types.ToolRequest{
-				Name:   "list_dir",
-				CallID: "list20a",
-				Args:   map[string]interface{}{"path": "."},
+				Name:           "list_dir",
+				CallID:         "list20a",
+				Args:           map[string]interface{}{"path": "."},
+				SourceClientID: "ai-page-1",
 			})
 		}
 		for _, want := range []string{"[系统重新注入提示词]", "system - 操作系统:", "operations ###", "[任务状态快照提示]"} {

@@ -94,6 +94,8 @@ func (c *Controller) NewTab(ctx context.Context, rawURL string) (tool.BrowserTab
 	}
 	tab.Controlled = true
 	c.tabs.SetDefault(tab)
+	c.tabs.MarkCreated(tab.TabID)
+	tab = c.tabs.Upsert(tab)
 	return tab, nil
 }
 
@@ -111,9 +113,64 @@ func (c *Controller) UseTab(ctx context.Context, tabID int, reason, callID strin
 	}
 	tab.Controlled = true
 	c.tabs.SetDefault(tab)
+	c.tabs.MarkClaimed(tab.TabID)
+	tab = c.tabs.Upsert(tab)
 	// [Fixed by mimo-v2.5-pro: persist AI page approval so downstream tools don't re-block]
 	c.tabs.MarkApproved(tab.TabID)
 	return tab, nil
+}
+
+func (c *Controller) FinalizeTabs(ctx context.Context, req tool.BrowserFinalizeTabsRequest) (tool.BrowserFinalizeTabsResponse, error) {
+	resp := tool.BrowserFinalizeTabsResponse{}
+	closeIDs := uniquePositiveInts(req.CloseTabIDs)
+	releaseIDs := uniquePositiveInts(req.ReleaseTabIDs)
+
+	var closable []int
+	for _, tabID := range closeIDs {
+		source := c.tabs.TrackingSource(tabID)
+		switch {
+		case source == "created":
+			closable = append(closable, tabID)
+		case source == "claimed" && req.CloseClaimedTabs:
+			closable = append(closable, tabID)
+		case source == "claimed":
+			resp.Skipped = append(resp.Skipped, fmt.Sprintf("tabId=%d skipped: claimed tabs require closeClaimedTabs=true", tabID))
+		default:
+			resp.Skipped = append(resp.Skipped, fmt.Sprintf("tabId=%d skipped: tab is not tracked by PierCode", tabID))
+		}
+	}
+
+	if len(closable) > 0 {
+		tab := tool.BrowserTab{TabID: closable[0]}
+		if fetched, err := c.getTab(ctx, closable[0]); err == nil {
+			tab = fetched
+		}
+		target := fmt.Sprintf("close tabIds=%v", closable)
+		if err := c.ask(ctx, req.CallID, "关闭受控浏览器标签页", tab, target, "关闭标签页可能丢失页面状态或未保存内容。"); err != nil {
+			return tool.BrowserFinalizeTabsResponse{}, err
+		}
+		var out struct {
+			Closed  []int    `json:"closed"`
+			Skipped []string `json:"skipped"`
+		}
+		if err := c.sendNative(ctx, "finalizeTabs", map[string]interface{}{"closeTabIds": closable}, &out); err != nil {
+			return tool.BrowserFinalizeTabsResponse{}, err
+		}
+		resp.Closed = append(resp.Closed, out.Closed...)
+		resp.Skipped = append(resp.Skipped, out.Skipped...)
+		for _, tabID := range out.Closed {
+			c.tabs.ClearDefault(tabID)
+			c.events.ClearConsole(tabID)
+			c.events.ClearNetwork(tabID)
+			c.events.ClearDomainTracking(tabID)
+		}
+	}
+
+	for _, tabID := range releaseIDs {
+		c.tabs.Release(tabID)
+		resp.Released = append(resp.Released, tabID)
+	}
+	return resp, nil
 }
 
 func (c *Controller) Navigate(ctx context.Context, tabID *int, rawURL, callID string) (tool.BrowserTab, error) {
@@ -336,6 +393,9 @@ func (c *Controller) Type(ctx context.Context, req tool.BrowserTypeRequest) (str
 	}, defaultActionTimeout); err != nil {
 		return "", err
 	}
+	if err := c.ensureTypedTextLanded(ctx, tab.TabID, req.Ref, req.Selector, req.SnapshotID, req.Text, req.Clear); err != nil {
+		return "", err
+	}
 	if req.Submit {
 		if err := c.sendKey(ctx, tab.TabID, "Enter"); err != nil {
 			return "", err
@@ -343,6 +403,93 @@ func (c *Controller) Type(ctx context.Context, req tool.BrowserTypeRequest) (str
 	}
 	c.tabs.MarkStale(tab.TabID)
 	return fmt.Sprintf("typed %d characters into %s in tabId=%d", len([]rune(req.Text)), target, tab.TabID), nil
+}
+
+type typedTextEnsureResult struct {
+	OK      bool   `json:"ok"`
+	Changed bool   `json:"changed"`
+	Before  string `json:"before"`
+	After   string `json:"after"`
+	Type    string `json:"type"`
+}
+
+func (c *Controller) ensureTypedTextLanded(ctx context.Context, tabID int, ref, selector, snapshotID, text string, clear bool) error {
+	if ref != "" {
+		objectID, release, err := c.resolveRefObject(ctx, tabID, snapshotID, ref)
+		if err != nil {
+			return err
+		}
+		defer release()
+		out, err := c.callFunctionOnObject(ctx, tabID, objectID, ensureTypedTextFunction(), []interface{}{text, clear})
+		if err != nil {
+			return err
+		}
+		return validateTypedTextResult(out, text)
+	}
+	if selector == "" {
+		return nil
+	}
+	expression := `(function() {
+  var el = document.querySelector(` + jsString(selector) + `);
+  if (!el) throw new Error('Element not found: ' + ` + jsString(selector) + `);
+  return (` + ensureTypedTextFunction() + `).call(el, ` + jsString(text) + `, ` + fmt.Sprintf("%t", clear) + `);
+})()`
+	out, err := c.runtimeEvaluate(ctx, tabID, expression, false, defaultActionTimeout, true)
+	if err != nil {
+		return err
+	}
+	return validateTypedTextResult(out, text)
+}
+
+func validateTypedTextResult(out *runtimeEvalResult, text string) error {
+	var result typedTextEnsureResult
+	if len(out.Result.Value) > 0 {
+		if err := json.Unmarshal(out.Result.Value, &result); err != nil {
+			return fmt.Errorf("failed to parse typed text verification: %w", err)
+		}
+	}
+	if !result.OK {
+		return fmt.Errorf("typed text did not appear in target %s: expected %q, before %q, after %q", result.Type, text, result.Before, result.After)
+	}
+	return nil
+}
+
+func ensureTypedTextFunction() string {
+	return `function(text, clear) {
+  function read(el) {
+    var tag = (el.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea') return String(el.value || '');
+    if (el.isContentEditable) return String(el.textContent || '');
+    return '';
+  }
+  function write(el, value) {
+    var tag = (el.tagName || '').toLowerCase();
+    if (tag === 'input') {
+      var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      if (setter) setter.call(el, value); else el.value = value;
+    } else if (tag === 'textarea') {
+      var setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      if (setter) setter.call(el, value); else el.value = value;
+    } else if (el.isContentEditable) {
+      el.focus();
+      el.textContent = value;
+    } else {
+      throw new Error('Target does not accept typed text: ' + tag);
+    }
+    el.dispatchEvent(new InputEvent('input', {bubbles: true, cancelable: true, inputType: 'insertText', data: text}));
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+  var before = read(this);
+  var ok = clear ? before === String(text) : before.indexOf(String(text)) >= 0;
+  var changed = false;
+  if (!ok) {
+    write(this, clear ? String(text) : before + String(text));
+    changed = true;
+  }
+  var after = read(this);
+  ok = clear ? after === String(text) : after.indexOf(String(text)) >= 0;
+  return {ok: ok, changed: changed, before: before, after: after, type: (this.tagName || '').toLowerCase()};
+}`
 }
 
 func (c *Controller) Screenshot(ctx context.Context, req tool.BrowserScreenshotRequest) (tool.BrowserScreenshot, error) {
@@ -415,6 +562,58 @@ func (c *Controller) Screenshot(ctx context.Context, req tool.BrowserScreenshotR
 
 	shot := tool.BrowserScreenshot{Tab: tab, Format: format, Bytes: size, FilePath: tmpFile.Name()}
 	return shot, nil
+}
+
+func (c *Controller) Viewport(ctx context.Context, req tool.BrowserViewportRequest) (string, error) {
+	tab, err := c.ensureTab(ctx, req.TabID)
+	if err != nil {
+		return "", err
+	}
+	method := "setDeviceMetricsOverride"
+	params := json.RawMessage(`{}`)
+	if !req.Reset {
+		rawParams, _ := json.Marshal(map[string]interface{}{
+			"width":             req.Width,
+			"height":            req.Height,
+			"deviceScaleFactor": 1,
+			"mobile":            false,
+		})
+		params = rawParams
+	} else {
+		method = "clearDeviceMetricsOverride"
+	}
+	if _, err := c.relay.SendCommand(ctx, Command{
+		TabID:  &tab.TabID,
+		Domain: "Emulation",
+		Method: method,
+		Params: params,
+	}, defaultActionTimeout); err != nil {
+		return "", err
+	}
+	c.tabs.MarkStale(tab.TabID)
+	if req.Reset {
+		return fmt.Sprintf("reset viewport override in tabId=%d", tab.TabID), nil
+	}
+	return fmt.Sprintf("set viewport override to %dx%d in tabId=%d", req.Width, req.Height, tab.TabID), nil
+}
+
+func (c *Controller) Downloads(ctx context.Context, req tool.BrowserDownloadsRequest) (tool.BrowserDownloadsResponse, error) {
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	state := strings.ToLower(strings.TrimSpace(req.State))
+	if state == "" {
+		state = "all"
+	}
+	var out tool.BrowserDownloadsResponse
+	if err := c.sendNative(ctx, "downloads", map[string]interface{}{"limit": limit, "state": state}, &out); err != nil {
+		return tool.BrowserDownloadsResponse{}, err
+	}
+	return out, nil
 }
 
 // ensureTab resolves the target tab for a browser tool call.
@@ -631,3 +830,16 @@ func (c *Controller) sendKeyChord(ctx context.Context, tabID int, modifier, key 
 
 func centerX(b *Bounds) float64 { return b.X + b.Width/2 }
 func centerY(b *Bounds) float64 { return b.Y + b.Height/2 }
+
+func uniquePositiveInts(values []int) []int {
+	seen := make(map[int]bool, len(values))
+	out := make([]int, 0, len(values))
+	for _, value := range values {
+		if value <= 0 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}

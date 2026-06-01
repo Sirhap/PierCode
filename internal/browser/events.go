@@ -150,8 +150,8 @@ func (b *EventBus) handleDialogEvent(event Event) {
 
 func (b *EventBus) handleConsoleEvent(event Event) {
 	var params struct {
-		Type      string `json:"type"`
-		Args      []struct {
+		Type string `json:"type"`
+		Args []struct {
 			Type        string      `json:"type"`
 			Value       interface{} `json:"value"`
 			Description string      `json:"description"`
@@ -282,7 +282,7 @@ func (b *EventBus) handleResponseReceived(event Event) {
 
 func (b *EventBus) GetConsoleMessages(tabID int, filter ConsoleFilter) []ConsoleMessage {
 	b.mu.RLock()
-	messages := b.console[tabID]
+	messages := append([]ConsoleMessage(nil), b.console[tabID]...)
 	b.mu.RUnlock()
 
 	var result []ConsoleMessage
@@ -323,7 +323,7 @@ func (b *EventBus) ClearConsole(tabID int) {
 
 func (b *EventBus) GetNetworkRequests(tabID int, filter NetworkFilter) []NetworkRequest {
 	b.mu.RLock()
-	requests := b.network[tabID]
+	requests := append([]NetworkRequest(nil), b.network[tabID]...)
 	b.mu.RUnlock()
 
 	var result []NetworkRequest

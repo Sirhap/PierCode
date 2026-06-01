@@ -61,7 +61,31 @@ func (c *Controller) Zoom(ctx context.Context, req tool.BrowserZoomRequest) (too
 		clipH = *req.Height
 	}
 
-	if req.Selector != "" {
+	if req.Ref != "" {
+		target, err := c.tabs.ResolveRef(tab.TabID, req.SnapshotID, req.Ref)
+		if err != nil {
+			return tool.BrowserZoomResponse{}, err
+		}
+		if target.Bounds == nil && target.BackendID > 0 {
+			bounds, err := c.boxModelBounds(ctx, tab.TabID, target.BackendID)
+			if err != nil {
+				c.tabs.MarkStale(tab.TabID)
+				return tool.BrowserZoomResponse{}, fmt.Errorf("snapshot is stale; call browser_snapshot again: %w", err)
+			}
+			target.Bounds = bounds
+		}
+		if target.Bounds == nil {
+			return tool.BrowserZoomResponse{}, fmt.Errorf("ref %s has no bounds; call browser_snapshot again or use selector", req.Ref)
+		}
+		clipX = target.Bounds.X
+		clipY = target.Bounds.Y
+		if clipW == 0 {
+			clipW = target.Bounds.Width
+		}
+		if clipH == 0 {
+			clipH = target.Bounds.Height
+		}
+	} else if req.Selector != "" {
 		expression := `(function() {
   var el = document.querySelector(` + jsString(req.Selector) + `);
   if (!el) throw new Error('Element not found: ' + ` + jsString(req.Selector) + `);
@@ -146,39 +170,12 @@ func (c *Controller) Resize(ctx context.Context, req tool.BrowserResizeRequest) 
 	if err != nil {
 		return "", err
 	}
-	getWinParams, _ := json.Marshal(map[string]interface{}{})
-	raw, err := c.relay.SendCommand(ctx, Command{
-		TabID:  &tab.TabID,
-		Domain: "Browser",
-		Method: "getWindowForTarget",
-		Params: getWinParams,
-	}, defaultReadTimeout)
-	if err != nil {
-		return "", fmt.Errorf("failed to get window id: %w", err)
-	}
-	var winOut struct {
-		WindowID int `json:"windowId"`
-	}
-	if err := json.Unmarshal(raw, &winOut); err != nil {
-		return "", fmt.Errorf("failed to parse window id: %w", err)
-	}
-	if winOut.WindowID == 0 {
-		return "", fmt.Errorf("Browser.getWindowForTarget returned no windowId")
-	}
-	boundsParams, _ := json.Marshal(map[string]interface{}{
-		"windowId": winOut.WindowID,
-		"bounds": map[string]interface{}{
-			"width":  req.Width,
-			"height": req.Height,
-		},
-	})
-	if _, err := c.relay.SendCommand(ctx, Command{
-		TabID:  &tab.TabID,
-		Domain: "Browser",
-		Method: "setWindowBounds",
-		Params: boundsParams,
-	}, defaultActionTimeout); err != nil {
-		return "", fmt.Errorf("failed to set window bounds: %w", err)
+	if err := c.sendNativeWithTimeout(ctx, "resizeWindow", map[string]interface{}{
+		"tabId":  tab.TabID,
+		"width":  req.Width,
+		"height": req.Height,
+	}, defaultActionTimeout, nil); err != nil {
+		return "", fmt.Errorf("failed to resize browser window: %w", err)
 	}
 	return fmt.Sprintf("resized browser window to %dx%d for tabId=%d", req.Width, req.Height, tab.TabID), nil
 }
