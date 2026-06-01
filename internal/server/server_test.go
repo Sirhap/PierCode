@@ -478,6 +478,10 @@ func TestHandlePrompt(t *testing.T) {
 		if !bytes.Contains(body, []byte("Tool <name> does not exists")) {
 			t.Errorf("expected qwen profile to address host-native missing-tool errors")
 		}
+		if !bytes.Contains(body, []byte("ordinary final-answer Markdown text")) ||
+			!bytes.Contains(body, []byte("Do not invoke functions")) {
+			t.Errorf("expected qwen profile to force visible markdown instead of host-native calls")
+		}
 	})
 
 	t.Run("default prompt fallback renders placeholders", func(t *testing.T) {

@@ -63,6 +63,24 @@ func TestProfilePromptOverridesDefaultWhenRegistered(t *testing.T) {
 	}
 }
 
+func TestRenderedToolDocsDoNotIncludeExecutableToolFenceExamples(t *testing.T) {
+	rendered := string(Render([]byte("{{TOOLS}}"), "C:/repo", []tool.ToolInfo{{
+		Name:        "browser_snapshot",
+		Description: "snapshot page",
+		Parameters:  map[string]string{"tabId": "optional tab id"},
+	}}))
+
+	if strings.Contains(rendered, "```piercode-tool") || strings.Contains(rendered, "```tool") {
+		t.Fatalf("rendered tool docs must not include executable tool-call examples, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "browser_snapshot") || !strings.Contains(rendered, "name") || !strings.Contains(rendered, "call_id") || !strings.Contains(rendered, "args") {
+		t.Fatalf("rendered tool docs should still describe the protocol fields, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "`text` fence") {
+		t.Fatalf("rendered tool docs should direct non-executed examples to text fences, got %q", rendered)
+	}
+}
+
 func TestProfileRegistryCanFilterToolsAndSkills(t *testing.T) {
 	registry := NewProfileRegistry([]byte("default {{TOOLS}}"))
 	registry.Register(Profile{

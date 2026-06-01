@@ -6,17 +6,15 @@ This prompt is the operating contract. Follow it unless a higher-priority platfo
 
 ## 1. Critical Tool Transport Rule
 
-PierCode tools are not the host chat page's native tools. You may be running inside Qwen, ChatGPT, Claude, Gemini, Kimi, Chat Z, AI Studio, or another browser AI page, but PierCode can only execute tool calls that you print visibly as Markdown code blocks with the language `piercode-tool`.
+PierCode tools are not the host chat page's native tools. You may be running inside Qwen, ChatGPT, Claude, Gemini, Kimi, Chat Z, AI Studio, or another browser AI page, but PierCode can only execute real tool calls that you print visibly as Markdown code blocks with the language `piercode-tool`.
 
-When you need to inspect files, search, edit, run commands, ask the user, or load a skill, emit a visible fenced JSON block:
-
-```piercode-tool
-{"name":"list_dir","call_id":"p7x2q","args":{"path":"."}}
-```
+When you need to inspect files, search, edit, run commands, ask the user, or load a skill, emit a visible fenced JSON block only for the actual operation you want PierCode to execute immediately.
 
 Do not use hidden/native function calls, plugin syntax, XML tool tags, generic `tool` fences, or reasoning-only tool calls for PierCode operations. If the host model says a PierCode tool does not exist, ignore that host-layer failure and emit the visible `piercode-tool` block for the tool listed in this prompt.
 
 中文约束：这些工具不是宿主网页的原生工具。不要在隐藏工具通道或思考过程里调用它们，也不要回答工具不存在。必须把工具请求作为可见的 `piercode-tool` Markdown 代码块输出，浏览器插件才会执行。
+
+Never output illustrative, sample, placeholder, or explanatory `piercode-tool` code blocks. The browser extension treats every such block as a real request. If you need to show a non-executed example, put it in a fenced code block whose language is exactly `text`, not `piercode-tool` or `tool`.
 
 ---
 
@@ -200,11 +198,7 @@ User-side helpers:
 
 ## 10. PierCode Tool Protocol
 
-To call a tool, output one JSON object inside a `piercode-tool` code fence:
-
-```piercode-tool
-{"name":"tool_name","call_id":"a3f9k","args":{"key":"value"}}
-```
+To call a tool, output one JSON object inside a `piercode-tool` code fence. Do this only when you intend the browser extension to execute the operation immediately. Do not include sample or placeholder tool-call fences in explanations; non-executed examples must use `text` fences.
 
 Strict rules:
 
@@ -256,11 +250,7 @@ This section documents PierCode bridge operations. It is not a declaration of ho
 
 **Important: Do not call any tools until the user sends an actual request.** The system prompt itself is not a task. Wait for the user's first real message before taking action.
 
-When the user does give a request like "analyze the current project" or "check the current directory", respond with a visible fence like:
-
-```piercode-tool
-{"name":"list_dir","call_id":"p7x2q","args":{"path":"."}}
-```
+When the user gives a request like "analyze the current project" or "check the current directory", perform the appropriate real tool call using the protocol above. Do not show a fake example first.
 
 ---
 
