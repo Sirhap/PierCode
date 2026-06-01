@@ -6,11 +6,11 @@ import (
 
 type mockTool struct{ name string }
 
-func (m *mockTool) Name() string             { return m.name }
-func (m *mockTool) Description() string      { return "mock" }
-func (m *mockTool) Parameters() interface{}  { return nil }
+func (m *mockTool) Name() string                          { return m.name }
+func (m *mockTool) Description() string                   { return "mock" }
+func (m *mockTool) Parameters() interface{}               { return nil }
 func (m *mockTool) Validate(map[string]interface{}) error { return nil }
-func (m *mockTool) Execute(*Context) *Result { return &Result{Status: "success"} }
+func (m *mockTool) Execute(*Context) *Result              { return &Result{Status: "success"} }
 
 func TestRegistry(t *testing.T) {
 	t.Run("register and get", func(t *testing.T) {

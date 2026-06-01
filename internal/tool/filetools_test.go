@@ -299,3 +299,66 @@ func TestReadFileTruncationRespectsUTF8(t *testing.T) {
 		t.Fatalf("truncated body is not valid UTF-8 (len=%d)", len(body))
 	}
 }
+
+func TestGlobGrepExcludeDirs(t *testing.T) {
+	cfg := testConfig(t)
+	root := cfg.RootDir
+	// 正常文件
+	mustWrite(t, filepath.Join(root, "main.go"), "package main // needle")
+	// 应被排除的目录
+	for _, dir := range []string{"node_modules", ".git", "dist", ".idea"} {
+		sub := filepath.Join(root, dir)
+		if err := os.MkdirAll(sub, 0755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(sub, "junk.go"), "package x // needle")
+	}
+
+	t.Run("glob skips excluded dirs", func(t *testing.T) {
+		res := NewGlobTool(cfg).Execute(testCtx(cfg, map[string]interface{}{"pattern": "**/*.go"}))
+		if res.Status != "success" {
+			t.Fatalf("glob failed: %s", res.Error)
+		}
+		if !strings.Contains(res.Output, "main.go") {
+			t.Fatalf("expected main.go, got %q", res.Output)
+		}
+		for _, bad := range []string{"node_modules", "/.git/", "dist", ".idea"} {
+			if strings.Contains(res.Output, bad) {
+				t.Fatalf("excluded dir leaked into glob output: %q in %q", bad, res.Output)
+			}
+		}
+	})
+
+	t.Run("grep native skips excluded dirs", func(t *testing.T) {
+		// 直接测 native 路径, 不依赖系统是否装了 rg
+		out, err := grepNative("needle", root, "")
+		if err != nil {
+			t.Fatalf("grepNative failed: %v", err)
+		}
+		if !strings.Contains(out, "main.go") {
+			t.Fatalf("expected main.go match, got %q", out)
+		}
+		for _, bad := range []string{"node_modules", "/.git/", "dist", ".idea"} {
+			if strings.Contains(out, bad) {
+				t.Fatalf("excluded dir leaked into grep output: %q in %q", bad, out)
+			}
+		}
+	})
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGrepInvalidPatternErrors(t *testing.T) {
+	cfg := testConfig(t)
+	mustWrite(t, filepath.Join(cfg.RootDir, "a.txt"), "hello")
+	// 无效正则: 缺右括号。rg(exit 2) 与 native 都应报错, 不再静默返回无匹配。
+	res := NewGrepTool(cfg).Execute(testCtx(cfg, map[string]interface{}{"pattern": "("}))
+	if res.Status != "error" {
+		t.Fatalf("invalid regex should error, got status=%s output=%q", res.Status, res.Output)
+	}
+}

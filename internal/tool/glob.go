@@ -69,7 +69,16 @@ func (t *GlobTool) Execute(ctx *Context) *Result {
 	isRecursive := strings.Contains(pattern, "**")
 
 	filepath.WalkDir(safePath, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			// Prune heavy/VCS/hidden directories, but never the walk root
+			// itself (its base name may legitimately be e.g. "node_modules"
+			// if the user pointed -dir there).
+			if p != safePath && shouldSkipDir(d.Name()) {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		name := d.Name()

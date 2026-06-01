@@ -70,7 +70,12 @@ func (t *GrepTool) Execute(ctx *Context) *Result {
 
 	var output string
 	if rgPath, err := exec.LookPath("rg"); err == nil {
-		output = grepWithRg(rgPath, pattern, safePath, include)
+		output, err = grepWithRg(rgPath, pattern, safePath, include)
+		if err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
 	} else {
 		output, err = grepNative(pattern, safePath, include)
 		if err != nil {
@@ -86,19 +91,38 @@ func (t *GrepTool) Execute(ctx *Context) *Result {
 	return result
 }
 
-func grepWithRg(rgPath, pattern, searchPath, include string) string {
+func grepWithRg(rgPath, pattern, searchPath, include string) (string, error) {
 	args := []string{"-n", "--no-heading"}
 	if include != "" {
 		if strings.ContainsAny(include, "/\\") {
-			return "error: include pattern must not contain path separators"
+			return "", errors.New("include pattern must not contain path separators")
 		}
 		args = append(args, "--glob", include)
 	}
 	args = append(args, "--", pattern, searchPath)
 	cmd := exec.Command(rgPath, args...)
-	out, _ := cmd.Output()
+	out, err := cmd.Output()
+	// ripgrep exit codes: 0 = matches found, 1 = no matches (not an error),
+	// 2 = an actual error (e.g. invalid regex). Surface code 2 instead of
+	// silently returning "no matches", matching the native path's behavior.
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			switch exitErr.ExitCode() {
+			case 1:
+				// no matches — fall through with empty output
+			default:
+				msg := strings.TrimSpace(string(exitErr.Stderr))
+				if msg == "" {
+					msg = "ripgrep failed"
+				}
+				return "", fmt.Errorf("invalid pattern or search error: %s", msg)
+			}
+		} else {
+			return "", err
+		}
+	}
 	lines := strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n")
-	return formatGrepLines(lines, 100)
+	return formatGrepLines(lines, 100), nil
 }
 
 func grepNative(pattern, searchPath, include string) (string, error) {
@@ -114,7 +138,16 @@ func grepNative(pattern, searchPath, include string) (string, error) {
 	var matches []match
 
 	filepath.WalkDir(searchPath, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			// Match ripgrep's default pruning so the native fallback returns
+			// comparable results: skip node_modules/.git/etc. Never prune the
+			// walk root itself.
+			if p != searchPath && shouldSkipDir(d.Name()) {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if include != "" {

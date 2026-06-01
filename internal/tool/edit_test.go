@@ -234,3 +234,26 @@ func TestEditPreservesLFLineEndings(t *testing.T) {
 		t.Errorf("LF file should not gain CR.\n got: %q\nwant: %q", got, want)
 	}
 }
+
+func TestEditCRLFReplaceAllCount(t *testing.T) {
+	cfg := testConfig(t)
+	p := filepath.Join(cfg.RootDir, "c.txt")
+	// CRLF 文件, "x" 出现 3 次
+	if err := os.WriteFile(p, []byte("x\r\ny\r\nx\r\nx\r\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	res := NewEditTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+		"path": "c.txt", "old_string": "x", "new_string": "Z", "replace_all": true,
+	}))
+	if res.Status != "success" {
+		t.Fatalf("edit failed: %s", res.Error)
+	}
+	got, _ := os.ReadFile(p)
+	if string(got) != "Z\r\ny\r\nZ\r\nZ\r\n" {
+		t.Fatalf("CRLF replaceAll wrong content: %q", got)
+	}
+	// 报告应为 3 处, 来自实际写入运行
+	if !strings.Contains(res.Output, "3") {
+		t.Fatalf("expected count 3 in output, got %q", res.Output)
+	}
+}

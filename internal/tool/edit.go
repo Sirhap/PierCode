@@ -105,15 +105,18 @@ func (t *EditTool) Execute(ctx *Context) *Result {
 		outBytes = []byte(replaced)
 	} else {
 		// Try LF-form first (some editors author CRLF files with LF lines mixed in).
-		newRaw, ok := spliceOnRaw(originalContent, oldStr, newStr, replaceAll)
+		newRaw, rawCount, ok := spliceOnRaw(originalContent, oldStr, newStr, replaceAll)
 		if !ok {
 			// Try the CRLF-form of oldStr/newStr against the raw content.
 			oldCRLF := strings.ReplaceAll(strings.ReplaceAll(oldStr, "\r\n", "\n"), "\n", "\r\n")
 			newCRLF := strings.ReplaceAll(strings.ReplaceAll(newStr, "\r\n", "\n"), "\n", "\r\n")
-			newRaw, ok = spliceOnRaw(originalContent, oldCRLF, newCRLF, replaceAll)
+			newRaw, rawCount, ok = spliceOnRaw(originalContent, oldCRLF, newCRLF, replaceAll)
 		}
 		if ok {
 			outBytes = []byte(newRaw)
+			// Report the count from the run we actually wrote, not the
+			// LF-normalized run above.
+			count = rawCount
 		} else {
 			// Fall back to the LF-normalized result. Mixed-ending files will
 			// be normalized to LF here — that's worse than perfect but still
@@ -156,25 +159,26 @@ func normalizeLineEndings(s string) string {
 }
 
 // spliceOnRaw tries to replace oldStr with newStr in raw without any line-ending
-// normalization. Returns the new content and true if oldStr was found.
-// Used to preserve the original file's mixed/CRLF endings when the AI sent the
-// edit in matching form.
-func spliceOnRaw(raw, oldStr, newStr string, replaceAll bool) (string, bool) {
+// normalization. Returns the new content, the number of replacements made, and
+// true if oldStr was found. Used to preserve the original file's mixed/CRLF
+// endings when the AI sent the edit in matching form.
+func spliceOnRaw(raw, oldStr, newStr string, replaceAll bool) (string, int, bool) {
 	if oldStr == "" {
-		return raw, false
+		return raw, 0, false
 	}
 	if !strings.Contains(raw, oldStr) {
-		return raw, false
+		return raw, 0, false
 	}
 	if replaceAll {
-		return strings.ReplaceAll(raw, oldStr, newStr), true
+		count := strings.Count(raw, oldStr)
+		return strings.ReplaceAll(raw, oldStr, newStr), count, true
 	}
 	// Single replace: only if exactly one match — otherwise refuse so the
 	// caller falls back to the smarter Replacer cascade.
 	if strings.Count(raw, oldStr) != 1 {
-		return raw, false
+		return raw, 0, false
 	}
-	return strings.Replace(raw, oldStr, newStr, 1), true
+	return strings.Replace(raw, oldStr, newStr, 1), 1, true
 }
 
 func levenshtein(a, b string) int {
