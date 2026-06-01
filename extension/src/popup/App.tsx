@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { DEFAULT_AUTO_EXECUTE, resolveAutoExecute } from '../settings'
+import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, resolveAutoApproveBrowserActions, resolveAutoExecute } from '../settings'
 
 function normalizeAuthUrl(raw: string): { baseUrl: string; token: string; port: number } {
   const authUrl = new URL(raw.trim())
@@ -84,6 +84,7 @@ export default function App() {
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
   const [autoSend, setAutoSend] = useState(true)
   const [autoExecute, setAutoExecute] = useState(DEFAULT_AUTO_EXECUTE)
+  const [autoApproveBrowserActions, setAutoApproveBrowserActions] = useState(DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS)
   const [delayMin, setDelayMin] = useState(1)
   const [delayMax, setDelayMax] = useState(4)
   const [browserRelay, setBrowserRelay] = useState<BrowserRelayStatus>({})
@@ -96,7 +97,7 @@ export default function App() {
   }, [toast])
 
   useEffect(() => {
-    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'delayMin', 'delayMax'], (result) => {
+    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'delayMin', 'delayMax'], (result) => {
       const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
       if (result.authToken && savedUrl) {
         setStatus('checking')
@@ -110,6 +111,9 @@ export default function App() {
       const nextAutoExecute = resolveAutoExecute(result.autoExecute)
       setAutoExecute(nextAutoExecute)
       if (result.autoExecute === undefined) chrome.storage.local.set({ autoExecute: nextAutoExecute })
+      const nextAutoApproveBrowserActions = resolveAutoApproveBrowserActions(result.autoApproveBrowserActions)
+      setAutoApproveBrowserActions(nextAutoApproveBrowserActions)
+      if (result.autoApproveBrowserActions === undefined) chrome.storage.local.set({ autoApproveBrowserActions: nextAutoApproveBrowserActions })
       if (result.delayMin !== undefined) setDelayMin(result.delayMin)
       if (result.delayMax !== undefined) setDelayMax(result.delayMax)
     })
@@ -267,6 +271,11 @@ export default function App() {
     chrome.storage.local.set({ autoExecute: val })
   }
 
+  const handleAutoApproveBrowserActionsChange = (val: boolean) => {
+    setAutoApproveBrowserActions(val)
+    chrome.storage.local.set({ autoApproveBrowserActions: val })
+  }
+
   const handleDelayChange = (min: number, max: number) => {
     const safeMin = Math.max(0, min)
     const safeMax = Math.max(safeMin, max)
@@ -352,6 +361,21 @@ export default function App() {
             <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transition-transform duration-200 ${autoExecute ? 'translate-x-5' : 'translate-x-0.5'}`} />
           </button>
         </div>
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-gray-300">自动审批浏览器操作</span>
+          <button
+            onClick={() => handleAutoApproveBrowserActionsChange(!autoApproveBrowserActions)}
+            className={`relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 ${autoApproveBrowserActions ? 'bg-amber-500' : 'bg-gray-600'}`}
+            title="开启后，点击、输入、导航等浏览器审批会自动允许"
+          >
+            <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transition-transform duration-200 ${autoApproveBrowserActions ? 'translate-x-5' : 'translate-x-0.5'}`} />
+          </button>
+        </div>
+        {autoApproveBrowserActions && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+            浏览器操作将自动允许，请只在可信页面使用。
+          </div>
+        )}
         <div className="flex items-center justify-between">
           <span className="text-sm text-gray-300">自动提交</span>
           <button

@@ -11,8 +11,15 @@ const JSDOMWithOptions: any = JSDOM;
 const extensionRoot = path.resolve(new URL('../..', import.meta.url).pathname);
 const configureHTMLPath = path.join(extensionRoot, 'public/configure.html');
 const configureScriptPath = path.join(extensionRoot, 'public/configure.js');
+const manifestPath = path.join(extensionRoot, 'public/manifest.json');
 
 describe('extension configure page', () => {
+  it('declares configure.html as the extension options page', () => {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+
+    expect(manifest.options_page).toBe('configure.html');
+  });
+
   it('uses an external script so Manifest V3 CSP permits it', () => {
     const html = fs.readFileSync(configureHTMLPath, 'utf8');
     const dom = new JSDOM(html);

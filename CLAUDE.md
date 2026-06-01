@@ -67,7 +67,7 @@ Local Filesystem / Browser CDP
 
 **`internal/tool/`**: Tool implementations (each tool implements the `Tool` interface in `tool.go`)
 - `registry.go`: Thread-safe tool registry (Register/Get/List)
-- Core tools: `exec_cmd`, `read_file`, `write_file`, `edit`, `list_dir`, `glob`, `grep`, `web_fetch`, `skill`, `question`, `todo_write`, `todo_read`, `task_list`, `task_output`, `task_stop`, `send_stdin`
+- Core tools: `exec_cmd`, `read_file`, `write_file`, `edit`, `apply_patch` (multi-file contextual patches), `list_dir`, `glob`, `grep`, `web_fetch`, `skill`, `question`, `todo_write`, `todo_read`, `task_list`, `task_output`, `task_stop`, `send_stdin`, `tool_help` (on-demand tool docs)
 - Browser tools (`browser_tools.go`, `browser_tools_ext.go`, `browser_tools_find.go`): ~25 browser automation tools using CDP via the extension's debugger API
 - `tool.go`: `Tool` interface, `Context` struct (carries RootDir snapshot, Streamer, TaskRunner, Broadcast callbacks), `BrowserController` interface
 
@@ -104,6 +104,8 @@ Built with Vite + React + TypeScript + Tailwind CSS. Five entry points (see `vit
 | `src/page-bridge/` | `page-bridge.js` | Bridge between content script and injected script |
 
 **Platform adapter pattern** (`src/platform-adapters/`): Each supported AI site has its own adapter module. Adapters are matched by URL in priority order in `platform-adapters.ts`.
+
+**Qwen context compression** (`src/content/qwen-context-compress.ts`): Estimates conversation token usage and generates a summary when a configurable threshold is exceeded, to keep long Qwen sessions within context. Thresholds live in `src/settings.ts` (`DEFAULT_QWEN_MAX_CONTEXT_TOKENS`, `DEFAULT_QWEN_MAX_SUMMARY_TOKENS`).
 
 Currently supported platforms (from manifest + adapters):
 - Google Gemini (`gemini.google.com`)

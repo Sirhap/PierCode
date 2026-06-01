@@ -1,0 +1,192 @@
+// Qwen 上下文压缩模块
+// 触发条件: 可配置 tokens 阈值, 摘要限制可配置
+
+import { QwenCompressionConfig, DEFAULT_QWEN_MAX_CONTEXT_TOKENS, DEFAULT_QWEN_MAX_SUMMARY_TOKENS } from '../settings';
+
+const TOKEN_ESTIMATE_RATIO = 4; // 粗略: 1 token ≈ 4 chars (英文/代码)
+
+export interface ConversationContext {
+  messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string; timestamp: number; sourceKey?: string }>;
+  totalChars: number;
+  lastCompressedAt: number;
+}
+
+// 简单 token 估算 (基于字符数, 非精确但足够用于阈值判断)
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  // 英文/代码: ~4 chars/token, 中文: ~1.5 chars/token, 混合取平均 ~2.5
+  const ascii = (text.match(/[\x00-\x7F]/g) || []).length;
+  const nonAscii = text.length - ascii;
+  return Math.ceil(ascii / TOKEN_ESTIMATE_RATIO + nonAscii / 1.5);
+}
+
+export function estimateContextTokens(ctx: ConversationContext): number {
+  return ctx.messages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0);
+}
+
+// 生成摘要: 保留系统提示和最近上下文, 输出顺序保持原会话顺序。
+export function generateSummary(ctx: ConversationContext, targetTokens = DEFAULT_QWEN_MAX_SUMMARY_TOKENS): string {
+  if (ctx.messages.length === 0) return '';
+
+  const parts: string[] = [];
+  let accumulatedTokens = 0;
+
+  const systemMsg = ctx.messages.find(m => m.role === 'system');
+  if (systemMsg) {
+    const truncated = truncateToTokens(systemMsg.content, Math.floor(targetTokens * 0.1));
+    parts.push(`[系统] ${truncated}`);
+    accumulatedTokens += estimateTokens(truncated);
+  }
+
+  const recentMessages = ctx.messages.filter(m => m.role !== 'system');
+  const selected: string[] = [];
+  for (let i = recentMessages.length - 1; i >= 0; i--) {
+    if (accumulatedTokens >= targetTokens * 0.85) break;
+    const msg = recentMessages[i];
+    const remaining = Math.max(0, Math.floor(targetTokens * 0.9) - accumulatedTokens);
+    if (remaining <= 0) break;
+    const msgBudget = Math.max(128, Math.min(remaining, Math.floor(targetTokens * 0.2)));
+    const part = `[${msg.role}] ${truncateToTokens(msg.content, msgBudget)}`;
+    const partTokens = estimateTokens(part);
+    if (partTokens > remaining && selected.length > 0) break;
+    selected.unshift(part);
+    accumulatedTokens += partTokens;
+  }
+  parts.push(...selected);
+
+  const toolCalls = ctx.messages.filter(m => m.content.includes('piercode-tool'));
+  if (toolCalls.length > 0) {
+    const summary = `[工具调用摘要: ${toolCalls.length} 次, 最近: ${extractLastToolCall(toolCalls)}]`;
+    if (accumulatedTokens + estimateTokens(summary) <= targetTokens) {
+      parts.push(summary);
+    }
+  }
+
+  return truncateToTokens(parts.join('\n\n'), targetTokens);
+}
+
+export function truncateToTokens(text: string, maxTokens: number): string {
+  if (maxTokens <= 0) return '';
+  if (estimateTokens(text) <= maxTokens) return text;
+
+  const suffix = '... [已截断]';
+  const suffixTokens = estimateTokens(suffix);
+  const contentBudget = Math.max(1, maxTokens - suffixTokens);
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (estimateTokens(text.slice(0, mid)) <= contentBudget) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return text.slice(0, low) + suffix;
+}
+
+function extractLastToolCall(toolCalls: Array<{ content: string }>): string {
+  if (toolCalls.length === 0) return '无';
+  const last = toolCalls[toolCalls.length - 1].content;
+  // 提取工具名
+  const match = last.match(/"name"\s*:\s*"([^"]+)"/);
+  return match ? match[1] : 'unknown';
+}
+
+// 检查是否需要压缩 (使用默认阈值, 实际调用方应传入配置)
+export function shouldCompress(ctx: ConversationContext, maxTokens = DEFAULT_QWEN_MAX_CONTEXT_TOKENS): boolean {
+  const tokens = estimateContextTokens(ctx);
+  return tokens >= maxTokens;
+}
+
+// 执行压缩并返回新会话内容
+export async function compressAndPrepareNewSession(
+  ctx: ConversationContext,
+  onSummaryGenerated: (summary: string) => void,
+  config: QwenCompressionConfig = {
+    enabled: true,
+    maxContextTokens: DEFAULT_QWEN_MAX_CONTEXT_TOKENS,
+    maxSummaryTokens: DEFAULT_QWEN_MAX_SUMMARY_TOKENS
+  }
+): Promise<{ summary: string; newContext: ConversationContext }> {
+  if (!config.enabled) {
+    return { summary: '', newContext: ctx };
+  }
+
+  const summary = generateSummary(ctx, config.maxSummaryTokens);
+  onSummaryGenerated(summary);
+
+  // 新会话以摘要开头, 保留最近少量消息作为上下文衔接
+  const recentCount = Math.min(3, ctx.messages.filter(m => m.role !== 'system').length);
+  const recentMessages = [...ctx.messages]
+    .filter(m => m.role !== 'system')
+    .slice(-recentCount)
+    .map(m => ({ ...m, content: truncateToTokens(m.content, 2000) })); // 每条限制 2000 chars
+
+  const newContext: ConversationContext = {
+    messages: [
+      { role: 'system', content: `[上下文已压缩] 摘要:\n\n${summary}`, timestamp: Date.now() },
+      ...recentMessages
+    ],
+    totalChars: summary.length + recentMessages.reduce((s, m) => s + m.content.length, 0),
+    lastCompressedAt: Date.now()
+  };
+
+  return { summary, newContext };
+}
+
+// 工具输出压缩: 用于回填到聊天界面的长结果截断
+export function compactToolOutputForChat(output: string, maxChars = 100_000): { text: string; compacted: boolean } {
+  if (output.length <= maxChars) return { text: output, compacted: false };
+
+  const sections = splitToolSections(output);
+  const budgetPerSection = Math.max(
+    4_000,
+    Math.floor((maxChars - 2_000) / Math.max(1, sections.length))
+  );
+  const compactedSections = sections.map(section => compactSection(section, budgetPerSection));
+  const text = [
+    `[PierCode] 工具结果过长，已自动压缩后回填。原始长度 ${output.length} 字符，压缩后保留每段开头、结尾和截断说明。`,
+    '',
+    ...compactedSections
+  ].join('\n\n');
+
+  if (text.length <= maxChars) return { text, compacted: true };
+  return {
+    text: text.slice(0, maxChars - 80) + `\n\n... [压缩结果仍过长，已截断 ${text.length - maxChars + 80} 字符]`,
+    compacted: true
+  };
+}
+
+function splitToolSections(output: string): string[] {
+  const marker = /^### .+ #.+$/gm;
+  const matches = Array.from(output.matchAll(marker));
+  if (matches.length === 0) return [output];
+
+  const sections: string[] = [];
+  for (let i = 0; i < matches.length; i++) {
+    const start = matches[i].index ?? 0;
+    const end = i + 1 < matches.length ? matches[i + 1].index ?? output.length : output.length;
+    sections.push(output.slice(start, end).trim());
+  }
+  return sections.filter(Boolean);
+}
+
+function compactSection(section: string, budget: number): string {
+  if (section.length <= budget) return section;
+
+  const lines = section.split('\n');
+  const heading = lines[0]?.startsWith('### ') ? lines[0] : '';
+  const body = heading ? lines.slice(1).join('\n') : section;
+  const bodyBudget = Math.max(1_000, budget - heading.length - 200);
+  const headChars = Math.min(8_000, Math.floor(bodyBudget * 0.75));
+  const tailChars = Math.min(2_000, Math.max(500, bodyBudget - headChars));
+  const omitted = Math.max(0, body.length - headChars - tailChars);
+  const compactedBody = [
+    body.slice(0, headChars).trimEnd(),
+    `\n... [已省略 ${omitted} 字符，原始工具结果过长] ...\n`,
+    body.slice(Math.max(headChars, body.length - tailChars)).trimStart()
+  ].join('');
+
+  return heading ? `${heading}\n${compactedBody}` : compactedBody;
+}

@@ -9,7 +9,7 @@ import (
 func TestToolConcurrencyPolicy(t *testing.T) {
 	for _, name := range []string{
 		"read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question",
-		"browser_find", "browser_console", "browser_network",
+		"tool_help", "browser_find", "browser_console", "browser_network",
 	} {
 		if !isReadOnlyTool(name) {
 			t.Fatalf("expected %s to be read-only", name)

@@ -1,0 +1,534 @@
+package tool
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/sirhap/piercode/internal/security"
+	"github.com/sirhap/piercode/internal/types"
+)
+
+type ApplyPatchTool struct {
+	config *types.Config
+}
+
+func NewApplyPatchTool(config *types.Config) *ApplyPatchTool {
+	return &ApplyPatchTool{config: config}
+}
+
+func (t *ApplyPatchTool) Name() string { return "apply_patch" }
+
+func (t *ApplyPatchTool) Description() string {
+	return "Apply a multi-file patch with contextual hunks. Prefer this for code edits; all hunks must apply cleanly or no files are written."
+}
+
+func (t *ApplyPatchTool) Parameters() interface{} {
+	return map[string]string{
+		"patch":   "string (required) - patch text delimited by *** Begin Patch and *** End Patch",
+		"dry_run": "bool (optional, default false) - validate and report changes without writing files",
+	}
+}
+
+func (t *ApplyPatchTool) Validate(args map[string]interface{}) error {
+	patch, ok := args["patch"].(string)
+	if !ok || strings.TrimSpace(patch) == "" {
+		return errors.New("patch is required")
+	}
+	if !strings.Contains(patch, "*** Begin Patch") || !strings.Contains(patch, "*** End Patch") {
+		return errors.New("patch must include *** Begin Patch and *** End Patch")
+	}
+	return nil
+}
+
+func (t *ApplyPatchTool) Execute(ctx *Context) *Result {
+	result := &Result{StartTime: time.Now()}
+	defer func() { result.EndTime = time.Now() }()
+	patch, _ := ctx.Args["patch"].(string)
+	dryRun, _ := ctx.Args["dry_run"].(bool)
+
+	ops, err := parsePatch(patch)
+	if err != nil {
+		result.Status = "error"
+		result.Error = err.Error()
+		return result
+	}
+
+	plans, err := planPatch(ctx.EffectiveRootDir(), ops)
+	if err != nil {
+		result.Status = "error"
+		result.Error = err.Error()
+		return result
+	}
+
+	if !dryRun {
+		if err := commitPlans(plans); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
+	}
+
+	result.Status = "success"
+	result.Output = formatPatchSummary(plans, dryRun)
+	return result
+}
+
+// fileBackup records the prior state of a path so it can be restored if a later
+// step in the same patch fails, keeping multi-file patches all-or-nothing on disk.
+type fileBackup struct {
+	absPath string
+	existed bool
+	content []byte
+	mode    os.FileMode
+	created bool // true if the commit created this path (restore = remove)
+}
+
+// commitPlans applies every plan, restoring all touched files to their original
+// state if any single operation fails.
+func commitPlans(plans []patchPlan) error {
+	backups := make([]fileBackup, 0, len(plans))
+	rollback := func() {
+		// Restore in reverse so directory creation/removal nests correctly.
+		for i := len(backups) - 1; i >= 0; i-- {
+			b := backups[i]
+			if b.existed {
+				_ = os.WriteFile(b.absPath, b.content, b.mode)
+			} else if b.created {
+				_ = os.Remove(b.absPath)
+			}
+		}
+	}
+
+	for _, plan := range plans {
+		info, statErr := os.Stat(plan.absPath)
+		existed := statErr == nil
+		backup := fileBackup{absPath: plan.absPath, existed: existed}
+		if existed {
+			raw, err := os.ReadFile(plan.absPath)
+			if err != nil {
+				rollback()
+				return err
+			}
+			backup.content = raw
+			backup.mode = info.Mode().Perm()
+		}
+
+		if plan.delete {
+			if err := os.Remove(plan.absPath); err != nil {
+				rollback()
+				return err
+			}
+			backups = append(backups, backup)
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(plan.absPath), 0755); err != nil {
+			rollback()
+			return err
+		}
+		if err := os.WriteFile(plan.absPath, []byte(plan.content), plan.mode); err != nil {
+			rollback()
+			return err
+		}
+		backup.created = !existed
+		backups = append(backups, backup)
+	}
+	return nil
+}
+
+type patchOpKind int
+
+const (
+	patchAdd patchOpKind = iota
+	patchUpdate
+	patchDelete
+)
+
+type patchOp struct {
+	kind  patchOpKind
+	path  string
+	hunks []patchHunk
+	lines []string
+}
+
+type patchHunk struct {
+	oldLines []string
+	newLines []string
+}
+
+type patchPlan struct {
+	path    string
+	absPath string
+	content string
+	mode    os.FileMode
+	delete  bool
+	added   int
+	removed int
+}
+
+func parsePatch(patch string) ([]patchOp, error) {
+	lines := strings.Split(strings.ReplaceAll(patch, "\r\n", "\n"), "\n")
+	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "*** Begin Patch" {
+		return nil, errors.New("patch must start with *** Begin Patch")
+	}
+	var ops []patchOp
+	for i := 1; i < len(lines); {
+		line := strings.TrimRight(lines[i], "\r")
+		if strings.TrimSpace(line) == "*** End Patch" {
+			return ops, nil
+		}
+		switch {
+		case strings.HasPrefix(line, "*** Add File: "):
+			op, next, err := parseAddFile(lines, i)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, op)
+			i = next
+		case strings.HasPrefix(line, "*** Update File: "):
+			op, next, err := parseUpdateFile(lines, i)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, op)
+			i = next
+		case strings.HasPrefix(line, "*** Delete File: "):
+			path := strings.TrimSpace(strings.TrimPrefix(line, "*** Delete File: "))
+			if path == "" {
+				return nil, fmt.Errorf("delete file header at line %d has empty path", i+1)
+			}
+			ops = append(ops, patchOp{kind: patchDelete, path: path})
+			i++
+		case strings.TrimSpace(line) == "":
+			i++
+		default:
+			return nil, fmt.Errorf("unexpected patch line %d: %s", i+1, line)
+		}
+	}
+	return nil, errors.New("patch missing *** End Patch")
+}
+
+func parseAddFile(lines []string, start int) (patchOp, int, error) {
+	path := strings.TrimSpace(strings.TrimPrefix(lines[start], "*** Add File: "))
+	if path == "" {
+		return patchOp{}, start, fmt.Errorf("add file header at line %d has empty path", start+1)
+	}
+	op := patchOp{kind: patchAdd, path: path}
+	i := start + 1
+	for i < len(lines) {
+		line := lines[i]
+		if strings.HasPrefix(line, "*** ") {
+			break
+		}
+		if !strings.HasPrefix(line, "+") {
+			return patchOp{}, start, fmt.Errorf("add file line %d must start with +", i+1)
+		}
+		op.lines = append(op.lines, strings.TrimPrefix(line, "+"))
+		i++
+	}
+	return op, i, nil
+}
+
+func parseUpdateFile(lines []string, start int) (patchOp, int, error) {
+	path := strings.TrimSpace(strings.TrimPrefix(lines[start], "*** Update File: "))
+	if path == "" {
+		return patchOp{}, start, fmt.Errorf("update file header at line %d has empty path", start+1)
+	}
+	op := patchOp{kind: patchUpdate, path: path}
+	i := start + 1
+	for i < len(lines) {
+		line := lines[i]
+		if strings.HasPrefix(line, "*** ") {
+			break
+		}
+		if strings.TrimSpace(line) == "" {
+			i++
+			continue
+		}
+		if strings.TrimSpace(line) != "@@" && !strings.HasPrefix(line, "@@ ") {
+			return patchOp{}, start, fmt.Errorf("update file %s expected @@ hunk at line %d", path, i+1)
+		}
+		hunk, next, err := parseHunk(lines, i+1)
+		if err != nil {
+			return patchOp{}, start, err
+		}
+		op.hunks = append(op.hunks, hunk)
+		i = next
+	}
+	if len(op.hunks) == 0 {
+		return patchOp{}, start, fmt.Errorf("update file %s has no hunks", path)
+	}
+	return op, i, nil
+}
+
+func parseHunk(lines []string, start int) (patchHunk, int, error) {
+	var oldLines, newLines []string
+	i := start
+	for i < len(lines) {
+		line := lines[i]
+		if strings.HasPrefix(line, "*** ") || strings.TrimSpace(line) == "@@" || strings.HasPrefix(line, "@@ ") {
+			break
+		}
+		if strings.HasPrefix(line, `\ No newline`) {
+			i++
+			continue
+		}
+		if line == "" {
+			return patchHunk{}, start, fmt.Errorf("hunk line %d is empty; use a leading space for blank context lines", i+1)
+		}
+		prefix := line[0]
+		text := line[1:]
+		switch prefix {
+		case ' ':
+			oldLines = append(oldLines, text)
+			newLines = append(newLines, text)
+		case '-':
+			oldLines = append(oldLines, text)
+		case '+':
+			newLines = append(newLines, text)
+		default:
+			return patchHunk{}, start, fmt.Errorf("hunk line %d must start with space, -, or +", i+1)
+		}
+		i++
+	}
+	if len(oldLines) == 0 {
+		return patchHunk{}, start, fmt.Errorf("hunk starting at line %d has no context or removed lines", start+1)
+	}
+	return patchHunk{oldLines: oldLines, newLines: newLines}, i, nil
+}
+
+// splitContentLines splits file content into logical lines, returning the lines
+// and whether the original content ended with a trailing newline. An empty file
+// yields no lines. This lets us round-trip content through line-anchored edits
+// without inventing or dropping a final newline.
+func splitContentLines(content string) (lines []string, trailingNewline bool) {
+	if content == "" {
+		return nil, false
+	}
+	trailingNewline = strings.HasSuffix(content, "\n")
+	body := content
+	if trailingNewline {
+		body = strings.TrimSuffix(body, "\n")
+	}
+	return strings.Split(body, "\n"), trailingNewline
+}
+
+// joinContentLines is the inverse of splitContentLines.
+func joinContentLines(lines []string, trailingNewline bool) string {
+	if len(lines) == 0 {
+		if trailingNewline {
+			return "\n"
+		}
+		return ""
+	}
+	joined := strings.Join(lines, "\n")
+	if trailingNewline {
+		joined += "\n"
+	}
+	return joined
+}
+
+func planPatch(rootDir string, ops []patchOp) ([]patchPlan, error) {
+	if len(ops) == 0 {
+		return nil, errors.New("patch contains no operations")
+	}
+	type fileState struct {
+		path    string
+		absPath string
+		content string
+		mode    os.FileMode
+		exists  bool
+		delete  bool
+		added   int
+		removed int
+	}
+	states := map[string]*fileState{}
+	order := []string{}
+
+	getState := func(path string) (*fileState, error) {
+		absPath, err := resolvePatchPath(rootDir, path)
+		if err != nil {
+			return nil, err
+		}
+		key := absPath
+		if state, ok := states[key]; ok {
+			return state, nil
+		}
+		info, statErr := os.Stat(absPath)
+		state := &fileState{path: path, absPath: absPath, mode: 0644}
+		if statErr == nil {
+			if info.IsDir() {
+				return nil, fmt.Errorf("%s is a directory", path)
+			}
+			raw, err := os.ReadFile(absPath)
+			if err != nil {
+				return nil, err
+			}
+			state.content = string(raw)
+			state.mode = info.Mode().Perm()
+			state.exists = true
+		} else if !os.IsNotExist(statErr) {
+			return nil, statErr
+		}
+		states[key] = state
+		order = append(order, key)
+		return state, nil
+	}
+
+	for _, op := range ops {
+		state, err := getState(op.path)
+		if err != nil {
+			return nil, err
+		}
+		switch op.kind {
+		case patchAdd:
+			if state.exists && !state.delete {
+				return nil, fmt.Errorf("cannot add %s: file already exists", op.path)
+			}
+			// Added files end with a trailing newline, matching the convention
+			// that each "+" line in the patch is a full line of the new file.
+			state.content = joinContentLines(op.lines, true)
+			state.exists = true
+			state.delete = false
+			state.added += len(op.lines)
+		case patchDelete:
+			if !state.exists || state.delete {
+				return nil, fmt.Errorf("cannot delete %s: file does not exist", op.path)
+			}
+			state.delete = true
+			state.removed += countPatchLines(state.content)
+		case patchUpdate:
+			if !state.exists || state.delete {
+				return nil, fmt.Errorf("cannot update %s: file does not exist", op.path)
+			}
+			for _, hunk := range op.hunks {
+				next, removed, added, err := applyPatchHunk(state.content, hunk)
+				if err != nil {
+					return nil, fmt.Errorf("%s: %w", op.path, err)
+				}
+				state.content = next
+				state.removed += removed
+				state.added += added
+			}
+		}
+	}
+
+	plans := make([]patchPlan, 0, len(order))
+	for _, key := range order {
+		state := states[key]
+		plans = append(plans, patchPlan{
+			path:    state.path,
+			absPath: state.absPath,
+			content: state.content,
+			mode:    state.mode,
+			delete:  state.delete,
+			added:   state.added,
+			removed: state.removed,
+		})
+	}
+	return plans, nil
+}
+
+func resolvePatchPath(rootDir, path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", errors.New("path is required")
+	}
+	if filepath.IsAbs(path) {
+		return resolveAbsPath(path, rootDir)
+	}
+	return security.SafePath(rootDir, path)
+}
+
+// applyPatchHunk locates hunk.oldLines as a contiguous run of whole lines within
+// content and replaces it with hunk.newLines. Matching is anchored to line
+// boundaries, so a context line can never match the tail of a longer line or a
+// substring inside a word. The match must be unique; otherwise the caller must
+// supply more surrounding context.
+func applyPatchHunk(content string, hunk patchHunk) (string, int, int, error) {
+	if len(hunk.oldLines) == 0 {
+		return "", 0, 0, errors.New("empty hunk context")
+	}
+
+	lines, trailingNewline := splitContentLines(content)
+	idx, count := findLineRun(lines, hunk.oldLines)
+	if count == 0 {
+		return "", 0, 0, errors.New("hunk context not found")
+	}
+	if count > 1 {
+		return "", 0, 0, errors.New("hunk context is ambiguous; add more surrounding context")
+	}
+
+	updated := make([]string, 0, len(lines)-len(hunk.oldLines)+len(hunk.newLines))
+	updated = append(updated, lines[:idx]...)
+	updated = append(updated, hunk.newLines...)
+	updated = append(updated, lines[idx+len(hunk.oldLines):]...)
+
+	return joinContentLines(updated, trailingNewline), len(hunk.oldLines), len(hunk.newLines), nil
+}
+
+// findLineRun returns the start index of the first occurrence of run within
+// lines and the total number of (non-overlapping) occurrences. A zero count
+// means run was not found.
+func findLineRun(lines, run []string) (firstIdx, count int) {
+	firstIdx = -1
+	if len(run) == 0 || len(run) > len(lines) {
+		return -1, 0
+	}
+	for i := 0; i+len(run) <= len(lines); {
+		if linesEqual(lines[i:i+len(run)], run) {
+			if firstIdx == -1 {
+				firstIdx = i
+			}
+			count++
+			i += len(run) // non-overlapping
+			continue
+		}
+		i++
+	}
+	return firstIdx, count
+}
+
+func linesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func formatPatchSummary(plans []patchPlan, dryRun bool) string {
+	var b strings.Builder
+	if dryRun {
+		b.WriteString("dry run: ")
+	}
+	b.WriteString(fmt.Sprintf("applied patch to %d file(s)", len(plans)))
+	for _, plan := range plans {
+		action := "updated"
+		if plan.delete {
+			action = "deleted"
+		} else if plan.removed == 0 && plan.added > 0 {
+			action = "added"
+		}
+		b.WriteString(fmt.Sprintf("\n- %s %s (+%d -%d)", action, plan.path, plan.added, plan.removed))
+	}
+	return b.String()
+}
+
+func countPatchLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	trimmed := strings.TrimSuffix(s, "\n")
+	if trimmed == "" {
+		return 1
+	}
+	return strings.Count(trimmed, "\n") + 1
+}

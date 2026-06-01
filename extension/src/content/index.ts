@@ -4,6 +4,8 @@ import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId } from './ws-linker';
 import { visualIndicator } from './visual-indicator';
 import { exposeAccessibilityTree, generateAccessibilityTree, getElementCoordinates, scrollToElement, clickElement, searchElements } from './accessibility-tree';
+import { compactToolOutputForChat, ConversationContext, compressAndPrepareNewSession, shouldCompress } from './qwen-context-compress';
+import { QwenCompressionConfig, resolveQwenCompressionConfig } from '../settings';
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
@@ -19,6 +21,159 @@ let monacoRequestSeq = 0;
 const CONTEXT_INVALID_MESSAGE = '扩展已失效，请刷新页面';
 let lastContextInvalidNoticeAt = 0;
 let responseSessionActivatedAt = 0;
+
+// Qwen 上下文压缩状态 (仅 Qwen 平台启用)
+let qwenConversationCtx: ConversationContext | null = null;
+let compressionInProgress = false;
+let qwenCompressionConfigCache: QwenCompressionConfig | null = null;
+
+function updateQwenContext(role: 'user' | 'assistant' | 'system', content: string, sourceKey?: string): void {
+  if (platformAdapter.name !== 'qwen') return;
+  const clean = content.trim();
+  if (!clean) return;
+  if (!qwenConversationCtx) {
+    qwenConversationCtx = {
+      messages: [],
+      totalChars: 0,
+      lastCompressedAt: 0
+    };
+  }
+  if (sourceKey) {
+    const existing = qwenConversationCtx.messages.find(m => m.sourceKey === sourceKey);
+    if (existing) {
+      if (existing.content === clean) return;
+      qwenConversationCtx.totalChars += clean.length - existing.content.length;
+      existing.content = clean;
+      existing.timestamp = Date.now();
+    } else {
+      qwenConversationCtx.messages.push({ role, content: clean, timestamp: Date.now(), sourceKey });
+      qwenConversationCtx.totalChars += clean.length;
+    }
+  } else {
+    qwenConversationCtx.messages.push({ role, content: clean, timestamp: Date.now() });
+    qwenConversationCtx.totalChars += clean.length;
+  }
+
+  void maybeTriggerQwenContextCompression();
+}
+
+async function loadQwenCompressionConfig(): Promise<QwenCompressionConfig> {
+  if (qwenCompressionConfigCache) return qwenCompressionConfigCache;
+  if (!checkContext()) return resolveQwenCompressionConfig(undefined);
+  try {
+    const stored = await chrome.storage.local.get(['qwenCompressionConfig']);
+    qwenCompressionConfigCache = resolveQwenCompressionConfig(stored.qwenCompressionConfig);
+  } catch {
+    qwenCompressionConfigCache = resolveQwenCompressionConfig(undefined);
+  }
+  return qwenCompressionConfigCache;
+}
+
+if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'local' && 'qwenCompressionConfig' in changes) {
+      qwenCompressionConfigCache = resolveQwenCompressionConfig(changes.qwenCompressionConfig.newValue);
+    }
+  });
+}
+
+async function maybeTriggerQwenContextCompression(): Promise<void> {
+  if (!qwenConversationCtx || compressionInProgress) return;
+  const config = await loadQwenCompressionConfig();
+  if (!config.enabled) return;
+  if (shouldCompress(qwenConversationCtx, config.maxContextTokens)) {
+    await triggerContextCompression(config);
+  }
+}
+
+async function triggerContextCompression(config?: QwenCompressionConfig): Promise<void> {
+  if (!qwenConversationCtx || compressionInProgress) return;
+  const resolvedConfig = config || await loadQwenCompressionConfig();
+  if (!resolvedConfig.enabled) return;
+  compressionInProgress = true;
+  showToast('上下文过长，正在压缩...', 3000);
+
+  try {
+    const { summary, newContext } = await compressAndPrepareNewSession(
+      qwenConversationCtx,
+      (s) => console.log('[PierCode] 生成摘要:', s.slice(0, 200) + '...'),
+      resolvedConfig
+    );
+    qwenConversationCtx = newContext;
+    const payload = formatQwenCompressedContextPrompt(summary);
+    try {
+      await navigator.clipboard.writeText(payload);
+    } catch {}
+
+    const result = await openQwenCompressedContextSession(payload);
+    if (result.ok) {
+      showToast('上下文已压缩，并已发送到新的 Qwen 会话', 8000);
+    } else {
+      showToast('上下文已压缩，新会话发送失败，摘要已尝试复制到剪贴板', 8000);
+      console.warn('[PierCode] 新 Qwen 会话发送失败:', result.error);
+    }
+  } catch (err) {
+    console.error('[PierCode] 压缩失败:', err);
+    showToast('上下文压缩失败', 5000);
+  } finally {
+    compressionInProgress = false;
+  }
+}
+
+function formatQwenCompressedContextPrompt(summary: string): string {
+  return [
+    '请从下面的压缩上下文继续当前 PierCode 会话。',
+    '',
+    '<compressed_context>',
+    summary.trim(),
+    '</compressed_context>',
+    '',
+    '继续执行用户后续任务。'
+  ].join('\n');
+}
+
+function qwenNewSessionUrl(): string {
+  return `${location.protocol}//${location.host}/`;
+}
+
+async function openQwenCompressedContextSession(text: string): Promise<{ ok: boolean; error?: string }> {
+  if (!checkContext()) return { ok: false, error: CONTEXT_INVALID_MESSAGE };
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'OPEN_QWEN_COMPRESSED_CONTEXT',
+      url: qwenNewSessionUrl(),
+      text,
+    });
+    return response?.ok === true
+      ? { ok: true }
+      : { ok: false, error: response?.error || 'unknown error' };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
+async function fillCompressedContextWhenReady(text: string): Promise<boolean> {
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    const editor = querySelectorFirst(getSiteConfig().editor);
+    if (editor) {
+      await fillAndSend(text, true, { forceSend: true });
+      return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  return false;
+}
+
+async function handleCompressedContextMessage(text: string): Promise<{ ok: boolean; error?: string }> {
+  if (!text.trim()) return { ok: false, error: 'empty compressed context' };
+  try {
+    const sent = await fillCompressedContextWhenReady(text);
+    return sent ? { ok: true } : { ok: false, error: 'editor not found' };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
 
 function activateResponseSession(): void {
   if (!responseSessionActivatedAt) responseSessionActivatedAt = Date.now();
@@ -134,6 +289,19 @@ function resolveAutoExecute(value: unknown): boolean {
   return typeof value === 'boolean' ? value : false;
 }
 
+function resolveAutoApproveBrowserActions(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : false;
+}
+
+async function shouldAutoApproveBrowserActions(): Promise<boolean> {
+  try {
+    const result = await chrome.storage.local.get(['autoApproveBrowserActions']);
+    return resolveAutoApproveBrowserActions(result.autoApproveBrowserActions);
+  } catch {
+    return false;
+  }
+}
+
 function decodeHTMLEntities(s: string): string {
   const el = document.createElement('textarea');
   el.innerHTML = s;
@@ -191,7 +359,7 @@ function ensureStreamDispatchers() {
     dismissRemoteQuestionPopup(msg.call_id);
   });
   onBrowserApprovalAsk(msg => {
-    showBrowserApprovalPopup(msg);
+    void handleBrowserApprovalAsk(msg);
   });
   onBrowserApprovalDone(msg => {
     dismissBrowserApprovalPopup(msg.approval_id, msg.call_id);
@@ -397,6 +565,24 @@ function showBrowserApprovalPopup(msg: {
   panel.dataset.piercodeBrowserApprovalId = msg.approval_id;
   if (msg.call_id) panel.dataset.piercodeBrowserApprovalCallId = msg.call_id;
   activeBrowserApprovalPopups.set(msg.approval_id, panel);
+}
+
+async function handleBrowserApprovalAsk(msg: {
+  approval_id: string;
+  call_id?: string;
+  action: string;
+  tab?: { tabId?: number; title?: string; url?: string };
+  target: string;
+  risk: string;
+}) {
+  if (await shouldAutoApproveBrowserActions()) {
+    if (msg.call_id) dismissBrowserApprovalPopupForCall(msg.call_id);
+    dismissBrowserApprovalPopup(msg.approval_id, msg.call_id);
+    const ok = sendBrowserApprovalAnswer(msg.approval_id, true, 'auto approved by extension setting');
+    if (ok) showToast(`已自动允许浏览器操作：${msg.action || 'browser action'}`, 2500);
+    return;
+  }
+  showBrowserApprovalPopup(msg);
 }
 
 function dismissBrowserApprovalPopupForCall(callID: string) {
@@ -722,6 +908,11 @@ if (!(window as any).__PIERCODE_LOADED__) {
     attachCurrentEditor();
     const obs = new MutationObserver(attachCurrentEditor);
     obs.observe(document.body, { childList: true, subtree: true });
+    document.addEventListener('focusin', event => {
+      const target = event.target as HTMLElement | null;
+      const editorEl = findEditorFromTarget(target);
+      if (editorEl) attachInputListener(editorEl);
+    }, true);
   }
   if (document.body) mountInputListener();
   else document.addEventListener('DOMContentLoaded', mountInputListener);
@@ -731,6 +922,13 @@ if (!(window as any).__PIERCODE_LOADED__) {
     if (msg.type === 'HIDE_INDICATORS') {
       visualIndicator.hideAllIndicators();
       return false;
+    }
+
+    if (msg.type === 'PIERCODE_FILL_COMPRESSED_CONTEXT') {
+      handleCompressedContextMessage(String(msg.text || ''))
+        .then(sendResponse)
+        .catch(error => sendResponse({ ok: false, error: String(error) }));
+      return true;
     }
 
     // 处理无障碍树相关请求
@@ -1158,9 +1356,18 @@ function startDOMObserver(_responseSelector: string) {
       const combinedOutput = batchOutputs.join('\n\n');
       batchOutputs.length = 0;
       if (combinedOutput) {
-        fillAndSend(combinedOutput, true);
+        fillAndSend(prepareToolOutputForChat(combinedOutput), true);
       }
     }, batchWaitMs);
+  }
+
+  function prepareToolOutputForChat(output: string): string {
+    if (platformAdapter.name !== 'qwen') return output;
+    const compacted = compactToolOutputForChat(output);
+    if (compacted.compacted) {
+      showToast('工具结果过长，已压缩后回填', 5000);
+    }
+    return compacted.text;
   }
 
   async function executeBatch() {
@@ -1311,6 +1518,10 @@ function startDOMObserver(_responseSelector: string) {
           renderToolCard(data, codeText, sourceEl, key, processed);
           maybeScheduleAutoExecute(data, key);
         }
+      }
+      // 更新 Qwen 上下文追踪 (assistant 响应)
+      if (platformAdapter.name === 'qwen' && sourceEl) {
+        updateQwenContext('assistant', text, aiResponseLogKey(sourceEl));
       }
       scheduleAIResponseLog(sourceEl, text);
       // 只有 Qwen DOM 专用路径真正解析到工具时才结束；否则继续走通用
@@ -1781,6 +1992,20 @@ function querySelectorFirst(selectors: string): HTMLElement | null {
   return null;
 }
 
+function findEditorFromTarget(target: HTMLElement | null): HTMLElement | null {
+  if (!target) return null;
+  for (const sel of getSiteConfig().editor.split(',').map(s => s.trim()).filter(Boolean)) {
+    try {
+      if (target.matches(sel)) return target;
+      const closest = target.closest(sel) as HTMLElement | null;
+      if (closest) return closest;
+    } catch {
+      // Ignore unsupported site selectors and continue with the next one.
+    }
+  }
+  return null;
+}
+
 function isVisibleElement(el: HTMLElement): boolean {
   const rect = el.getBoundingClientRect();
   const style = window.getComputedStyle(el);
@@ -1808,7 +2033,7 @@ async function focusCurrentTabForSend(): Promise<void> {
   }
 }
 
-async function fillAndSend(result: string, autoSend = false) {
+async function fillAndSend(result: string, autoSend = false, options: { forceSend?: boolean } = {}) {
   const { editor: editorSel, sendBtn: sendBtnSel, fillMethod } = getSiteConfig();
   if (autoSend) {
     await focusCurrentTabForSend();
@@ -1817,14 +2042,15 @@ async function fillAndSend(result: string, autoSend = false) {
   if (!editor) return;
 
   editor.focus();
+  const method = effectiveFillMethod(editor, fillMethod);
 
-  if (fillMethod === 'paste') {
+  if (method === 'paste') {
     const dataTransfer = new DataTransfer();
     dataTransfer.setData('text/plain', result);
     editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dataTransfer, bubbles: true, cancelable: true }));
-  } else if (fillMethod === 'execCommand') {
+  } else if (method === 'execCommand') {
     document.execCommand('insertText', false, result);
-  } else if (fillMethod === 'value') {
+  } else if (method === 'value') {
     const ta = editor as HTMLTextAreaElement;
     const nativeInputValueSetter = getNativeSetter();
     const current = ta.value;
@@ -1832,7 +2058,7 @@ async function fillAndSend(result: string, autoSend = false) {
     if (nativeInputValueSetter) nativeInputValueSetter.call(ta, next);
     else ta.value = next;
     ta.dispatchEvent(new Event('input', { bubbles: true }));
-  } else if (fillMethod === 'prosemirror') {
+  } else if (method === 'prosemirror') {
     const current = editor.innerText.trim();
     editor.textContent = current ? current + '\n' + result : result;
     editor.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1842,7 +2068,7 @@ async function fillAndSend(result: string, autoSend = false) {
   if (autoSend) {
     if (!checkContext()) return;
     const cfg = await chrome.storage.local.get(['autoSend', 'delayMin', 'delayMax']);
-    if (cfg.autoSend === false) return;
+    if (cfg.autoSend === false && !options.forceSend) return;
 
     const min = (cfg.delayMin ?? 1) * 1000;
     const max = (cfg.delayMax ?? 4) * 1000;
@@ -2049,8 +2275,15 @@ function getCaretPosition(el: HTMLElement): number {
   return range.toString().length;
 }
 
+function effectiveFillMethod(el: HTMLElement, configuredFillMethod: string): string {
+  if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') return 'value';
+  if (el.isContentEditable && configuredFillMethod === 'value') return 'execCommand';
+  return configuredFillMethod;
+}
+
 function replaceTokenInEditor(el: HTMLElement, token: string, replacement: string, fillMethod: string) {
-  if (fillMethod === 'value') {
+  const method = effectiveFillMethod(el, fillMethod);
+  if (method === 'value') {
     const ta = el as HTMLTextAreaElement;
     const val = ta.value;
     const pos = ta.selectionStart ?? val.length;
@@ -2065,7 +2298,7 @@ function replaceTokenInEditor(el: HTMLElement, token: string, replacement: strin
     const newCaret = tokenStart + replacement.length;
     ta.setSelectionRange(newCaret, newCaret);
     ta.dispatchEvent(new Event('input', { bubbles: true }));
-  } else if (fillMethod === 'execCommand' || fillMethod === 'prosemirror') {
+  } else if (method === 'execCommand' || method === 'prosemirror') {
     // prosemirror 也通过 execCommand insertText 拦截，不能直接写 innerHTML
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return;
@@ -2144,6 +2377,10 @@ function attachInputListener(editorEl: HTMLElement) {
     if (text === lastPromptText && now - lastPromptAt < 1500) return;
     lastPromptText = text;
     lastPromptAt = now;
+    // 更新 Qwen 上下文追踪 (user 输入)
+    if (platformAdapter.name === 'qwen') {
+      updateQwenContext('user', text);
+    }
     sendUserPromptLog(`user:${getConversationId()}:${now}`, text);
   }
 
@@ -2164,7 +2401,7 @@ function attachInputListener(editorEl: HTMLElement) {
     }, true);
   }
 
-  editorEl.addEventListener('input', async () => {
+  async function updateCompletions() {
     const currentVersion = ++inputVersion;
     const text = getEditorText(editorEl);
     const pos = getCaretPosition(editorEl);
@@ -2223,5 +2460,22 @@ function attachInputListener(editorEl: HTMLElement) {
     }
 
     dismiss();
-  });
+  }
+
+  let completionTimer: number | null = null;
+  function scheduleCompletionUpdate() {
+    if (completionTimer !== null) window.clearTimeout(completionTimer);
+    completionTimer = window.setTimeout(() => {
+      completionTimer = null;
+      void updateCompletions();
+    }, 0);
+  }
+
+  editorEl.addEventListener('input', scheduleCompletionUpdate);
+  editorEl.addEventListener('keyup', event => {
+    if (event.key.length === 1 || event.key === 'Backspace' || event.key === 'Delete' || event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      scheduleCompletionUpdate();
+    }
+  }, true);
+  editorEl.addEventListener('compositionend', scheduleCompletionUpdate);
 }

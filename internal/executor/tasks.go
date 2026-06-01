@@ -179,14 +179,21 @@ func (m *TaskManager) runGC() {
 
 // gcStopOnce returns a channel closed when Close is called. We can't reuse
 // the existing closed flag for select, so we expose a derived channel.
+//
+// If Close already ran before the GC loop first evaluated this (the manager is
+// closed but gcStop was still nil), we create the channel and close it
+// immediately. Otherwise the GC loop would receive a fresh, never-closed
+// channel and block forever, leaking the goroutine.
 func (m *TaskManager) gcStopOnce() <-chan struct{} {
 	m.gcMu.Lock()
+	defer m.gcMu.Unlock()
 	if m.gcStop == nil {
 		m.gcStop = make(chan struct{})
+		if m.closed.Load() {
+			close(m.gcStop)
+		}
 	}
-	c := m.gcStop
-	m.gcMu.Unlock()
-	return c
+	return m.gcStop
 }
 
 func (m *TaskManager) gcOnce(now time.Time) {
@@ -396,13 +403,18 @@ func (m *TaskManager) Close() {
 	if !m.closed.CompareAndSwap(false, true) {
 		return
 	}
+	// Mark closed (above) before touching gcStop so a concurrent gcStopOnce
+	// that creates the channel sees closed==true and closes it itself. Here we
+	// create-and-close if it doesn't exist yet, or close it if it does. Either
+	// way the GC loop's next select observes a closed channel and returns.
 	m.gcMu.Lock()
-	if m.gcStop != nil {
-		select {
-		case <-m.gcStop:
-		default:
-			close(m.gcStop)
-		}
+	if m.gcStop == nil {
+		m.gcStop = make(chan struct{})
+	}
+	select {
+	case <-m.gcStop:
+	default:
+		close(m.gcStop)
 	}
 	m.gcMu.Unlock()
 	m.mu.RLock()

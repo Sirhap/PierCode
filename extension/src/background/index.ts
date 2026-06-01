@@ -805,6 +805,37 @@ async function createControlledTab(url: string) {
   return tabToDTO(fresh);
 }
 
+async function openQwenCompressedContextTab(url: string, text: string): Promise<{ ok: boolean; tab?: ReturnType<typeof tabToDTO>; error?: string }> {
+  if (!text.trim()) return { ok: false, error: 'empty compressed context' };
+  const tab = await chrome.tabs.create({ url: url || 'https://chat.qwen.ai/', active: true });
+  if (!tab.id) return { ok: false, error: 'created tab has no id' };
+  await waitForTabComplete(tab.id, 30000).catch(() => undefined);
+  const result = await sendCompressedContextToTab(tab.id, text);
+  const fresh = await chrome.tabs.get(tab.id).catch(() => tab);
+  return result.ok
+    ? { ok: true, tab: tabToDTO(fresh) }
+    : { ok: false, tab: tabToDTO(fresh), error: result.error };
+}
+
+async function sendCompressedContextToTab(tabId: number, text: string): Promise<{ ok: boolean; error?: string }> {
+  const deadline = Date.now() + 30000;
+  let lastError = 'content script not ready';
+  while (Date.now() < deadline) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        type: 'PIERCODE_FILL_COMPRESSED_CONTEXT',
+        text,
+      });
+      if (response?.ok === true) return { ok: true };
+      lastError = response?.error || 'content script did not accept compressed context';
+    } catch (error) {
+      lastError = errorMessage(error);
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  return { ok: false, error: lastError };
+}
+
 async function ensureAttached(tabId: number) {
   if (attachedTabs.has(tabId)) return;
   // chrome-extension:// 和某些特殊页面无法 attach debugger，加超时避免卡死
@@ -934,6 +965,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'FOCUS_SELF') {
     // FOCUS_SELF from content script: default to non-intrusive mode
     focusSenderTab(_sender, { forceFocus: msg.forceFocus === true })
+      .then(sendResponse)
+      .catch(error => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (msg.type === 'OPEN_QWEN_COMPRESSED_CONTEXT') {
+    openQwenCompressedContextTab(String(msg.url || 'https://chat.qwen.ai/'), String(msg.text || ''))
       .then(sendResponse)
       .catch(error => sendResponse({ ok: false, error: String(error) }));
     return true;

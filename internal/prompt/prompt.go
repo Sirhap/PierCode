@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,21 +29,26 @@ func BuildToolsDoc(tools []tool.ToolInfo) string {
 	if len(tools) == 0 {
 		return "（无可用工具）"
 	}
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name < tools[j].Name
+	})
 	var sb strings.Builder
+	sb.WriteString("This is a compact route index, not full API documentation. Before first use of an unfamiliar or parameter-sensitive tool, call `tool_help` with the exact tool name to read detailed parameters.\n\n")
+	sb.WriteString("Available operations:\n")
 	for i, t := range tools {
 		if i > 0 {
 			sb.WriteString("\n")
 		}
-		sb.WriteString(fmt.Sprintf("### %s\n\n%s\n\n", t.Name, t.Description))
-		if params, ok := t.Parameters.(map[string]string); ok && len(params) > 0 {
-			sb.WriteString("参数：\n")
-			for k, v := range params {
-				sb.WriteString(fmt.Sprintf("- %s: %s\n", k, v))
-			}
-			sb.WriteString("\n")
-		}
-
-		sb.WriteString("调用格式：在确实要执行该工具时，输出一个 `piercode-tool` fenced JSON block，字段为 `name`、`call_id`、`args`。不要为说明或示例输出可执行工具块；如需列举非执行示例，使用 `text` fence。\n")
+		sb.WriteString(fmt.Sprintf("- `%s`: %s", t.Name, firstLine(t.Description)))
 	}
+	sb.WriteString("\n\nCall format: when you actually execute a tool, output one visible `piercode-tool` fenced JSON block with fields `name`, `call_id`, and `args`. Do not output executable tool blocks for explanations or examples; non-executed examples must use a `text` fence.\n")
 	return sb.String()
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return s
 }

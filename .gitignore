@@ -38,6 +38,7 @@ extension/dist/
 # OpenLink/omx build and dev tools
 .omx/
 .claude/
+.todos.json
 .piercode/
 .playwright-mcp/
 release-packages/

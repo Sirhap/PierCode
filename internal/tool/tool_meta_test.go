@@ -18,6 +18,7 @@ func TestToolMeta(t *testing.T) {
 		Parameters() interface{}
 	}{
 		NewEditTool(cfg),
+		NewApplyPatchTool(cfg),
 		NewExecCmdTool(cfg),
 		NewGlobTool(cfg),
 		NewGrepTool(cfg),
@@ -28,6 +29,7 @@ func TestToolMeta(t *testing.T) {
 		NewSkillTool(cfg),
 		NewTodoWriteTool(cfg),
 		NewWebFetchTool(),
+		NewToolHelpTool(NewRegistry()),
 	}
 
 	for _, tool := range tools {
@@ -48,6 +50,12 @@ func TestValidateMethods(t *testing.T) {
 
 	t.Run("EditTool validate missing path", func(t *testing.T) {
 		if err := NewEditTool(cfg).Validate(map[string]interface{}{}); err == nil {
+			t.Error("expected error")
+		}
+	})
+
+	t.Run("ApplyPatchTool validate missing patch", func(t *testing.T) {
+		if err := NewApplyPatchTool(cfg).Validate(map[string]interface{}{}); err == nil {
 			t.Error("expected error")
 		}
 	})
@@ -73,6 +81,48 @@ func TestValidateMethods(t *testing.T) {
 	t.Run("SkillTool validate always passes", func(t *testing.T) {
 		if err := NewSkillTool(cfg).Validate(map[string]interface{}{}); err != nil {
 			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("ToolHelpTool validate optional strings", func(t *testing.T) {
+		tool := NewToolHelpTool(NewRegistry())
+		if err := tool.Validate(map[string]interface{}{"tool": "browser_snapshot"}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if err := tool.Validate(map[string]interface{}{"tool": 1}); err == nil {
+			t.Error("expected error")
+		}
+	})
+}
+
+func TestToolHelpTool(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(NewReadFileTool(&types.Config{RootDir: t.TempDir(), Timeout: 10})); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(NewToolHelpTool(reg)); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("returns detailed parameters for exact tool", func(t *testing.T) {
+		tool := NewToolHelpTool(reg)
+		res := tool.Execute(&Context{Args: map[string]interface{}{"tool": "read_file"}})
+		if res.Status != "success" {
+			t.Fatal(res.Error)
+		}
+		if !strings.Contains(res.Output, "### read_file") || !strings.Contains(res.Output, "Parameters:") || !strings.Contains(res.Output, "path") {
+			t.Fatalf("expected detailed read_file docs, got %q", res.Output)
+		}
+	})
+
+	t.Run("lists matching tools", func(t *testing.T) {
+		tool := NewToolHelpTool(reg)
+		res := tool.Execute(&Context{Args: map[string]interface{}{"query": "read"}})
+		if res.Status != "success" {
+			t.Fatal(res.Error)
+		}
+		if !strings.Contains(res.Output, "read_file") || !strings.Contains(res.Output, "Call tool_help") {
+			t.Fatalf("expected filtered tool list, got %q", res.Output)
 		}
 	})
 }

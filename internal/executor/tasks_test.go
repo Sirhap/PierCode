@@ -411,3 +411,41 @@ func TestTaskManagerPropagatesRealFailureFromPipeError(t *testing.T) {
 		t.Errorf("expected empty ErrMsg, got %q", snap.ErrMsg)
 	}
 }
+
+// 回归: Close 早于 runGC 首次求值 gcStopOnce 的竞态下, gcStopOnce 必须返回
+// 已关闭的 channel, 否则 gc goroutine 永远阻塞在 select -> 泄漏。
+func TestGCStopOnceClosedAfterClose(t *testing.T) {
+	m := &TaskManager{
+		tasks:     map[string]*Task{},
+		chunkSubs: map[uint64]ChunkSubscriber{},
+		doneSubs:  map[uint64]DoneSubscriber{},
+	}
+	// 模拟极端时序: Close 在 gcStop 仍为 nil 时先跑。
+	m.Close()
+
+	ch := m.gcStopOnce()
+	select {
+	case <-ch:
+		// ok: 已关闭
+	case <-time.After(time.Second):
+		t.Fatal("gcStopOnce() channel not closed after Close(); gc goroutine would leak")
+	}
+}
+
+// 回归: NewTaskManager 启动的 gc goroutine 在 Close 后必须退出, 不泄漏。
+func TestNewTaskManagerGCGoroutineStops(t *testing.T) {
+	before := runtime.NumGoroutine()
+	for i := 0; i < 50; i++ {
+		m := NewTaskManager()
+		m.Close()
+	}
+	// 给被取消的 gc goroutine 时间退出。
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= before+5 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("gc goroutines leaked: before=%d after=%d", before, runtime.NumGoroutine())
+}

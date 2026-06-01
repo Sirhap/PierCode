@@ -87,6 +87,7 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewListDirTool(config))
 	e.registry.Register(tool.NewReadFileTool(config))
 	e.registry.Register(tool.NewWriteFileTool(config))
+	e.registry.Register(tool.NewApplyPatchTool(config))
 	e.registry.Register(tool.NewGlobTool(config))
 	e.registry.Register(tool.NewGrepTool(config))
 	e.registry.Register(tool.NewEditTool(config))
@@ -133,6 +134,7 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserFinalizeTabsTool())
 	e.registry.Register(tool.NewBrowserViewportTool())
 	e.registry.Register(tool.NewBrowserDownloadsTool())
+	e.registry.Register(tool.NewToolHelpTool(e.registry))
 	return e
 }
 
@@ -308,7 +310,7 @@ func (e *Executor) lockForTool(name string) func() {
 
 func isReadOnlyTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question",
+	case "read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question", "tool_help",
 		"todo_read", "task_list", "task_output", "browser_tabs", "browser_snapshot",
 		"browser_screenshot", "browser_wait", "browser_wait_for_function", "browser_get_content",
 		"browser_pdf", "browser_cookies", "browser_console", "browser_network",
@@ -362,6 +364,8 @@ func summarizeToolLog(req *types.ToolRequest, resp *types.ToolResponse) string {
 		newText := argString(args, "new_string")
 		header := fmt.Sprintf("Edited %s (+%d -%d)", path, countLogicalLines(newText), countLogicalLines(oldText))
 		return header + editPreview(oldText, newText)
+	case "apply_patch":
+		return "Applied patch" + outputPreview(resp.Output, toolPreviewLines)
 	case "write_file":
 		path := argString(args, "path")
 		content := argString(args, "content")
@@ -450,6 +454,9 @@ func fullToolLog(req *types.ToolRequest, resp *types.ToolResponse) string {
 			b.WriteString("\n+++ new\n")
 			b.WriteString(newText)
 		}
+		appendFullOutput(&b, resp)
+	case "apply_patch":
+		b.WriteString("Applied patch")
 		appendFullOutput(&b, resp)
 	case "write_file":
 		b.WriteString("Wrote ")

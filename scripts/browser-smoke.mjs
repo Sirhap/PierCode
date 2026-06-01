@@ -143,9 +143,7 @@ try {
   const worker = await waitForExtensionWorker(debugPort);
   const extensionId = String(worker.url || '').match(/^chrome-extension:\/\/([^/]+)\//)?.[1];
   if (!extensionId) throw new Error(`could not determine extension id from ${worker.url}`);
-  const configURL = `chrome-extension://${extensionId}/configure.html?apiUrl=${encodeURIComponent(`http://127.0.0.1:${serverPort}`)}&token=${encodeURIComponent(token)}`;
-  const configTarget = await openExtensionPage(debugPort, configURL);
-  await waitForExtensionConfigured(configTarget.webSocketDebuggerUrl);
+  await configureExtensionWorker(worker.webSocketDebuggerUrl, `http://127.0.0.1:${serverPort}`, token);
   await waitForStats(serverPort, token, stats => Number(stats.browser_relays || 0) > 0);
 
   const pageURL = `http://127.0.0.1:${pagePort}/`;
@@ -296,22 +294,71 @@ async function waitForExtensionWorker(debugPort) {
 }
 
 async function openExtensionPage(debugPort, url) {
-  const target = url.replaceAll('&', '%26');
+  let created = null;
   try {
-    await fetch(`http://127.0.0.1:${debugPort}/json/new?${target}`, { method: 'PUT' });
+    const response = await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`, { method: 'PUT' });
+    created = await response.json().catch(() => null);
   } catch {
-    await fetch(`http://127.0.0.1:${debugPort}/json/new?${target}`).catch(() => {});
+    const response = await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`).catch(() => null);
+    created = response ? await response.json().catch(() => null) : null;
+  }
+  if (created?.webSocketDebuggerUrl) {
+    const ws = new WebSocket(created.webSocketDebuggerUrl);
+    await waitForOpen(ws);
+    try {
+      await cdpSend(ws, 'Page.enable');
+      await cdpSend(ws, 'Page.navigate', { url });
+    } finally {
+      ws.close();
+    }
   }
   const deadline = Date.now() + 10000;
   let last = [];
   while (Date.now() < deadline) {
     const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
     last = await response.json();
-    const target = last.find(item => item.type === 'page' && String(item.url || '').startsWith(url));
+    const target = last.find(item => item.type === 'page' && sameURLIgnoringEncoding(item.url, url));
     if (target?.webSocketDebuggerUrl) return target;
     await sleep(250);
   }
   throw new Error(`timed out waiting for extension page; targets=${JSON.stringify(last)}`);
+}
+
+async function configureExtensionWorker(wsURL, apiUrl, token) {
+  const ws = new WebSocket(wsURL);
+  await waitForOpen(ws);
+  try {
+    const result = await cdpSend(ws, 'Runtime.evaluate', {
+      expression: `new Promise(resolve => chrome.storage.local.set({ apiUrl: ${JSON.stringify(apiUrl)}, authToken: ${JSON.stringify(token)} }, () => resolve(JSON.stringify({ ok: !chrome.runtime.lastError, error: chrome.runtime.lastError?.message || '' }))))`,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (result.exceptionDetails) {
+      throw new Error(`extension storage configuration exception: ${JSON.stringify(result.exceptionDetails)}`);
+    }
+    const value = JSON.parse(result.result?.value || '{}');
+    if (!value?.ok) {
+      throw new Error(`extension storage configuration failed: ${value?.error || 'unknown error'}`);
+    }
+  } finally {
+    ws.close();
+  }
+}
+
+function sameURLIgnoringEncoding(actual, expected) {
+  try {
+    const actualURL = new URL(String(actual || ''));
+    const expectedURL = new URL(String(expected || ''));
+    if (actualURL.origin !== expectedURL.origin || actualURL.pathname !== expectedURL.pathname) {
+      return false;
+    }
+    for (const [key, value] of expectedURL.searchParams.entries()) {
+      if (actualURL.searchParams.get(key) !== value) return false;
+    }
+    return true;
+  } catch {
+    return String(actual || '').startsWith(String(expected || ''));
+  }
 }
 
 async function waitForExtensionConfigured(wsURL) {

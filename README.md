@@ -112,7 +112,8 @@ go build -o piercode.exe ./cmd/server
 | `list_dir` | 列出目录内容 |
 | `read_file` | 读取文件内容 |
 | `write_file` | 创建、覆盖或追加文件 |
-| `edit` | 对文件做精确字符串替换 |
+| `apply_patch` | 应用带上下文的多文件 patch，适合作为默认代码编辑工具 |
+| `edit` | 对文件做小范围精确字符串替换 |
 | `glob` | 按 glob 模式搜索文件 |
 | `grep` | 用正则搜索文件内容 |
 | `web_fetch` | 获取 HTTP 页面内容 |
@@ -153,7 +154,7 @@ PierCode 可以通过 Chrome 扩展的 background service worker 使用 `chrome.
 
 - 默认创建或选择专用受控 tab，不控制 ChatGPT、Gemini、Claude、Qwen 等 AI 对话页；如确需控制 AI 对话页，必须先调用 `browser_use_tab` 并由用户审批。
 - `browser_snapshot` 返回紧凑 AX tree 文本和 `e0/e1` refs，是 AI 理解页面和后续点击/输入的主路径。
-- `browser_click`、`browser_type`、`browser_upload`、`browser_evaluate` 等会改变页面或读取/执行页面脚本的工具会弹出确认面板，用户拒绝时工具失败；点击、输入、上传、导航后旧 snapshot refs 视为失效，需要重新 snapshot。
+- `browser_click`、`browser_type`、`browser_upload`、`browser_evaluate` 等会改变页面或读取/执行页面脚本的工具会弹出确认面板，用户拒绝时工具失败；扩展 popup 可开启“自动审批浏览器操作”来自动允许这些浏览器审批；点击、输入、上传、导航后旧 snapshot refs 视为失效，需要重新 snapshot。
 - `browser_screenshot` 只在视觉布局、图片、图表或渲染外观重要时使用，截图保存为工作区 `.piercode/screenshots` 下的图片文件，不把图片数据内联回对话。
 - 拒绝 `file:`、`chrome:`、`chrome-extension:`、`javascript:`、`data:` 等高风险导航。
 - `browser_cookies` 必须指定 domain 或 URL，避免无范围导出 Cookie；不提供 localStorage 或 sessionStorage 专用读取工具。`browser_evaluate` 属于审批工具，只应在明确需要页面内表达式时使用。

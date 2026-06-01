@@ -451,8 +451,18 @@ function connectWebSocket(apiUrl: string, token: string) {
   configuredToken = token;
   const seq = ++connectionSeq;
 
+  // Detach the old socket's handlers BEFORE closing it. Otherwise its async
+  // onclose fires after we've assigned the new socket to the global `ws` and
+  // runs `ws = null` (its closure references the global, not the old socket),
+  // nulling out the freshly created connection. Every send() then sees ws ===
+  // null and silently drops until the next reconnect.
   if (ws) {
-    ws.close();
+    const old = ws;
+    old.onopen = null;
+    old.onmessage = null;
+    old.onclose = null;
+    old.onerror = null;
+    try { old.close(); } catch {}
   }
 
   const wsUrl = toWebSocketUrl(apiUrl, token);

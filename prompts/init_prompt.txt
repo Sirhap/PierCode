@@ -76,6 +76,7 @@ Use the lightest reliable path:
 - **Repository discovery**: use `list_dir`, `glob`, `grep`, and `read_file` before answering codebase questions.
 - **Code changes**: inspect first, edit with minimal surface area, then verify.
 - **Multi-step work**: use `todo_write` when tracking materially helps execution.
+- **Tool details**: use `tool_help` before first use of an unfamiliar or parameter-sensitive tool instead of relying on the compact route index.
 - **Specialized guidance**: use the `skill` tool when the request maps to an available skill.
 - **User input**: use `question` only when the answer is required to continue safely.
 - **Shell work**: use `exec_cmd` only when it appears in the PierCode Bridge Operations section. If it is absent, shell access is disabled; use file tools or ask the user for command output.
@@ -132,7 +133,7 @@ Before editing, read the relevant surrounding code and project guidance. Match e
 
 Prefer existing utilities, components, types, and local patterns over new abstractions. Do not assume a dependency exists; confirm it in project files before using it. Keep unrelated refactors out of scope.
 
-Use `edit` for exact focused replacements. Read the target file first, preserve exact indentation, and never include displayed line-number prefixes in `old_string` or `new_string`. Prefer editing existing files. Use `write_file` only when creating a new file or replacing a whole file is clearly simpler and safer; before replacing existing content, read the file and confirm the target is the intended one.
+Prefer `apply_patch` for code edits because it carries context and fails cleanly when hunks no longer match. Use `edit` only for exact focused replacements where `old_string` is unique and small. Read the target file first, preserve exact indentation, and never include displayed line-number prefixes in edit payloads. Use `write_file` only when creating a new file or replacing a whole file is clearly simpler and safer; before replacing existing content, read the file and confirm the target is the intended one.
 
 Treat action risk by reversibility and blast radius. Local reversible edits and tests are normally fine. Ask first for deletion, broad overwrites, force pushes, publishing, deployment, credential use, external messages, or uploading project content to third-party services. If you find unexpected files, branches, locks, or conflicts, inspect and explain them instead of deleting or bypassing them.
 
@@ -238,13 +239,15 @@ This section documents PierCode bridge operations. It is not a declaration of ho
 - Find files by path pattern: `glob`
 - Search file contents: `grep`
 - Read exact files: `read_file`
-- Make precise replacements: `edit`
+- Apply contextual code edits: `apply_patch`
+- Make small exact replacements: `edit`
 - Create or replace files: `write_file`
 - Run commands when enabled: `exec_cmd`
 - Fetch allowed URLs: `web_fetch`
 - Ask required user input: `question`
 - Track multi-step work: `todo_write`
 - Load a matching skill: `skill`
+- Read detailed parameters for a tool: `tool_help`
 
 `read_file` output includes absolute line numbers before a tab, like `     1\tpackage main`. Use those numbers in code references, but do not include the line-number prefixes inside `edit.old_string`.
 

@@ -81,6 +81,21 @@ func TestRenderedToolDocsDoNotIncludeExecutableToolFenceExamples(t *testing.T) {
 	}
 }
 
+func TestRenderedToolDocsAreCompactRouteIndex(t *testing.T) {
+	rendered := string(Render([]byte("{{TOOLS}}"), "C:/repo", []tool.ToolInfo{{
+		Name:        "browser_snapshot",
+		Description: "snapshot page",
+		Parameters:  map[string]string{"tabId": "optional tab id"},
+	}}))
+
+	if !strings.Contains(rendered, "compact route index") || !strings.Contains(rendered, "tool_help") {
+		t.Fatalf("rendered tool docs should route detailed docs through tool_help, got %q", rendered)
+	}
+	if strings.Contains(rendered, "optional tab id") {
+		t.Fatalf("rendered tool docs should not inline detailed parameter docs, got %q", rendered)
+	}
+}
+
 func TestProfileRegistryCanFilterToolsAndSkills(t *testing.T) {
 	registry := NewProfileRegistry([]byte("default {{TOOLS}}"))
 	registry.Register(Profile{

@@ -143,7 +143,7 @@ func TestExecutor(t *testing.T) {
 		for _, info := range tools {
 			seen[info.Name] = true
 		}
-		for _, want := range []string{"browser_finalize_tabs", "browser_viewport", "browser_downloads"} {
+		for _, want := range []string{"browser_finalize_tabs", "browser_viewport", "browser_downloads", "tool_help"} {
 			if !seen[want] {
 				t.Fatalf("expected %s to be registered", want)
 			}
@@ -261,7 +261,7 @@ func TestExecutorPromptGuidance(t *testing.T) {
 				SourceClientID: "ai-page-1",
 			})
 		}
-		for _, want := range []string{"[系统重新注入提示词]", "system - 操作系统:", "operations ###", "[任务状态快照提示]"} {
+		for _, want := range []string{"[系统重新注入提示词]", "system - 操作系统:", "operations This is a compact route index", "`tool_help`", "[任务状态快照提示]"} {
 			if !strings.Contains(resp.Output, want) {
 				t.Fatalf("expected reinjected prompt to contain %q, got %q", want, resp.Output)
 			}

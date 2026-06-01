@@ -79,7 +79,7 @@ PIERCODE_API_URL=http://127.0.0.1:<port> PIERCODE_TOKEN=<token> node scripts/bro
 | --- | --- | --- | --- | --- |
 | Go 后端启动 | token、端口、工作目录、local-only | 真实启动 | 能输出认证 URL，`/stats` 可访问 | 终端日志 |
 | 扩展刷新 | MV3 service worker reload | 真实 Chrome | `chrome://extensions` 显示已重新加载 | 截图/记录 |
-| 弹窗 UI | 未连接、连接中、已连接、重新配置、自动执行、自动提交、随机延迟 | 真实 Chrome + Vitest | 文案和状态正确，storage 写入正确 | 截图、`configure.test.ts` |
+| 弹窗 UI | 未连接、连接中、已连接、重新配置、自动执行、自动审批浏览器操作、自动提交、随机延迟 | 真实 Chrome + Vitest | 文案和状态正确，storage 写入正确 | 截图、`configure.test.ts` |
 | 配置页 | `configure.html` 外部脚本、写入 `apiUrl/authToken`、缺参状态 | Vitest + build | 无 inline script，MV3 CSP 不阻断 | `configure.test.ts` |
 | 后台 relay | `browser_hello` capability、ping、断线重连、token 失效 | 真实 Chrome + Go test | relay 状态准确，token 失效清理配置 | 日志/单测 |
 | 审批流程 | ask、approve、reject、timeout、done dismiss | 真实 Chrome + Go test | 用户审批弹窗显示正确；批准才执行；拒绝不执行 | live smoke、人工记录 |
@@ -182,7 +182,7 @@ PIERCODE_API_URL=http://127.0.0.1:<port> PIERCODE_TOKEN=<token> node scripts/bro
 4. 粘贴后端 auth URL。
 5. 点击连接。
 6. 观察本地服务状态、AI 页面状态、browser relay 状态。
-7. 切换自动执行工具、自动提交。
+7. 切换自动执行工具、自动审批浏览器操作、自动提交。
 8. 修改随机延迟最小/最大值。
 9. 点击重新配置后能回到配置态。
 
