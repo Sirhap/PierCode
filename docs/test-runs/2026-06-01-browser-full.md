@@ -75,6 +75,9 @@ All automated checks passed, the installed PierCode extension was reloaded in th
 | Attachment upload | pass | Normal user prompt produced `browser_screenshot` tool call `qwen_attach_1780301467195` with `attach:true`; Qwen displayed a visible tool card and `✅ 已执行`. |
 | Attachment evidence | pass | Tool output contained `screenshot tabId=104679826 title="about:blank" url="about:blank" format=png bytes=8668`, saved `/Volumes/other/IdeaProjects/sirhao/piercode/.piercode/screenshots/screenshot-4218451719.png`, and returned `Attachment upload: uploaded to current AI chat page`; Qwen replied `截图已成功捕获并上传到当前聊天页面。测试完成.` |
 | False-positive guard | pass | The real Qwen test used explicit tool-call prompts and observed visible tool-card execution, not ordinary Markdown code-block matching. Existing adapter tests for `Show more` and ordinary code-block handling passed in the Vitest suite. |
+| PierCode self-development, long raw results | observed issue | In Qwen conversation `https://chat.qwen.ai/c/3169f2ad-c99f-4fd5-ab2b-faa1fd2d72d0`, a prompt asked Qwen to inspect PierCode itself with `list_dir` and four `read_file` calls. All five tool cards executed, but combined raw tool output was left in the Qwen input box and Qwen showed the 131072-character large-text guard. |
+| PierCode self-development, compact results | pass | In fresh Qwen conversation `https://chat.qwen.ai/c/05f6ee40-846b-4042-9101-798e7e10219a`, four `read_file` calls used `limit:60`; all four cards executed, no 131072-character guard appeared, input stayed clear, and Qwen produced the expected self-development analysis. |
+| Compact self-dev analysis evidence | pass | Qwen concluded that existing DOM/message/tool foundations are present in `extension/src/content/index.ts`, `extension/src/content/ws-linker.ts`, `extension/src/background/index.ts`, and `internal/server/ws.go`; it recommended a continuation packet, 20-turn trigger, backend snapshot/recovery, new-tab initialization, and tests for serialization, migration, retry/idempotency, secret stripping, and multi-platform behavior. |
 
 ## Bugs Found
 
@@ -90,6 +93,8 @@ All automated checks passed, the installed PierCode extension was reloaded in th
 | BROWSER-FULL-008 | Drag status could remain `not dropped` even when the command returned ok. | The local fixture listened to too narrow an event path. | Fixture now handles `mouseup`, `pointerup`, `dragover`, and `drop`, then asserts `invoice dropped`. | pass |
 | BROWSER-FULL-009 | A rerun failed before tool coverage because `/stats` showed `browser_relays:0`. | Backend restart left the real Chrome extension service worker disconnected until the extension was reloaded. | Reloaded the installed extension in real Chrome and reran from the beginning; the smoke script also fails fast when no relay is present. | pass |
 | BROWSER-FULL-010 | Approval coverage was previously too implicit. | Auto-approval WebSocket covered approve behavior, but the script did not assert approve/reject counts or `browser_approval_done` receipts. | Added explicit approve and reject call ids, waits for done receipts, and final approval statistics assertions. | pass |
+| QWEN-SELF-DEV-001 | Qwen self-development test executed `list_dir` and multiple `read_file` tool cards, but the combined tool result was left in the Qwen input box instead of being sent for final analysis. Qwen showed: `如需输入超出 131072 个字符的文本，请将输入转换为 txt 文档通过上传文件的方式输入，或者在 设置-界面-粘贴大文本为文件 开启功能后以粘贴方式输入`. | Tool-result fill-back can exceed Qwen's large-text input threshold; relying on raw long `read_file` output is unsafe for future context compression and session handoff. | Future continuation-packet flow must compress/summarize tool results before fill-back, or attach large context as a file when Qwen supports it. Self-dev tests should include a long-result guard. | observed; requires product fix |
+| QWEN-SELF-DEV-002 | Compact self-development flow needed a smaller test shape after QWEN-SELF-DEV-001. | Full-file `read_file` outputs are too large for Qwen; the same use case works when each tool result is bounded. | Retested in a fresh Qwen conversation using `read_file` with `limit:60` for four files. Tool cards executed, Qwen did not show the large-text guard, and Qwen produced the expected implementation analysis. | pass |
 
 ## Optimizations / Procedure Notes
 
@@ -102,6 +107,8 @@ All automated checks passed, the installed PierCode extension was reloaded in th
 7. For accessibility refs, refresh the snapshot after layout, viewport, or form-state changes.
 8. After backend restart, check authenticated `/stats` and reload the real Chrome extension if `browser_relays` is zero.
 9. Approval tests must assert both the command result and the terminal `browser_approval_done` receipt.
+10. Qwen has a large-text guard at 131072 characters. Long PierCode tool results should not be pasted back as raw text during self-development workflows; compress them or attach them as files before asking Qwen to continue.
+11. For Qwen self-development tests, prefer bounded `read_file` windows such as `limit:60` and ask for synthesis after the bounded results are available.
 
 ## Coverage Matrix
 
@@ -141,6 +148,8 @@ All automated checks passed, the installed PierCode extension was reloaded in th
 | Qwen tool result fill-back | pass | n/a | pass | pass |
 | Qwen ordinary code-block/Show more guard | pass | n/a | pass | pass |
 | Attachment upload into AI page | pass | n/a | pass | pass |
+| Qwen self-development with bounded tool results | pass | n/a | pass | pass |
+| Qwen long raw tool-result guard | n/a | n/a | observed | requires product fix |
 | Background task tools | pass | pass | n/a | pass |
 | Sandbox/security behavior | pass | n/a | n/a | pass |
 | Relay stability/read-timeout cleanup | pass | pass | pass | pass |
