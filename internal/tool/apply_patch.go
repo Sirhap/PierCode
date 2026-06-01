@@ -301,33 +301,67 @@ func parseHunk(lines []string, start int) (patchHunk, int, error) {
 	return patchHunk{oldLines: oldLines, newLines: newLines}, i, nil
 }
 
-// splitContentLines splits file content into logical lines, returning the lines
-// and whether the original content ended with a trailing newline. An empty file
-// yields no lines. This lets us round-trip content through line-anchored edits
-// without inventing or dropping a final newline.
-func splitContentLines(content string) (lines []string, trailingNewline bool) {
-	if content == "" {
-		return nil, false
-	}
-	trailingNewline = strings.HasSuffix(content, "\n")
-	body := content
-	if trailingNewline {
-		body = strings.TrimSuffix(body, "\n")
-	}
-	return strings.Split(body, "\n"), trailingNewline
+// lineStyle records how a file's lines should be re-joined: whether it ended
+// with a trailing newline and whether its line endings are CRLF. Matching is
+// always done on \r-stripped lines so a patch authored with LF endings applies
+// cleanly to a CRLF file; on write the original style is restored.
+type lineStyle struct {
+	trailingNewline bool
+	crlf            bool
 }
 
-// joinContentLines is the inverse of splitContentLines.
-func joinContentLines(lines []string, trailingNewline bool) string {
+// splitContentLines splits file content into logical lines with \r stripped,
+// and reports the file's line-ending style so it can be reconstructed. An empty
+// file yields no lines. CRLF is detected as the dominant ending: a file counts
+// as CRLF when it has at least one "\r\n" and no bare "\n" without a preceding
+// "\r" (i.e. it isn't mixed toward LF).
+func splitContentLines(content string) (lines []string, style lineStyle) {
+	if content == "" {
+		return nil, lineStyle{}
+	}
+	style.crlf = detectCRLF(content)
+	style.trailingNewline = strings.HasSuffix(content, "\n")
+	body := content
+	if style.trailingNewline {
+		body = strings.TrimSuffix(body, "\n")
+	}
+	raw := strings.Split(body, "\n")
+	lines = make([]string, len(raw))
+	for i, l := range raw {
+		lines[i] = strings.TrimSuffix(l, "\r")
+	}
+	return lines, style
+}
+
+// detectCRLF reports whether content predominantly uses CRLF endings. A file is
+// CRLF when every \n is preceded by \r (no bare LF). This keeps a single stray
+// LF from forcing the whole file to LF, while still treating genuinely
+// LF-dominant files as LF.
+func detectCRLF(content string) bool {
+	crlf := strings.Count(content, "\r\n")
+	if crlf == 0 {
+		return false
+	}
+	totalLF := strings.Count(content, "\n")
+	return crlf == totalLF
+}
+
+// joinContentLines is the inverse of splitContentLines: it re-joins lines using
+// the recorded style's separator and trailing-newline state.
+func joinContentLines(lines []string, style lineStyle) string {
+	sep := "\n"
+	if style.crlf {
+		sep = "\r\n"
+	}
 	if len(lines) == 0 {
-		if trailingNewline {
-			return "\n"
+		if style.trailingNewline {
+			return sep
 		}
 		return ""
 	}
-	joined := strings.Join(lines, "\n")
-	if trailingNewline {
-		joined += "\n"
+	joined := strings.Join(lines, sep)
+	if style.trailingNewline {
+		joined += sep
 	}
 	return joined
 }
@@ -389,9 +423,11 @@ func planPatch(rootDir string, ops []patchOp) ([]patchPlan, error) {
 			if state.exists && !state.delete {
 				return nil, fmt.Errorf("cannot add %s: file already exists", op.path)
 			}
-			// Added files end with a trailing newline, matching the convention
-			// that each "+" line in the patch is a full line of the new file.
-			state.content = joinContentLines(op.lines, true)
+			// Added files end with a trailing newline (LF), matching the
+			// convention that each "+" line in the patch is a full line of the
+			// new file. New files default to LF regardless of other files in
+			// the patch.
+			state.content = joinContentLines(op.lines, lineStyle{trailingNewline: true})
 			state.exists = true
 			state.delete = false
 			state.added += len(op.lines)
@@ -453,7 +489,7 @@ func applyPatchHunk(content string, hunk patchHunk) (string, int, int, error) {
 		return "", 0, 0, errors.New("empty hunk context")
 	}
 
-	lines, trailingNewline := splitContentLines(content)
+	lines, style := splitContentLines(content)
 	idx, count := findLineRun(lines, hunk.oldLines)
 	if count == 0 {
 		return "", 0, 0, errors.New("hunk context not found")
@@ -467,7 +503,7 @@ func applyPatchHunk(content string, hunk patchHunk) (string, int, int, error) {
 	updated = append(updated, hunk.newLines...)
 	updated = append(updated, lines[idx+len(hunk.oldLines):]...)
 
-	return joinContentLines(updated, trailingNewline), len(hunk.oldLines), len(hunk.newLines), nil
+	return joinContentLines(updated, style), len(hunk.oldLines), len(hunk.newLines), nil
 }
 
 // findLineRun returns the start index of the first occurrence of run within

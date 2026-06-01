@@ -296,14 +296,62 @@ func TestApplyPatchTool(t *testing.T) {
 			t.Fatalf("unexpected block replacement: %q", got)
 		}
 	})
+
+	// A patch authored with LF context lines must apply cleanly to a CRLF file
+	// and preserve the CRLF endings on write.
+	t.Run("applies to a CRLF file and preserves CRLF endings", func(t *testing.T) {
+		cfg := testConfig(t)
+		path := filepath.Join(cfg.RootDir, "crlf.txt")
+		if err := os.WriteFile(path, []byte("alpha\r\nbeta\r\ngamma\r\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+			"patch": strings.Join([]string{
+				"*** Begin Patch",
+				"*** Update File: crlf.txt",
+				"@@",
+				" alpha",
+				"-beta",
+				"+BETA",
+				" gamma",
+				"*** End Patch",
+			}, "\n"),
+		}))
+		if res.Status != "success" {
+			t.Fatalf("apply_patch failed: %s", res.Error)
+		}
+		if got, _ := os.ReadFile(path); string(got) != "alpha\r\nBETA\r\ngamma\r\n" {
+			t.Fatalf("CRLF endings not preserved: %q", got)
+		}
+	})
 }
 
 func TestSplitJoinContentLinesRoundTrip(t *testing.T) {
-	cases := []string{"", "\n", "a", "a\n", "a\nb", "a\nb\n", "\na\n", "a\n\nb\n"}
+	cases := []string{
+		// LF / no-newline
+		"", "\n", "a", "a\n", "a\nb", "a\nb\n", "\na\n", "a\n\nb\n",
+		// CRLF — must round-trip exactly (endings preserved)
+		"a\r\n", "a\r\nb\r\n", "a\r\nb", "\r\na\r\n",
+	}
 	for _, in := range cases {
-		lines, nl := splitContentLines(in)
-		if got := joinContentLines(lines, nl); got != in {
-			t.Errorf("round trip failed for %q: got %q (lines=%v nl=%v)", in, got, lines, nl)
+		lines, style := splitContentLines(in)
+		if got := joinContentLines(lines, style); got != in {
+			t.Errorf("round trip failed for %q: got %q (lines=%v style=%+v)", in, got, lines, style)
+		}
+	}
+}
+
+func TestDetectCRLF(t *testing.T) {
+	crlf := []string{"a\r\n", "a\r\nb\r\n", "a\r\nb"}
+	lf := []string{"", "a", "a\n", "a\nb\n", "a\r\nb\n" /* mixed → LF */}
+	for _, s := range crlf {
+		if !detectCRLF(s) {
+			t.Errorf("detectCRLF(%q) = false, want true", s)
+		}
+	}
+	for _, s := range lf {
+		if detectCRLF(s) {
+			t.Errorf("detectCRLF(%q) = true, want false", s)
 		}
 	}
 }
