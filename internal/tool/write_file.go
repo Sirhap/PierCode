@@ -81,6 +81,8 @@ func (t *WriteFileTool) Execute(ctx *Context) *Result {
 			return result
 		}
 	} else {
+		// Snapshot the prior state before overwriting so `undo` can restore it.
+		_ = snapshotPaths(rootDir, "write_file", safePath)
 		if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {
 			result.Status = "error"
 			result.Error = err.Error()

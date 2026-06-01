@@ -126,6 +126,8 @@ func (t *EditTool) Execute(ctx *Context) *Result {
 		}
 	}
 
+	// Snapshot the prior state before writing so `undo` can restore it.
+	_ = snapshotPaths(rootDir, "edit", safePath)
 	if err := os.WriteFile(safePath, outBytes, 0644); err != nil {
 		result.Status = "error"
 		result.Error = err.Error()

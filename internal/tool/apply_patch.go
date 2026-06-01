@@ -65,6 +65,14 @@ func (t *ApplyPatchTool) Execute(ctx *Context) *Result {
 	}
 
 	if !dryRun {
+		// Snapshot every touched path before writing so `undo` can restore the
+		// whole patch as one unit. commitPlans still does its own in-call
+		// rollback on partial failure; this is the cross-call undo layer.
+		paths := make([]string, 0, len(plans))
+		for _, p := range plans {
+			paths = append(paths, p.absPath)
+		}
+		_ = snapshotPaths(ctx.EffectiveRootDir(), "apply_patch", paths...)
 		if err := commitPlans(plans); err != nil {
 			result.Status = "error"
 			result.Error = err.Error()

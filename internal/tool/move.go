@@ -83,6 +83,10 @@ func (t *MoveTool) Execute(ctx *Context) *Result {
 		}
 	}
 
+	// Snapshot both endpoints before the rename so `undo` can restore them:
+	// the source (which will disappear) and the destination (which may be
+	// overwritten).
+	_ = snapshotPaths(rootDir, "move", srcAbs, dstAbs)
 	if err := os.MkdirAll(filepath.Dir(dstAbs), 0755); err != nil {
 		result.Status = "error"
 		result.Error = err.Error()

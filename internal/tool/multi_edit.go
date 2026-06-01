@@ -121,6 +121,8 @@ func (t *MultiEditTool) Execute(ctx *Context) *Result {
 	}
 
 	out := restoreLineStyle(content, style)
+	// Snapshot the prior state before writing so `undo` can restore it.
+	_ = snapshotPaths(rootDir, "multi_edit", safePath)
 	if err := os.WriteFile(safePath, []byte(out), 0644); err != nil {
 		result.Status = "error"
 		result.Error = err.Error()

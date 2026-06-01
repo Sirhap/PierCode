@@ -93,6 +93,7 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewEditTool(config))
 	e.registry.Register(tool.NewMultiEditTool(config))
 	e.registry.Register(tool.NewMoveTool(config))
+	e.registry.Register(tool.NewUndoTool(config))
 	e.registry.Register(tool.NewWebFetchTool())
 	e.registry.Register(tool.NewQuestionTool())
 	e.registry.Register(tool.NewSkillTool(config))
