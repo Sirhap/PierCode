@@ -611,3 +611,83 @@ func TestCORSOptions(t *testing.T) {
 		t.Errorf("expected 204, got %d", w.Code)
 	}
 }
+
+// execJSON 是 /exec 测试的小帮手, 返回解析后的响应。
+func execJSON(t *testing.T, s *Server, body string) (int, types.ToolResponse) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/exec", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	var resp types.ToolResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	return w.Code, resp
+}
+
+func TestHandleExecBlocksDangerousCommand(t *testing.T) {
+	s := testServer(t)
+	code, resp := execJSON(t, s, `{"name":"exec_cmd","call_id":"d1","args":{"command":"rm -rf /"}}`)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200 with error body, got %d", code)
+	}
+	if resp.Status != "error" {
+		t.Fatalf("dangerous command should be blocked, got status=%s", resp.Status)
+	}
+	if !strings.Contains(strings.ToLower(resp.Error), "dangerous") {
+		t.Errorf("expected dangerous-command error, got %q", resp.Error)
+	}
+}
+
+func TestHandleExecUnknownTool(t *testing.T) {
+	s := testServer(t)
+	_, resp := execJSON(t, s, `{"name":"no_such_tool","call_id":"u1","args":{}}`)
+	if resp.Status != "error" {
+		t.Fatalf("unknown tool should error, got status=%s", resp.Status)
+	}
+}
+
+func TestHandleExecWriteThenReadRoundTrip(t *testing.T) {
+	s := testServer(t)
+	_, w := execJSON(t, s, `{"name":"write_file","call_id":"w1","args":{"path":"rt.txt","content":"roundtrip"}}`)
+	if w.Status != "success" {
+		t.Fatalf("write failed: %s", w.Error)
+	}
+	_, r := execJSON(t, s, `{"name":"read_file","call_id":"r1","args":{"path":"rt.txt"}}`)
+	if r.Status != "success" || !strings.Contains(r.Output, "roundtrip") {
+		t.Fatalf("read failed: status=%s output=%q", r.Status, r.Output)
+	}
+}
+
+func TestHandleExecPathTraversalBlocked(t *testing.T) {
+	s := testServer(t)
+	_, resp := execJSON(t, s, `{"name":"read_file","call_id":"t1","args":{"path":"../../../etc/passwd"}}`)
+	if resp.Status != "error" {
+		t.Fatalf("path traversal should be blocked, got status=%s output=%q", resp.Status, resp.Output)
+	}
+}
+
+func TestHandleListTasks(t *testing.T) {
+	s := testServer(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/tasks", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "tasks") {
+		t.Errorf("expected tasks key in body, got %q", w.Body.String())
+	}
+}
+
+func TestHandleConfig(t *testing.T) {
+	s := testServer(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/config", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
