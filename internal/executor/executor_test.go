@@ -143,7 +143,8 @@ func TestExecutor(t *testing.T) {
 		for _, info := range tools {
 			seen[info.Name] = true
 		}
-		for _, want := range []string{"browser_finalize_tabs", "browser_viewport", "browser_downloads", "tool_help"} {
+		for _, want := range []string{"browser_finalize_tabs", "browser_viewport", "browser_downloads",
+			"browser_storage", "browser_set_cookie", "browser_wait_for_navigation", "browser_emulate", "browser_get_attributes", "tool_help"} {
 			if !seen[want] {
 				t.Fatalf("expected %s to be registered", want)
 			}

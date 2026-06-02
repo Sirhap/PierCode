@@ -163,6 +163,11 @@ type BrowserController interface {
 	FinalizeTabs(ctx context.Context, req BrowserFinalizeTabsRequest) (BrowserFinalizeTabsResponse, error)
 	Viewport(ctx context.Context, req BrowserViewportRequest) (string, error)
 	Downloads(ctx context.Context, req BrowserDownloadsRequest) (BrowserDownloadsResponse, error)
+	Storage(ctx context.Context, req BrowserStorageRequest) (string, error)
+	SetCookie(ctx context.Context, req BrowserSetCookieRequest) (string, error)
+	WaitForNavigation(ctx context.Context, req BrowserWaitForNavigationRequest) (string, error)
+	Emulate(ctx context.Context, req BrowserEmulateRequest) (string, error)
+	GetAttributes(ctx context.Context, req BrowserGetAttributesRequest) (string, error)
 }
 
 type BrowserTab struct {
@@ -484,6 +489,58 @@ type BrowserDownloadsResponse struct {
 	Count     int               `json:"count"`
 	Total     int               `json:"total"`
 	Truncated bool              `json:"truncated"`
+}
+
+type BrowserStorageRequest struct {
+	TabID   *int
+	Action  string // get|set|remove|clear|keys
+	Storage string // local|session
+	Key     string
+	Value   string
+}
+
+type BrowserSetCookieRequest struct {
+	Action         string // set|delete
+	Name           string
+	Value          string
+	Domain         string
+	Path           string
+	URL            string
+	Secure         bool
+	HTTPOnly       bool
+	SameSite       string
+	ExpirationDate float64
+	CallID         string
+}
+
+type BrowserWaitForNavigationRequest struct {
+	TabID          *int
+	URLPattern     string
+	WaitUntil      string // load|domcontentloaded
+	TimeoutSeconds int
+}
+
+type BrowserEmulateRequest struct {
+	TabID             *int
+	UserAgent         string
+	DeviceScaleFactor float64
+	Mobile            *bool
+	ColorScheme       string // light|dark|no-preference
+	Timezone          string
+	Latitude          *float64
+	Longitude         *float64
+	Accuracy          *float64
+	Reset             bool
+	CallID            string
+}
+
+type BrowserGetAttributesRequest struct {
+	TabID      *int
+	Ref        string
+	Selector   string
+	SnapshotID string
+	Attributes []string
+	Styles     []string
 }
 
 // resolveAbsPath validates an absolute path against RootDir and common allowed roots (~/.claude, ~/.piercode, ~/.agent).

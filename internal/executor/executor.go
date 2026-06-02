@@ -137,6 +137,11 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserFinalizeTabsTool())
 	e.registry.Register(tool.NewBrowserViewportTool())
 	e.registry.Register(tool.NewBrowserDownloadsTool())
+	e.registry.Register(tool.NewBrowserStorageTool())
+	e.registry.Register(tool.NewBrowserSetCookieTool())
+	e.registry.Register(tool.NewBrowserWaitForNavigationTool())
+	e.registry.Register(tool.NewBrowserEmulateTool())
+	e.registry.Register(tool.NewBrowserGetAttributesTool())
 	e.registry.Register(tool.NewToolHelpTool(e.registry))
 	return e
 }
@@ -317,7 +322,7 @@ func isReadOnlyTool(name string) bool {
 		"todo_read", "task_list", "task_output", "browser_tabs", "browser_snapshot",
 		"browser_screenshot", "browser_wait", "browser_wait_for_function", "browser_get_content",
 		"browser_pdf", "browser_cookies", "browser_console", "browser_network",
-		"browser_find":
+		"browser_find", "browser_get_attributes":
 		return true
 	default:
 		return false

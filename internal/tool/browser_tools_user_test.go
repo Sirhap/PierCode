@@ -208,6 +208,26 @@ func (r *userJourneyRecorder) Downloads(_ context.Context, req BrowserDownloadsR
 	}, nil
 }
 
+func (r *userJourneyRecorder) Storage(_ context.Context, _ BrowserStorageRequest) (string, error) {
+	return "ok", nil
+}
+
+func (r *userJourneyRecorder) SetCookie(_ context.Context, _ BrowserSetCookieRequest) (string, error) {
+	return "ok", nil
+}
+
+func (r *userJourneyRecorder) WaitForNavigation(_ context.Context, _ BrowserWaitForNavigationRequest) (string, error) {
+	return "ok", nil
+}
+
+func (r *userJourneyRecorder) Emulate(_ context.Context, _ BrowserEmulateRequest) (string, error) {
+	return "ok", nil
+}
+
+func (r *userJourneyRecorder) GetAttributes(_ context.Context, _ BrowserGetAttributesRequest) (string, error) {
+	return "ok", nil
+}
+
 func TestUserBrowserListTabsWithoutManualTabId(t *testing.T) {
 	recorder := &userJourneyRecorder{}
 	tool := NewBrowserTabsTool()

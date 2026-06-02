@@ -286,3 +286,18 @@ func (f *fakeBrowserController) Downloads(context.Context, BrowserDownloadsReque
 		Total:     1,
 	}, nil
 }
+func (f *fakeBrowserController) Storage(context.Context, BrowserStorageRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) SetCookie(context.Context, BrowserSetCookieRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) WaitForNavigation(context.Context, BrowserWaitForNavigationRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) Emulate(context.Context, BrowserEmulateRequest) (string, error) {
+	return "", nil
+}
+func (f *fakeBrowserController) GetAttributes(context.Context, BrowserGetAttributesRequest) (string, error) {
+	return "", nil
+}

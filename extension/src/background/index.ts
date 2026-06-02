@@ -403,6 +403,8 @@ async function handleNativeBrowserCommand(method: string, params: Record<string,
       return takeScreenshot(Number(params.tabId));
     case 'cookies':
       return getCookies(params);
+    case 'setCookie':
+      return setCookieNative(params);
     case 'finalizeTabs':
       return finalizeTabs(params);
     case 'downloads':
@@ -656,6 +658,54 @@ async function getCookies(params: Record<string, unknown>): Promise<unknown> {
     truncated: cookies.length > limit,
     includeValue,
   };
+}
+
+function cookieScopeURL(params: Record<string, unknown>): string {
+  const url = typeof params.url === 'string' ? params.url.trim() : '';
+  if (url) return url;
+  const domain = typeof params.domain === 'string' ? params.domain.trim() : '';
+  if (!domain) throw new Error('cookie scope required: provide domain or url');
+  const secure = params.secure === true;
+  const host = domain.replace(/^\./, '');
+  const scheme = secure ? 'https' : 'http';
+  return `${scheme}://${host}/`;
+}
+
+async function setCookieNative(params: Record<string, unknown>): Promise<unknown> {
+  const action = typeof params.action === 'string' ? params.action.toLowerCase() : '';
+  const name = typeof params.name === 'string' ? params.name.trim() : '';
+  if (!name) throw new Error('cookie name is required');
+  const url = cookieScopeURL(params);
+
+  if (action === 'delete') {
+    await chrome.cookies.remove({ url, name });
+    return { ok: true, name, domain: typeof params.domain === 'string' ? params.domain : '' };
+  }
+  if (action !== 'set') {
+    throw new Error(`unsupported set_cookie action: ${action}`);
+  }
+
+  const details: chrome.cookies.SetDetails = {
+    url,
+    name,
+    value: typeof params.value === 'string' ? params.value : String(params.value ?? ''),
+  };
+  if (typeof params.domain === 'string' && params.domain.trim()) details.domain = params.domain.trim();
+  if (typeof params.path === 'string' && params.path.trim()) details.path = params.path.trim();
+  if (params.secure === true) details.secure = true;
+  if (params.httpOnly === true) details.httpOnly = true;
+  if (typeof params.sameSite === 'string' && params.sameSite.trim()) {
+    details.sameSite = params.sameSite.trim() as chrome.cookies.SameSiteStatus;
+  }
+  if (typeof params.expirationDate === 'number' && params.expirationDate > 0) {
+    details.expirationDate = params.expirationDate;
+  }
+
+  const cookie = await chrome.cookies.set(details);
+  if (!cookie) {
+    throw new Error(`failed to set cookie ${name} for ${url}; the target domain may be outside the extension host permissions`);
+  }
+  return { ok: true, name: cookie.name, domain: cookie.domain };
 }
 
 async function finalizeTabs(params: Record<string, unknown>): Promise<unknown> {

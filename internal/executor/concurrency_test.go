@@ -9,14 +9,15 @@ import (
 func TestToolConcurrencyPolicy(t *testing.T) {
 	for _, name := range []string{
 		"read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question",
-		"tool_help", "browser_find", "browser_console", "browser_network",
+		"tool_help", "browser_find", "browser_console", "browser_network", "browser_get_attributes",
 	} {
 		if !isReadOnlyTool(name) {
 			t.Fatalf("expected %s to be read-only", name)
 		}
 	}
 
-	for _, name := range []string{"write_file", "edit", "exec_cmd", "todo_write", "unknown_tool", ""} {
+	for _, name := range []string{"write_file", "edit", "exec_cmd", "todo_write", "unknown_tool", "",
+		"browser_storage", "browser_set_cookie", "browser_emulate", "browser_wait_for_navigation"} {
 		if isReadOnlyTool(name) {
 			t.Fatalf("expected %s to require exclusive lock", name)
 		}
