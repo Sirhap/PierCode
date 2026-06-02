@@ -691,3 +691,24 @@ func TestHandleConfig(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
+
+func TestHandleStatsIncludesTaskCounts(t *testing.T) {
+	s := testServer(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/stats", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	for _, k := range []string{"tasks_total", "tasks_running", "browser_clients"} {
+		if _, ok := body[k]; !ok {
+			t.Errorf("stats missing key %q; body=%v", k, body)
+		}
+	}
+	if body["tasks_total"].(float64) != 0 {
+		t.Errorf("expected 0 tasks, got %v", body["tasks_total"])
+	}
+}

@@ -218,10 +218,23 @@ func (s *Server) handleConfig(c *gin.Context) {
 }
 
 func (s *Server) handleStats(c *gin.Context) {
+	totalTasks, runningTasks := 0, 0
+	if s.executor != nil {
+		if tm := s.executor.Tasks(); tm != nil {
+			for _, t := range tm.List() {
+				totalTasks++
+				if t.Status == "running" {
+					runningTasks++
+				}
+			}
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"browser_clients":   s.ws.ClientCount(),
 		"browser_relays":    s.ws.RoleCount("browser-relay"),
 		"browser_providers": s.ws.ProviderCounts(),
+		"tasks_total":       totalTasks,
+		"tasks_running":     runningTasks,
 	})
 }
 

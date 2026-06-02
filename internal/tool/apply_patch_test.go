@@ -414,3 +414,81 @@ func TestApplyPatchFuzzyIndentFallback(t *testing.T) {
 		}
 	})
 }
+
+func TestApplyPatchFinalNewline(t *testing.T) {
+	patchFor := func(file string) string {
+		return strings.Join([]string{
+			"*** Begin Patch", "*** Update File: " + file, "@@", "-b", "+B", "*** End Patch",
+		}, "\n")
+	}
+
+	t.Run("add ensures trailing newline", func(t *testing.T) {
+		cfg := testConfig(t)
+		p := filepath.Join(cfg.RootDir, "f.txt")
+		os.WriteFile(p, []byte("a\nb"), 0644) // 无尾换行
+		res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+			"patch": patchFor("f.txt"), "final_newline": "add",
+		}))
+		if res.Status != "success" {
+			t.Fatalf("failed: %s", res.Error)
+		}
+		if got, _ := os.ReadFile(p); string(got) != "a\nB\n" {
+			t.Fatalf("expected trailing newline added, got %q", got)
+		}
+	})
+
+	t.Run("strip removes trailing newline", func(t *testing.T) {
+		cfg := testConfig(t)
+		p := filepath.Join(cfg.RootDir, "f.txt")
+		os.WriteFile(p, []byte("a\nb\n"), 0644) // 有尾换行
+		res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+			"patch": patchFor("f.txt"), "final_newline": "strip",
+		}))
+		if res.Status != "success" {
+			t.Fatalf("failed: %s", res.Error)
+		}
+		if got, _ := os.ReadFile(p); string(got) != "a\nB" {
+			t.Fatalf("expected trailing newline stripped, got %q", got)
+		}
+	})
+
+	t.Run("keep is default and preserves state", func(t *testing.T) {
+		cfg := testConfig(t)
+		p := filepath.Join(cfg.RootDir, "f.txt")
+		os.WriteFile(p, []byte("a\nb"), 0644)
+		res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+			"patch": patchFor("f.txt"),
+		}))
+		if res.Status != "success" {
+			t.Fatalf("failed: %s", res.Error)
+		}
+		if got, _ := os.ReadFile(p); string(got) != "a\nB" {
+			t.Fatalf("keep should preserve no-newline, got %q", got)
+		}
+	})
+
+	t.Run("add uses CRLF for CRLF files", func(t *testing.T) {
+		cfg := testConfig(t)
+		p := filepath.Join(cfg.RootDir, "c.txt")
+		os.WriteFile(p, []byte("a\r\nb"), 0644)
+		res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+			"patch": patchFor("c.txt"), "final_newline": "add",
+		}))
+		if res.Status != "success" {
+			t.Fatalf("failed: %s", res.Error)
+		}
+		if got, _ := os.ReadFile(p); string(got) != "a\r\nB\r\n" {
+			t.Fatalf("expected CRLF trailing newline, got %q", got)
+		}
+	})
+
+	t.Run("invalid final_newline rejected", func(t *testing.T) {
+		cfg := testConfig(t)
+		err := NewApplyPatchTool(cfg).Validate(map[string]interface{}{
+			"patch": "*** Begin Patch\n*** End Patch", "final_newline": "bogus",
+		})
+		if err == nil {
+			t.Fatal("expected validation error")
+		}
+	})
+}

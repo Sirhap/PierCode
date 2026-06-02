@@ -28,8 +28,9 @@ func (t *ApplyPatchTool) Description() string {
 
 func (t *ApplyPatchTool) Parameters() interface{} {
 	return map[string]string{
-		"patch":   "string (required) - patch text delimited by *** Begin Patch and *** End Patch",
-		"dry_run": "bool (optional, default false) - validate and report changes without writing files",
+		"patch":         "string (required) - patch text delimited by *** Begin Patch and *** End Patch",
+		"dry_run":       "bool (optional, default false) - validate and report changes without writing files",
+		"final_newline": "string (optional) - 'keep' (default, preserve each file's existing trailing-newline state), 'add' (ensure a trailing newline), or 'strip' (remove it)",
 	}
 }
 
@@ -40,6 +41,17 @@ func (t *ApplyPatchTool) Validate(args map[string]interface{}) error {
 	}
 	if !strings.Contains(patch, "*** Begin Patch") || !strings.Contains(patch, "*** End Patch") {
 		return errors.New("patch must include *** Begin Patch and *** End Patch")
+	}
+	if v, ok := args["final_newline"]; ok && v != nil {
+		s, ok := v.(string)
+		if !ok {
+			return errors.New("final_newline must be a string")
+		}
+		switch s {
+		case "", "keep", "add", "strip":
+		default:
+			return errors.New("final_newline must be 'keep', 'add', or 'strip'")
+		}
 	}
 	return nil
 }
@@ -62,6 +74,17 @@ func (t *ApplyPatchTool) Execute(ctx *Context) *Result {
 		result.Status = "error"
 		result.Error = err.Error()
 		return result
+	}
+
+	// Optionally force the trailing-newline state of every written (non-delete)
+	// file, overriding the default of preserving each file's existing state.
+	if fn, _ := ctx.Args["final_newline"].(string); fn == "add" || fn == "strip" {
+		for i := range plans {
+			if plans[i].delete {
+				continue
+			}
+			plans[i].content = applyFinalNewline(plans[i].content, fn)
+		}
 	}
 
 	if !dryRun {
@@ -475,6 +498,30 @@ func planPatch(rootDir string, ops []patchOp) ([]patchPlan, error) {
 		})
 	}
 	return plans, nil
+}
+
+// applyFinalNewline forces content to end with ("add") or without ("strip") a
+// trailing newline, matching the content's dominant line ending (CRLF vs LF).
+// Any other mode returns content unchanged.
+func applyFinalNewline(content, mode string) string {
+	switch mode {
+	case "add":
+		if content == "" {
+			return content
+		}
+		if strings.HasSuffix(content, "\n") {
+			return content
+		}
+		if detectCRLF(content) {
+			return content + "\r\n"
+		}
+		return content + "\n"
+	case "strip":
+		content = strings.TrimSuffix(content, "\n")
+		return strings.TrimSuffix(content, "\r")
+	default:
+		return content
+	}
 }
 
 func resolvePatchPath(rootDir, path string) (string, error) {
