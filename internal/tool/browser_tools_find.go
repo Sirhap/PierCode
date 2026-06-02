@@ -219,7 +219,7 @@ func NewBrowserNetworkTool() Tool {
 func NewBrowserCookiesTool() Tool {
 	return &browserTool{
 		name:        "browser_cookies",
-		description: "Read browser cookies for a specific domain or URL. Cookie values are returned by default.",
+		description: "Read browser cookies for a specific domain or URL after user approval. Cookie values are returned by default.",
 		parameters: map[string]string{
 			"domain":       "string (optional) - cookie domain scope, e.g. .example.com",
 			"url":          "string (optional) - URL scope for cookies, e.g. https://example.com",

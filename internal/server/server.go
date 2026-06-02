@@ -262,7 +262,7 @@ func (s *Server) resolveAIProfile(c *gin.Context) prompt.Profile {
 	if profileID == "" {
 		profileID = c.Query("adapter")
 	}
-	return prompt.DefaultProfileRegistry(s.config.DefaultPrompt).Select(profileID)
+	return s.executor.ResolveProfile(profileID)
 }
 
 func (s *Server) handleSetCWD(c *gin.Context) {

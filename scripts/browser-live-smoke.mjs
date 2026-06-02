@@ -12,7 +12,11 @@ const pdfOutput = join(smokeDir, 'browser-live-smoke.pdf');
 const apiUrl = (process.env.PIERCODE_API_URL || '').replace(/\/+$/, '');
 const token = process.env.PIERCODE_TOKEN || '';
 if (!apiUrl || !token) {
-  throw new Error('Set PIERCODE_API_URL and PIERCODE_TOKEN for the already-running PierCode server.');
+  throw new Error([
+    'browser-live-smoke requires the real user Chrome with the installed PierCode extension.',
+    'Start the PierCode backend, configure that already-installed extension with the printed auth URL,',
+    'then run with PIERCODE_API_URL and PIERCODE_TOKEN for the already-running backend.',
+  ].join(' '));
 }
 
 mkdirSync(smokeDir, { recursive: true });
@@ -81,6 +85,7 @@ const pageServer = createServer((req, res) => {
   #dropTarget { background: #dcfce7; }
   #hoverTarget { margin-top: 8px; padding: 12px; background: #fef3c7; width: 180px; }
   #notes { border: 1px solid #94a3b8; min-height: 48px; padding: 8px; width: 320px; }
+  #attributeTarget { color: rgb(37, 99, 235); margin-top: 12px; padding: 6px; }
   .spacer { height: 1100px; }
 </style>
 <main>
@@ -129,6 +134,7 @@ const pageServer = createServer((req, res) => {
   <p id="fileStatus">empty</p>
   <p id="dragStatus">not dropped</p>
   <p id="viewportStatus">viewport unknown</p>
+  <p id="attributeTarget" data-state="ready" aria-label="Attribute probe">Attribute probe</p>
   <div class="spacer"></div>
   <p id="bottomMarker">Bottom of long approval report</p>
 </main>
@@ -208,7 +214,11 @@ const approvalSocket = await openApprovalSocket();
 try {
   const stats = await getStats();
   if (Number(stats.browser_relays || 0) < 1) {
-    throw new Error(`browser relay is not connected: ${JSON.stringify(stats)}`);
+    throw new Error([
+      'real Chrome PierCode extension relay is not connected.',
+      'Open the user Chrome profile that has PierCode installed, configure the extension with the backend auth URL,',
+      `then rerun browser-live-smoke. stats=${JSON.stringify(stats)}`,
+    ].join(' '));
   }
 
   const pageURL = `http://127.0.0.1:${pagePort}/`;
@@ -383,6 +393,137 @@ try {
     throw new Error(`cookies with value did not include live cookie value: ${JSON.stringify(cookiesWithValue)}`);
   }
 
+  const storageSet = await step('set localStorage value', () => execTool('browser_storage', {
+    action: 'set',
+    storage: 'local',
+    key: 'piercode_live_storage',
+    value: 'stored-value',
+  }));
+  const storageGet = await step('read localStorage value', () => execTool('browser_storage', {
+    action: 'get',
+    storage: 'local',
+    key: 'piercode_live_storage',
+  }));
+  if (!String(storageGet.output || '').includes('stored-value')) {
+    throw new Error(`localStorage get did not include stored value: ${JSON.stringify(storageGet)}`);
+  }
+  const storageKeys = await step('list localStorage keys', () => execTool('browser_storage', {
+    action: 'keys',
+    storage: 'local',
+  }));
+  if (!String(storageKeys.output || '').includes('piercode_live_storage')) {
+    throw new Error(`localStorage keys did not include test key: ${JSON.stringify(storageKeys)}`);
+  }
+  const sessionSet = await step('set sessionStorage value', () => execTool('browser_storage', {
+    action: 'set',
+    storage: 'session',
+    key: 'piercode_live_session',
+    value: 'session-value',
+  }));
+  const sessionGet = await step('read sessionStorage value', () => execTool('browser_storage', {
+    action: 'get',
+    storage: 'session',
+    key: 'piercode_live_session',
+  }));
+  if (!String(sessionGet.output || '').includes('session-value')) {
+    throw new Error(`sessionStorage get did not include stored value: ${JSON.stringify(sessionGet)}`);
+  }
+  const storageRemove = await step('remove localStorage value', () => execTool('browser_storage', {
+    action: 'remove',
+    storage: 'local',
+    key: 'piercode_live_storage',
+  }));
+  const storageRemoved = await step('verify localStorage value removed', () => execTool('browser_storage', {
+    action: 'get',
+    storage: 'local',
+    key: 'piercode_live_storage',
+  }));
+  if (!String(storageRemoved.output || '').includes('(null)')) {
+    throw new Error(`localStorage remove did not clear value: ${JSON.stringify(storageRemoved)}`);
+  }
+  const sessionClear = await step('clear sessionStorage values', () => execTool('browser_storage', {
+    action: 'clear',
+    storage: 'session',
+  }));
+
+  const setCookieCallId = 'live-smoke-set-cookie-approve';
+  approvalDecisions.push({ approved: true, reason: 'live smoke approves local cookie write', callId: setCookieCallId });
+  const setCookie = await step('set local test cookie through extension', () => execTool('browser_set_cookie', {
+    action: 'set',
+    url: pageURL,
+    name: 'piercode_live_set_cookie',
+    value: 'native-value',
+    sameSite: 'lax',
+    call_id: setCookieCallId,
+  }));
+  await step('wait for set-cookie approval completion notice', () => waitForApprovalDone(setCookieCallId));
+  const setCookieRead = await step('read newly set cookie value', () => execTool('browser_cookies', { url: pageURL, includeValue: true, limit: 20 }));
+  if (!String(setCookieRead.output || '').includes('piercode_live_set_cookie=native-value')) {
+    throw new Error(`newly set cookie was not readable: ${JSON.stringify(setCookieRead)}`);
+  }
+  const deleteCookieCallId = 'live-smoke-delete-cookie-approve';
+  approvalDecisions.push({ approved: true, reason: 'live smoke approves local cookie delete', callId: deleteCookieCallId });
+  const deleteCookie = await step('delete local test cookie through extension', () => execTool('browser_set_cookie', {
+    action: 'delete',
+    url: pageURL,
+    name: 'piercode_live_set_cookie',
+    call_id: deleteCookieCallId,
+  }));
+  await step('wait for delete-cookie approval completion notice', () => waitForApprovalDone(deleteCookieCallId));
+  const deletedCookieRead = await step('verify deleted cookie is absent', () => execTool('browser_cookies', { url: pageURL, includeValue: true, limit: 20 }));
+  if (String(deletedCookieRead.output || '').includes('piercode_live_set_cookie=native-value')) {
+    throw new Error(`deleted cookie was still readable: ${JSON.stringify(deletedCookieRead)}`);
+  }
+
+  const attributes = await step('read attributes and computed style', () => execTool('browser_get_attributes', {
+    selector: '#attributeTarget',
+    attributes: ['id', 'data-state', 'aria-label', 'missing-attribute'],
+    styles: ['color', 'margin-top'],
+  }));
+  const attributesOutput = String(attributes.output || '');
+  if (!attributesOutput.includes('"data-state":"ready"') ||
+      !attributesOutput.includes('"missing-attribute":null') ||
+      !attributesOutput.includes('"color":"rgb(37, 99, 235)"')) {
+    throw new Error(`attributes output missed expected values: ${JSON.stringify(attributes)}`);
+  }
+
+  const emulate = await step('emulate UA, DPR, dark mode, and timezone', () => execTool('browser_emulate', {
+    userAgent: 'PierCodeLiveSmoke/1.0',
+    deviceScaleFactor: 2,
+    mobile: true,
+    colorScheme: 'dark',
+    timezone: 'America/New_York',
+  }));
+  const emulatedState = await step('verify emulated browser state', () => execTool('browser_evaluate', {
+    expression: "JSON.stringify({ ua: navigator.userAgent, dpr: window.devicePixelRatio, dark: matchMedia('(prefers-color-scheme: dark)').matches, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })",
+  }));
+  const emulatedOutput = String(emulatedState.output || '');
+  if (!emulatedOutput.includes('PierCodeLiveSmoke/1.0') ||
+      !emulatedOutput.includes('"dpr":2') ||
+      !emulatedOutput.includes('"dark":true') ||
+      !emulatedOutput.includes('"timezone":"America/New_York"')) {
+    throw new Error(`emulated state did not include expected overrides: ${JSON.stringify(emulatedState)}`);
+  }
+  const emulateReset = await step('reset emulation overrides', () => execTool('browser_emulate', { reset: true }));
+  const resetState = await step('verify emulation reset cleared UA override', () => execTool('browser_evaluate', {
+    expression: "navigator.userAgent",
+  }));
+  if (String(resetState.output || '').includes('PierCodeLiveSmoke/1.0')) {
+    throw new Error(`emulation reset did not clear UA override: ${JSON.stringify(resetState)}`);
+  }
+
+  await step('trigger link navigation to second page', () => execTool('browser_click', { selector: '#secondLink' }));
+  const navigationWait = await step('wait for second-page navigation', () => execTool('browser_wait_for_navigation', {
+    urlPattern: '/second',
+    waitUntil: 'load',
+    timeout: 10,
+  }));
+  if (!String(navigationWait.output || '').includes('/second')) {
+    throw new Error(`wait_for_navigation did not report second page URL: ${JSON.stringify(navigationWait)}`);
+  }
+  await step('return to report page after wait_for_navigation', () => execTool('browser_navigate', { url: pageURL }));
+  await step('wait for report after wait_for_navigation test', () => execTool('browser_wait', { selector: '#downloadButton', state: 'visible', timeout: 10 }));
+
   await step('click report download button', () => execTool('browser_click', { selector: '#downloadButton' }));
   const downloads = await step('read browser download history', waitForLiveDownload);
 
@@ -470,6 +611,24 @@ try {
     networkAfterClear: networkAfterClear.output,
     cookies: cookies.output,
     cookiesWithValue: cookiesWithValue.output,
+    storageSet: storageSet.output,
+    storageGet: storageGet.output,
+    storageKeys: storageKeys.output,
+    sessionSet: sessionSet.output,
+    sessionGet: sessionGet.output,
+    storageRemove: storageRemove.output,
+    storageRemoved: storageRemoved.output,
+    sessionClear: sessionClear.output,
+    setCookie: setCookie.output,
+    setCookieRead: setCookieRead.output,
+    deleteCookie: deleteCookie.output,
+    deletedCookieRead: deletedCookieRead.output,
+    attributes: attributes.output,
+    emulate: emulate.output,
+    emulatedState: emulatedState.output,
+    emulateReset: emulateReset.output,
+    resetState: resetState.output,
+    navigationWait: navigationWait.output,
     rejectedClick: rejectedClick.error,
     viewport: viewport.output,
     drag: drag.output,

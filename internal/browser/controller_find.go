@@ -368,6 +368,21 @@ func (c *Controller) Cookies(ctx context.Context, req tool.BrowserCookiesRequest
 	if strings.TrimSpace(req.Domain) == "" && strings.TrimSpace(req.URL) == "" {
 		return tool.BrowserCookiesResponse{}, fmt.Errorf("domain or url is required")
 	}
+	scope := strings.TrimSpace(req.URL)
+	if scope == "" {
+		scope = strings.TrimSpace(req.Domain)
+	}
+	risk := "Cookie names and metadata may expose browser session details."
+	if req.IncludeValue {
+		risk = "Cookie values may include session tokens or other sensitive credentials."
+	}
+	if err := c.approvals.Ask(ctx, ApprovalAsk{
+		Action: "read browser cookies",
+		Target: scope,
+		Risk:   risk,
+	}); err != nil {
+		return tool.BrowserCookiesResponse{}, err
+	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 200

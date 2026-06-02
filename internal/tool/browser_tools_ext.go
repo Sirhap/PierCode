@@ -131,6 +131,7 @@ func NewBrowserEvaluateTool() Tool {
 			"expression":    "string (required, max 10000 chars) - JS expression",
 			"returnByValue": "boolean (optional, default true) - serialize result by value",
 			"tabId":         "number (optional) - controlled tab id",
+			"timeoutMs":     "number (optional, default 10000) - max time to wait for async evaluation",
 		},
 		validate: func(args map[string]interface{}) error {
 			expr := stringArg(args, "expression")
@@ -148,6 +149,7 @@ func NewBrowserEvaluateTool() Tool {
 				Expression:    stringArg(ctx.Args, "expression"),
 				ReturnByValue: !hasBoolArg(ctx.Args, "returnByValue") || boolArg(ctx.Args, "returnByValue"),
 				CallID:        stringArg(ctx.Args, "call_id"),
+				TimeoutMS:     intArgDefault(ctx.Args, "timeoutMs", 0),
 			})
 			if err != nil {
 				return "", err

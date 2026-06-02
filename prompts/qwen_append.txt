@@ -29,3 +29,34 @@ Call exec_cmd with command ls
 Correct behavior: print only the single real `piercode-tool` block for the operation you intend PierCode to execute now. Do not print a protocol example or a dry-run block.
 
 If Qwen reports a PierCode operation as missing, immediately retry by printing the visible `piercode-tool` block in the final answer. The PierCode browser extension, not Qwen native tools, executes that block.
+
+## PierCode Context Packet Handoff
+
+PierCode may ask you to compress the current conversation so it can open a fresh Qwen session. When that happens, do not continue the original task and do not output `piercode-tool`.
+
+If PierCode explicitly asks for a context packet, or if you can tell the task is long-running and the useful context is getting too large, output exactly one Markdown fenced JSON packet in this format:
+
+```piercode-context
+{
+  "version": 1,
+  "reason": "model_initiated",
+  "goal": "当前用户目标和成功标准",
+  "completed": ["已经完成且有证据的事项"],
+  "current_state": "当前会话/代码/浏览器状态",
+  "key_files": ["关键文件绝对路径或仓库相对路径"],
+  "evidence": ["关键命令、测试结果、浏览器观察结果"],
+  "pending": ["下一步待办"],
+  "constraints": ["用户偏好、安全约束、不能丢的上下文"],
+  "next_action": "新会话接手后的第一步"
+}
+```
+
+Rules for context packets:
+
+- A context packet is not a tool call. Never wrap it in `piercode-tool`.
+- The packet must be one Markdown fenced JSON block using the language tag `piercode-context`.
+- Put `version` and `reason` inside the JSON object, not in an XML-like wrapper.
+- Do not include Markdown headings, explanations, or text before or after the packet.
+- Preserve exact file paths, command results, test results, blockers, user preferences, and next actions.
+- Compress repetitive logs and long tool outputs aggressively while keeping the conclusion and evidence.
+- After outputting the packet, stop. PierCode will parse it, open a new Qwen session, and send the packet there.

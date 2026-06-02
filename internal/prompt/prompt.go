@@ -22,7 +22,7 @@ func BuildSystemInfo(rootDir string) string {
 	hostname, _ := os.Hostname()
 	return fmt.Sprintf("- 操作系统: %s/%s\n- 工作目录: %s\n- 主机名: %s\n- 当前时间: %s",
 		runtime.GOOS, runtime.GOARCH, rootDir, hostname,
-		time.Now().Format("2006-01-02 15:04:05"))
+		time.Now().Format("2006-01-02 15:04"))
 }
 
 func BuildToolsDoc(tools []tool.ToolInfo) string {

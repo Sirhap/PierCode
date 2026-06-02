@@ -234,6 +234,22 @@ func TestExecutorPromptGuidance(t *testing.T) {
 		}
 	})
 
+	t.Run("qwen tool responses include context packet reminder", func(t *testing.T) {
+		e := New(testConfig(t))
+		resp := e.Execute(context.Background(), &types.ToolRequest{
+			Name:           "list_dir",
+			CallID:         "qwen1a",
+			Args:           map[string]interface{}{"path": "."},
+			SourceClientID: "ai-page-1",
+			Profile:        "qwen",
+		})
+		for _, want := range []string{"[Qwen 上下文迁移提示]", "```piercode-context", "不要输出 XML wrapper", "不要输出 `piercode-tool`"} {
+			if !strings.Contains(resp.Output, want) {
+				t.Fatalf("expected qwen context packet reminder to contain %q, got %q", want, resp.Output)
+			}
+		}
+	})
+
 	t.Run("direct API calls get clean output without prompt guidance", func(t *testing.T) {
 		e := New(testConfig(t))
 		resp := e.Execute(context.Background(), &types.ToolRequest{

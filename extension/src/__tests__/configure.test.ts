@@ -56,6 +56,99 @@ describe('extension configure page', () => {
     expect((dom.window as any).__PIERCODE_CONFIG_DONE__).toBe(true);
   });
 
+  it('optionally stores Qwen compression config from configuration link', () => {
+    const script = fs.readFileSync(configureScriptPath, 'utf8');
+    const dom = new JSDOMWithOptions('<!doctype html><div id="status">Configuring...</div>', {
+      url: 'chrome-extension://piercode/configure.html?apiUrl=http%3A%2F%2F127.0.0.1%3A39527&token=dev-token&qwenMaxContextTokens=1&qwenMaxSummaryTokens=2048&qwenCompressionEnabled=true&qwenE2EBridgeEnabled=true'
+    });
+    const set: any = vi.fn((_values: unknown, callback: () => void) => callback());
+
+    Object.assign(dom.window, {
+      chrome: {
+        storage: {
+          local: { set }
+        }
+      }
+    });
+
+    vm.createContext(dom.window);
+    vm.runInContext(script, dom.window);
+
+    expect(set).toHaveBeenCalledWith(
+      {
+        apiUrl: 'http://127.0.0.1:39527',
+        authToken: 'dev-token',
+        qwenCompressionConfig: {
+          enabled: true,
+          maxContextTokens: 1,
+          maxSummaryTokens: 2048,
+        },
+        qwenE2EBridgeEnabled: true,
+      },
+      expect.any(Function)
+    );
+  });
+
+  it('can disable Qwen compression without overriding token limits', () => {
+    const script = fs.readFileSync(configureScriptPath, 'utf8');
+    const dom = new JSDOMWithOptions('<!doctype html><div id="status">Configuring...</div>', {
+      url: 'chrome-extension://piercode/configure.html?apiUrl=http%3A%2F%2F127.0.0.1%3A39527&token=dev-token&qwenCompressionEnabled=false'
+    });
+    const set: any = vi.fn((_values: unknown, callback: () => void) => callback());
+
+    Object.assign(dom.window, {
+      chrome: {
+        storage: {
+          local: { set }
+        }
+      }
+    });
+
+    vm.createContext(dom.window);
+    vm.runInContext(script, dom.window);
+
+    expect(set).toHaveBeenCalledWith(
+      {
+        apiUrl: 'http://127.0.0.1:39527',
+        authToken: 'dev-token',
+        qwenCompressionConfig: {
+          enabled: false,
+        },
+      },
+      expect.any(Function)
+    );
+  });
+
+  it('can reload the extension after storing configuration', () => {
+    vi.useFakeTimers();
+    try {
+      const script = fs.readFileSync(configureScriptPath, 'utf8');
+      const dom = new JSDOMWithOptions('<!doctype html><div id="status">Configuring...</div>', {
+        url: 'chrome-extension://piercode/configure.html?apiUrl=http%3A%2F%2F127.0.0.1%3A39527&token=dev-token&reloadExtension=true'
+      });
+      const reload: any = vi.fn();
+      const set: any = vi.fn((_values: unknown, callback: () => void) => callback());
+
+      Object.assign(dom.window, {
+        chrome: {
+          runtime: { reload },
+          storage: {
+            local: { set }
+          }
+        }
+      });
+
+      vm.createContext(dom.window);
+      vm.runInContext(script, dom.window);
+      vi.advanceTimersByTime(50);
+
+      expect(dom.window.document.getElementById('status')?.textContent).toBe('Configured: http://127.0.0.1:39527 (reloading)');
+      expect(reload).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows a clear status when the configuration link is incomplete', () => {
     const script = fs.readFileSync(configureScriptPath, 'utf8');
     const dom = new JSDOMWithOptions('<!doctype html><div id="status">Configuring...</div>', {

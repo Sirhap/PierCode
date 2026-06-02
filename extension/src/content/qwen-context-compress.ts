@@ -1,7 +1,7 @@
 // Qwen 上下文压缩模块
 // 触发条件: 可配置 tokens 阈值, 摘要限制可配置
 
-import { QwenCompressionConfig, DEFAULT_QWEN_MAX_CONTEXT_TOKENS, DEFAULT_QWEN_MAX_SUMMARY_TOKENS } from '../settings';
+import { QwenCompressionConfig, DEFAULT_QWEN_MAX_CONTEXT_TOKENS, DEFAULT_QWEN_MAX_SUMMARY_TOKENS } from './qwen-settings';
 
 const TOKEN_ESTIMATE_RATIO = 4; // 粗略: 1 token ≈ 4 chars (英文/代码)
 
@@ -10,6 +10,23 @@ export interface ConversationContext {
   totalChars: number;
   lastCompressedAt: number;
 }
+
+export interface PierCodeContextPacket {
+  attrs: Record<string, string>;
+  content: string;
+  raw: string;
+}
+
+export interface QwenCompressedContextHandoff {
+  version: number;
+  reason: 'compressed_context_handoff';
+  context: string;
+  instruction: string;
+}
+
+const CONTEXT_PACKET_RE = /<piercode_context_packet\b([^>]*)>([\s\S]*?)<\/piercode_context_packet>/i;
+const CONTEXT_PACKET_ATTR_RE = /([a-zA-Z_:][\w:.-]*)\s*=\s*"([^"]*)"/g;
+const CONTEXT_PACKET_FENCE_RE = /```piercode-context\s*\n([\s\S]*?)\n```/i;
 
 // 简单 token 估算 (基于字符数, 非精确但足够用于阈值判断)
 export function estimateTokens(text: string): number {
@@ -22,6 +39,109 @@ export function estimateTokens(text: string): number {
 
 export function estimateContextTokens(ctx: ConversationContext): number {
   return ctx.messages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0);
+}
+
+export function parsePierCodeContextPacket(text: string): PierCodeContextPacket | null {
+  const fenceMatch = text.match(CONTEXT_PACKET_FENCE_RE);
+  if (fenceMatch) {
+    const content = fenceMatch[1].trim();
+    const attrs: Record<string, string> = {};
+    try {
+      const packet = JSON.parse(content) as unknown;
+      if (!packet || typeof packet !== 'object' || Array.isArray(packet)) return null;
+      const packetObj = packet as Record<string, unknown>;
+      if (packetObj.version !== undefined) attrs.version = String(packetObj.version);
+      if (packetObj.reason !== undefined) attrs.reason = String(packetObj.reason);
+    } catch {
+      return null;
+    }
+    return {
+      attrs,
+      content,
+      raw: fenceMatch[0].trim(),
+    };
+  }
+
+  const match = text.match(CONTEXT_PACKET_RE);
+  if (!match) return null;
+
+  const attrs: Record<string, string> = {};
+  const rawAttrs = match[1] || '';
+  for (const attr of rawAttrs.matchAll(CONTEXT_PACKET_ATTR_RE)) {
+    attrs[attr[1]] = attr[2];
+  }
+
+  return {
+    attrs,
+    content: match[2].trim(),
+    raw: match[0].trim(),
+  };
+}
+
+export function formatPierCodeContextPacketPrompt(ctx: ConversationContext, config: QwenCompressionConfig): string {
+  const messageCount = ctx.messages.length;
+  const estimatedTokens = estimateContextTokens(ctx);
+  const lastUser = [...ctx.messages].reverse().find(m => m.role === 'user')?.content.trim();
+
+  return [
+    'PierCode 上下文即将达到上限。请压缩当前会话上下文，用于迁移到新的 Qwen 会话。',
+    '',
+    '必须严格遵守：',
+    '1. 只输出一个 Markdown fenced JSON block，语言名必须是 `piercode-context`；不要输出解释、寒暄或 Markdown 标题。',
+    '2. 不要输出 `piercode-tool`，不要调用任何工具，不要继续执行原任务。',
+    '3. JSON 内容要足够让新会话无缝继续：version、reason、目标、已完成、当前状态、关键文件/命令/测试、待办、约束、下一步。',
+    '4. 保留关键路径、错误信息、测试结果、用户明确偏好；删除重复日志和冗长工具输出。',
+    '',
+    `当前 PierCode 估算：${estimatedTokens} tokens / 阈值 ${config.maxContextTokens} tokens，消息数 ${messageCount}。`,
+    lastUser ? `最近用户输入摘要：${truncateToTokens(lastUser, 512)}` : '',
+    '',
+    '输出格式必须是：',
+    '```piercode-context',
+    '{',
+    '  "version": 1,',
+    '  "reason": "piercode_requested",',
+    '  "goal": "当前用户目标和成功标准",',
+    '  "completed": ["已经完成且有证据的事项"],',
+    '  "current_state": "当前会话/代码/浏览器状态",',
+    '  "key_files": ["关键文件绝对路径或仓库相对路径"],',
+    '  "evidence": ["关键命令、测试结果、浏览器观察结果"],',
+    '  "pending": ["下一步待办"],',
+    '  "constraints": ["用户偏好、安全约束、不能丢的上下文"],',
+    '  "next_action": "新会话接手后的第一步"',
+    '}',
+    '```',
+  ].filter(Boolean).join('\n');
+}
+
+// Packet handoff: 模型已输出成型的 ```piercode-context 围栏块，原样转发，
+// 不再二次套壳（避免把结构化字段压成 context 字段里的转义字符串）。
+// 仅用于"模型自压缩"路径；纯文本本地摘要走 formatQwenCompressedContextPrompt。
+export function formatPacketHandoffPrompt(packetRaw: string, initPrompt = ''): string {
+  return [
+    '请从下面的 PierCode 压缩上下文继续当前会话，按其中的 next_action / pending 接续执行。',
+    '',
+    packetRaw.trim(),
+    initPrompt.trim() ? '\n\n---\n' : '',
+    initPrompt.trim(),
+  ].filter(part => part !== '').join('\n');
+}
+
+export function formatQwenCompressedContextPrompt(summary: string, initPrompt = ''): string {
+  const contextPayload: QwenCompressedContextHandoff = {
+    version: 1,
+    reason: 'compressed_context_handoff',
+    context: summary.trim(),
+    instruction: '继续执行用户后续任务。'
+  };
+  return [
+    '请从下面的 PierCode 压缩上下文继续当前会话。',
+    '',
+    '```piercode-context',
+    JSON.stringify(contextPayload, null, 2),
+    '```',
+    initPrompt.trim() ? '\n\n---\n' : '',
+    initPrompt.trim(),
+  ].filter(part => part !== '').join('\n');
 }
 
 // 生成摘要: 保留系统提示和最近上下文, 输出顺序保持原会话顺序。

@@ -157,7 +157,17 @@ func (c *Controller) Evaluate(ctx context.Context, req tool.BrowserEvaluateReque
 	if err := c.ask(ctx, req.CallID, "执行页面 JavaScript", tab, truncate(req.Expression, 120), "JavaScript 可读取或修改页面状态，需确认后执行。"); err != nil {
 		return tool.BrowserEvaluateResponse{}, err
 	}
-	out, err := c.runtimeEvaluate(ctx, tab.TabID, evaluateExpression(req.Expression), true, defaultActionTimeout, true)
+	timeout := defaultActionTimeout
+	if req.TimeoutMS > 0 {
+		timeout = time.Duration(req.TimeoutMS) * time.Millisecond
+		if timeout < defaultActionTimeout {
+			timeout = defaultActionTimeout
+		}
+		if timeout > 3*time.Minute {
+			timeout = 3 * time.Minute
+		}
+	}
+	out, err := c.runtimeEvaluate(ctx, tab.TabID, evaluateExpression(req.Expression), true, timeout, true)
 	if err != nil {
 		return tool.BrowserEvaluateResponse{}, err
 	}

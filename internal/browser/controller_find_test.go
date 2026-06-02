@@ -633,6 +633,54 @@ func TestReadNetworkFormatsStatusTextAndDuration(t *testing.T) {
 	}
 }
 
+func TestCookiesRequiresApprovalBeforeRelayCommand(t *testing.T) {
+	var commandSent bool
+	var relay *RelayManager
+	relay = NewRelayManager(func(payload []byte) bool {
+		commandSent = true
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"cookies":[],"count":0,"total":0,"includeValue":true}`)})
+		return true
+	})
+
+	var controller *Controller
+	var askSeen ApprovalAsk
+	controller = NewController(relay, func(payload []byte) {
+		var ask ApprovalAsk
+		if err := json.Unmarshal(payload, &ask); err != nil {
+			t.Fatalf("invalid approval payload: %v", err)
+		}
+		if ask.Type != "browser_approval_ask" {
+			return
+		}
+		askSeen = ask
+		go controller.DeliverApproval(ApprovalAnswer{ApprovalID: ask.ApprovalID, Approved: false, Reason: "no cookies"})
+	})
+
+	_, err := controller.Cookies(context.Background(), tool.BrowserCookiesRequest{
+		URL:          "https://example.com",
+		IncludeValue: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no cookies") {
+		t.Fatalf("expected approval rejection, got %v", err)
+	}
+	if commandSent {
+		t.Fatal("cookies command should not be sent before approval")
+	}
+	if askSeen.Action != "read browser cookies" {
+		t.Fatalf("unexpected approval action: %q", askSeen.Action)
+	}
+	if !strings.Contains(askSeen.Target, "https://example.com") {
+		t.Fatalf("approval target should include requested scope, got %q", askSeen.Target)
+	}
+	if !strings.Contains(askSeen.Risk, "values") {
+		t.Fatalf("approval risk should mention cookie values, got %q", askSeen.Risk)
+	}
+}
+
 func TestZoomRespectsOutputDir(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 109, URL: "https://example.com", Title: "Zoom OutputDir"}
 	var relay *RelayManager

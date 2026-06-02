@@ -17,7 +17,7 @@ func TestToolConcurrencyPolicy(t *testing.T) {
 	}
 
 	for _, name := range []string{"write_file", "edit", "exec_cmd", "todo_write", "unknown_tool", "",
-		"browser_storage", "browser_set_cookie", "browser_emulate", "browser_wait_for_navigation"} {
+		"browser_storage", "browser_cookies", "browser_set_cookie", "browser_emulate", "browser_wait_for_navigation"} {
 		if isReadOnlyTool(name) {
 			t.Fatalf("expected %s to require exclusive lock", name)
 		}

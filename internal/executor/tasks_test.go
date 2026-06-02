@@ -449,3 +449,46 @@ func TestNewTaskManagerGCGoroutineStops(t *testing.T) {
 	}
 	t.Fatalf("gc goroutines leaked: before=%d after=%d", before, runtime.NumGoroutine())
 }
+
+func TestTaskManagerStartCloseRaceDoesNotLeaveRunningTasks(t *testing.T) {
+	skipOnWindows(t)
+
+	for i := 0; i < 50; i++ {
+		tm := NewTaskManager()
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = tm.Start(tool.TaskSpec{
+				Command: "sleep 30",
+				Dir:     t.TempDir(),
+				Timeout: 5 * time.Second,
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			tm.Close()
+		}()
+		wg.Wait()
+
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			running := false
+			for _, summary := range tm.List() {
+				if summary.Status == string(TaskRunning) {
+					running = true
+					break
+				}
+			}
+			if !running {
+				break
+			}
+			if time.Now().After(deadline) {
+				tm.Close()
+				t.Fatalf("task escaped Close in iteration %d: %+v", i, tm.List())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		tm.Close()
+	}
+}

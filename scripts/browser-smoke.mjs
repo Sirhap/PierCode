@@ -5,6 +5,18 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 
+const allowIsolatedChromeSmoke = process.env.PIERCODE_ALLOW_ISOLATED_CHROME_SMOKE === '1' || process.env.CI === 'true';
+if (!allowIsolatedChromeSmoke) {
+  throw new Error([
+    'scripts/browser-smoke.mjs starts a fresh isolated Chrome profile and loads extension/dist.',
+    'It does not test the real user Chrome profile or the already-installed PierCode extension.',
+    'For real installed-extension verification, run scripts/browser-live-smoke.mjs after configuring the installed extension.',
+    'Set PIERCODE_ALLOW_ISOLATED_CHROME_SMOKE=1 only when you intentionally want the isolated CI-style smoke.',
+  ].join(' '));
+}
+
+console.warn('browser-smoke: using an isolated Chrome profile; this is not a real installed-extension test.');
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const smokeDir = join(repoRoot, '.piercode', 'smoke');
 const extensionDir = join(repoRoot, 'extension', 'dist');
@@ -53,6 +65,17 @@ const pageServer = createServer((req, res) => {
     res.end('PierCode browser smoke download\n');
     return;
   }
+  if (req.url === '/second') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(`<!doctype html>
+<meta charset="utf-8">
+<title>PierCode browser smoke second</title>
+<main>
+  <h1>Second smoke page</h1>
+  <p id="secondStatus">ready</p>
+</main>`);
+    return;
+  }
   if (req.url !== '/') {
     res.writeHead(404).end('not found');
     return;
@@ -76,19 +99,23 @@ const pageServer = createServer((req, res) => {
   }
   #dragSource { background: #dbeafe; cursor: grab; }
   #dropTarget { background: #dcfce7; }
+  #attributeTarget { color: rgb(37, 99, 235); margin-top: 12px; padding: 6px; }
 </style>
 <main>
   <h1>PierCode browser smoke report</h1>
   <label>Upload receipt <input id="file" type="file"></label>
   <button id="alertButton" onclick="alert('piercode smoke alert')">Show alert</button>
   <a id="downloadLink" href="/download" download>Download report</a>
+  <a id="secondLink" href="/second">Open second page</a>
   <div id="dragSource">Drag invoice</div>
   <div id="dropTarget">Drop approved</div>
   <p id="fileStatus">empty</p>
   <p id="dragStatus">not dropped</p>
   <p id="viewportStatus">viewport unknown</p>
+  <p id="attributeTarget" data-state="ready" aria-label="Attribute probe">Attribute probe</p>
 </main>
 <script>
+  document.cookie = 'piercode_smoke_cookie=ready; SameSite=Lax';
   document.getElementById('file').addEventListener('change', event => {
     const files = Array.from(event.target.files || []);
     document.getElementById('fileStatus').textContent = files.map(file => file.name + ':' + file.size).join(',');
@@ -143,10 +170,18 @@ try {
   const worker = await waitForExtensionWorker(debugPort);
   const extensionId = String(worker.url || '').match(/^chrome-extension:\/\/([^/]+)\//)?.[1];
   if (!extensionId) throw new Error(`could not determine extension id from ${worker.url}`);
-  await configureExtensionWorker(worker.webSocketDebuggerUrl, `http://127.0.0.1:${serverPort}`, token);
+  const configureURL = `chrome-extension://${extensionId}/configure.html?apiUrl=${encodeURIComponent(`http://127.0.0.1:${serverPort}`)}&token=${encodeURIComponent(token)}`;
+  try {
+    const configurePage = await openExtensionPage(debugPort, configureURL);
+    await waitForExtensionConfigured(configurePage.webSocketDebuggerUrl);
+  } catch (error) {
+    console.warn(`browser-smoke: configure page failed (${error.message || error}); configuring extension worker directly.`);
+    await configureExtensionWorker(worker.webSocketDebuggerUrl, `http://127.0.0.1:${serverPort}`, token);
+  }
   await waitForStats(serverPort, token, stats => Number(stats.browser_relays || 0) > 0);
 
   const pageURL = `http://127.0.0.1:${pagePort}/`;
+  const secondURL = `http://127.0.0.1:${pagePort}/second`;
   await execTool(serverPort, token, 'browser_new_tab', { url: pageURL });
   await execTool(serverPort, token, 'browser_wait', { selector: '#file', state: 'attached', timeout: 10 });
 
@@ -174,6 +209,121 @@ try {
     throw new Error(`PDF was not written or is too small: ${pdfOutput}`);
   }
 
+  const storageSet = await execTool(serverPort, token, 'browser_storage', {
+    action: 'set',
+    storage: 'local',
+    key: 'piercode_smoke_storage',
+    value: 'stored-value',
+  });
+  const storageGet = await execTool(serverPort, token, 'browser_storage', {
+    action: 'get',
+    storage: 'local',
+    key: 'piercode_smoke_storage',
+  });
+  if (!String(storageGet.output || '').includes('stored-value')) {
+    throw new Error(`localStorage get did not include stored value: ${JSON.stringify(storageGet)}`);
+  }
+  const storageKeys = await execTool(serverPort, token, 'browser_storage', {
+    action: 'keys',
+    storage: 'local',
+  });
+  if (!String(storageKeys.output || '').includes('piercode_smoke_storage')) {
+    throw new Error(`localStorage keys did not include test key: ${JSON.stringify(storageKeys)}`);
+  }
+  const storageRemove = await execTool(serverPort, token, 'browser_storage', {
+    action: 'remove',
+    storage: 'local',
+    key: 'piercode_smoke_storage',
+  });
+  const storageRemoved = await execTool(serverPort, token, 'browser_storage', {
+    action: 'get',
+    storage: 'local',
+    key: 'piercode_smoke_storage',
+  });
+  if (!String(storageRemoved.output || '').includes('(null)')) {
+    throw new Error(`localStorage remove did not clear value: ${JSON.stringify(storageRemoved)}`);
+  }
+  const sessionSet = await execTool(serverPort, token, 'browser_storage', {
+    action: 'set',
+    storage: 'session',
+    key: 'piercode_smoke_session',
+    value: 'session-value',
+  });
+  const sessionClear = await execTool(serverPort, token, 'browser_storage', {
+    action: 'clear',
+    storage: 'session',
+  });
+
+  const setCookie = await execTool(serverPort, token, 'browser_set_cookie', {
+    action: 'set',
+    url: pageURL,
+    name: 'piercode_smoke_set_cookie',
+    value: 'native-value',
+    sameSite: 'lax',
+  });
+  const setCookieRead = await execTool(serverPort, token, 'browser_cookies', { url: pageURL, includeValue: true, limit: 20 });
+  if (!String(setCookieRead.output || '').includes('piercode_smoke_set_cookie=native-value')) {
+    throw new Error(`newly set cookie was not readable: ${JSON.stringify(setCookieRead)}`);
+  }
+  const deleteCookie = await execTool(serverPort, token, 'browser_set_cookie', {
+    action: 'delete',
+    url: pageURL,
+    name: 'piercode_smoke_set_cookie',
+  });
+  const deletedCookieRead = await execTool(serverPort, token, 'browser_cookies', { url: pageURL, includeValue: true, limit: 20 });
+  if (String(deletedCookieRead.output || '').includes('piercode_smoke_set_cookie=native-value')) {
+    throw new Error(`deleted cookie was still readable: ${JSON.stringify(deletedCookieRead)}`);
+  }
+
+  const attributes = await execTool(serverPort, token, 'browser_get_attributes', {
+    selector: '#attributeTarget',
+    attributes: ['id', 'data-state', 'aria-label', 'missing-attribute'],
+    styles: ['color', 'margin-top'],
+  });
+  const attributesOutput = String(attributes.output || '');
+  if (!attributesOutput.includes('"data-state":"ready"') ||
+      !attributesOutput.includes('"missing-attribute":null') ||
+      !attributesOutput.includes('"color":"rgb(37, 99, 235)"')) {
+    throw new Error(`attributes output missed expected values: ${JSON.stringify(attributes)}`);
+  }
+
+  const emulate = await execTool(serverPort, token, 'browser_emulate', {
+    userAgent: 'PierCodeSmoke/1.0',
+    deviceScaleFactor: 2,
+    mobile: true,
+    colorScheme: 'dark',
+    timezone: 'America/New_York',
+  });
+  const emulatedState = await execTool(serverPort, token, 'browser_evaluate', {
+    expression: "JSON.stringify({ ua: navigator.userAgent, dpr: window.devicePixelRatio, dark: matchMedia('(prefers-color-scheme: dark)').matches, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })",
+  });
+  const emulatedOutput = String(emulatedState.output || '');
+  if (!emulatedOutput.includes('PierCodeSmoke/1.0') ||
+      !emulatedOutput.includes('"dpr":2') ||
+      !emulatedOutput.includes('"dark":true') ||
+      !emulatedOutput.includes('"timezone":"America/New_York"')) {
+    throw new Error(`emulated state did not include expected overrides: ${JSON.stringify(emulatedState)}`);
+  }
+  const emulateReset = await execTool(serverPort, token, 'browser_emulate', { reset: true });
+  const resetState = await execTool(serverPort, token, 'browser_evaluate', {
+    expression: 'navigator.userAgent',
+  });
+  if (String(resetState.output || '').includes('PierCodeSmoke/1.0')) {
+    throw new Error(`emulation reset did not clear UA override: ${JSON.stringify(resetState)}`);
+  }
+
+  await execTool(serverPort, token, 'browser_click', { selector: '#secondLink' });
+  const navigationWait = await execTool(serverPort, token, 'browser_wait_for_navigation', {
+    urlPattern: '/second',
+    waitUntil: 'load',
+    timeout: 10,
+  });
+  if (!String(navigationWait.output || '').includes('/second')) {
+    throw new Error(`wait_for_navigation did not report second page URL: ${JSON.stringify(navigationWait)}`);
+  }
+  await execTool(serverPort, token, 'browser_navigate', { url: pageURL });
+  await execTool(serverPort, token, 'browser_wait', { selector: '#downloadLink', state: 'visible', timeout: 10 });
+
   await execTool(serverPort, token, 'browser_click', { selector: '#downloadLink' });
   const downloads = await execTool(serverPort, token, 'browser_downloads', { state: 'complete', limit: 10 });
   if (!String(downloads.output || '').includes('piercode-smoke-report.txt')) {
@@ -196,6 +346,23 @@ try {
     drag: drag.output,
     dragStatus: dragStatus.output,
     pdf: pdf.output,
+    storageSet: storageSet.output,
+    storageGet: storageGet.output,
+    storageKeys: storageKeys.output,
+    storageRemove: storageRemove.output,
+    storageRemoved: storageRemoved.output,
+    sessionSet: sessionSet.output,
+    sessionClear: sessionClear.output,
+    setCookie: setCookie.output,
+    setCookieRead: setCookieRead.output,
+    deleteCookie: deleteCookie.output,
+    deletedCookieRead: deletedCookieRead.output,
+    attributes: attributes.output,
+    emulate: emulate.output,
+    emulatedState: emulatedState.output,
+    emulateReset: emulateReset.output,
+    resetState: resetState.output,
+    navigationWait: navigationWait.output,
     downloads: downloads.output,
     dialog: dialog.output,
   }, null, 2));
@@ -284,7 +451,7 @@ async function waitForExtensionWorker(debugPort) {
       last = await response.json();
       const worker = last.find(target =>
         target.type === 'service_worker' &&
-        /^chrome-extension:\/\/[^/]+\/(?:background|service_worker)\.js$/.test(String(target.url || ''))
+        /^chrome-extension:\/\/[^/]+\/background\.js$/.test(String(target.url || ''))
       );
       if (worker && worker.webSocketDebuggerUrl) return worker;
     } catch {}
@@ -296,20 +463,25 @@ async function waitForExtensionWorker(debugPort) {
 async function openExtensionPage(debugPort, url) {
   let created = null;
   try {
-    const response = await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`, { method: 'PUT' });
+    const response = await fetch(`http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' });
     created = await response.json().catch(() => null);
   } catch {
-    const response = await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`).catch(() => null);
+    const response = await fetch(`http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent(url)}`).catch(() => null);
     created = response ? await response.json().catch(() => null) : null;
   }
   if (created?.webSocketDebuggerUrl) {
-    const ws = new WebSocket(created.webSocketDebuggerUrl);
-    await waitForOpen(ws);
-    try {
-      await cdpSend(ws, 'Page.enable');
-      await cdpSend(ws, 'Page.navigate', { url });
-    } finally {
-      ws.close();
+    if (sameURLIgnoringEncoding(created.url, url)) {
+      return created;
+    }
+    if (String(created.url || '') === 'about:blank') {
+      const ws = new WebSocket(created.webSocketDebuggerUrl);
+      await waitForOpen(ws);
+      try {
+        await cdpSend(ws, 'Page.enable');
+        await cdpSend(ws, 'Page.navigate', { url });
+      } finally {
+        ws.close();
+      }
     }
   }
   const deadline = Date.now() + 10000;

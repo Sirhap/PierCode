@@ -189,6 +189,12 @@ type patchOp struct {
 type patchHunk struct {
 	oldLines []string
 	newLines []string
+	lines    []patchLine
+}
+
+type patchLine struct {
+	prefix byte
+	text   string
 }
 
 type patchPlan struct {
@@ -298,6 +304,7 @@ func parseUpdateFile(lines []string, start int) (patchOp, int, error) {
 
 func parseHunk(lines []string, start int) (patchHunk, int, error) {
 	var oldLines, newLines []string
+	var hunkLines []patchLine
 	i := start
 	for i < len(lines) {
 		line := lines[i]
@@ -309,6 +316,10 @@ func parseHunk(lines []string, start int) (patchHunk, int, error) {
 			continue
 		}
 		if line == "" {
+			if i+1 >= len(lines) || strings.HasPrefix(lines[i+1], "*** ") ||
+				strings.TrimSpace(lines[i+1]) == "@@" || strings.HasPrefix(lines[i+1], "@@ ") {
+				break
+			}
 			return patchHunk{}, start, fmt.Errorf("hunk line %d is empty; use a leading space for blank context lines", i+1)
 		}
 		prefix := line[0]
@@ -324,12 +335,13 @@ func parseHunk(lines []string, start int) (patchHunk, int, error) {
 		default:
 			return patchHunk{}, start, fmt.Errorf("hunk line %d must start with space, -, or +", i+1)
 		}
+		hunkLines = append(hunkLines, patchLine{prefix: prefix, text: text})
 		i++
 	}
 	if len(oldLines) == 0 {
 		return patchHunk{}, start, fmt.Errorf("hunk starting at line %d has no context or removed lines", start+1)
 	}
-	return patchHunk{oldLines: oldLines, newLines: newLines}, i, nil
+	return patchHunk{oldLines: oldLines, newLines: newLines, lines: hunkLines}, i, nil
 }
 
 // lineStyle records how a file's lines should be re-joined: whether it ended
@@ -546,6 +558,7 @@ func applyPatchHunk(content string, hunk patchHunk) (string, int, int, error) {
 
 	lines, style := splitContentLines(content)
 	idx, count := findLineRun(lines, hunk.oldLines)
+	fuzzyMatch := false
 	if count == 0 {
 		// Exact whole-line match failed. Fall back to comparing lines with
 		// leading/trailing whitespace trimmed, which absorbs indentation
@@ -554,6 +567,7 @@ func applyPatchHunk(content string, hunk patchHunk) (string, int, int, error) {
 		tIdx, tCount := findLineRunTrimmed(lines, hunk.oldLines)
 		if tCount == 1 {
 			idx = tIdx
+			fuzzyMatch = true
 		} else {
 			return "", 0, 0, errors.New("hunk context not found")
 		}
@@ -561,12 +575,40 @@ func applyPatchHunk(content string, hunk patchHunk) (string, int, int, error) {
 		return "", 0, 0, errors.New("hunk context is ambiguous; add more surrounding context")
 	}
 
+	newLines := hunk.newLines
+	if fuzzyMatch {
+		newLines = materializeFuzzyHunkNewLines(lines[idx:idx+len(hunk.oldLines)], hunk)
+	}
 	updated := make([]string, 0, len(lines)-len(hunk.oldLines)+len(hunk.newLines))
 	updated = append(updated, lines[:idx]...)
-	updated = append(updated, hunk.newLines...)
+	updated = append(updated, newLines...)
 	updated = append(updated, lines[idx+len(hunk.oldLines):]...)
 
-	return joinContentLines(updated, style), len(hunk.oldLines), len(hunk.newLines), nil
+	return joinContentLines(updated, style), len(hunk.oldLines), len(newLines), nil
+}
+
+func materializeFuzzyHunkNewLines(matchedOldLines []string, hunk patchHunk) []string {
+	if len(hunk.lines) == 0 {
+		return hunk.newLines
+	}
+	out := make([]string, 0, len(hunk.newLines))
+	oldIdx := 0
+	for _, line := range hunk.lines {
+		switch line.prefix {
+		case ' ':
+			if oldIdx < len(matchedOldLines) {
+				out = append(out, matchedOldLines[oldIdx])
+			} else {
+				out = append(out, line.text)
+			}
+			oldIdx++
+		case '-':
+			oldIdx++
+		case '+':
+			out = append(out, line.text)
+		}
+	}
+	return out
 }
 
 // findLineRun returns the start index of the first occurrence of run within

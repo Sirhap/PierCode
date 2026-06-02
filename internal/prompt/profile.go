@@ -1,12 +1,15 @@
 package prompt
 
 import (
+	"bytes"
 	"strings"
 
 	"github.com/sirhap/piercode/internal/skill"
 	"github.com/sirhap/piercode/internal/tool"
 	"github.com/sirhap/piercode/prompts"
 )
+
+const skillsPlaceholder = "{{SKILLS}}"
 
 const DefaultProfileID = "default"
 
@@ -22,6 +25,12 @@ type Profile struct {
 	PromptAppend []byte
 	ToolNames    []string
 	SkillNames   []string
+	// ContextHandoff, when non-empty, is appended to every AI-originated tool
+	// result for this profile (e.g. Qwen's context-packet migration prompt).
+	// Empty means the profile declares no per-call handoff guidance. Keeping it
+	// on the profile lets new adapters opt in by registration instead of adding
+	// a hardcoded platform check in the executor.
+	ContextHandoff string
 }
 
 type ProfileRegistry struct {
@@ -41,8 +50,9 @@ func DefaultProfileRegistry(defaultPrompt []byte) *ProfileRegistry {
 	// trusted embedded prompt bytes, not files from the writable workspace.
 	registry := NewProfileRegistry(defaultPrompt)
 	registry.Register(Profile{
-		ID:           "qwen",
-		PromptAppend: prompts.QwenPromptAppend,
+		ID:             "qwen",
+		PromptAppend:   prompts.QwenPromptAppend,
+		ContextHandoff: qwenContextPacketReminder,
 	})
 	return registry
 }
@@ -119,20 +129,35 @@ func (p Profile) FilterSkills(skills []skill.Info) []skill.Info {
 	return filtered
 }
 
+// AppendSkillsDoc injects the dynamic skills list. If the template contains the
+// {{SKILLS}} placeholder, the list is substituted in place so it sits next to
+// the Skills guidance. Otherwise it is appended at the end (back-compat for
+// templates without the placeholder).
 func AppendSkillsDoc(content []byte, skills []skill.Info) []byte {
+	if bytes.Contains(content, []byte(skillsPlaceholder)) {
+		return bytes.ReplaceAll(content, []byte(skillsPlaceholder), []byte(buildSkillsList(skills)))
+	}
 	if len(skills) == 0 {
 		return content
 	}
+	return append(content, []byte("\n\n## 当前可用 Skills\n\n"+buildSkillsList(skills))...)
+}
+
+func buildSkillsList(skills []skill.Info) string {
+	if len(skills) == 0 {
+		return "（当前会话没有可用 skills。）"
+	}
 	var sb strings.Builder
-	sb.WriteString("\n\n## 当前可用 Skills\n\n")
-	for _, sk := range skills {
+	for i, sk := range skills {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
 		sb.WriteString("- **")
 		sb.WriteString(sk.Name)
 		sb.WriteString("**: ")
 		sb.WriteString(sk.Description)
-		sb.WriteString("\n")
 	}
-	return append(content, []byte(sb.String())...)
+	return sb.String()
 }
 
 func allowedNameSet(names []string) map[string]struct{} {

@@ -271,6 +271,7 @@ type BrowserEvaluateRequest struct {
 	Expression    string
 	ReturnByValue bool
 	CallID        string
+	TimeoutMS     int
 }
 
 type BrowserEvaluateResponse struct {

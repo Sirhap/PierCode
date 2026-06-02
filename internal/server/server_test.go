@@ -482,6 +482,11 @@ func TestHandlePrompt(t *testing.T) {
 			!bytes.Contains(body, []byte("Do not invoke functions")) {
 			t.Errorf("expected qwen profile to force visible markdown instead of host-native calls")
 		}
+		if !bytes.Contains(body, []byte("PierCode Context Packet Handoff")) ||
+			!bytes.Contains(body, []byte("```piercode-context")) ||
+			!bytes.Contains(body, []byte("\"reason\": \"model_initiated\"")) {
+			t.Errorf("expected qwen profile to include context packet handoff protocol")
+		}
 	})
 
 	t.Run("default prompt fallback renders placeholders", func(t *testing.T) {

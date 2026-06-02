@@ -18,6 +18,7 @@ import (
 type Executor struct {
 	config    *types.Config
 	registry  *tool.Registry
+	profiles  *prompt.ProfileRegistry
 	callCount atomic.Int64
 	toolMu    sync.RWMutex
 	// logger is read from Execute on every tool call (potentially many
@@ -81,6 +82,7 @@ func New(config *types.Config) *Executor {
 	e := &Executor{
 		config:   config,
 		registry: tool.NewRegistry(),
+		profiles: prompt.DefaultProfileRegistry(config.DefaultPrompt),
 		tasks:    NewTaskManager(),
 	}
 	e.registry.Register(tool.NewExecCmdTool(config))
@@ -259,31 +261,19 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	return resp
 }
 
-const (
-	fullPromptReinjectEvery = 20
-	taskCheckpointEvery     = 5
-)
-
-const operatingReminder = "\n\n[系统提示] 继续以 PierCode 身份执行：工具调用必须使用可见的 `piercode-tool` fenced JSON；所有文件操作保持在当前工作目录/sandbox 内；需要更细规则时加载匹配的 `piercode-*` skill；完成前用测试或明确证据验证。"
-
-const taskCheckpointReminder = "\n\n[任务状态快照提示] 如果当前任务已跨多步或上下文变长，请在下一次回复中简短保留：目标、已完成事项、已改文件、验证结果、下一步/阻塞；必要时用 `todo_write`/`todo_read` 同步待办。"
+// ResolveProfile returns the prompt profile for the given adapter/profile id
+// from the executor's shared registry. The /prompt route and the periodic
+// re-injection then render from the same profile surface.
+func (e *Executor) ResolveProfile(id string) prompt.Profile {
+	return e.profiles.Select(id)
+}
 
 func (e *Executor) appendPromptGuidance(resp *types.ToolResponse, n int64, profileID string) {
-	if n%fullPromptReinjectEvery == 0 {
+	profile := e.profiles.Select(profileID)
+	resp.Output += profile.GuidanceFor(n, func() []byte {
 		rootDir := e.config.GetRootDir()
-		profile := prompt.DefaultProfileRegistry(e.config.DefaultPrompt).Select(profileID)
-		if len(profile.Prompt) > 0 {
-			rendered := profile.Render(rootDir, e.ListTools(), skill.LoadInfos(rootDir))
-			resp.Output += "\n\n[系统重新注入提示词]\n" + string(rendered)
-		} else {
-			resp.Output += operatingReminder
-		}
-	} else {
-		resp.Output += operatingReminder
-	}
-	if n%taskCheckpointEvery == 0 {
-		resp.Output += taskCheckpointReminder
-	}
+		return profile.Render(rootDir, e.ListTools(), skill.LoadInfos(rootDir))
+	})
 }
 
 func (e *Executor) ListTools() []tool.ToolInfo {
@@ -321,7 +311,7 @@ func isReadOnlyTool(name string) bool {
 	case "read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question", "tool_help",
 		"todo_read", "task_list", "task_output", "browser_tabs", "browser_snapshot",
 		"browser_screenshot", "browser_wait", "browser_wait_for_function", "browser_get_content",
-		"browser_pdf", "browser_cookies", "browser_console", "browser_network",
+		"browser_pdf", "browser_console", "browser_network",
 		"browser_find", "browser_get_attributes":
 		return true
 	default:

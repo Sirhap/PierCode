@@ -64,6 +64,19 @@ go run ./cmd/server -dir .
 PIERCODE_API_URL=http://127.0.0.1:<port> PIERCODE_TOKEN=<token> node scripts/browser-live-smoke.mjs
 ```
 
+新增浏览器工具、真实用户插件、真实 Chrome relay 的验收必须使用 `scripts/browser-live-smoke.mjs`。`scripts/browser-smoke.mjs` 会新开隔离 Chrome profile 并加载 `extension/dist`，只用于 CI/回归辅助；手动运行时必须显式设置 `PIERCODE_ALLOW_ISOLATED_CHROME_SMOKE=1`，且不得把它的结果记为“真实 Chrome/已安装扩展通过”。
+
+Qwen 上下文压缩端到端脚本：
+
+```bash
+PIERCODE_API_URL=http://127.0.0.1:<port> \
+PIERCODE_TOKEN=<token> \
+PIERCODE_EXTENSION_ID=<installed-piercode-extension-id> \
+node scripts/qwen-context-e2e.mjs
+```
+
+该脚本使用真实 Chrome、真实已登录 Qwen、已安装 PierCode 扩展，不启动隔离 Chrome profile。脚本会通过 `configure.html` 自动写入临时 `qwenCompressionConfig.maxContextTokens=1` 和 `qwenE2EBridgeEnabled=true`，跑完后恢复为 `1000000` 并关闭 E2E bridge。E2E bridge 默认关闭，仅用于测试时把页面侧 `postMessage` 路由到 content script 内部稳定的 `fillAndSend`。
+
 执行前必须：
 
 1. 在用户已打开的 Chrome 中刷新 PierCode 扩展。
@@ -141,6 +154,53 @@ PIERCODE_API_URL=http://127.0.0.1:<port> PIERCODE_TOKEN=<token> node scripts/bro
 | `browser_finalize_tabs` | 清理测试创建的 tab | 关闭 PierCode 创建 tab，不误关用户 tab |
 
 ## 真实 Chrome 用户场景测试
+
+### 2026-06-02 真实 Chrome E2E 记录
+
+环境：
+
+- 后端：`go run ./cmd/server -dir . -port 63643 -token piercode-e2e-2026-fixed-token-abcdef1234567890`
+- PierCode 扩展：真实 Chrome 已安装未打包扩展 `lolcioebooncpbcgfdkcpolcihcdhcfl`，来源 `extension/dist`
+- Qwen 页面：`https://chat.qwen.ai/`
+- `/stats`：`{"browser_clients":2,"browser_providers":{"Extension":1,"Qwen":1},"browser_relays":1,"tasks_running":0,"tasks_total":0}`
+
+通过项：
+
+- 真实 Chrome 重载 PierCode 扩展后，Qwen 页面日志出现 `[PierCode] 使用 qwen 平台适配器` 和 `✅ WebSocket 已连接`。
+- 临时把 Qwen 压缩阈值设为 `1` 后，真实 Qwen 会话触发上下文压缩。
+- Qwen 未在 60 秒内输出上下文 packet，PierCode 按预期走本地摘要兜底并打开新会话：`https://chat.qwen.ai/c/910db97e-54c1-4882-a928-7de432ad3843`。
+- 新会话应包含 `piercode-context` fenced JSON handoff，说明压缩上下文已迁移。
+- 恢复正式阈值 `1_000_000`、重载扩展并刷新压缩后会话后，要求 Qwen 输出可见 `piercode-tool` 调用：
+  - `call_id`: `post_compress_list_dir_1780381790205`
+  - `name`: `list_dir`
+  - `args.path`: `.`
+- PierCode 在压缩后会话中提取到工具调用，页面显示 `✅ 已执行`，结果包含 `.git/`、`README.md`、`cmd/`、`docs/`、`extension/`、`internal/`、`prompts/`、`scripts/`。
+- 2026-06-02 15:03 CST 复跑压缩上下文端到端：
+  - `/stats`：`{"browser_clients":3,"browser_providers":{"Extension":1,"Qwen":2},"browser_relays":1,"tasks_running":0,"tasks_total":0}`
+  - 临时阈值 `1` 触发压缩，旧会话 `https://chat.qwen.ai/c/fb2b2101-60ef-4774-a247-6842f887646e` 显示 `上下文已本地压缩，并已发送到新的 Qwen 会话`。
+  - 新会话 `https://chat.qwen.ai/c/570ccbf1-92a3-466c-98fe-2203cf8aef46` 收到 handoff 并回复 `我已收到压缩的上下文包并继续会话`，页面正文未出现 `<compressed_context>`。
+  - 压缩后会话工具调用通过，`call_id` 为 `post_compress_list_dir_1780441420`，页面显示 `✅ 已执行`，结果包含 `README.md`、`cmd/`、`docs/`、`extension/`、`internal/`、`prompts/`、`scripts/`。
+- 2026-06-02 15:25 CST 自动化脚本验证：
+  - 新增 `scripts/qwen-context-e2e.mjs`，覆盖真实 relay、配置页自动写入低阈值、Qwen 压缩触发、新会话无 XML wrapper、post-compress 工具调用验证。
+  - 脚本多轮跑通到 `wait for local compression handoff`、`select newest Qwen handoff tab`、`verify compressed context response has no XML wrapper`。
+  - 发现真实 Qwen 输入自动化仍有波动：`textarea.message-input-textarea` 在部分新首页状态可被工具设置但未实际提交，导致后续等待 handoff 超时。已补 `qwenE2EBridgeEnabled` 测试入口，让脚本可复用 content script 内部稳定 `fillAndSend`；真实 Chrome 需重载安装的 PierCode 扩展后再跑完整脚本。
+- 真实 Chrome live smoke 通过，测试页 `http://127.0.0.1:61692/`，覆盖新增工具：
+  - `browser_storage`: `localStorage/sessionStorage` set/get/keys/remove/clear 均通过。
+  - `browser_set_cookie`: 本地测试 cookie 写入、读取、删除均通过，审批完成通知可见。
+  - `browser_wait_for_navigation`: 点击链接后等待 `/second` 导航完成，再返回报告页通过。
+  - `browser_emulate`: UA、DPR、dark mode、timezone 生效，reset 后 UA 恢复。
+  - `browser_get_attributes`: 读取 `#attributeTarget` 属性和 computed style 成功。
+  - 审批统计：`asked=38`、`approved=37`、`rejected=1`、`done=38`、`mismatches=[]`。
+
+问题和优化点：
+
+- 模型没有在压缩请求后按协议输出 packet，实际使用本地摘要兜底。后续要继续调试提示词，使模型主动压缩时输出：
+  - 一个 Markdown fenced JSON block，语言名 `piercode-context`
+  - `version`、`reason` 和上下文字段都放进 JSON 对象
+  - 不输出 XML-like wrapper，不输出 `piercode-tool`
+- 真实 Qwen 标签很多时，自动化接管可能命中旧会话；记录和复跑时必须使用明确 URL 或新开指定会话 URL。
+- 临时测试阈值只能用于触发压缩，完成迁移后必须恢复 `DEFAULT_QWEN_MAX_CONTEXT_TOKENS = 1_000_000` 并重载扩展，避免新会话循环压缩。
+- `content.js` 必须保持 MV3 classic content script，不能因为共享 chunk 生成顶层 `import`。`extension/src/__tests__/content-build.test.ts` 已覆盖该回归。
 
 ### 场景 A：本地业务审批页面全工具链
 

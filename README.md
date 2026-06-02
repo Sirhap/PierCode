@@ -124,7 +124,7 @@ go build -o piercode.exe ./cmd/server
 | `browser_navigate` / `browser_snapshot` | 导航受控标签页并读取可访问性树快照；页面理解优先使用 snapshot refs |
 | `browser_click` / `browser_type` | 经用户确认后点击或输入；操作后旧 snapshot refs 视为失效 |
 | `browser_screenshot` | 截取受控标签页截图并保存到工作区 `.piercode/screenshots` |
-| `browser_cookies` / `browser_set_cookie` | 读取 Cookie（只读）；写入或删除 Cookie 需用户审批，目标域须在扩展 host 权限内 |
+| `browser_cookies` / `browser_set_cookie` | 读取、写入或删除 Cookie 均需用户审批，目标域须在扩展 host 权限内 |
 | `browser_storage` | 读写 localStorage / sessionStorage（get/set/remove/clear/keys） |
 | `browser_emulate` | 模拟设备与环境：UA、设备像素比、移动端、配色方案、时区、地理位置；`reset=true` 清除 |
 | `browser_wait_for_navigation` | 等待受控标签页导航完成并匹配 URL，配合触发跳转的点击使用 |
@@ -161,7 +161,7 @@ PierCode 可以通过 Chrome 扩展的 background service worker 使用 `chrome.
 - `browser_click`、`browser_type`、`browser_upload`、`browser_evaluate` 等会改变页面或读取/执行页面脚本的工具会弹出确认面板，用户拒绝时工具失败；扩展 popup 可开启“自动审批浏览器操作”来自动允许这些浏览器审批；点击、输入、上传、导航后旧 snapshot refs 视为失效，需要重新 snapshot。
 - `browser_screenshot` 只在视觉布局、图片、图表或渲染外观重要时使用，截图保存为工作区 `.piercode/screenshots` 下的图片文件，不把图片数据内联回对话。
 - 拒绝 `file:`、`chrome:`、`chrome-extension:`、`javascript:`、`data:` 等高风险导航。
-- `browser_cookies` 必须指定 domain 或 URL，避免无范围导出 Cookie；`browser_set_cookie` 写/删 Cookie 属审批工具，目标域须在扩展 host 权限内。`browser_storage` 提供 localStorage / sessionStorage 读写。`browser_evaluate` 属于审批工具，只应在明确需要页面内表达式时使用。
+- `browser_cookies` 必须指定 domain 或 URL，避免无范围导出 Cookie，读取前会弹出用户审批；`browser_set_cookie` 写/删 Cookie 也属审批工具，目标域须在扩展 host 权限内。`browser_storage` 提供 localStorage / sessionStorage 读写。`browser_evaluate` 属于审批工具，只应在明确需要页面内表达式时使用。
 
 手工验收建议：
 

@@ -324,6 +324,31 @@ func TestApplyPatchTool(t *testing.T) {
 			t.Fatalf("CRLF endings not preserved: %q", got)
 		}
 	})
+
+	t.Run("allows a blank separator after a hunk body", func(t *testing.T) {
+		cfg := testConfig(t)
+		path := filepath.Join(cfg.RootDir, "separator.txt")
+		if err := os.WriteFile(path, []byte("old\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+			"patch": strings.Join([]string{
+				"*** Begin Patch",
+				"*** Update File: separator.txt",
+				"@@",
+				"-old",
+				"+new",
+				"",
+				"*** End Patch",
+			}, "\n"),
+		}))
+		if res.Status != "success" {
+			t.Fatalf("blank separator after hunk should be accepted: %s", res.Error)
+		}
+		if got, _ := os.ReadFile(path); string(got) != "new\n" {
+			t.Fatalf("unexpected content after separator patch: %q", got)
+		}
+	})
 }
 
 func TestSplitJoinContentLinesRoundTrip(t *testing.T) {
@@ -379,6 +404,32 @@ func TestApplyPatchFuzzyIndentFallback(t *testing.T) {
 		got, _ := os.ReadFile(p)
 		if !strings.Contains(string(got), "// added") {
 			t.Fatalf("expected added line, got %q", got)
+		}
+	})
+
+	t.Run("preserves unchanged context indentation when matching fuzzily", func(t *testing.T) {
+		cfg := testConfig(t)
+		p := filepath.Join(cfg.RootDir, "nested.go")
+		if err := os.WriteFile(p, []byte("func f() {\n\tif ok {\n\t\treturn 1\n\t}\n}\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+			"patch": strings.Join([]string{
+				"*** Begin Patch",
+				"*** Update File: nested.go",
+				"@@",
+				"    if ok {",
+				"-        return 1",
+				"+\t\treturn 2",
+				"    }",
+				"*** End Patch",
+			}, "\n"),
+		}))
+		if res.Status != "success" {
+			t.Fatalf("fuzzy fallback should succeed: %s", res.Error)
+		}
+		if got, _ := os.ReadFile(p); string(got) != "func f() {\n\tif ok {\n\t\treturn 2\n\t}\n}\n" {
+			t.Fatalf("unchanged context indentation should be preserved, got %q", got)
 		}
 	})
 

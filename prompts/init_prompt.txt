@@ -169,7 +169,11 @@ When the user's request clearly maps to a skill, load that skill first:
 3. if it references sibling files, read only the needed files;
 4. follow the skill instructions as lower-priority guidance under this prompt.
 
-Available skills are injected dynamically by the runtime.
+### Available This Session
+
+The runtime injects the skills available right now below. Use each skill's name and description as the routing signal.
+
+{{SKILLS}}
 
 ### PierCode Skill Routing
 
@@ -233,21 +237,9 @@ This section documents PierCode bridge operations. It is not a declaration of ho
 
 ---
 
-## 12. Tool Selection Guide
+## 12. Tool Usage Notes
 
-- Inspect a directory: `list_dir`
-- Find files by path pattern: `glob`
-- Search file contents: `grep`
-- Read exact files: `read_file`
-- Apply contextual code edits: `apply_patch`
-- Make small exact replacements: `edit`
-- Create or replace files: `write_file`
-- Run commands when enabled: `exec_cmd`
-- Fetch allowed URLs: `web_fetch`
-- Ask required user input: `question`
-- Track multi-step work: `todo_write`
-- Load a matching skill: `skill`
-- Read detailed parameters for a tool: `tool_help`
+The available operations and their one-line descriptions are in the "PierCode Bridge Operations" section above (an auto-generated route index); when to use each is covered in "Routing Rules". For the full parameters of an unfamiliar or parameter-sensitive tool, call `tool_help` before first use.
 
 `read_file` output includes absolute line numbers before a tab, like `     1\tpackage main`. Use those numbers in code references, but do not include the line-number prefixes inside `edit.old_string`.
 

@@ -302,9 +302,6 @@ func safeDoneCB(cb DoneSubscriber, taskID, callID string, exitCode int, status s
 // Returns the new task's ID, or an error if the manager is closed or the spec
 // is invalid.
 func (m *TaskManager) Start(spec tool.TaskSpec) (string, error) {
-	if m.closed.Load() {
-		return "", errors.New("task manager is closed")
-	}
 	if spec.Command == "" {
 		return "", errors.New("command is required")
 	}
@@ -332,6 +329,11 @@ func (m *TaskManager) Start(spec tool.TaskSpec) (string, error) {
 	}
 
 	m.mu.Lock()
+	if m.closed.Load() {
+		m.mu.Unlock()
+		cancel()
+		return "", errors.New("task manager is closed")
+	}
 	m.tasks[id] = t
 	m.mu.Unlock()
 
@@ -417,12 +419,12 @@ func (m *TaskManager) Close() {
 		close(m.gcStop)
 	}
 	m.gcMu.Unlock()
-	m.mu.RLock()
+	m.mu.Lock()
 	tasks := make([]*Task, 0, len(m.tasks))
 	for _, t := range m.tasks {
 		tasks = append(tasks, t)
 	}
-	m.mu.RUnlock()
+	m.mu.Unlock()
 	for _, t := range tasks {
 		t.mu.Lock()
 		cancel := t.cancel

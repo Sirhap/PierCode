@@ -6,6 +6,7 @@ import (
 
 	"github.com/sirhap/piercode/internal/skill"
 	"github.com/sirhap/piercode/internal/tool"
+	"github.com/sirhap/piercode/prompts"
 )
 
 func TestProfileRegistryFallsBackToDefault(t *testing.T) {
@@ -125,6 +126,65 @@ func TestProfileRegistryCanFilterToolsAndSkills(t *testing.T) {
 	if !strings.Contains(rendered, "debugging") || strings.Contains(rendered, "deployment") {
 		t.Fatalf("expected only debug skill to be rendered, got %q", rendered)
 	}
+}
+
+func TestSkillsSubstituteAtPlaceholderWhenPresent(t *testing.T) {
+	profile := Profile{
+		ID:     "default",
+		Prompt: []byte("guidance\n{{SKILLS}}\ntail"),
+	}
+	skills := []skill.Info{
+		{Name: "debug", Description: "debugging"},
+		{Name: "deploy", Description: "deployment"},
+	}
+
+	rendered := string(profile.Render("C:/repo", nil, skills))
+	if strings.Contains(rendered, skillsPlaceholder) {
+		t.Fatalf("placeholder must be substituted, got %q", rendered)
+	}
+	if strings.Contains(rendered, "## 当前可用 Skills") {
+		t.Fatalf("placeholder mode should not add the append-only heading, got %q", rendered)
+	}
+	// List sits between the guidance and the tail, not at the very end.
+	gi := strings.Index(rendered, "guidance")
+	di := strings.Index(rendered, "debugging")
+	ti := strings.Index(rendered, "tail")
+	if !(gi < di && di < ti) {
+		t.Fatalf("skills list should render at the placeholder position, got %q", rendered)
+	}
+}
+
+func TestSkillsAppendAtEndWhenNoPlaceholder(t *testing.T) {
+	profile := Profile{
+		ID:     "default",
+		Prompt: []byte("body without placeholder"),
+	}
+	skills := []skill.Info{{Name: "debug", Description: "debugging"}}
+
+	rendered := string(profile.Render("C:/repo", nil, skills))
+	if !strings.Contains(rendered, "## 当前可用 Skills") || !strings.Contains(rendered, "debugging") {
+		t.Fatalf("expected skills appended at end for templates without placeholder, got %q", rendered)
+	}
+}
+
+func TestEmbeddedDefaultPromptSubstitutesSkillsPlaceholder(t *testing.T) {
+	registry := DefaultProfileRegistry(prompts.DefaultPrompt)
+	rendered := string(registry.Select("").Render("C:/repo", nil, []skill.Info{
+		{Name: "piercode-debug", Description: "diagnose runtime failures"},
+	}))
+	if strings.Contains(rendered, skillsPlaceholder) {
+		t.Fatalf("embedded prompt left an unsubstituted {{SKILLS}} placeholder")
+	}
+	if !strings.Contains(rendered, "piercode-debug") {
+		t.Fatalf("embedded prompt should render the injected skills, got tail %q", tail(rendered))
+	}
+}
+
+func tail(s string) string {
+	if len(s) > 400 {
+		return s[len(s)-400:]
+	}
+	return s
 }
 
 func TestProfileEmptyFiltersExposeNothing(t *testing.T) {

@@ -4,8 +4,20 @@ import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId } from './ws-linker';
 import { visualIndicator } from './visual-indicator';
 import { exposeAccessibilityTree, generateAccessibilityTree, getElementCoordinates, scrollToElement, clickElement, searchElements } from './accessibility-tree';
-import { compactToolOutputForChat, ConversationContext, compressAndPrepareNewSession, shouldCompress } from './qwen-context-compress';
-import { QwenCompressionConfig, resolveQwenCompressionConfig } from '../settings';
+import { SinglePacketWaiter } from './qwen-context-packet-waiter';
+import {
+  compactToolOutputForChat,
+  ConversationContext,
+  compressAndPrepareNewSession,
+  formatPacketHandoffPrompt,
+  formatPierCodeContextPacketPrompt,
+  formatQwenCompressedContextPrompt,
+  parsePierCodeContextPacket,
+  PierCodeContextPacket,
+  shouldCompress
+} from './qwen-context-compress';
+import { QwenCompressionConfig, resolveQwenCompressionConfig } from './qwen-settings';
+import { dispatchEnterAsSendFallback } from './send-fallback';
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
@@ -26,6 +38,8 @@ let responseSessionActivatedAt = 0;
 let qwenConversationCtx: ConversationContext | null = null;
 let compressionInProgress = false;
 let qwenCompressionConfigCache: QwenCompressionConfig | null = null;
+const qwenContextPacketWaiter = new SinglePacketWaiter<PierCodeContextPacket>();
+const handledContextPacketHashes = new Set<number>();
 
 function updateQwenContext(role: 'user' | 'assistant' | 'system', content: string, sourceKey?: string): void {
   if (platformAdapter.name !== 'qwen') return;
@@ -54,7 +68,43 @@ function updateQwenContext(role: 'user' | 'assistant' | 'system', content: strin
     qwenConversationCtx.totalChars += clean.length;
   }
 
+  if (role === 'assistant' && maybeHandleQwenContextPacket(clean)) {
+    return;
+  }
   void maybeTriggerQwenContextCompression();
+}
+
+function maybeHandleQwenContextPacket(text: string): boolean {
+  if (platformAdapter.name !== 'qwen') return false;
+  const packet = parsePierCodeContextPacket(text);
+  if (!packet) return false;
+
+  const packetHash = hashStr(packet.raw);
+  if (handledContextPacketHashes.has(packetHash)) return true;
+  handledContextPacketHashes.add(packetHash);
+
+  if (qwenContextPacketWaiter.resolve(packet)) {
+    return true;
+  }
+
+  if (compressionInProgress) {
+    return true;
+  }
+
+  void openContextPacketInNewSession(packet, 'model_initiated');
+  return true;
+}
+
+function waitForQwenContextPacket(): Promise<PierCodeContextPacket | null> {
+  return qwenContextPacketWaiter.register();
+}
+
+function startQwenContextPacketTimeout(timeoutMs: number): void {
+  qwenContextPacketWaiter.startTimeout(timeoutMs);
+}
+
+function clearPendingContextPacketWaiter(): void {
+  qwenContextPacketWaiter.cancel();
 }
 
 async function loadQwenCompressionConfig(): Promise<QwenCompressionConfig> {
@@ -91,45 +141,91 @@ async function triggerContextCompression(config?: QwenCompressionConfig): Promis
   const resolvedConfig = config || await loadQwenCompressionConfig();
   if (!resolvedConfig.enabled) return;
   compressionInProgress = true;
-  showToast('上下文过长，正在压缩...', 3000);
+  showToast('上下文接近上限，正在请求 Qwen 压缩...', 5000);
 
   try {
+    // 让模型自压缩：第一次按标准提示词，超时未出包则用更强约束重试一次，
+    // 仍失败才退化到本地 DOM 摘要兜底（质量低很多）。
+    const basePrompt = formatPierCodeContextPacketPrompt(qwenConversationCtx, resolvedConfig);
+    let packet = await requestContextPacketFromModel(basePrompt, 60000);
+    if (!packet) {
+      console.warn('[PierCode] Qwen 首次未按时输出上下文包，加强约束重试一次');
+      const strictPrompt = '⚠️ 上次未按格式输出。现在只允许输出一个 `piercode-context` fenced JSON，'
+        + '不要任何解释、寒暄、Markdown 标题或工具调用。\n\n' + basePrompt;
+      packet = await requestContextPacketFromModel(strictPrompt, 45000);
+    }
+
+    if (packet) {
+      await openContextPacketInNewSession(packet, 'piercode_requested');
+      return;
+    }
+
+    console.warn('[PierCode] Qwen 两次未输出上下文包，使用本地摘要兜底');
     const { summary, newContext } = await compressAndPrepareNewSession(
       qwenConversationCtx,
       (s) => console.log('[PierCode] 生成摘要:', s.slice(0, 200) + '...'),
       resolvedConfig
     );
     qwenConversationCtx = newContext;
-    const payload = formatQwenCompressedContextPrompt(summary);
-    try {
-      await navigator.clipboard.writeText(payload);
-    } catch {}
-
-    const result = await openQwenCompressedContextSession(payload);
-    if (result.ok) {
-      showToast('上下文已压缩，并已发送到新的 Qwen 会话', 8000);
-    } else {
-      showToast('上下文已压缩，新会话发送失败，摘要已尝试复制到剪贴板', 8000);
-      console.warn('[PierCode] 新 Qwen 会话发送失败:', result.error);
-    }
+    const initPrompt = await fetchInitPromptForCurrentProfile();
+    const payload = formatQwenCompressedContextPrompt(summary, initPrompt);
+    await openNewSessionWithPayload(payload, '上下文已本地压缩，并已发送到新的 Qwen 会话');
   } catch (err) {
     console.error('[PierCode] 压缩失败:', err);
     showToast('上下文压缩失败', 5000);
   } finally {
+    clearPendingContextPacketWaiter();
     compressionInProgress = false;
   }
 }
 
-function formatQwenCompressedContextPrompt(summary: string): string {
-  return [
-    '请从下面的压缩上下文继续当前 PierCode 会话。',
-    '',
-    '<compressed_context>',
-    summary.trim(),
-    '</compressed_context>',
-    '',
-    '继续执行用户后续任务。'
-  ].join('\n');
+// 给当前 Qwen 会话发"压缩成 packet"的提示词，并等模型在 timeoutMs 内回出 packet。
+// 返回 packet 或 null（编辑器没找到 / 模型没按时输出）。
+async function requestContextPacketFromModel(prompt: string, timeoutMs: number): Promise<PierCodeContextPacket | null> {
+  const packetPromise = waitForQwenContextPacket();
+  const sent = await fillAndSend(prompt, true, { forceSend: true, immediate: true });
+  if (!sent) {
+    clearPendingContextPacketWaiter();
+    return null;
+  }
+  startQwenContextPacketTimeout(timeoutMs);
+  return packetPromise;
+}
+
+async function openContextPacketInNewSession(packet: PierCodeContextPacket, reason: string): Promise<void> {
+  const wasInProgress = compressionInProgress;
+  compressionInProgress = true;
+  try {
+    const packetText = packet.raw || packet.content;
+    qwenConversationCtx = {
+      messages: [
+        { role: 'system', content: `[上下文已压缩:${reason}]\n\n${packetText}`, timestamp: Date.now() },
+      ],
+      totalChars: packetText.length,
+      lastCompressedAt: Date.now(),
+    };
+    // 模型 packet 已是成型的 ```piercode-context 块，原样转发，不二次套壳。
+    const initPrompt = await fetchInitPromptForCurrentProfile();
+    const payload = formatPacketHandoffPrompt(packetText, initPrompt);
+    await openNewSessionWithPayload(payload, '上下文已压缩，并已发送到新的 Qwen 会话');
+  } finally {
+    compressionInProgress = wasInProgress;
+  }
+}
+
+// 在新标签开会话并把最终 payload 注入。payload 由调用方按路径(packet/本地摘要)构造好。
+async function openNewSessionWithPayload(payload: string, successMessage: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(payload);
+  } catch {}
+
+  const result = await openQwenCompressedContextSession(payload);
+  if (result.ok) {
+    showToast(successMessage, 8000);
+  } else {
+    showToast('上下文已压缩，新会话发送失败，摘要已尝试复制到剪贴板', 8000);
+    console.warn('[PierCode] 新 Qwen 会话发送失败:', result.error);
+  }
 }
 
 function qwenNewSessionUrl(): string {
@@ -157,11 +253,19 @@ async function fillCompressedContextWhenReady(text: string): Promise<boolean> {
   while (Date.now() < deadline) {
     const editor = querySelectorFirst(getSiteConfig().editor);
     if (editor) {
-      await fillAndSend(text, true, { forceSend: true });
-      return true;
+      // 新标签 SPA 可能仍在 hydrate：editor 已可见但输入事件还没挂上。
+      // 先等输入区稳定，再用 immediate 发送（会主动等发送按钮可点），
+      // 单次填充避免重试把文本追加成重复内容。
+      await new Promise(resolve => setTimeout(resolve, 800));
+      const sent = await fillAndSend(text, true, { forceSend: true, immediate: true });
+      if (!sent) {
+        console.warn('[PierCode] 压缩上下文已填入但发送失败（editor 消失或发送按钮未启用）');
+      }
+      return sent;
     }
     await new Promise(resolve => setTimeout(resolve, 500));
   }
+  console.warn('[PierCode] 压缩上下文注入失败：30s 内未找到 Qwen 输入框');
   return false;
 }
 
@@ -172,6 +276,31 @@ async function handleCompressedContextMessage(text: string): Promise<{ ok: boole
     return sent ? { ok: true } : { ok: false, error: 'editor not found' };
   } catch (error) {
     return { ok: false, error: String(error) };
+  }
+}
+
+async function handleQwenE2EFillAndSend(text: string, nonce: string): Promise<void> {
+  const reply = (ok: boolean, error = '') => {
+    window.postMessage({ type: 'PIERCODE_E2E_FILL_AND_SEND_RESULT', nonce, ok, error }, '*');
+  };
+  try {
+    if (!isQwenPage()) {
+      reply(false, 'not a Qwen page');
+      return;
+    }
+    if (!text.trim()) {
+      reply(false, 'empty text');
+      return;
+    }
+    const stored = await chrome.storage.local.get(['qwenE2EBridgeEnabled']);
+    if (stored.qwenE2EBridgeEnabled !== true) {
+      reply(false, 'Qwen E2E bridge is disabled');
+      return;
+    }
+    const sent = await fillAndSend(text, true, { forceSend: true, immediate: true });
+    reply(sent === true, sent ? '' : 'fillAndSend returned false');
+  } catch (error) {
+    reply(false, String(error));
   }
 }
 
@@ -853,7 +982,7 @@ function getSiteConfig(): SiteConfig {
         'button[aria-label*="发送"]:not([disabled])',
         'button[aria-label*="Send"]:not([disabled])'
       ].join(','),
-      stopBtn: null,
+      stopBtn: 'button.stop-button, button[class*="stop-button"]',
       fillMethod: 'value',
       useObserver: true,
       responseSelector: adapterSelector || '.qwen-chat-message-assistant'
@@ -916,6 +1045,13 @@ if (!(window as any).__PIERCODE_LOADED__) {
   }
   if (document.body) mountInputListener();
   else document.addEventListener('DOMContentLoaded', mountInputListener);
+
+  window.addEventListener('message', event => {
+    const msg = event.data || {};
+    if (msg?.type !== 'PIERCODE_E2E_FILL_AND_SEND') return;
+    if (event.source !== window) return;
+    handleQwenE2EFillAndSend(String(msg.text || ''), String(msg.nonce || ''));
+  });
 
   // 监听来自background的消息
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -1896,21 +2032,30 @@ function withPlatformProfile(toolCall: any): any {
   return { ...toolCall, profile: platformProfile, client_id: getPierCodeClientId() };
 }
 
-async function sendInitPrompt() {
-  if (!checkContext()) return;
+async function fetchInitPromptForCurrentProfile(): Promise<string> {
+  if (!checkContext()) return '';
   const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
-  if (!apiUrl) { alert('请先在插件中配置 API 地址'); return; }
+  if (!apiUrl) return '';
   const headers: any = { 'Content-Type': 'application/json' };
-  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
   const resp = await bgFetch(apiEndpointForProfile(apiUrl, '/prompt'), { headers });
-  if (!resp.ok) { alert('获取初始化提示词失败'); return; }
+  if (!resp.ok) {
+    console.warn('[PierCode] 获取初始化提示词失败，新会话仅发送压缩上下文:', resp.status, resp.body);
+    return '';
+  }
+  return resp.body;
+}
+
+async function sendInitPrompt() {
+  const prompt = await fetchInitPromptForCurrentProfile();
+  if (!prompt) { alert('获取初始化提示词失败'); return; }
 
   if (location.hostname.includes('aistudio.google.com')) {
-    await fillAiStudioSystemInstructions(resp.body);
+    await fillAiStudioSystemInstructions(prompt);
     return;
   }
 
-  fillAndSend(resp.body, true);
+  fillAndSend(prompt, true);
 }
 
 async function fillAiStudioSystemInstructions(prompt: string) {
@@ -2033,13 +2178,44 @@ async function focusCurrentTabForSend(): Promise<void> {
   }
 }
 
-async function fillAndSend(result: string, autoSend = false, options: { forceSend?: boolean } = {}) {
-  const { editor: editorSel, sendBtn: sendBtnSel, fillMethod } = getSiteConfig();
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isSendBlockedByRunningResponse(stopBtnSel: string | null): boolean {
+  return !!stopBtnSel && !!querySelectorFirst(stopBtnSel);
+}
+
+async function clickSendWhenReady(siteConfig: SiteConfig, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isSendBlockedByRunningResponse(siteConfig.stopBtn)) {
+      const sendBtn = querySelectorFirst(siteConfig.sendBtn);
+      if (sendBtn) {
+        sendBtn.click();
+        return true;
+      }
+    }
+    await sleep(250);
+  }
+
+  if (!isQwenPage() || !isSendBlockedByRunningResponse(siteConfig.stopBtn)) {
+    const ed = querySelectorFirst(siteConfig.editor);
+    if (ed) {
+      return dispatchEnterAsSendFallback(ed);
+    }
+  }
+  return false;
+}
+
+async function fillAndSend(result: string, autoSend = false, options: { forceSend?: boolean; immediate?: boolean } = {}): Promise<boolean> {
+  const siteConfig = getSiteConfig();
+  const { editor: editorSel, fillMethod } = siteConfig;
   if (autoSend) {
     await focusCurrentTabForSend();
   }
   const editor = querySelectorFirst(editorSel);
-  if (!editor) return;
+  if (!editor) return false;
 
   editor.focus();
   const method = effectiveFillMethod(editor, fillMethod);
@@ -2066,31 +2242,21 @@ async function fillAndSend(result: string, autoSend = false, options: { forceSen
   }
 
   if (autoSend) {
-    if (!checkContext()) return;
+    if (!checkContext()) return true;
     const cfg = await chrome.storage.local.get(['autoSend', 'delayMin', 'delayMax']);
-    if (cfg.autoSend === false && !options.forceSend) return;
+    if (cfg.autoSend === false && !options.forceSend) return true;
 
-    const min = (cfg.delayMin ?? 1) * 1000;
-    const max = (cfg.delayMax ?? 4) * 1000;
-    const delay = Math.random() * (max - min) + min;
-
-    showCountdownToast(delay, () => {
-      const checkAndClick = (attempts = 0) => {
-        if (attempts > 50) {
-          const ed = querySelectorFirst(editorSel);
-          if (ed) ed.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-          return;
-        }
-        const sendBtn = querySelectorFirst(sendBtnSel);
-        if (sendBtn) {
-          sendBtn.click();
-        } else {
-          setTimeout(() => checkAndClick(attempts + 1), 100);
-        }
-      };
-      checkAndClick();
-    });
+    if (options.immediate) {
+      const clicked = await clickSendWhenReady(siteConfig, isQwenPage() ? 90000 : 5000);
+      if (!clicked) return false;
+    } else {
+      const min = (cfg.delayMin ?? 1) * 1000;
+      const max = (cfg.delayMax ?? 4) * 1000;
+      const delay = Math.random() * (max - min) + min;
+      showCountdownToast(delay, () => { void clickSendWhenReady(siteConfig, 5000); });
+    }
   }
+  return true;
 }
 
 // ── 斜杠命令 / @ 文件补全 ──────────────────────────────────────────────────────
