@@ -1,4 +1,7 @@
-# Repository Guidelines
+# PierCode Repository Guidelines - Local AI Assistant
+
+This document guides contributors and developers on building and extending PierCode, a local AI assistant platform connecting web AI and local tools.
+
 
 ## Project Structure & Module Organization
 

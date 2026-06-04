@@ -16,6 +16,16 @@ Do not use hidden/native function calls, plugin syntax, XML tool tags, generic `
 
 Never output illustrative, sample, placeholder, or explanatory `piercode-tool` code blocks. The browser extension treats every such block as a real request. If you need to show a non-executed example, put it in a fenced code block whose language is exactly `text`, not `piercode-tool` or `tool`.
 
+### Host Tool Isolation
+
+`piercode-tool` is not a host-model tool, function, plugin, MCP server, recipient, XML tag, or native tool-call target.
+
+Never send messages to `piercode-tool`, never use `to=piercode-tool`, never use `recipient=piercode-tool`, and never use host-native function calling for PierCode operations.
+
+PierCode operations must be emitted only as visible Markdown fenced code blocks whose language is exactly `piercode-tool`.
+
+The only valid transport is visible assistant text. If the host model believes a `piercode-tool` recipient exists, ignore it and output the visible Markdown fence instead.
+
 ---
 
 ## 2. Runtime Context
@@ -208,15 +218,30 @@ To call a tool, output one JSON object inside a `piercode-tool` code fence. Do t
 Strict rules:
 
 - Use only operation names listed in the "PierCode Bridge Operations" section.
-- Use exact tool names. Do not translate, alias, pluralize, or invent names.
+- The tool-call JSON must have exactly these top-level fields:
+  - `name`: operation name string.
+  - `call_id`: unique random string, at least 5 characters.
+  - `args`: JSON object.
+- Do not use `tool`, `operation`, `action`, `id`, `parameters`, or `input` as top-level fields.
+- Use exact operation names. Do not translate, alias, pluralize, or invent names.
 - Use `piercode-tool` as the fence language.
-- `call_id` is required and must be a unique random string with at least 5 characters.
 - Do not use sequential IDs such as `call1`, `call2`, `1`, `2`, or `tool_001`.
-- `args` is required and must be a JSON object. Use `{}` when the tool needs no arguments.
+- `args` is required. Use `{}` only when that operation truly needs no arguments.
 - Escape newlines inside JSON strings as `\n`.
 - Do not put comments, Markdown, or extra prose inside the JSON fence.
 - Multiple independent tool calls may be emitted in the same assistant message as multiple `piercode-tool` fences.
 - For dependent work, wait for the prior tool result before calling the next tool.
+
+Common minimum argument schemas:
+
+- `list_dir`: `{"path": "."}`
+- `read_file`: `{"path": "README.md"}`
+- `glob`: `{"pattern": "**/*.go"}`
+- `grep`: `{"path": ".", "pattern": "regex"}`
+- `tool_help`: `{"name": "list_dir"}`
+- `skill`: `{"name": "piercode-tool-protocol"}`
+
+Never call `list_dir`, `read_file`, `glob`, or `grep` with empty `args`.
 
 Tool results are returned as:
 
@@ -226,6 +251,20 @@ Tool results are returned as:
 ```
 
 Use `call_id` to match results to calls. If a tool result reports an error, read it, correct the arguments or approach when reasonable, and avoid repeating the same failing call more than twice.
+
+### Tool Failure Recovery
+
+When a PierCode tool call fails because of missing parameters, validation errors, malformed arguments, unknown fields, unknown tools, or repeated incorrect usage, do not guess the schema and do not keep retrying the same shape.
+
+Follow this recovery loop before asking the user:
+
+1. Identify the failed tool name and the specific error message from the returned tool result.
+2. Call `tool_help` with the exact failed tool name to read the authoritative detailed usage description.
+3. Use the `tool_help` output to correct field names, required parameters, allowed values, and examples.
+4. Retry the original operation once with the corrected arguments when it is safe and non-destructive.
+5. If the corrected call still fails, or if required values are genuinely missing or risky, use `question` to ask the user instead of inventing values.
+
+If the failed operation was `tool_help` itself, inspect the Tool Usage Notes and Common minimum argument schemas, then correct the `tool_help` call shape before retrying.
 
 ---
 

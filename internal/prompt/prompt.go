@@ -41,7 +41,9 @@ func BuildToolsDoc(tools []tool.ToolInfo) string {
 		}
 		sb.WriteString(fmt.Sprintf("- `%s`: %s", t.Name, firstLine(t.Description)))
 	}
-	sb.WriteString("\n\nCall format: when you actually execute a tool, output one visible `piercode-tool` fenced JSON block with fields `name`, `call_id`, and `args`. Do not output executable tool blocks for explanations or examples; non-executed examples must use a `text` fence.\n")
+		sb.WriteString("\n\nTool-call JSON must have exactly these top-level fields: `name`, `call_id`, and `args`. Do not use `tool`, `operation`, `action`, `id`, `parameters`, or `input` as top-level fields.\n")
+		sb.WriteString("\nCommon minimum argument schemas: `list_dir` uses {\"path\":\".\"}; `read_file` uses {\"path\":\"README.md\"}; `glob` uses {\"pattern\":\"**/*.go\"}; `grep` uses {\"path\":\".\",\"pattern\":\"regex\"}; `tool_help` uses {\"name\":\"list_dir\"}; `skill` uses {\"name\":\"piercode-tool-protocol\"}. Never call `list_dir`, `read_file`, `glob`, or `grep` with empty `args`.\n")
+		sb.WriteString("\nCall format: when you actually execute a tool, output one visible `piercode-tool` fenced JSON block with fields `name`, `call_id`, and `args`. Do not output executable tool blocks for explanations or examples; non-executed examples must use a `text` fence.\n")
 	return sb.String()
 }
 

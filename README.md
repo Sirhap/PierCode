@@ -1,4 +1,8 @@
-# PierCode
+# PierCode - Local AI Assistant Proxy
+
+PierCode is a local development tool that connects web-based AI assistants (ChatGPT, Claude, Qwen, etc.) to your local filesystem and browser via a Chrome extension and a sandboxed Go server. Execute safe file operations, commands, and browser interactions from AI outputs. Learn more in the [documentation](docs/index.md).
+
+
 
 > **免责声明：本项目仅供学习和研究使用，严禁用于任何商业用途。**
 

@@ -1,4 +1,7 @@
-# CLAUDE.md
+# CLAUDE.md - Guidance for PierCode Local AI Assistant
+
+This file provides instructions for Claude Code (claude.ai/code) when interacting with PierCode, the local AI assistant proxy connecting web-based AI to local sandboxed Go server and Chrome extension.
+
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
