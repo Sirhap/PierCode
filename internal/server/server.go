@@ -27,6 +27,7 @@ import (
 	"github.com/sirhap/piercode/internal/skill"
 	"github.com/sirhap/piercode/internal/tool"
 	"github.com/sirhap/piercode/internal/types"
+	"github.com/sirhap/piercode/internal/version"
 )
 
 type Server struct {
@@ -177,7 +178,7 @@ func (s *Server) handleHealth(c *gin.Context) {
 	// 任何本机进程或恶意网页都能借此做侦察 + 定向攻击，已移除。
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
-		"version": "1.0.0",
+		"version": version.Version,
 	})
 }
 

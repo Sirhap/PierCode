@@ -43,3 +43,4 @@ extension/dist/
 .playwright-mcp/
 release-packages/
 release/
+dist/

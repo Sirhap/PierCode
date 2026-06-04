@@ -7,16 +7,43 @@ builds:
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
-    ldflags: ["-s -w"]
+    ldflags:
+      - -s -w
+      - -X github.com/sirhap/piercode/internal/version.Version={{ .Version }}
 
 archives:
-  - formats: [tar.gz]
+  - id: default
+    ids: [server]
+    formats: [tar.gz]
     format_overrides:
       - goos: windows
         formats: [zip]
     name_template: "piercode_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
 
 release:
   github:
     owner: Sirhap
     name: PierCode
+  # The extension is built in the workflow and dropped into ./dist; ship it
+  # alongside the binaries so a release is self-contained.
+  extra_files:
+    - glob: ./dist/piercode-extension_*.zip
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
