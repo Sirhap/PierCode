@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS,
   DEFAULT_AUTO_EXECUTE,
+  DEFAULT_STEALTH_MODE,
   DEFAULT_QWEN_COMPRESSION_ENABLED,
   DEFAULT_QWEN_MAX_CONTEXT_TOKENS,
   DEFAULT_QWEN_MAX_SUMMARY_TOKENS,
   resolveAutoApproveBrowserActions,
   resolveAutoExecute,
+  resolveStealthMode,
   resolveQwenCompressionConfig,
 } from '../settings';
 
@@ -33,6 +35,19 @@ describe('resolveAutoApproveBrowserActions', () => {
   it('preserves explicit browser action auto approval choices', () => {
     expect(resolveAutoApproveBrowserActions(true)).toBe(true);
     expect(resolveAutoApproveBrowserActions(false)).toBe(false);
+  });
+});
+
+describe('resolveStealthMode', () => {
+  it('defaults stealth mode off when unset', () => {
+    expect(DEFAULT_STEALTH_MODE).toBe(false);
+    expect(resolveStealthMode(undefined)).toBe(false);
+    expect(resolveStealthMode(null)).toBe(false);
+  });
+
+  it('preserves explicit stealth mode choices', () => {
+    expect(resolveStealthMode(true)).toBe(true);
+    expect(resolveStealthMode(false)).toBe(false);
   });
 });
 

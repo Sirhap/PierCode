@@ -21,6 +21,7 @@ describe('content script build output', () => {
 
     expect(manifest.content_scripts?.[0]?.js).toContain('content.js');
     expect(manifest.content_scripts?.[0]?.type).toBeUndefined();
-    expect(contentScript).not.toMatch(/^\s*import\s/m);
+    expect(contentScript).not.toMatch(/(?:^|[;\n])\s*import(?:\s|[{*(])/);
+    expect(contentScript).not.toMatch(/\bfrom\s*["'][^"']+["']/);
   });
 });

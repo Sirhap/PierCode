@@ -57,6 +57,55 @@ describe('visualIndicator', () => {
     expect(button?.textContent).toContain('正在停止');
   });
 
+  it('stealth mode shows a mini dot instead of the border/badge and randomizes ids', () => {
+    visualIndicator.configure({ stealth: true });
+    visualIndicator.showPulsingBorder();
+    visualIndicator.showStatusBadge('loading');
+
+    // No piercode-prefixed container in stealth mode.
+    expect(document.getElementById('piercode-shadow-container')).toBeNull();
+
+    const container = document.querySelector('div[id^="x"]') as HTMLElement | null;
+    expect(container).toBeTruthy();
+    const root = container?.shadowRoot;
+
+    // Border and big badge are absent; only the mini dot exists.
+    const dot = Array.from(root?.children ?? []).find(
+      (el) => el.id.endsWith('-mini-dot'),
+    ) as HTMLElement | undefined;
+    expect(dot).toBeTruthy();
+    expect(root?.querySelector('[id$="-agent-glow-border"]')).toBeNull();
+    expect(root?.querySelector('[id$="-status-badge"]')).toBeNull();
+    expect(visualIndicator.state.stealth).toBe(true);
+
+    // Clicking the dot stops the operation.
+    dot?.click();
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'STOP_BROWSER_OPERATION' });
+
+    visualIndicator.configure({ stealth: false });
+  });
+
+  it('keeps the running indicator visible when stealth mode changes mid-operation', () => {
+    visualIndicator.showPulsingBorder();
+
+    visualIndicator.configure({ stealth: true });
+
+    expect(document.getElementById('piercode-shadow-container')).toBeNull();
+    expect(visualIndicator.state.isPulsingActive).toBe(true);
+
+    const stealthContainer = document.querySelector('div[id^="x"]') as HTMLElement | null;
+    const stealthRoot = stealthContainer?.shadowRoot;
+    expect(stealthRoot?.querySelector('[id$="-mini-dot"]')).toBeTruthy();
+    expect(stealthRoot?.querySelector('[id$="-agent-stop-button"]')).toBeNull();
+
+    visualIndicator.configure({ stealth: false });
+
+    const normalRoot = document.getElementById('piercode-shadow-container')?.shadowRoot;
+    expect(visualIndicator.state.isPulsingActive).toBe(true);
+    expect(normalRoot?.getElementById('piercode-agent-glow-border')).toBeTruthy();
+    expect(normalRoot?.getElementById('piercode-agent-stop-button')?.textContent).toContain('停止操作');
+  });
+
   it('hides indicators while preserving enough state to show them again after tool UI work', () => {
     visualIndicator.showPulsingBorder();
     visualIndicator.showStatusBadge('completed');

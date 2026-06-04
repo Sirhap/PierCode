@@ -16,22 +16,81 @@ const state: VisualIndicatorState = {
   currentTabId: null,
 };
 
+// 隐身配置。stealth 开启时改用迷你圆点、关闭脉冲边框，并随机化 DOM id
+// 以免页面凭固定 id 探测插件。idBase 默认 'piercode'，保证非隐身行为与
+// 单测断言不变；调用 configure({ stealth: true }) 时换成随机前缀。
+interface IndicatorConfig {
+  stealth: boolean;
+  idBase: string;
+}
+
+const config: IndicatorConfig = {
+  stealth: false,
+  idBase: 'piercode',
+};
+
+function ids() {
+  const b = config.idBase;
+  return {
+    container: `${b}-shadow-container`,
+    glow: `${b}-agent-glow-border`,
+    stopContainer: `${b}-agent-stop-container`,
+    stopButton: `${b}-agent-stop-button`,
+    badge: `${b}-status-badge`,
+    dot: `${b}-mini-dot`,
+    pulseStyles: `${b}-pulse-styles`,
+    highlight: `${b}-highlight-overlay`,
+  };
+}
+
+function randomBase(): string {
+  // 无明显特征的短随机串，避免 'piercode' 出现在 DOM。
+  const n = Math.random().toString(36).slice(2, 8);
+  return `x${n}`;
+}
+
+/**
+ * 配置指示器外观。stealth 切换时重建容器（id 变化），保证旧节点清理干净。
+ */
+function configure(opts: { stealth: boolean }): void {
+  if (opts.stealth === config.stealth) return;
+  const wasRunning = state.isPulsingActive;
+  hideAllIndicators();
+  destroyContainer();
+  config.stealth = opts.stealth;
+  config.idBase = opts.stealth ? randomBase() : 'piercode';
+  if (wasRunning) {
+    showPulsingBorder();
+  }
+}
+
 let shadowRoot: ShadowRoot | null = null;
 let glowBorder: HTMLDivElement | null = null;
 let stopContainer: HTMLDivElement | null = null;
 let statusBadge: HTMLDivElement | null = null;
+let miniDot: HTMLDivElement | null = null;
+
+function destroyContainer(): void {
+  const el = shadowRoot?.host as HTMLElement | undefined;
+  el?.remove();
+  shadowRoot = null;
+  glowBorder = null;
+  stopContainer = null;
+  statusBadge = null;
+  miniDot = null;
+}
 
 function getOrCreateShadowRoot(): ShadowRoot {
   if (shadowRoot) return shadowRoot;
 
-  let container = document.getElementById('piercode-shadow-container');
+  let container = document.getElementById(ids().container);
   if (container?.shadowRoot) {
     shadowRoot = container.shadowRoot;
     return shadowRoot;
   }
 
   container = document.createElement('div');
-  container.id = 'piercode-shadow-container';
+  container.id = ids().container;
   container.style.cssText = 'all: initial; position: fixed; z-index: 2147483647;';
   shadowRoot = container.attachShadow({ mode: 'open' });
   document.body.appendChild(container);
@@ -39,9 +98,9 @@ function getOrCreateShadowRoot(): ShadowRoot {
 }
 
 function clearHighlight(): void {
-  const container = document.getElementById('piercode-shadow-container');
+  const container = document.getElementById(ids().container);
   if (!container?.shadowRoot) return;
-  const overlay = container.shadowRoot.getElementById('piercode-highlight-overlay');
+  const overlay = container.shadowRoot.getElementById(ids().highlight);
   if (overlay) overlay.remove();
 }
 
@@ -52,11 +111,16 @@ function highlightElement(ref: string): void {
 }
 
 function createPulseStyles(root: ShadowRoot): void {
-  if (root.getElementById('piercode-pulse-styles')) return;
+  if (root.getElementById(ids().pulseStyles)) return;
 
   const style = document.createElement('style');
-  style.id = 'piercode-pulse-styles';
+  style.id = ids().pulseStyles;
   style.textContent = `
+    @keyframes piercode-dot-pulse {
+      0%, 100% { opacity: 0.55; transform: scale(1); }
+      50%      { opacity: 1;    transform: scale(1.25); }
+    }
+
     @keyframes piercode-agent-pulse {
       0%, 100% {
         box-shadow:
@@ -100,9 +164,15 @@ function showPulsingBorder(): void {
   const root = getOrCreateShadowRoot();
   createPulseStyles(root);
 
+  // 隐身模式：不画全屏脉冲边框，也不弹大停止按钮，只显示角落迷你圆点。
+  if (config.stealth) {
+    showMiniDot('loading');
+    return;
+  }
+
   if (!glowBorder) {
     glowBorder = document.createElement('div');
-    glowBorder.id = 'piercode-agent-glow-border';
+    glowBorder.id = ids().glow;
     glowBorder.style.cssText = `
       position: fixed;
       top: 0;
@@ -138,6 +208,8 @@ function showPulsingBorder(): void {
 function hidePulsingBorder(): void {
   state.isPulsingActive = false;
 
+  hideMiniDot();
+
   if (glowBorder) {
     glowBorder.style.opacity = '0';
   }
@@ -154,7 +226,7 @@ function hidePulsingBorder(): void {
 
 function createStopButton(): HTMLDivElement {
   const container = document.createElement('div');
-  container.id = 'piercode-agent-stop-container';
+  container.id = ids().stopContainer;
   container.style.cssText = `
     position: fixed;
     bottom: 16px;
@@ -167,7 +239,7 @@ function createStopButton(): HTMLDivElement {
   `;
 
   const button = document.createElement('button');
-  button.id = 'piercode-agent-stop-button';
+  button.id = ids().stopButton;
   button.innerHTML = `
     <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" style="display:inline-block;vertical-align:middle;margin-right:8px;">
       <path d="M128,20A108,108,0,1,0,236,128,108.12,108.12,0,0,0,128,20Zm0,192a84,84,0,1,1,84-84A84.09,84.09,0,0,1,128,212Zm40-112v56a12,12,0,0,1-12,12H100a12,12,0,0,1-12-12V100a12,12,0,0,1,12-12h56A12,12,0,0,1,168,100Z"></path>
@@ -226,11 +298,70 @@ function createStopButton(): HTMLDivElement {
   return container;
 }
 
+const DOT_COLORS: Record<string, string> = {
+  loading: '#4ade80',
+  completed: '#4CAF50',
+  error: '#f44336',
+};
+
+// 隐身模式下的迷你指示：右下角一个小圆点。loading 时脉冲呼吸，
+// 点击即发送停止指令。占地极小，不显眼。
+function showMiniDot(status: 'loading' | 'completed' | 'error'): void {
+  const root = getOrCreateShadowRoot();
+  createPulseStyles(root);
+
+  if (!miniDot) {
+    miniDot = document.createElement('div');
+    miniDot.id = ids().dot;
+    miniDot.title = '停止操作';
+    miniDot.style.cssText = `
+      position: fixed;
+      bottom: 14px;
+      right: 14px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      cursor: pointer;
+      pointer-events: auto;
+      z-index: 2147483647;
+      box-shadow: 0 0 0 3px rgba(0,0,0,0.06);
+    `;
+    miniDot.addEventListener('click', () => {
+      try {
+        chrome.runtime.sendMessage({ type: 'STOP_BROWSER_OPERATION' });
+      } catch (error) {
+        console.error('[PierCode] Failed to send stop message:', error);
+      }
+      hideAllIndicators();
+    });
+    root.appendChild(miniDot);
+  }
+
+  miniDot.style.display = '';
+  miniDot.style.background = DOT_COLORS[status];
+  miniDot.style.animation = status === 'loading'
+    ? 'piercode-dot-pulse 1.4s ease-in-out infinite'
+    : 'none';
+}
+
+function hideMiniDot(): void {
+  if (miniDot) {
+    miniDot.remove();
+    miniDot = null;
+  }
+}
+
 function showStatusBadge(status: 'loading' | 'completed' | 'error'): void {
+  // 隐身模式：用迷你圆点替代大徽章。
+  if (config.stealth) {
+    showMiniDot(status);
+    return;
+  }
+
   const root = getOrCreateShadowRoot();
 
   // 移除旧的状态徽章
-  const existing = root.getElementById('piercode-status-badge');
+  const existing = root.getElementById(ids().badge);
   if (existing) existing.remove();
 
   const emojiMap: Record<string, string> = {
@@ -246,7 +377,7 @@ function showStatusBadge(status: 'loading' | 'completed' | 'error'): void {
   };
 
   const badge = document.createElement('div');
-  badge.id = 'piercode-status-badge';
+  badge.id = ids().badge;
   badge.style.cssText = `
     position: fixed;
     top: 20px;
@@ -282,6 +413,7 @@ function hideStatusBadge(): void {
     statusBadge.remove();
     statusBadge = null;
   }
+  hideMiniDot();
 }
 
 function hideAllIndicators(): void {
@@ -295,10 +427,17 @@ function hideForToolUse(): void {
   if (glowBorder) glowBorder.style.display = 'none';
   if (stopContainer) stopContainer.style.display = 'none';
   if (statusBadge) statusBadge.style.display = 'none';
+  if (miniDot) miniDot.style.display = 'none';
 }
 
 function showAfterToolUse(): void {
   if (state.wasPulsingBeforeHide) {
+    if (config.stealth) {
+      // 隐身模式只需把迷你圆点恢复为 loading 脉冲。
+      showMiniDot('loading');
+      state.wasPulsingBeforeHide = false;
+      return;
+    }
     if (glowBorder) {
       glowBorder.style.display = '';
       requestAnimationFrame(() => {
@@ -320,6 +459,7 @@ function showAfterToolUse(): void {
 
 // 暴露API供其他模块调用
 export const visualIndicator = {
+  configure,
   showPulsingBorder,
   hidePulsingBorder,
   showStatusBadge,
@@ -333,6 +473,7 @@ export const visualIndicator = {
     return {
       isPulsingActive: state.isPulsingActive,
       wasPulsingBeforeHide: state.wasPulsingBeforeHide,
+      stealth: config.stealth,
     };
   },
 };

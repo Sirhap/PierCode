@@ -124,6 +124,9 @@ if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
     if (areaName === 'local' && 'qwenCompressionConfig' in changes) {
       qwenCompressionConfigCache = resolveQwenCompressionConfig(changes.qwenCompressionConfig.newValue);
     }
+    if (areaName === 'local' && 'stealthMode' in changes) {
+      visualIndicator.configure({ stealth: resolveStealthMode(changes.stealthMode.newValue) });
+    }
   });
 }
 
@@ -419,6 +422,11 @@ function resolveAutoExecute(value: unknown): boolean {
 }
 
 function resolveAutoApproveBrowserActions(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : false;
+}
+
+function resolveStealthMode(value: unknown): boolean {
+  // Keep this local so content.js remains a classic MV3 content script.
   return typeof value === 'boolean' ? value : false;
 }
 
@@ -1009,6 +1017,14 @@ if (!(window as any).__PIERCODE_LOADED__) {
     injectPageBridge();
   }
   initWsLinker();
+  // 启动时读取隐身模式设置，确保第一次显示指示器前外观已正确。
+  try {
+    chrome.storage?.local?.get(['stealthMode'], (result) => {
+      visualIndicator.configure({ stealth: resolveStealthMode(result?.stealthMode) });
+    });
+  } catch {
+    // storage 不可用时保持默认（非隐身），不阻塞初始化。
+  }
   // Register WS dispatchers (tool_stream/done + question_ask/cancel) up
   // front so question popups can appear even before any ToolCard renders.
   ensureStreamDispatchers();

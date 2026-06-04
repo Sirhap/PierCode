@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, resolveAutoApproveBrowserActions, resolveAutoExecute } from '../settings'
+import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, DEFAULT_STEALTH_MODE, resolveAutoApproveBrowserActions, resolveAutoExecute, resolveStealthMode } from '../settings'
 
 const DEFAULT_PORT = 39527
 
@@ -97,6 +97,8 @@ export default function App() {
   const [delayMax, setDelayMax] = useState(4)
   const [browserRelay, setBrowserRelay] = useState<BrowserRelayStatus>({})
   const [hasStoredAuth, setHasStoredAuth] = useState(false)
+  const [stealthMode, setStealthMode] = useState(DEFAULT_STEALTH_MODE)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
 
   useEffect(() => {
     if (toast) {
@@ -106,7 +108,7 @@ export default function App() {
   }, [toast])
 
   useEffect(() => {
-    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'delayMin', 'delayMax'], (result) => {
+    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'delayMin', 'delayMax', 'stealthMode'], (result) => {
       const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
       if (result.authToken && savedUrl) {
         setHasStoredAuth(true)
@@ -127,6 +129,9 @@ export default function App() {
       if (result.autoApproveBrowserActions === undefined) chrome.storage.local.set({ autoApproveBrowserActions: nextAutoApproveBrowserActions })
       if (result.delayMin !== undefined) setDelayMin(result.delayMin)
       if (result.delayMax !== undefined) setDelayMax(result.delayMax)
+      const nextStealthMode = resolveStealthMode(result.stealthMode)
+      setStealthMode(nextStealthMode)
+      if (result.stealthMode === undefined) chrome.storage.local.set({ stealthMode: nextStealthMode })
     })
   }, [])
 
@@ -327,6 +332,11 @@ export default function App() {
     chrome.storage.local.set({ delayMin: safeMin, delayMax: safeMax })
   }
 
+  const handleStealthModeChange = (val: boolean) => {
+    setStealthMode(val)
+    chrome.storage.local.set({ stealthMode: val })
+  }
+
   const statusColor = status === 'connected' ? 'bg-emerald-400' : status === 'checking' ? 'bg-yellow-400' : 'bg-red-400'
   const statusText = status === 'checking' ? '检查中...' : status === 'connected' ? '本地服务已连接' : '未连接'
 
@@ -410,7 +420,7 @@ export default function App() {
       {/* Divider */}
       <div className="border-t border-gray-800 my-3" />
 
-      {/* Auto send toggle */}
+      {/* 常用开关 */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <span className="text-sm text-gray-300">自动执行工具</span>
@@ -422,21 +432,6 @@ export default function App() {
           </button>
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-sm text-gray-300">自动审批浏览器操作</span>
-          <button
-            onClick={() => handleAutoApproveBrowserActionsChange(!autoApproveBrowserActions)}
-            className={`relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 ${autoApproveBrowserActions ? 'bg-amber-500' : 'bg-gray-600'}`}
-            title="开启后，点击、输入、导航等浏览器审批会自动允许"
-          >
-            <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transition-transform duration-200 ${autoApproveBrowserActions ? 'translate-x-5' : 'translate-x-0.5'}`} />
-          </button>
-        </div>
-        {autoApproveBrowserActions && (
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-            浏览器操作将自动允许，请只在可信页面使用。
-          </div>
-        )}
-        <div className="flex items-center justify-between">
           <span className="text-sm text-gray-300">自动提交</span>
           <button
             onClick={() => handleAutoSendChange(!autoSend)}
@@ -446,27 +441,77 @@ export default function App() {
           </button>
         </div>
 
-        {autoSend && (
-          <div className="bg-gray-900 rounded-lg p-3 space-y-2">
-            <span className="text-xs text-gray-400">随机延迟（秒）</span>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                min={0}
-                value={delayMin}
-                onChange={(e) => handleDelayChange(Number(e.target.value), delayMax)}
-                className="w-16 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-sm text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
-              />
-              <span className="text-gray-500 text-sm">~</span>
-              <input
-                type="number"
-                min={0}
-                value={delayMax}
-                onChange={(e) => handleDelayChange(delayMin, Number(e.target.value))}
-                className="w-16 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-sm text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
-              />
-              <span className="text-xs text-gray-500">秒</span>
+        {/* 高级选项（默认折叠，减少首屏干扰） */}
+        <button
+          onClick={() => setAdvancedOpen(!advancedOpen)}
+          className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
+        >
+          <svg
+            className={`h-3 w-3 transition-transform duration-200 ${advancedOpen ? 'rotate-90' : ''}`}
+            viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          >
+            <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          高级选项
+        </button>
+
+        {advancedOpen && (
+          <div className="space-y-3 pl-1">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-300">隐身模式</span>
+              <button
+                onClick={() => handleStealthModeChange(!stealthMode)}
+                className={`relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 ${stealthMode ? 'bg-indigo-500' : 'bg-gray-600'}`}
+                title="关闭页面脉冲边框与大块徽章，仅留角落迷你圆点，并随机化注入元素 id"
+              >
+                <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transition-transform duration-200 ${stealthMode ? 'translate-x-5' : 'translate-x-0.5'}`} />
+              </button>
             </div>
+            {stealthMode && (
+              <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-100">
+                页面上仅保留右下角迷你圆点（点击可停止），注入元素 id 随机化。
+              </div>
+            )}
+
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-300">自动审批浏览器操作</span>
+              <button
+                onClick={() => handleAutoApproveBrowserActionsChange(!autoApproveBrowserActions)}
+                className={`relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 ${autoApproveBrowserActions ? 'bg-amber-500' : 'bg-gray-600'}`}
+                title="开启后，点击、输入、导航等浏览器审批会自动允许"
+              >
+                <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transition-transform duration-200 ${autoApproveBrowserActions ? 'translate-x-5' : 'translate-x-0.5'}`} />
+              </button>
+            </div>
+            {autoApproveBrowserActions && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                浏览器操作将自动允许，请只在可信页面使用。
+              </div>
+            )}
+
+            {autoSend && (
+              <div className="bg-gray-900 rounded-lg p-3 space-y-2">
+                <span className="text-xs text-gray-400">自动提交随机延迟（秒）</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    value={delayMin}
+                    onChange={(e) => handleDelayChange(Number(e.target.value), delayMax)}
+                    className="w-16 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-sm text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
+                  />
+                  <span className="text-gray-500 text-sm">~</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={delayMax}
+                    onChange={(e) => handleDelayChange(delayMin, Number(e.target.value))}
+                    className="w-16 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-sm text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
+                  />
+                  <span className="text-xs text-gray-500">秒</span>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
