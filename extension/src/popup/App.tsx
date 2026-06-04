@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
 import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, resolveAutoApproveBrowserActions, resolveAutoExecute } from '../settings'
 
-function normalizeAuthUrl(raw: string): { baseUrl: string; token: string; port: number } {
-  const authUrl = new URL(raw.trim())
+const DEFAULT_PORT = 39527
+
+export function normalizeAuthUrl(raw: string): { baseUrl: string; token: string; port: number } {
+  const trimmed = raw.trim()
+  // 容错：用户可能只粘了 token（64 位 hex），而非完整认证 URL。
+  // 此时默认连本机 39527，省去手动拼 URL。
+  if (/^[0-9a-fA-F]{16,128}$/.test(trimmed)) {
+    return { baseUrl: `http://127.0.0.1:${DEFAULT_PORT}`, token: trimmed, port: DEFAULT_PORT }
+  }
+  const authUrl = new URL(trimmed)
   const token = (authUrl.searchParams.get('token') || '').trim()
   const baseUrl = `${authUrl.protocol}//${authUrl.host}`
   const port = Number(authUrl.port || (authUrl.protocol === 'https:' ? 443 : 80))
@@ -88,6 +96,7 @@ export default function App() {
   const [delayMin, setDelayMin] = useState(1)
   const [delayMax, setDelayMax] = useState(4)
   const [browserRelay, setBrowserRelay] = useState<BrowserRelayStatus>({})
+  const [hasStoredAuth, setHasStoredAuth] = useState(false)
 
   useEffect(() => {
     if (toast) {
@@ -100,10 +109,12 @@ export default function App() {
     chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'delayMin', 'delayMax'], (result) => {
       const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
       if (result.authToken && savedUrl) {
+        setHasStoredAuth(true)
         setStatus('checking')
         setInfo('正在检查本地服务')
         checkConnection(savedUrl, result.authToken)
       } else {
+        setHasStoredAuth(false)
         setStatus('disconnected')
         setInfo('请输入认证 Token URL')
       }
@@ -118,6 +129,36 @@ export default function App() {
       if (result.delayMax !== undefined) setDelayMax(result.delayMax)
     })
   }, [])
+
+  // 轮询：popup 打开期间每 4s 复检一次本地服务状态，这样用户在 popup 开着时
+  // 启停服务也能即时反映，无需手动关开 popup。reconfig 表单展开或正在连接时跳过，
+  // 避免打断输入或与手动连接竞态。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (reconfig || loading) return
+      chrome.storage.local.get(['authToken', 'apiUrl', 'authPort'], (result) => {
+        const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
+        if (result.authToken && savedUrl) {
+          checkConnection(savedUrl, result.authToken, { keepConnected: status === 'connected' })
+        }
+      })
+    }, 4000)
+    return () => clearInterval(timer)
+  }, [reconfig, loading, status])
+
+  const recheckNow = () => {
+    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort'], (result) => {
+      const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
+      if (result.authToken && savedUrl) {
+        setStatus('checking')
+        setInfo('正在检查本地服务')
+        checkConnection(savedUrl, result.authToken)
+      } else {
+        setReconfig(true)
+        setInfo('请输入认证 Token URL')
+      }
+    })
+  }
 
   const ensureContentScripts = (): Promise<EnsureContentResult> => {
     return new Promise(resolve => {
@@ -207,10 +248,11 @@ export default function App() {
         setStatus('disconnected')
         if (error instanceof Error && error.message === 'unauthorized') {
           clearStoredAuth()
+          setHasStoredAuth(false)
           setReconfig(true)
           setInfo('Token 已失效，请重新输入当前 TUI 显示的认证 URL')
         } else {
-          setInfo('服务未运行')
+          setInfo('本地服务未运行，请启动后端（go run ./cmd/server）')
         }
       })
   }
@@ -244,6 +286,7 @@ export default function App() {
         await new Promise<void>(resolve => {
           chrome.storage.local.set({ authToken: tokenValue, apiUrl: baseUrl, authPort: port }, () => resolve())
         })
+        setHasStoredAuth(true)
         setReconfig(false)
         setStatus('connected')
         setInfo('授权成功，正在检查 AI 页面')
@@ -303,6 +346,7 @@ export default function App() {
               onClick={() => {
                 if (!reconfig) {
                   clearStoredAuth()
+                  setHasStoredAuth(false)
                   setStatus('disconnected')
                   setInfo('请输入认证 Token URL')
                 }
@@ -344,7 +388,23 @@ export default function App() {
               </>
             ) : '连接'}
           </button>
+          <p className="text-[11px] leading-snug text-gray-500">
+            粘贴 TUI 显示的认证 URL（或直接粘 token）。授权一次后 token 会持久化，服务重启无需重连。
+          </p>
         </div>
+      )}
+
+      {/* 服务掉线但已有授权：给一键重连，省得用户重开 popup 或重新粘贴 */}
+      {status === 'disconnected' && hasStoredAuth && !reconfig && (
+        <button
+          onClick={recheckNow}
+          className="w-full mb-4 bg-gray-800 hover:bg-gray-700 active:bg-gray-900 text-gray-200 text-sm font-medium rounded-lg py-2 transition-colors cursor-pointer flex items-center justify-center gap-2"
+        >
+          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M4 4v5h5M20 20v-5h-5M5.5 9a7 7 0 0111.9-2.5M18.5 15a7 7 0 01-11.9 2.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          重新连接服务
+        </button>
       )}
 
       {/* Divider */}
@@ -412,7 +472,7 @@ export default function App() {
       </div>
 
       {/* Info */}
-      {info && <div className="mt-3 text-xs text-gray-500 truncate">{info}</div>}
+      {info && <div className="mt-3 text-xs text-gray-500 truncate" title={info}>{info}</div>}
 
       <div className="mt-3 rounded-lg border border-gray-800 bg-gray-900 p-3 text-xs text-gray-400">
         <div className="flex items-center justify-between">

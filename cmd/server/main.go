@@ -30,6 +30,7 @@ func main() {
 	allowedOrigins := flag.String("allowed-origins", "", "允许的 CORS/WS Origin 白名单（逗号分隔），默认仅放行 chrome-extension:// 与 127.0.0.1")
 	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 piercode 进程占用，强制结束该进程")
 	fixedToken := flag.String("token", "", "使用固定的认证 token（而非随机生成），方便扩展重启后自动重连")
+	ephemeralToken := flag.Bool("ephemeral-token", false, "每次启动都随机生成 token（旧行为）。默认会把 token 持久化到 ~/.piercode/token，扩展无需每次重连")
 	flag.Parse()
 
 	absDir, err := filepath.Abs(*dir)
@@ -59,11 +60,18 @@ func main() {
 	ln.Close()
 
 	var token string
-	if *fixedToken != "" {
+	switch {
+	case *fixedToken != "":
 		token = *fixedToken
-	} else {
+	case *ephemeralToken:
 		var err error
 		token, err = security.NewSessionToken()
+		if err != nil {
+			log.Fatal(err)
+		}
+	default:
+		var err error
+		token, err = security.PersistentSessionToken()
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -101,7 +109,10 @@ func main() {
 
 	if *showToken {
 		fmt.Printf("\n认证 URL: http://127.0.0.1:%d/auth?token=%s\n", *port, token)
-		fmt.Printf("请在浏览器扩展中输入此 URL\n")
+		if *fixedToken == "" && !*ephemeralToken {
+			fmt.Printf("（token 已持久化到 ~/.piercode/token，扩展授权一次后重启无需重连）\n")
+		}
+		fmt.Printf("请在浏览器扩展中输入此 URL（仅首次需要）\n")
 	} else {
 		fmt.Printf("\n认证 token 为本次启动临时生成，--show-token=false 已隐藏。\n")
 		fmt.Printf("如需重新授权浏览器插件，请重启并显示认证 URL。\n")
