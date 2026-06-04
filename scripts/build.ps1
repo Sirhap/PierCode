@@ -61,6 +61,10 @@ try {
     go build -ldflags "-s -w" -o (Join-Path $binDir "piercode.exe") ./cmd/server
   }
 
+  Invoke-Step "build piercode-mcp.exe" {
+    go build -ldflags "-s -w" -o (Join-Path $binDir "piercode-mcp.exe") ./cmd/mcp
+  }
+
   Push-Location $extensionDir
   try {
     if (-not (Test-Path "node_modules")) {

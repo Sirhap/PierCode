@@ -32,6 +32,15 @@ type AuthInfo = {
   token: string;
 }
 
+// Fixed local default so the extension auto-connects to a PierCode server
+// started with the matching `-token`, without pasting an auth URL every time.
+// 127.0.0.1-only; the token is a shared local-dev constant, not a secret.
+// Pasting a real auth URL in the popup overrides this (stored auth wins).
+const DEFAULT_FIXED_AUTH: AuthInfo = {
+  apiUrl: 'http://127.0.0.1:39527',
+  token: 'piercode-fixed-local-dev-token-0000000000000000',
+};
+
 type BrowserCommand = {
   type: 'browser_cmd';
   id: string;
@@ -187,7 +196,9 @@ function getAuthInfo(): Promise<AuthInfo | null> {
       } else if (result.authPort && result.authToken) {
         resolve({ apiUrl: `http://127.0.0.1:${result.authPort}`, token: result.authToken });
       } else {
-        resolve(null);
+        // No stored auth → fall back to the fixed local default so a freshly
+        // installed extension connects as soon as a matching server is up.
+        resolve(DEFAULT_FIXED_AUTH);
       }
     });
   });

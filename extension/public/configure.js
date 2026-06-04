@@ -6,6 +6,7 @@ const qwenMaxContextTokens = Number(params.get('qwenMaxContextTokens') || '');
 const qwenMaxSummaryTokens = Number(params.get('qwenMaxSummaryTokens') || '');
 const qwenCompressionEnabled = params.get('qwenCompressionEnabled');
 const qwenE2EBridgeEnabled = params.get('qwenE2EBridgeEnabled');
+const autoApproveBrowserActions = params.get('autoApproveBrowserActions');
 const reloadExtension = params.get('reloadExtension') === 'true';
 
 function setStatus(text, done) {
@@ -36,6 +37,9 @@ if (apiUrl && authToken) {
   }
   if (qwenE2EBridgeEnabled !== null) {
     values.qwenE2EBridgeEnabled = qwenE2EBridgeEnabled === 'true';
+  }
+  if (autoApproveBrowserActions !== null) {
+    values.autoApproveBrowserActions = autoApproveBrowserActions === 'true';
   }
   chrome.storage.local.set(values, () => {
     setStatus(`Configured: ${apiUrl}${reloadExtension ? ' (reloading)' : ''}`, true);

@@ -78,6 +78,65 @@ func TestWSManager_RegisterAndUnregister(t *testing.T) {
 	assert.Equal(t, "hello", received2["data"])
 }
 
+func TestWSManagerClientMetasReturnsInspectableClients(t *testing.T) {
+	m := NewWSManager(nil)
+	defer m.Close()
+
+	connected := time.Unix(1700000000, 0)
+	m.RegisterWithMeta(nil, WSClientMeta{
+		ID:        "content-qwen-1",
+		Client:    "content",
+		Role:      "ai-page",
+		Provider:  "Qwen",
+		Host:      "chat.qwen.ai",
+		Connected: connected,
+	})
+	m.RegisterWithMeta(nil, WSClientMeta{
+		ID:        "relay-1",
+		Client:    "background",
+		Role:      "browser-relay",
+		Provider:  "Extension",
+		Host:      "chrome-extension",
+		Connected: connected.Add(time.Second),
+	})
+
+	metas := m.ClientMetas()
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 client metas, got %#v", metas)
+	}
+	if metas[0].ID != "content-qwen-1" || metas[0].Provider != "Qwen" || metas[0].Host != "chat.qwen.ai" {
+		t.Fatalf("unexpected first client meta: %#v", metas[0])
+	}
+	if metas[1].ID != "relay-1" || metas[1].Role != "browser-relay" {
+		t.Fatalf("unexpected second client meta: %#v", metas[1])
+	}
+}
+
+func TestFindWebAIClientPrefersRecentMatchingAIPage(t *testing.T) {
+	m := NewWSManager(nil)
+	defer m.Close()
+
+	base := time.Unix(1700000000, 0)
+	m.RegisterWithMeta(nil, WSClientMeta{ID: "claude-old", Client: "content", Role: "ai-page", Provider: "Claude", Connected: base})
+	m.RegisterWithMeta(nil, WSClientMeta{ID: "claude-new", Client: "content", Role: "ai-page", Provider: "Claude", Connected: base.Add(time.Minute)})
+	m.RegisterWithMeta(nil, WSClientMeta{ID: "qwen-1", Client: "content", Role: "ai-page", Provider: "Qwen", Connected: base.Add(2 * time.Minute)})
+	m.RegisterWithMeta(nil, WSClientMeta{ID: "relay-1", Client: "background", Role: "browser-relay", Provider: "Extension", Connected: base.Add(3 * time.Minute)})
+
+	if got := m.FindWebAIClient("Claude"); got != "claude-new" {
+		t.Fatalf("expected most recent Claude ai-page, got %q", got)
+	}
+	if got := m.FindWebAIClient("Qwen"); got != "qwen-1" {
+		t.Fatalf("expected qwen-1, got %q", got)
+	}
+	if got := m.FindWebAIClient("Gemini"); got != "" {
+		t.Fatalf("expected no match for Gemini, got %q", got)
+	}
+	// Empty provider matches any AI page but never the browser relay.
+	if got := m.FindWebAIClient(""); got == "" || got == "relay-1" {
+		t.Fatalf("empty provider should resolve to an ai-page, got %q", got)
+	}
+}
+
 func TestWSManager_BroadcastConcurrent(t *testing.T) {
 	m := NewWSManager(nil)
 	m.Start()

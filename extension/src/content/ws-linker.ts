@@ -75,6 +75,23 @@ export type BrowserAttachmentUploadMessage = {
   bytes?: number;
 };
 
+export type WebAIQueryMessage = {
+  type: 'ai_query';
+  query_id: string;
+  call_id?: string;
+  text: string;
+  provider?: string;
+  client_id?: string;
+  timeout_ms?: number;
+};
+
+export type WebAIQueryCancelMessage = {
+  type: 'ai_query_cancel';
+  query_id: string;
+  call_id?: string;
+  reason?: string;
+};
+
 type StreamHandler = (msg: ToolStreamMessage) => void;
 type DoneHandler = (msg: ToolDoneMessage) => void;
 type QuestionAskHandler = (msg: QuestionAskMessage) => void;
@@ -82,6 +99,8 @@ type QuestionCancelHandler = (msg: QuestionCancelMessage) => void;
 type BrowserApprovalAskHandler = (msg: BrowserApprovalAskMessage) => void;
 type BrowserApprovalDoneHandler = (msg: BrowserApprovalDoneMessage) => void;
 type BrowserAttachmentUploadHandler = (msg: BrowserAttachmentUploadMessage) => void;
+type WebAIQueryHandler = (msg: WebAIQueryMessage) => void;
+type WebAIQueryCancelHandler = (msg: WebAIQueryCancelMessage) => void;
 
 const streamHandlers: StreamHandler[] = [];
 const doneHandlers: DoneHandler[] = [];
@@ -90,6 +109,8 @@ const questionCancelHandlers: QuestionCancelHandler[] = [];
 const browserApprovalAskHandlers: BrowserApprovalAskHandler[] = [];
 const browserApprovalDoneHandlers: BrowserApprovalDoneHandler[] = [];
 const browserAttachmentUploadHandlers: BrowserAttachmentUploadHandler[] = [];
+const webAIQueryHandlers: WebAIQueryHandler[] = [];
+const webAIQueryCancelHandlers: WebAIQueryCancelHandler[] = [];
 const answeredBrowserApprovals = new Set<string>();
 
 function getOrCreateClientId(): string {
@@ -185,6 +206,22 @@ export function onBrowserAttachmentUpload(handler: BrowserAttachmentUploadHandle
   };
 }
 
+export function onWebAIQuery(handler: WebAIQueryHandler): () => void {
+  webAIQueryHandlers.push(handler);
+  return () => {
+    const idx = webAIQueryHandlers.indexOf(handler);
+    if (idx >= 0) webAIQueryHandlers.splice(idx, 1);
+  };
+}
+
+export function onWebAIQueryCancel(handler: WebAIQueryCancelHandler): () => void {
+  webAIQueryCancelHandlers.push(handler);
+  return () => {
+    const idx = webAIQueryCancelHandlers.indexOf(handler);
+    if (idx >= 0) webAIQueryCancelHandlers.splice(idx, 1);
+  };
+}
+
 function clearStoredAuth(): Promise<void> {
   return new Promise(resolve => {
     chrome.storage.local.remove(["authToken", "apiUrl", "authPort"], () => resolve());
@@ -248,7 +285,7 @@ function toWebSocketUrl(apiUrl: string, token: string): string | null {
     url.searchParams.set("id", PAGE_CLIENT_ID);
     url.searchParams.set("client", "content");
     url.searchParams.set("role", "ai-page");
-    url.searchParams.set("provider", currentProvider());
+    url.searchParams.set("provider", getCurrentProviderName());
     url.searchParams.set("host", location.hostname);
     return url.toString();
   } catch {
@@ -280,7 +317,7 @@ function disconnectWebSocket(state: BridgeState = 'not_configured') {
   setBridgeStatus(state, '');
 }
 
-function currentProvider(): string {
+export function getCurrentProviderName(): string {
   const h = location.hostname.toLowerCase();
   if (h.includes("qwen.ai") || h.includes("qwenlm.ai")) return "Qwen";
   if (h.includes("claude.ai") || h.includes("free.easychat.top")) return "Claude";
@@ -334,6 +371,8 @@ function getInjectConfig(): InjectConfig {
         "textarea[placeholder*='Qwen']",
         "textarea[placeholder*='Send']",
         "textarea[placeholder*='输入']",
+        "textarea[placeholder*='有什么']",
+        "[role='textbox']",
         "[contenteditable='true']"
       ].join(","),
       sendBtn: [
@@ -430,7 +469,7 @@ function getInjectConfig(): InjectConfig {
 function querySelectorFirst(selectors: string): HTMLElement | null {
   for (const selector of selectors.split(",").map(s => s.trim()).filter(Boolean)) {
     const el = document.querySelector(selector) as HTMLElement | null;
-    if (el && isVisibleInput(el)) return el;
+    if (el && isVisibleInput(el) && !isInteractiveCandidateInsideAIResponse(el)) return el;
   }
   return null;
 }
@@ -444,6 +483,32 @@ function isVisibleInput(el: HTMLElement): boolean {
     style.visibility !== "hidden" &&
     style.opacity !== "0" &&
     el.getAttribute("aria-hidden") !== "true";
+}
+
+function isInteractiveCandidateInsideAIResponse(el: HTMLElement): boolean {
+  const label = [
+    el.getAttribute("placeholder") || "",
+    el.getAttribute("aria-label") || "",
+    el.getAttribute("title") || "",
+  ].join(" ");
+  if (/\bsearch\b|搜索/i.test(label)) return true;
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+    return false;
+  }
+  return !!el.closest([
+    "pre",
+    "code",
+    ".monaco-editor",
+    ".cm-editor",
+    ".qwen-markdown-code",
+    ".qwen-chat-message-assistant",
+    ".response-message-content.phase-answer",
+    "[data-message-author-role='assistant']",
+    ".font-claude-response",
+    ".segment-assistant",
+    "message-content",
+    "ms-chat-turn",
+  ].join(","));
 }
 
 function connectWebSocket(apiUrl: string, token: string) {
@@ -509,6 +574,14 @@ function connectWebSocket(apiUrl: string, token: string) {
         } else if (msg.type === "question_cancel" && typeof msg.call_id === "string") {
           for (const handler of questionCancelHandlers.slice()) {
             try { handler(msg as QuestionCancelMessage); } catch (e) { console.error(e); }
+          }
+        } else if (msg.type === "ai_query" && typeof msg.query_id === "string" && typeof msg.text === "string") {
+          for (const handler of webAIQueryHandlers.slice()) {
+            try { handler(msg as WebAIQueryMessage); } catch (e) { console.error(e); }
+          }
+        } else if (msg.type === "ai_query_cancel" && typeof msg.query_id === "string") {
+          for (const handler of webAIQueryCancelHandlers.slice()) {
+            try { handler(msg as WebAIQueryCancelMessage); } catch (e) { console.error(e); }
           }
         } else if (msg.type === "browser_approval_ask" && typeof msg.approval_id === "string") {
           for (const handler of browserApprovalAskHandlers.slice()) {
@@ -617,6 +690,18 @@ function fillTargetInput(targetInput: HTMLTextAreaElement | HTMLInputElement | H
 }
 
 function clickSendButton(config: InjectConfig, targetInput: HTMLElement, attempts = 0) {
+  if (isQwenPage()) {
+    targetInput.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Enter",
+      code: "Enter",
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true
+    }));
+    return;
+  }
+
   const sendBtn = querySelectorFirst(config.sendBtn);
   if (sendBtn) {
     sendBtn.click();
@@ -774,6 +859,34 @@ export function sendBrowserAttachmentUploadResult(callID: string, ok: boolean, e
     return true;
   } catch (err) {
     console.warn("[PierCode] attachment upload result 发送失败:", err);
+    return false;
+  }
+}
+
+export function sendWebAIQueryResult(queryID: string, result: {
+  callID?: string;
+  provider?: string;
+  url?: string;
+  text?: string;
+  error?: string;
+}): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn("[PierCode] WebSocket 未连接，无法发送 web AI query result");
+    return false;
+  }
+  try {
+    ws.send(JSON.stringify({
+      type: "ai_query_result",
+      query_id: queryID,
+      call_id: result.callID,
+      provider: result.provider,
+      url: result.url,
+      text: result.text || "",
+      error: result.error || "",
+    }));
+    return true;
+  } catch (err) {
+    console.warn("[PierCode] web AI query result 发送失败:", err);
     return false;
   }
 }

@@ -1,10 +1,11 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
 import { extractMonacoText, findQwenToolBody, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
-import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId } from './ws-linker';
+import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, onWebAIQuery, onWebAIQueryCancel, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, sendWebAIQueryResult, getPierCodeClientId, getCurrentProviderName } from './ws-linker';
 import { visualIndicator } from './visual-indicator';
 import { exposeAccessibilityTree, generateAccessibilityTree, getElementCoordinates, scrollToElement, clickElement, searchElements } from './accessibility-tree';
 import { SinglePacketWaiter } from './qwen-context-packet-waiter';
+import { shouldHandleWebAIQuery, StableWebAIResponseWaiter, WebAIQueryMessage, WebAIResponseCandidate } from './web-ai-query';
 import {
   compactToolOutputForChat,
   ConversationContext,
@@ -17,7 +18,7 @@ import {
   shouldCompress
 } from './qwen-context-compress';
 import { QwenCompressionConfig, resolveQwenCompressionConfig } from './qwen-settings';
-import { dispatchEnterAsSendFallback } from './send-fallback';
+import { dispatchEnterAsSendFallback, setContentEditableValueAndNotify, setTextAreaValueAndNotify } from './send-fallback';
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
@@ -31,6 +32,8 @@ let pageBridgeInjected = false;
 let monacoIdSeq = 0;
 let monacoRequestSeq = 0;
 const CONTEXT_INVALID_MESSAGE = '扩展已失效，请刷新页面';
+const DEFAULT_WEB_AI_QUERY_TIMEOUT_MS = 5 * 60 * 1000;
+const MAX_WEB_AI_QUERY_TIMEOUT_MS = 30 * 60 * 1000;
 let lastContextInvalidNoticeAt = 0;
 let responseSessionActivatedAt = 0;
 
@@ -958,7 +961,7 @@ function getSiteConfig(): SiteConfig {
   if (h.includes('chatgpt.com') || h.includes('chat.openai.com'))
     return {
       editor: 'div#prompt-textarea.ProseMirror[contenteditable="true"], div#prompt-textarea[contenteditable="true"], div.ProseMirror[contenteditable="true"][aria-label*="ChatGPT"], textarea[name="prompt-textarea"]',
-      sendBtn: 'button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled]), button[aria-label*="提交"]:not([disabled])',
+      sendBtn: 'button#composer-submit-button:not([disabled]), button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled]), button[aria-label*="发送提示"]:not([disabled]), button[aria-label*="提交"]:not([disabled])',
       stopBtn: null,
       fillMethod: 'execCommand',
       useObserver: true,
@@ -974,6 +977,8 @@ function getSiteConfig(): SiteConfig {
         'textarea[placeholder*="Qwen"]',
         'textarea[placeholder*="Send"]',
         'textarea[placeholder*="输入"]',
+        'textarea[placeholder*="有什么"]',
+        '[role="textbox"]',
         '[contenteditable="true"]'
       ].join(','),
       sendBtn: [
@@ -1590,6 +1595,135 @@ function startDOMObserver(_responseSelector: string) {
   const aiLogKeys = new WeakMap<Element, string>();
   const aiLastSentAt = new WeakMap<Element, number>();
   let loadingLastSentAt = 0;
+  let activeWebAIQuery: { queryID: string; waiter: StableWebAIResponseWaiter } | null = null;
+
+  onWebAIQuery(msg => {
+    void handleWebAIQuery(msg);
+  });
+  onWebAIQueryCancel(msg => {
+    if (activeWebAIQuery?.queryID === msg.query_id) {
+      activeWebAIQuery.waiter.cancel(msg.reason || 'web AI query cancelled');
+    }
+  });
+
+  async function handleWebAIQuery(msg: WebAIQueryMessage): Promise<void> {
+    if (!shouldHandleWebAIQuery(msg, {
+      provider: getCurrentProviderName(),
+      clientId: getPierCodeClientId(),
+    })) {
+      return;
+    }
+
+    if (activeWebAIQuery) {
+      sendWebAIQueryFailure(msg, 'another web AI query is already running in this tab');
+      return;
+    }
+
+    const prompt = msg.text.trim();
+    if (!prompt) {
+      sendWebAIQueryFailure(msg, 'web AI query prompt is empty');
+      return;
+    }
+
+    const initialElements = Array.from(document.querySelectorAll(responseContainerSelector()));
+    const initialTexts = initialElements.map(element => getCleanText(element));
+    const waiter = new StableWebAIResponseWaiter({
+      collect: collectWebAIResponseCandidates,
+      initialElements,
+      initialTexts,
+      observeRoot: document.body,
+      timeoutMs: resolveWebAIQueryTimeoutMs(msg.timeout_ms),
+      // Most platform configs have no stopBtn, so isGenerating() is often
+      // false and this quiet window is the only completion signal. Keep it
+      // wide enough that a mid-stream pause (code block, reasoning gap) is not
+      // mistaken for the end of the answer; +latency is negligible next to a
+      // full AI turn. The real fix is per-adapter streaming detection.
+      stableMs: 2500,
+      pollMs: 250,
+      isGenerating: () => isSendBlockedByRunningResponse(getSiteConfig().stopBtn),
+      ignoreText: isIgnorableWebAIResponseText,
+      emptyCandidateTimeoutMs: getCurrentProviderName() === 'ChatGPT' ? 90_000 : undefined,
+    });
+    activeWebAIQuery = { queryID: msg.query_id, waiter };
+
+    try {
+      showToast('Claude Code 正在询问当前 AI 页面...', 3000);
+      const responsePromise = waiter.wait();
+      activateResponseSession();
+      const sent = await fillAndSend(prompt, true, { forceSend: true, immediate: true });
+      if (!sent) {
+        waiter.cancel('failed to send prompt to current AI page');
+      }
+      const response = await responsePromise;
+      sendWebAIQueryResult(msg.query_id, {
+        callID: msg.call_id,
+        provider: getCurrentProviderName(),
+        url: location.href,
+        text: response.text,
+      });
+    } catch (error) {
+      const recoveredText = recoverWebAIResponseFromDOM(prompt);
+      if (recoveredText) {
+        sendWebAIQueryResult(msg.query_id, {
+          callID: msg.call_id,
+          provider: getCurrentProviderName(),
+          url: location.href,
+          text: recoveredText,
+        });
+        return;
+      }
+      sendWebAIQueryFailure(msg, error instanceof Error ? error.message : String(error));
+    } finally {
+      if (activeWebAIQuery?.queryID === msg.query_id) {
+        activeWebAIQuery = null;
+      }
+    }
+  }
+
+  function sendWebAIQueryFailure(msg: WebAIQueryMessage, error: string): void {
+    sendWebAIQueryResult(msg.query_id, {
+      callID: msg.call_id,
+      provider: getCurrentProviderName(),
+      url: location.href,
+      error,
+    });
+  }
+
+  function collectWebAIResponseCandidates(): WebAIResponseCandidate[] {
+    const generating = isSendBlockedByRunningResponse(getSiteConfig().stopBtn);
+    return Array.from(document.querySelectorAll(responseContainerSelector())).map(element => ({
+      element,
+      text: getCleanText(element),
+      isGenerating: generating,
+    }));
+  }
+
+  function isIgnorableWebAIResponseText(text: string): boolean {
+    const normalized = text.trim().replace(/\s+/g, ' ');
+    if (!normalized) return true;
+    return [
+      '已经完成思考',
+      '思考中',
+      'Thinking',
+      'Done thinking',
+      'Completed thinking',
+    ].some(noise => normalized === noise);
+  }
+
+  function recoverWebAIResponseFromDOM(prompt: string): string {
+    const marker = prompt.match(/\bpc-[a-z0-9][a-z0-9-]*\b/i)?.[0] || '';
+    if (marker && !document.body?.innerText.includes(marker)) return '';
+
+    const candidates = collectWebAIResponseCandidates()
+      .map(candidate => candidate.text.trim())
+      .filter(text => text.length >= 40 && !isIgnorableWebAIResponseText(text));
+    if (!candidates.length) return '';
+
+    const markerCandidates = marker
+      ? candidates.filter(text => text.includes(marker))
+      : [];
+    return (markerCandidates[markerCandidates.length - 1] || candidates[candidates.length - 1] || '').trim();
+  }
 
   function notifyQwenOverflowOnce(codeText: string): void {
     const key = String(hashStr(codeText.slice(0, 500)));
@@ -2132,7 +2266,7 @@ function showCountdownToast(ms: number, onFire: () => void): void {
 function querySelectorFirst(selectors: string): HTMLElement | null {
   for (const sel of selectors.split(',').map(s => s.trim())) {
     const el = document.querySelector(sel) as HTMLElement | null;
-    if (el && isVisibleElement(el)) return el;
+    if (el && isVisibleElement(el) && !isInteractiveCandidateInsideAIResponse(el)) return el;
   }
   return null;
 }
@@ -2162,6 +2296,32 @@ function isVisibleElement(el: HTMLElement): boolean {
     el.getAttribute('aria-hidden') !== 'true';
 }
 
+function isInteractiveCandidateInsideAIResponse(el: HTMLElement): boolean {
+  const label = [
+    el.getAttribute('placeholder') || '',
+    el.getAttribute('aria-label') || '',
+    el.getAttribute('title') || '',
+  ].join(' ');
+  if (/\bsearch\b|搜索/i.test(label)) return true;
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+    return false;
+  }
+  return !!el.closest([
+    'pre',
+    'code',
+    '.monaco-editor',
+    '.cm-editor',
+    '.qwen-markdown-code',
+    '.qwen-chat-message-assistant',
+    '.response-message-content.phase-answer',
+    '[data-message-author-role="assistant"]',
+    '.font-claude-response',
+    '.segment-assistant',
+    'message-content',
+    'ms-chat-turn',
+  ].join(','));
+}
+
 function isQwenPage(): boolean {
   const h = location.hostname.toLowerCase();
   return h.includes('qwen.ai') || h.includes('qwenlm.ai');
@@ -2182,11 +2342,44 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function resolveWebAIQueryTimeoutMs(timeoutMs: number | undefined): number {
+  if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return DEFAULT_WEB_AI_QUERY_TIMEOUT_MS;
+  }
+  return Math.min(Math.max(timeoutMs, 1000), MAX_WEB_AI_QUERY_TIMEOUT_MS);
+}
+
 function isSendBlockedByRunningResponse(stopBtnSel: string | null): boolean {
   return !!stopBtnSel && !!querySelectorFirst(stopBtnSel);
 }
 
-async function clickSendWhenReady(siteConfig: SiteConfig, timeoutMs: number): Promise<boolean> {
+async function clickSendWhenReady(siteConfig: SiteConfig, timeoutMs: number, submittedText = ''): Promise<boolean> {
+  if (isQwenPage()) {
+    const editor = querySelectorFirst(siteConfig.editor);
+    if (editor) {
+      const deadline = Date.now() + Math.min(timeoutMs, 15000);
+      while (Date.now() < deadline) {
+        if (!isSendBlockedByRunningResponse(siteConfig.stopBtn)) {
+          const sendBtn = querySelectorFirst(siteConfig.sendBtn);
+          if (sendBtn) {
+            sendBtn.click();
+            return true;
+          } else {
+            dispatchEnterAsSendFallback(editor);
+          }
+        }
+        await sleep(250);
+        if (textAppearsOutsideElement(submittedText, editor)) return true;
+        if (!getEditorText(editor).trim()) return true;
+      }
+      dispatchEnterAsSendFallback(editor);
+      await sleep(250);
+      if (textAppearsOutsideElement(submittedText, editor)) return true;
+      if (!getEditorText(editor).trim()) return true;
+      return false;
+    }
+  }
+
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!isSendBlockedByRunningResponse(siteConfig.stopBtn)) {
@@ -2203,6 +2396,24 @@ async function clickSendWhenReady(siteConfig: SiteConfig, timeoutMs: number): Pr
     const ed = querySelectorFirst(siteConfig.editor);
     if (ed) {
       return dispatchEnterAsSendFallback(ed);
+    }
+  }
+  return false;
+}
+
+function textAppearsOutsideElement(text: string, excluded: HTMLElement): boolean {
+  const needle = text.trim().replace(/\s+/g, ' ').slice(0, 80);
+  if (!needle || !document.body) return false;
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const chunks: string[] = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const parent = node.parentElement;
+    if (!parent || excluded.contains(parent)) continue;
+    if (parent.closest('script,style,noscript')) continue;
+    chunks.push(node.textContent || '');
+    if (chunks.join(' ').replace(/\s+/g, ' ').includes(needle)) {
+      return true;
     }
   }
   return false;
@@ -2225,20 +2436,17 @@ async function fillAndSend(result: string, autoSend = false, options: { forceSen
     dataTransfer.setData('text/plain', result);
     editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dataTransfer, bubbles: true, cancelable: true }));
   } else if (method === 'execCommand') {
-    document.execCommand('insertText', false, result);
+    const current = getEditorText(editor).trim();
+    const next = current ? `${current}\n${result}` : result;
+    setContentEditableValueAndNotify(editor, next);
   } else if (method === 'value') {
     const ta = editor as HTMLTextAreaElement;
-    const nativeInputValueSetter = getNativeSetter();
     const current = ta.value;
     const next = current ? current + '\n' + result : result;
-    if (nativeInputValueSetter) nativeInputValueSetter.call(ta, next);
-    else ta.value = next;
-    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    setTextAreaValueAndNotify(ta, next);
   } else if (method === 'prosemirror') {
     const current = editor.innerText.trim();
-    editor.textContent = current ? current + '\n' + result : result;
-    editor.dispatchEvent(new Event('input', { bubbles: true }));
-    editor.dispatchEvent(new Event('change', { bubbles: true }));
+    setContentEditableValueAndNotify(editor, current ? current + '\n' + result : result);
   }
 
   if (autoSend) {
@@ -2247,7 +2455,7 @@ async function fillAndSend(result: string, autoSend = false, options: { forceSen
     if (cfg.autoSend === false && !options.forceSend) return true;
 
     if (options.immediate) {
-      const clicked = await clickSendWhenReady(siteConfig, isQwenPage() ? 90000 : 5000);
+      const clicked = await clickSendWhenReady(siteConfig, isQwenPage() ? 90000 : 5000, result);
       if (!clicked) return false;
     } else {
       const min = (cfg.delayMin ?? 1) * 1000;

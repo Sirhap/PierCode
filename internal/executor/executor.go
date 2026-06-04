@@ -29,6 +29,7 @@ type Executor struct {
 	tasks             *TaskManager
 	broadcast         atomic.Pointer[func([]byte)]
 	broadcastToClient atomic.Pointer[func(string, []byte) bool]
+	pickWebAIClient   atomic.Pointer[func(string) string]
 	browserMu         sync.RWMutex
 	browser           tool.BrowserController
 }
@@ -67,6 +68,17 @@ func (e *Executor) SetClientBroadcaster(fn func(string, []byte) bool) {
 	e.broadcastToClient.Store(&fn)
 }
 
+// SetWebAIClientPicker wires a resolver that maps a requested provider to a
+// single connected AI-page WebSocket client id (empty if none match). Lets
+// ask_web_ai target one tab instead of broadcasting to every connected page.
+func (e *Executor) SetWebAIClientPicker(fn func(string) string) {
+	if fn == nil {
+		e.pickWebAIClient.Store(nil)
+		return
+	}
+	e.pickWebAIClient.Store(&fn)
+}
+
 func (e *Executor) SetBrowserController(controller tool.BrowserController) {
 	e.browserMu.Lock()
 	e.browser = controller
@@ -98,6 +110,7 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewUndoTool(config))
 	e.registry.Register(tool.NewWebFetchTool())
 	e.registry.Register(tool.NewQuestionTool())
+	e.registry.Register(tool.NewAskWebAITool())
 	e.registry.Register(tool.NewSkillTool(config))
 	e.registry.Register(tool.NewTodoWriteTool(config))
 	e.registry.Register(tool.NewTodoReadTool(config))
@@ -221,6 +234,9 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	if bp := e.broadcastToClient.Load(); bp != nil {
 		toolCtx.BroadcastToClient = *bp
 	}
+	if pp := e.pickWebAIClient.Load(); pp != nil {
+		toolCtx.PickWebAIClient = *pp
+	}
 	toolCtx.SourceClientID = req.SourceClientID
 
 	unlock := e.lockForTool(req.Name)
@@ -298,6 +314,13 @@ func (e *Executor) ListTools() []tool.ToolInfo {
 }
 
 func (e *Executor) lockForTool(name string) func() {
+	// ask_web_ai blocks on a remote browser AI response for up to 30 minutes
+	// and touches no filesystem state. Holding the shared RLock that long would
+	// stall every write tool, and — because Go's RWMutex blocks new readers once
+	// a writer is waiting — would then stall reads too. Run it lock-free.
+	if strings.EqualFold(strings.TrimSpace(name), "ask_web_ai") {
+		return func() {}
+	}
 	if isReadOnlyTool(name) {
 		e.toolMu.RLock()
 		return e.toolMu.RUnlock
@@ -309,6 +332,7 @@ func (e *Executor) lockForTool(name string) func() {
 func isReadOnlyTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question", "tool_help",
+		"ask_web_ai",
 		"todo_read", "task_list", "task_output", "browser_tabs", "browser_snapshot",
 		"browser_screenshot", "browser_wait", "browser_wait_for_function", "browser_get_content",
 		"browser_pdf", "browser_console", "browser_network",

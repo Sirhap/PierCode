@@ -54,6 +54,11 @@ type Context struct {
 	// this so multi-tab sessions do not receive the same attachment event.
 	BroadcastToClient func(clientID string, payload []byte) bool
 
+	// PickWebAIClient, if set, resolves a requested provider to a single
+	// connected AI-page WebSocket client id (empty if none match). ask_web_ai
+	// uses it to target one tab instead of broadcasting to every page.
+	PickWebAIClient func(provider string) string
+
 	// SourceClientID is the WebSocket client id of the AI page that initiated
 	// this tool call, when the call came through the browser extension.
 	SourceClientID string

@@ -70,6 +70,48 @@ http://127.0.0.1:39527/auth?token=<token>
 
 如果 AI 页面在扩展安装前已经打开，安装后需要刷新页面。
 
+## Claude Code / MCP 对接
+
+PierCode 提供一个 stdio MCP server：`cmd/mcp`。它不会替换 Claude Code 的内置提示词和工具调用规范，只向 Claude Code 额外暴露一个 `ask_web_ai` 工具。调用链路是：
+
+```text
+Claude Code MCP tool call
+  -> go run ./cmd/mcp
+  -> PierCode POST /exec ask_web_ai
+  -> 浏览器扩展 WebSocket
+  -> 当前 AI 网页输入框
+  -> 等待网页 AI 响应稳定
+  -> WebSocket 回传
+  -> MCP tool result 返回 Claude Code
+```
+
+建议用固定 token 启动 PierCode，避免每次重启都要改 MCP 配置：
+
+```powershell
+go run ./cmd/server -dir . -token piercode-dev-token
+```
+
+在 Claude Code 的 MCP 配置中添加一个 stdio server，命令等价于：
+
+```powershell
+go run ./cmd/mcp
+```
+
+并设置环境变量：
+
+```powershell
+$env:PIERCODE_API_URL = "http://127.0.0.1:39527"
+$env:PIERCODE_TOKEN = "piercode-dev-token"
+```
+
+也可以不用环境变量，直接传参：
+
+```powershell
+go run ./cmd/mcp -api http://127.0.0.1:39527 -token piercode-dev-token
+```
+
+使用前需要至少打开一个已授权并连接 PierCode 的 AI 页面，例如 `https://claude.ai`。默认 provider 是 `Claude`；也可以让 Claude Code 调用时传 `provider: "Qwen"`、`"ChatGPT"`、`"Gemini"`、`"Kimi"` 等，或传 `client_id` 精确指定某个浏览器标签页。网页 AI 返回内容会作为“不可信外部建议”返回给 Claude Code，仍需要 Claude Code 和用户自行验证，不能直接当作安全事实执行。
+
 ## 构建二进制
 
 一键验证、构建并打包 Windows 产物：
@@ -82,6 +124,7 @@ http://127.0.0.1:39527/auth?token=<token>
 
 - `bin\piercode-cli.exe`
 - `bin\piercode.exe`
+- `bin\piercode-mcp.exe`
 - `piercode_windows_amd64.zip`
 - `extension.zip`
 
@@ -95,11 +138,13 @@ http://127.0.0.1:39527/auth?token=<token>
 
 ```powershell
 go build -o piercode.exe ./cmd/server
+go build -o piercode-mcp.exe ./cmd/mcp
 ```
 
 这些构建产物不需要提交：
 
 - `piercode.exe`
+- `piercode-mcp.exe`
 - `extension/dist/`
 - `release/`
 - `release-packages/`
@@ -119,6 +164,7 @@ go build -o piercode.exe ./cmd/server
 | `web_fetch` | 获取 HTTP 页面内容 |
 | `skill` | 加载本地 skill 文档 |
 | `question` | 向用户提问 |
+| `ask_web_ai` | 通过已连接的浏览器 AI 页面提问并等待答案，主要用于 Claude Code MCP 场景 |
 | `todo_write` | 写入 `.todos.json` 任务状态 |
 | `browser_tabs` / `browser_new_tab` / `browser_use_tab` | 列出、创建、选择 Chrome 受控标签页；控制 AI 对话页前必须显式选择并审批 |
 | `browser_navigate` / `browser_snapshot` | 导航受控标签页并读取可访问性树快照；页面理解优先使用 snapshot refs |

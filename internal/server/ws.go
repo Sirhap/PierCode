@@ -29,6 +29,7 @@ type clientConn struct {
 	client    string
 	role      string
 	provider  string
+	host      string
 	connected time.Time
 	closeOnce sync.Once
 }
@@ -38,6 +39,7 @@ type WSClientMeta struct {
 	Client    string
 	Role      string
 	Provider  string
+	Host      string
 	Connected time.Time
 }
 
@@ -112,6 +114,7 @@ func (m *WSManager) RegisterWithMeta(conn *websocket.Conn, meta WSClientMeta) {
 		client:    strings.TrimSpace(meta.Client),
 		role:      strings.TrimSpace(meta.Role),
 		provider:  normalizeProvider(meta.Provider),
+		host:      strings.TrimSpace(meta.Host),
 		connected: meta.Connected,
 	}
 	m.clientsMu.Lock()
@@ -161,6 +164,55 @@ func (m *WSManager) ProviderCounts() map[string]int {
 		counts[normalizeProvider(cc.provider)]++
 	}
 	return counts
+}
+
+func (m *WSManager) ClientMetas() []WSClientMeta {
+	m.clientsMu.RLock()
+	defer m.clientsMu.RUnlock()
+	metas := make([]WSClientMeta, 0, len(m.clients))
+	for cc := range m.clients {
+		metas = append(metas, WSClientMeta{
+			ID:        cc.id,
+			Client:    cc.client,
+			Role:      cc.role,
+			Provider:  normalizeProvider(cc.provider),
+			Host:      cc.host,
+			Connected: cc.connected,
+		})
+	}
+	sort.Slice(metas, func(i, j int) bool {
+		if metas[i].Connected.Equal(metas[j].Connected) {
+			return metas[i].ID < metas[j].ID
+		}
+		return metas[i].Connected.Before(metas[j].Connected)
+	})
+	return metas
+}
+
+// FindWebAIClient returns the id of a connected AI-page client whose provider
+// matches the requested one, preferring the most recently connected tab. An
+// empty requested provider matches any AI page. Returns "" when none match, so
+// ask_web_ai can fail fast instead of waiting on a broadcast nobody handles.
+func (m *WSManager) FindWebAIClient(provider string) string {
+	want := normalizeProvider(strings.TrimSpace(provider))
+	matchAny := strings.TrimSpace(provider) == "" || want == "Browser"
+	m.clientsMu.RLock()
+	defer m.clientsMu.RUnlock()
+	var bestID string
+	var bestAt time.Time
+	for cc := range m.clients {
+		if cc.role != "ai-page" || cc.id == "" {
+			continue
+		}
+		if !matchAny && normalizeProvider(cc.provider) != want {
+			continue
+		}
+		if bestID == "" || cc.connected.After(bestAt) {
+			bestID = cc.id
+			bestAt = cc.connected
+		}
+	}
+	return bestID
 }
 
 func (m *WSManager) RoleCount(role string) int {

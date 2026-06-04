@@ -708,7 +708,7 @@ func TestHandleStatsIncludesTaskCounts(t *testing.T) {
 	}
 	var body map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&body)
-	for _, k := range []string{"tasks_total", "tasks_running", "browser_clients"} {
+	for _, k := range []string{"tasks_total", "tasks_running", "browser_clients", "browser_client_details"} {
 		if _, ok := body[k]; !ok {
 			t.Errorf("stats missing key %q; body=%v", k, body)
 		}

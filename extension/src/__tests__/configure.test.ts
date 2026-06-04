@@ -119,6 +119,34 @@ describe('extension configure page', () => {
     );
   });
 
+  it('optionally stores auto approve browser actions for real E2E runs', () => {
+    const script = fs.readFileSync(configureScriptPath, 'utf8');
+    const dom = new JSDOMWithOptions('<!doctype html><div id="status">Configuring...</div>', {
+      url: 'chrome-extension://piercode/configure.html?apiUrl=http%3A%2F%2F127.0.0.1%3A39527&token=dev-token&autoApproveBrowserActions=true'
+    });
+    const set: any = vi.fn((_values: unknown, callback: () => void) => callback());
+
+    Object.assign(dom.window, {
+      chrome: {
+        storage: {
+          local: { set }
+        }
+      }
+    });
+
+    vm.createContext(dom.window);
+    vm.runInContext(script, dom.window);
+
+    expect(set).toHaveBeenCalledWith(
+      {
+        apiUrl: 'http://127.0.0.1:39527',
+        authToken: 'dev-token',
+        autoApproveBrowserActions: true,
+      },
+      expect.any(Function)
+    );
+  });
+
   it('can reload the extension after storing configuration', () => {
     vi.useFakeTimers();
     try {

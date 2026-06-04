@@ -75,6 +75,9 @@ func New(config *types.Config) *Server {
 	s.executor.SetClientBroadcaster(func(clientID string, payload []byte) bool {
 		return s.ws.SendToID(clientID, payload)
 	})
+	s.executor.SetWebAIClientPicker(func(provider string) string {
+		return s.ws.FindWebAIClient(provider)
+	})
 
 	// Wire background task events into the WebSocket broadcast channel so any
 	// connected extension / TUI sees live stdout and completion notices.
@@ -170,6 +173,17 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/tasks/:id", s.handleGetTask)
 	s.router.POST("/tasks/:id/stop", s.handleStopTask)
 	s.router.POST("/question_answer", s.handleQuestionAnswer)
+
+	// Anthropic Messages API impersonation. Point Claude Code at this server via
+	// ANTHROPIC_BASE_URL and it will POST here instead of api.anthropic.com.
+	s.router.POST("/v1/messages", s.handleAnthropicMessages)
+	// OpenAI Chat Completions impersonation. Point Codex / any OpenAI client at
+	// this server via OPENAI_BASE_URL (with OPENAI_API_KEY set to the PierCode
+	// token) and it will POST here instead of api.openai.com.
+	s.router.POST("/v1/chat/completions", s.handleOpenAIChatCompletions)
+	// OpenAI Responses API impersonation. Modern Codex (>=0.137) speaks only this
+	// wire protocol; point its custom model_provider base_url here.
+	s.router.POST("/v1/responses", s.handleOpenAIResponses)
 }
 
 func (s *Server) handleHealth(c *gin.Context) {
@@ -230,11 +244,12 @@ func (s *Server) handleStats(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"browser_clients":   s.ws.ClientCount(),
-		"browser_relays":    s.ws.RoleCount("browser-relay"),
-		"browser_providers": s.ws.ProviderCounts(),
-		"tasks_total":       totalTasks,
-		"tasks_running":     runningTasks,
+		"browser_clients":        s.ws.ClientCount(),
+		"browser_client_details": s.ws.ClientMetas(),
+		"browser_relays":         s.ws.RoleCount("browser-relay"),
+		"browser_providers":      s.ws.ProviderCounts(),
+		"tasks_total":            totalTasks,
+		"tasks_running":          runningTasks,
 	})
 }
 
@@ -354,7 +369,7 @@ func (s *Server) handleExec(c *gin.Context) {
 	// hit the deadline. Give it the per-call timeout it advertises (or the
 	// 5-minute default the tool uses internally) plus a small grace window.
 	execTimeout := time.Duration(s.config.Timeout) * time.Second
-	if strings.EqualFold(req.Name, "question") {
+	if strings.EqualFold(req.Name, "question") || strings.EqualFold(req.Name, "ask_web_ai") {
 		execTimeout = 6 * time.Minute
 		if v, ok := req.Args["timeout_sec"].(float64); ok && v > 0 {
 			execTimeout = time.Duration(v*float64(time.Second)) + 30*time.Second
@@ -427,7 +442,8 @@ func (s *Server) handleWS(c *gin.Context) {
 	id := strings.TrimSpace(c.Query("id"))
 	role := strings.TrimSpace(c.Query("role"))
 	client := strings.TrimSpace(c.Query("client"))
-	s.ws.RegisterWithMeta(conn, WSClientMeta{ID: id, Provider: provider, Role: role, Client: client})
+	host := strings.TrimSpace(c.Query("host"))
+	s.ws.RegisterWithMeta(conn, WSClientMeta{ID: id, Provider: provider, Role: role, Client: client, Host: host})
 	count := s.ws.ClientCount()
 	s.logTUI("system", "BROWSER", "success", fmt.Sprintf("浏览器扩展已连接 (%d)", count))
 	if s.logger != nil {
@@ -493,8 +509,10 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 		Key        string          `json:"key"`
 		Text       string          `json:"text"`
 		CallID     string          `json:"call_id"`
+		QueryID    string          `json:"query_id"`
 		Answer     string          `json:"answer"`
 		Reason     string          `json:"reason"`
+		Provider   string          `json:"provider"`
 		ID         string          `json:"id"`
 		Success    bool            `json:"success"`
 		Data       json.RawMessage `json:"data"`
@@ -548,6 +566,29 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 			return
 		}
 		tool.PendingQuestions.Cancel(callID, msg.Reason)
+	case "ai_query_result":
+		queryID := strings.TrimSpace(msg.QueryID)
+		if queryID == "" {
+			queryID = strings.TrimSpace(msg.CallID)
+		}
+		if queryID == "" {
+			return
+		}
+		tool.PendingWebAIQueries.Deliver(queryID, tool.WebAIQueryResult{
+			Text:     msg.Text,
+			Provider: msg.Provider,
+			URL:      msg.URL,
+			Error:    msg.Error,
+		})
+	case "ai_query_cancel":
+		queryID := strings.TrimSpace(msg.QueryID)
+		if queryID == "" {
+			queryID = strings.TrimSpace(msg.CallID)
+		}
+		if queryID == "" {
+			return
+		}
+		tool.PendingWebAIQueries.Cancel(queryID, msg.Reason)
 	case "browser_result":
 		if s.browser != nil {
 			s.browser.DeliverResult(browser.Result{

@@ -41,6 +41,19 @@ describe('ChatGPT DOM adapter', () => {
     expect(extractWithChatGPTAdapter(response!)).toContain('你好！有什么我可以帮你的吗？');
   });
 
+  it('matches the current ChatGPT submit button after text is present', () => {
+    const dom = new JSDOM(`
+      <div data-composer-surface="true">
+        <div contenteditable="true" class="ProseMirror" id="prompt-textarea" role="textbox">hello</div>
+        <button id="composer-submit-button" aria-label="发送提示" data-testid="send-button"></button>
+      </div>
+    `);
+
+    const send = dom.window.document.querySelector('button#composer-submit-button:not([disabled]), button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled]), button[aria-label*="发送提示"]:not([disabled]), button[aria-label*="提交"]:not([disabled])');
+
+    expect(send).not.toBeNull();
+  });
+
   it('normalizes ChatGPT tool code blocks into piercode-tool fences', () => {
     const dom = new JSDOM(`
       <div data-message-author-role="assistant">
