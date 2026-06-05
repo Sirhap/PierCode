@@ -50,3 +50,6 @@ docs/.jekyll-metadata
 release-packages/
 release/
 dist/
+
+# Superpowers brainstorm scratch
+.superpowers/
