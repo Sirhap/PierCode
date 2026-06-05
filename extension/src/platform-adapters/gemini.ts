@@ -6,6 +6,7 @@ export const geminiAdapter: PlatformAdapter = {
   match: () => location.hostname.includes('gemini.google.com'),
   newSessionUrl: () => `${location.protocol}//${location.host}/app`,
   responseSelector: 'message-content, .model-response-text',
+  userSelector: 'user-query, .user-query-bubble-with-background',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';
     const tag = el.tagName.toLowerCase();

@@ -19,6 +19,7 @@ export const qwenAdapter: PlatformAdapter = {
   match: () => location.hostname.includes('qwen.ai') || location.hostname.includes('qwenlm.ai'),
   newSessionUrl: () => `${location.protocol}//${location.host}/`,
   responseSelector: '.qwen-chat-message-assistant, .response-message-content.phase-answer',
+  userSelector: '.qwen-chat-message-user, .user-message',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';
     const tag = el.tagName.toLowerCase();

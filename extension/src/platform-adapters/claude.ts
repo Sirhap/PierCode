@@ -6,6 +6,7 @@ export const claudeAdapter: PlatformAdapter = {
   match: () => location.hostname.includes('claude.ai') || location.hostname.includes('free.easychat.top'),
   newSessionUrl: () => `${location.protocol}//${location.host}/new`,
   responseSelector: '.font-claude-response, .standard-markdown',
+  userSelector: '[data-testid="user-message"], .font-user-message',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';
     const tag = el.tagName.toLowerCase();

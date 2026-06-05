@@ -6,6 +6,8 @@ export interface PlatformAdapter {
   extractText: (el: Element, buf: string[]) => boolean;
   // 获取响应容器的选择器。
   responseSelector: string;
+  // 用户消息容器选择器，供面板扫描会话计 token。未配置时只算 assistant 响应。
+  userSelector?: string;
   // 服务端提示词/tools/skills profile。未配置时使用适配器名，服务端未知则回退 default。
   profile?: string;
   // 该平台"新建对话"的 URL，用于压缩后把上下文迁移到新会话。
