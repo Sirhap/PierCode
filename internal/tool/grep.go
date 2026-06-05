@@ -25,8 +25,16 @@ func NewGrepTool(config *types.Config) *GrepTool {
 	return &GrepTool{config: config}
 }
 
-func (t *GrepTool) Name() string        { return "grep" }
-func (t *GrepTool) Description() string { return "Search file contents using regex" }
+func (t *GrepTool) Name() string { return "grep" }
+func (t *GrepTool) Description() string {
+	return `Searches file contents with a regular expression. Prefer this over running grep/rg via exec_cmd.
+
+Usage:
+- pattern is a regular expression (RE2 syntax). Escape literal special chars: ` + "`func\\(`" + ` to match "func(".
+- Use include to filter by file type, e.g. ` + "`*.go`" + ` or ` + "`*.{ts,tsx}`" + `.
+- Use grep to search contents; use glob to find files by name.
+- Narrow the path or include filter for large repos rather than scanning everything.`
+}
 func (t *GrepTool) Parameters() interface{} {
 	return map[string]string{
 		"pattern": "string (required) - regex pattern to search",

@@ -27,7 +27,14 @@ func (t *ReadFileTool) Name() string {
 }
 
 func (t *ReadFileTool) Description() string {
-	return "Read file contents"
+	return `Reads a file from the local filesystem. Prefer this over running cat/head/tail via exec_cmd.
+
+Usage:
+- The path must be inside the configured working directory.
+- By default reads up to 2000 lines from the start. Use offset and limit to read a specific window of a large file; read only the part you need.
+- Each line is returned prefixed with its line number and a tab (` + "`<lineno>\\t`" + `), like cat -n. When you later edit, match only the content AFTER the tab — never include the line number prefix in an edit.
+- Lines longer than the display limit are truncated.
+- Reading a directory, a missing file, or an empty file returns an error rather than content.`
 }
 
 func (t *ReadFileTool) Parameters() interface{} {

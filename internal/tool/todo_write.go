@@ -20,8 +20,28 @@ func NewTodoWriteTool(config *types.Config) *TodoWriteTool {
 	return &TodoWriteTool{config: config}
 }
 
-func (t *TodoWriteTool) Name() string        { return "todo_write" }
-func (t *TodoWriteTool) Description() string { return "Write task list to .todos.json" }
+func (t *TodoWriteTool) Name() string { return "todo_write" }
+func (t *TodoWriteTool) Description() string {
+	return `Create and manage a structured task list for the current session. Pass the FULL list every call — it replaces the stored list.
+
+When to use:
+- Tasks with 3+ distinct steps, or non-trivial work needing planning.
+- The user provides multiple work items (a numbered or comma-separated list).
+- Mark a task in_progress BEFORE starting it; mark it completed IMMEDIATELY after finishing (do not batch completions).
+
+When NOT to use:
+- A single straightforward task, or anything completable in under 3 trivial steps. Just do it directly.
+- Purely conversational or informational requests.
+
+Each item is an object with:
+- content: imperative description of the task (e.g. "Run tests").
+- status: one of "pending", "in_progress", "completed".
+
+Rules:
+- Keep exactly ONE task in_progress at a time — not zero, not more.
+- Only mark completed when FULLY done. If tests fail, the implementation is partial, or you hit an unresolved error, keep it in_progress and add a new task for the blocker.
+- Remove tasks that are no longer relevant from the list entirely.`
+}
 func (t *TodoWriteTool) Parameters() interface{} {
 	return map[string]string{
 		"todos": "array (required) - full list of todo items to save",

@@ -23,7 +23,15 @@ func (t *WriteFileTool) Name() string {
 }
 
 func (t *WriteFileTool) Description() string {
-	return "Write content to file"
+	return `Writes content to a file, creating it or overwriting it.
+
+Usage:
+- When to use: creating a new file, or fully replacing one. For partial changes to an existing file, use ` + "`edit`" + ` instead — do not rewrite a whole file to change a few lines.
+- ALWAYS prefer editing an existing file over overwriting it. NEVER create new files unless required.
+- Read an existing file before overwriting it so you do not discard content you cannot see.
+- Only use emojis if the user explicitly requests it.
+- Use mode "append" to add to the end of a file; default overwrites.
+- Prefer this over ` + "`echo >`" + ` / heredoc via exec_cmd.`
 }
 
 func (t *WriteFileTool) Parameters() interface{} {

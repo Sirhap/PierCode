@@ -21,8 +21,15 @@ func NewGlobTool(config *types.Config) *GlobTool {
 	return &GlobTool{config: config}
 }
 
-func (t *GlobTool) Name() string        { return "glob" }
-func (t *GlobTool) Description() string { return "Find files matching a glob pattern" }
+func (t *GlobTool) Name() string { return "glob" }
+func (t *GlobTool) Description() string {
+	return `Fast file search by glob pattern. Use this to find files by name — prefer it over running find/ls via exec_cmd.
+
+Usage:
+- Supports patterns like ` + "`**/*.go`" + `, ` + "`src/**/*.ts`" + `, ` + "`*.md`" + `.
+- Use glob to find files by path; use grep to search file contents.
+- For open-ended searches that may need multiple rounds, narrow the pattern instead of listing the whole tree.`
+}
 func (t *GlobTool) Parameters() interface{} {
 	return map[string]string{
 		"pattern": "string (required) - glob pattern, e.g. **/*.go or *.ts",

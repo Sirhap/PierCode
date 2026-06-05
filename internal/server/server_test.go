@@ -551,9 +551,11 @@ func TestHandlePrompt(t *testing.T) {
 			"Security Boundaries",
 			"Routing Rules",
 			"Question Tool Policy",
-				"Git Workflow Harness",
-				"git branch -a",
-				"pathspec ... did not match",
+			// Git detail now lives in the piercode-git-harness skill; the
+			// always-on prompt keeps the harness router plus a safety floor.
+			"Task Harnesses",
+			"piercode-git-harness",
+			"never force-push to a shared branch",
 			"Do not ask a blocking clarification only as normal prose",
 			"PierCode Skill Routing",
 			"piercode-tool-protocol",
