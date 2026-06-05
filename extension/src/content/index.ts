@@ -1094,6 +1094,9 @@ function getSiteConfig(): SiteConfig {
 
 if (!(window as any).__PIERCODE_LOADED__) {
   (window as any).__PIERCODE_LOADED__ = true;
+  // 构建标记：用于确认浏览器跑的是最新 content.js（控制台查 __PIERCODE_BUILD__）。
+  (window as any).__PIERCODE_BUILD__ = 'status-panel-2026-06-05';
+  console.log('[PierCode] content loaded, build:', (window as any).__PIERCODE_BUILD__);
 
   const cfg = getSiteConfig();
 
