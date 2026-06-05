@@ -3,6 +3,8 @@ import { extractMonacoText, findQwenToolBody, getAdapterProfileName, getPlatform
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId } from './ws-linker';
 import { visualIndicator } from './visual-indicator';
+import { statusPanel, type ControlledTabInfo } from './status-panel';
+import { computeMeter } from './token-meter';
 import { getDestructiveCommandWarning } from './destructive-warning';
 import { exposeAccessibilityTree, generateAccessibilityTree, getElementCoordinates, scrollToElement, clickElement, searchElements } from './accessibility-tree';
 import { SinglePacketWaiter } from './qwen-context-packet-waiter';
@@ -19,6 +21,7 @@ import {
 } from './qwen-context-compress';
 import { QwenCompressionConfig, resolveQwenCompressionConfig } from './qwen-settings';
 import { dispatchEnterAsSendFallback } from './send-fallback';
+import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
 
 // 静默窗口解析器（内联，避免 content 引入 ../settings 触发 Rollup 共享分块，
 // 进而让 content.js 输出 ESM import —— MV3 classic content script 不允许）。
@@ -137,6 +140,7 @@ if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
     }
     if (areaName === 'local' && 'stealthMode' in changes) {
       visualIndicator.configure({ stealth: resolveStealthMode(changes.stealthMode.newValue) });
+      statusPanel.configure({ stealth: resolveStealthMode(changes.stealthMode.newValue) });
     }
   });
 }
@@ -962,14 +966,14 @@ function getSiteConfig(): SiteConfig {
   const adapterSelector = platformAdapter.responseSelector;
 
   if (h.includes('kimi.com'))
-    return { editor: 'div.chat-input-editor[contenteditable="true"]', sendBtn: 'div.send-button-container', stopBtn: null, fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || '.segment-assistant' };
+    return { editor: 'div.chat-input-editor[contenteditable="true"]', sendBtn: 'div.send-button-container', stopBtn: 'button[aria-label*="停止"], button[aria-label*="Stop"], .stop-button, [class*="stop-button"]', fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || '.segment-assistant' };
   if (h.includes('chat.z.ai'))
-    return { editor: 'textarea#chat-input', sendBtn: 'button#send-message-button', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || '#response-content-container' };
+    return { editor: 'textarea#chat-input', sendBtn: 'button#send-message-button', stopBtn: 'button#stop-message-button, button[aria-label*="停止"], button[aria-label*="Stop"], [class*="stop"][role="button"]', fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || '#response-content-container' };
   if (h.includes('claude.ai') || h.includes('free.easychat.top'))
     return {
       editor: 'div[contenteditable="true"][data-testid="chat-input"], div.ProseMirror[contenteditable="true"][aria-label*="Claude"], div.ProseMirror[contenteditable="true"]',
       sendBtn: 'button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled])',
-      stopBtn: null,
+      stopBtn: 'button[aria-label="Stop response"], button[aria-label*="Stop"], button[aria-label*="停止"]',
       fillMethod: 'execCommand',
       useObserver: true,
       responseSelector: adapterSelector || '.font-claude-response'
@@ -978,13 +982,13 @@ function getSiteConfig(): SiteConfig {
     return {
       editor: 'div#prompt-textarea.ProseMirror[contenteditable="true"], div#prompt-textarea[contenteditable="true"], div.ProseMirror[contenteditable="true"][aria-label*="ChatGPT"], textarea[name="prompt-textarea"]',
       sendBtn: 'button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled]), button[aria-label*="提交"]:not([disabled])',
-      stopBtn: null,
+      stopBtn: 'button[data-testid="stop-button"], button[aria-label*="Stop streaming"], button[aria-label*="Stop generating"], button[aria-label*="停止"]',
       fillMethod: 'execCommand',
       useObserver: true,
       responseSelector: adapterSelector || '[data-message-author-role="assistant"] .markdown, [data-message-author-role="assistant"]'
     };
   if (h.includes('gemini.google.com'))
-    return { editor: 'div.ql-editor[contenteditable="true"]', sendBtn: 'button.send-button[aria-label*="发送"], button.send-button[aria-label*="Send"]', stopBtn: null, fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || 'model-response, .model-response-text, message-content' };
+    return { editor: 'div.ql-editor[contenteditable="true"]', sendBtn: 'button.send-button[aria-label*="发送"], button.send-button[aria-label*="Send"]', stopBtn: 'button.stop[aria-label*="停止"], button.stop[aria-label*="Stop"], button[aria-label*="停止回答"], button[aria-label*="Stop response"], button.send-button.stop', fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || 'model-response, .model-response-text, message-content' };
   if (h.includes('qwen.ai') || h.includes('qwenlm.ai'))
     return {
       editor: [
@@ -1010,13 +1014,13 @@ function getSiteConfig(): SiteConfig {
     return {
       editor: 'textarea',
       sendBtn: 'button[data-track-id="home_send_btn"]',
-      stopBtn: null,
+      stopBtn: 'button[data-track-id="home_stop_btn"], button[aria-label*="停止"], button[aria-label*="Stop"], [class*="stop-btn"]',
       fillMethod: 'value',
       useObserver: true,
       responseSelector: adapterSelector || '.markdown-prose'
     };
   // Default: AI Studio
-  return { editor: 'textarea[placeholder*="Start typing a prompt"]', sendBtn: 'button.ctrl-enter-submits.ms-button-primary[type="submit"], button[aria-label*="Run"]', stopBtn: null, fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || 'ms-chat-turn' };
+  return { editor: 'textarea[placeholder*="Start typing a prompt"]', sendBtn: 'button.ctrl-enter-submits.ms-button-primary[type="submit"], button[aria-label*="Run"]', stopBtn: 'button[aria-label*="Stop"], button.stoppable-stop, ms-run-button button[aria-label*="Stop"]', fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || 'ms-chat-turn' };
 }
 
 if (!(window as any).__PIERCODE_LOADED__) {
@@ -1032,10 +1036,15 @@ if (!(window as any).__PIERCODE_LOADED__) {
   try {
     chrome.storage?.local?.get(['stealthMode'], (result) => {
       visualIndicator.configure({ stealth: resolveStealthMode(result?.stealthMode) });
+      statusPanel.configure({ stealth: resolveStealthMode(result?.stealthMode) });
     });
   } catch {
     // storage 不可用时保持默认（非隐身），不阻塞初始化。
   }
+  // 状态面板：显示操作状态/提供商/token/受控 tab。
+  statusPanel.init();
+  statusPanel.setProvider(platformAdapter.name, platformProfile);
+  startTokenRefresh();
   // Register WS dispatchers (tool_stream/done + question_ask/cancel) up
   // front so question popups can appear even before any ToolCard renders.
   ensureStreamDispatchers();
@@ -1130,6 +1139,11 @@ if (!(window as any).__PIERCODE_LOADED__) {
       return false;
     }
 
+    if (msg.type === 'PIERCODE_CONTROLLED_TAB') {
+      statusPanel.setControlledTab((msg.info ?? null) as ControlledTabInfo | null);
+      return false;
+    }
+
     return false;
   });
 }
@@ -1138,6 +1152,52 @@ function hashStr(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = Math.imul(31, h) + s.charCodeAt(i) | 0;
   return h >>> 0;
+}
+
+// qwen 压缩阈值（与 settings.DEFAULT_QWEN_MAX_CONTEXT_TOKENS 同值）。这里内联，
+// 避免 content 引入 ../settings 触发 Rollup 共享分块（见文件顶部说明）。
+const STATUS_PANEL_QWEN_THRESHOLD = 1_000_000;
+const STATUS_PANEL_DEFAULT_THRESHOLD = 128_000;
+
+function tokenThreshold(): number {
+  if (platformAdapter.name === 'qwen') return STATUS_PANEL_QWEN_THRESHOLD;
+  return STATUS_PANEL_DEFAULT_THRESHOLD;
+}
+
+// scanConversation 扫描页面会话，分类 user/assistant 消息供 token 计量。
+// qwen 复用已维护的 qwenConversationCtx；其他平台按选择器扫 DOM。
+function scanConversation(): ConversationContext {
+  if (platformAdapter.name === 'qwen' && qwenConversationCtx) {
+    return qwenConversationCtx;
+  }
+  const messages: ConversationContext['messages'] = [];
+  let totalChars = 0;
+  const push = (role: 'user' | 'assistant', el: Element) => {
+    const content = (el.textContent || '').trim();
+    if (!content) return;
+    messages.push({ role, content, timestamp: Date.now() });
+    totalChars += content.length;
+  };
+  const userSel = platformAdapter.userSelector;
+  if (userSel) document.querySelectorAll(userSel).forEach((el) => push('user', el));
+  if (platformAdapter.responseSelector) {
+    document.querySelectorAll(platformAdapter.responseSelector).forEach((el) => push('assistant', el));
+  }
+  return { messages, totalChars, lastCompressedAt: 0 };
+}
+
+let tokenRefreshTimer: ReturnType<typeof setInterval> | null = null;
+function startTokenRefresh(): void {
+  if (tokenRefreshTimer) return;
+  const refresh = () => {
+    try {
+      const ctx = scanConversation();
+      const meter = computeMeter(ctx, platformAdapter.name);
+      statusPanel.setMeter(meter, tokenThreshold());
+    } catch {}
+  };
+  refresh();
+  tokenRefreshTimer = setInterval(refresh, 3000);
 }
 
 function getConversationId(): string {
@@ -1363,6 +1423,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
     // 显示可视化指示器
     visualIndicator.showPulsingBorder();
     visualIndicator.showStatusBadge('loading');
+    statusPanel.setOpState('executing');
 
     try {
       const text = await executeToolCallRaw(data);
@@ -1376,6 +1437,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
 
       // 显示完成状态
       visualIndicator.showStatusBadge('completed');
+      statusPanel.setOpState('done');
       setTimeout(() => visualIndicator.hideAllIndicators(), 1500);
 
       // For exec_cmd whose live stream already populated streamBox, don't
@@ -1412,6 +1474,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
       execBtn.disabled = false;
       unsubscribeStream();
       visualIndicator.showStatusBadge('error');
+      statusPanel.setOpState('error');
       setTimeout(() => visualIndicator.hideAllIndicators(), 2000);
     }
   };
@@ -1533,6 +1596,8 @@ function startDOMObserver(_responseSelector: string) {
   let submitTimer: ReturnType<typeof setTimeout> | null = null;
   let batchExecuting = false;
   const batchOutputs: string[] = [];
+  let lastResponseMutationAt = 0;
+  let lastAutoToolSeenAt = 0;
   // 静默窗口：流式输出停止后等待 quietMs 再触发批量执行/提交。
   // 取代旧的固定 batchWaitMs 双等待 —— 既把一次响应里的多个工具调用聚成一批，
   // 又能在慢速响应时自动顺延（每来一个新工具/新变动就重置计时）。
@@ -1560,33 +1625,61 @@ function startDOMObserver(_responseSelector: string) {
     if (batchTimer) clearTimeout(batchTimer);
     batchTimer = setTimeout(() => {
       batchTimer = null;
-      // 流仍在生成 → 顺延，等更多工具调用一起执行。
-      if (isResponseGenerating()) { scheduleBatchExecution(); return; }
+      // 执行不再等响应结束：工具一到就流式逐个执行（quietMs=0 即立即）。
+      // 执行期间陆续到达的同一响应的其它工具，靠 batchExecuting 锁 +
+      // executeBatch 收尾时重查 pendingBatch（见 executeBatch 末尾）继续并入
+      // 同一执行轮；攒到响应结束才在 scheduleFinalSubmit 里一次性提交。
       executeBatch();
     }, quietMs);
   }
 
   function scheduleToBatch(toolCall: any, key: string) {
     clearSubmitTimer();
+    lastAutoToolSeenAt = Date.now();
     pendingBatch.push({ data: ensureToolCallId(toolCall, key), key });
     // 每来一个新工具就重置静默计时，确保同一响应里的多个工具聚成一批。
     scheduleBatchExecution();
   }
 
+  function responseSettleRemainingMs(): number {
+    return autoSubmitSettleRemainingMs(Date.now(), lastResponseMutationAt, lastAutoToolSeenAt);
+  }
+
+  // 提交顺延的死锁上限：stopBtn 选择器若误命中常驻元素，isResponseGenerating
+  // 会恒 true，导致结果永不提交。设一个上限：自首个待提交结果产生起，最多顺延
+  // MAX_SUBMIT_DEFER_MS 就强制提交，确保 stopBtn 误判不会吞掉工具结果。
+  const MAX_SUBMIT_DEFER_MS = 15000;
+  let submitDeferStartedAt = 0;
+
   function scheduleFinalSubmit() {
     if (batchOutputs.length === 0) return;
     clearSubmitTimer();
+    if (submitDeferStartedAt === 0) submitDeferStartedAt = Date.now();
     submitTimer = setTimeout(() => {
       submitTimer = null;
       if (batchExecuting) return;
-      // 还有待执行工具，或流仍在生成 → 不提交，重新进入批量流程。
+      // 还有待执行工具 → 不提交，重新进入批量流程（执行完会再次 scheduleFinalSubmit）。
       if (pendingBatch.length > 0) {
         scheduleBatchExecution();
         return;
       }
-      if (isResponseGenerating()) { scheduleFinalSubmit(); return; }
+      const deferredTooLong = Date.now() - submitDeferStartedAt >= MAX_SUBMIT_DEFER_MS;
+      // 流仍在生成 → 顺延，等响应结束再一次性提交全部结果（同一响应=一次提交）。
+      // 但顺延不超过 MAX_SUBMIT_DEFER_MS，防 stopBtn 误判导致永久不提交。
+      if (!deferredTooLong && isResponseGenerating()) { scheduleFinalSubmit(); return; }
+      if (!deferredTooLong) {
+        const settleRemainingMs = responseSettleRemainingMs();
+        if (settleRemainingMs > 0) {
+          submitTimer = setTimeout(() => {
+            submitTimer = null;
+            scheduleFinalSubmit();
+          }, settleRemainingMs);
+          return;
+        }
+      }
       const combinedOutput = batchOutputs.join('\n\n');
       batchOutputs.length = 0;
+      submitDeferStartedAt = 0;
       if (combinedOutput) {
         fillAndSend(prepareToolOutputForChat(combinedOutput), true);
       }
@@ -1610,6 +1703,7 @@ function startDOMObserver(_responseSelector: string) {
     // 显示批量执行指示器
     visualIndicator.showPulsingBorder();
     visualIndicator.showStatusBadge('loading');
+    statusPanel.setOpState('executing');
 
     try {
       while (pendingBatch.length > 0) {
@@ -1648,6 +1742,7 @@ function startDOMObserver(_responseSelector: string) {
       batchExecuting = false;
       // 隐藏批量执行指示器
       visualIndicator.showStatusBadge('completed');
+      statusPanel.setOpState('done');
       setTimeout(() => visualIndicator.hideAllIndicators(), 1500);
     }
 
@@ -1932,6 +2027,7 @@ function startDOMObserver(_responseSelector: string) {
 
   function scheduleActiveScan(container: Element): void {
     ignoredPreSessionContainers.delete(container);
+    lastResponseMutationAt = Date.now();
     scheduleScan(container);
   }
 
@@ -1972,6 +2068,7 @@ function startDOMObserver(_responseSelector: string) {
     if (now - loadingLastSentAt < 1200) return;
     loadingLastSentAt = now;
     sendAIResponseLog(`ai:${getConversationId()}:loading`, '思考中...');
+    statusPanel.setOpState('thinking');
   }
 
   function responseContainerSelector(): string {
