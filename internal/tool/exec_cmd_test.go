@@ -87,6 +87,23 @@ func TestExecCmdExecute(t *testing.T) {
 		}
 	})
 
+	t.Run("grep no-match is success not error", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("uses POSIX grep; skipped on Windows")
+		}
+		// grep exits 1 when nothing matches. That is not a failure — the
+		// command ran fine, it just found nothing. Must report success.
+		res := tool.Execute(testCtx(cfg, map[string]interface{}{
+			"command": "echo hello | grep nomatch",
+		}))
+		if res.Status != "success" {
+			t.Fatalf("grep no-match should be success, got %q (err=%q)", res.Status, res.Error)
+		}
+		if !strings.Contains(res.Output, "No matches found") {
+			t.Errorf("expected 'No matches found' note, got %q", res.Output)
+		}
+	})
+
 	t.Run("streamer receives chunks in foreground mode", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("uses POSIX echo; skipped on Windows")

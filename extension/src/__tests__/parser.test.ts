@@ -190,6 +190,36 @@ describe('tryParseToolJSON', () => {
   it('returns null for completely invalid input', () => {
     expect(tryParseToolJSON('not json at all')).toBeNull();
   });
+
+  it('repairs trailing comma in object', () => {
+    const result = tryParseToolJSON('{"name":"list_dir","args":{"path":".",}}');
+    expect(result).not.toBeNull();
+    expect(result.name).toBe('list_dir');
+    expect(result.args.path).toBe('.');
+  });
+
+  it('repairs trailing comma in array', () => {
+    const result = tryParseToolJSON('{"name":"question","args":{"options":["a","b",]}}');
+    expect(result).not.toBeNull();
+    expect(result.args.options).toEqual(['a', 'b']);
+  });
+
+  it('does not treat comma inside a string as trailing', () => {
+    const result = tryParseToolJSON('{"name":"exec_cmd","args":{"command":"echo a,}"}}');
+    expect(result).not.toBeNull();
+    expect(result.args.command).toBe('echo a,}');
+  });
+});
+
+// parseJsonFenceToolCall should share the same repair chain as tryParseToolJSON,
+// so a fenced block with a trailing comma still parses.
+describe('parseJsonFenceToolCall repair', () => {
+  it('parses a fenced object with a trailing comma', () => {
+    const result = parseJsonFenceToolCall('{"name":"list_dir","call_id":"x1","args":{"path":".",}}');
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe('list_dir');
+    expect(result!.callId).toBe('x1');
+  });
 });
 
 // ── Integration: full scanText scenarios ───────────────────────────────────

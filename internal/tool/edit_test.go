@@ -33,6 +33,32 @@ func TestReplace(t *testing.T) {
 		}
 	})
 
+	t.Run("curly quotes normalize and replace", func(t *testing.T) {
+		content := "const msg = \"hello\";"
+		// old_string uses curly quotes “ ”
+		old := "const msg = “hello”;"
+		got, count, err := replace(content, old, "const msg = \"bye\";", false)
+		if err != nil {
+			t.Fatalf("curly-quote old_string should match ascii content, got %v", err)
+		}
+		if count != 1 || got != "const msg = \"bye\";" {
+			t.Errorf("got %q count=%d", got, count)
+		}
+	})
+
+	t.Run("en/em dash and apostrophe normalize", func(t *testing.T) {
+		content := "x = a - b; // it's fine"
+		// old_string uses em dash — and curly apostrophe ’
+		old := "x = a — b; // it’s fine"
+		got, _, err := replace(content, old, "y = a - b;", false)
+		if err != nil {
+			t.Fatalf("dash/apostrophe old_string should match ascii content, got %v", err)
+		}
+		if got != "y = a - b;" {
+			t.Errorf("got %q", got)
+		}
+	})
+
 	t.Run("crlf normalized match", func(t *testing.T) {
 		content := normalizeLineEndings("a\r\nb")
 		_, _, err := replace(content, "a\nb", "x", false)

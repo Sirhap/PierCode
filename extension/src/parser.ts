@@ -3,15 +3,16 @@ export const FENCE_RE = /```(?:piercode-tool|tool)\s*\n([\s\S]*?)\n```/gi;
 export const TOOL_RE = /<tool(?:\s[^>]*)?>[\s\S]*?<\/(?:tool|function)(?:_call)?>/gi;
 
 export function parseJsonFenceToolCall(jsonStr: string): any | null {
-  try {
-    const obj = JSON.parse(jsonStr.replace(/ /g, ' '));
-    if (!obj.name || typeof obj.name !== 'string') return null;
-    return {
-      name: obj.name,
-      callId: obj.call_id || null,
-      args: obj.args || {}
-    };
-  } catch { return null; }
+  // Share tryParseToolJSON's repair chain (unescaped quotes, trailing commas)
+  // so a fenced block with a common LLM JSON slip still parses instead of being
+  // silently dropped.
+  const obj = tryParseToolJSON(jsonStr);
+  if (!obj || !obj.name || typeof obj.name !== 'string') return null;
+  return {
+    name: obj.name,
+    callId: obj.call_id || null,
+    args: obj.args || {}
+  };
 }
 
 export function parseXmlToolCall(raw: string, decodeHTMLEntities: (s: string) => string = s => s): any | null {
@@ -27,19 +28,47 @@ export function parseXmlToolCall(raw: string, decodeHTMLEntities: (s: string) =>
 }
 
 export function tryParseToolJSON(raw: string): any | null {
-  // 将非断空格替换为普通空格（Monaco Editor 的 &nbsp; 会被 textContent 转为  ）
+  // 将非断空格替换为普通空格（Monaco Editor 的 &nbsp; 会被 textContent 转为  ）
   const normalized = raw.replace(/ /g, ' ');
   try { return JSON.parse(normalized); } catch {}
-  // 严格解析失败时尝试一次保守修复：把字符串值里出现的「未转义引号」补成
-  // \" ——但只在修复后的结果能解析、且看起来像合法工具调用（含 string name）
-  // 时才返回，否则宁可返回 null 让 AI 重发，避免静默给出错位转义后的参数
-  // （比如把含 " 的 path 写到错误文件名）。
-  try {
-    const repaired = repairUnescapedQuotes(normalized);
-    const parsed = JSON.parse(repaired);
-    if (looksLikeToolCall(parsed)) return parsed;
-  } catch {}
+
+  // 渐进式修复：每一步在前一步基础上叠加，命中即返回。所有修复都是字符串感知的
+  // （不动字符串字面量内部），且只在结果"看起来像工具调用"时才采纳，避免静默错位。
+  const repairs: ((s: string) => string)[] = [
+    stripTrailingCommas,
+    repairUnescapedQuotes,
+    (s) => repairUnescapedQuotes(stripTrailingCommas(s)),
+  ];
+  for (const repair of repairs) {
+    try {
+      const parsed = JSON.parse(repair(normalized));
+      if (looksLikeToolCall(parsed)) return parsed;
+    } catch {}
+  }
   return null;
+}
+
+// stripTrailingCommas removes commas that sit immediately before a closing } or
+// ] (a common LLM slip). String-aware: a comma inside a JSON string value is
+// left untouched.
+function stripTrailingCommas(input: string): string {
+  let result = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (escaped) { result += ch; escaped = false; continue; }
+    if (ch === '\\') { result += ch; escaped = true; continue; }
+    if (ch === '"') { inString = !inString; result += ch; continue; }
+    if (ch === ',' && !inString) {
+      // Look ahead past whitespace; drop the comma if the next non-space is } or ].
+      let j = i + 1;
+      while (j < input.length && /\s/.test(input[j])) j++;
+      if (input[j] === '}' || input[j] === ']') continue;
+    }
+    result += ch;
+  }
+  return result;
 }
 
 function repairUnescapedQuotes(input: string): string {

@@ -24,8 +24,19 @@ func NewEditTool(config *types.Config) *EditTool {
 	return &EditTool{config: config}
 }
 
-func (t *EditTool) Name() string        { return "edit" }
-func (t *EditTool) Description() string { return "Replace a string in a file (exact match)" }
+func (t *EditTool) Name() string { return "edit" }
+func (t *EditTool) Description() string {
+	return `Performs exact string replacements in files.
+
+Usage:
+- You must use ` + "`read_file`" + ` at least once in the conversation before editing a file. Read first so you match the real content.
+- When editing text from read_file output, preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The prefix format is ` + "`<lineno>\\t`" + ` (line number + tab). Everything after the tab is the actual file content to match. Never include any part of the line number prefix in old_string or new_string.
+- ALWAYS prefer editing existing files. Do NOT create new files unless required.
+- Only use emojis if the user explicitly requests it.
+- The edit FAILS if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique, or set replace_all to change every instance.
+- Use the smallest old_string that is clearly unique — usually 2-4 adjacent lines is enough. Avoid 10+ lines of context when less uniquely identifies the target.
+- Use replace_all for renaming a variable or string across the whole file.`
+}
 func (t *EditTool) Parameters() interface{} {
 	return map[string]string{
 		"path":        "string (required) - file path",
@@ -598,7 +609,52 @@ func TabNewlineReplacer(content, find string) []string {
 	return []string{fixed}
 }
 
-// ── 9. ContextAwareReplacer ───────────────────────────────────────────────────
+// ── PunctuationNormalizedReplacer ─────────────────────────────────────────────
+// 处理"智能标点"不一致：浏览器 AI 页常把直引号/单引号/连字符自动转成
+// 弯引号 “ ” ‘ ’、长破折号 — 或省略号 …，导致 old_string 与磁盘上的 ASCII
+// 文本无法逐字匹配。把 find 与 content 各 block 都归一到 ASCII 后比较；命中后
+// 返回的是 content 的原始 block（保留磁盘上的实际字符），由外层 strings.Index 定位。
+//
+// 移植自 Claude Code 的 normalizeQuotes（扩展到破折号/省略号）。
+
+var punctuationReplacements = strings.NewReplacer(
+	"‘", "'", // ‘ left single quote
+	"’", "'", // ’ right single quote / apostrophe
+	"“", "\"", // “ left double quote
+	"”", "\"", // ” right double quote
+	"–", "-", // – en dash
+	"—", "-", // — em dash
+	"…", "...", // … ellipsis
+	" ", " ", // non-breaking space
+)
+
+func normalizePunctuation(s string) string {
+	return punctuationReplacements.Replace(s)
+}
+
+func PunctuationNormalizedReplacer(content, find string) []string {
+	normFind := normalizePunctuation(find)
+	// No smart punctuation involved on either side → nothing this replacer adds.
+	if normFind == find && normalizePunctuation(content) == content {
+		return nil
+	}
+
+	var results []string
+
+	// Whole-string: a content block whose normalized form equals the
+	// normalized find. Slide a window the same number of lines as find.
+	lines := strings.Split(content, "\n")
+	findLines := strings.Split(find, "\n")
+	for i := 0; i+len(findLines) <= len(lines); i++ {
+		block := strings.Join(lines[i:i+len(findLines)], "\n")
+		if normalizePunctuation(block) == normFind {
+			results = append(results, block)
+		}
+	}
+	return results
+}
+
+// ── ContextAwareReplacer ──────────────────────────────────────────────────────
 
 func ContextAwareReplacer(content, find string) []string {
 	findLines := strings.Split(find, "\n")
@@ -721,6 +777,7 @@ func replace(content, oldString, newString string, replaceAll bool) (string, int
 
 	for _, replacer := range []Replacer{
 		SimpleReplacer,
+		PunctuationNormalizedReplacer,
 		LineTrimmedReplacer,
 		BlockAnchorReplacer,
 		WhitespaceNormalizedReplacer,

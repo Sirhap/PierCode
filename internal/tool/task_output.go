@@ -57,6 +57,18 @@ func (t *TaskOutputTool) Execute(ctx *Context) *Result {
 	var b strings.Builder
 	fmt.Fprintf(&b, "task %s [%s] exit=%d\n", snap.ID, snap.Status, snap.ExitCode)
 	fmt.Fprintf(&b, "command: %s\n", snap.Command)
+	// A nonzero exit is not always a failure: grep exits 1 for "no matches",
+	// diff exits 1 for "files differ", etc. Annotate so the model does not read
+	// a finished-with-1 background grep as a broken command.
+	if snap.ExitCode > 0 {
+		if sem := interpretCommandResult(snap.Command, snap.ExitCode); !sem.isError {
+			note := sem.message
+			if note == "" {
+				note = "not an error for this command"
+			}
+			fmt.Fprintf(&b, "note: exit %d is not a failure (%s)\n", snap.ExitCode, note)
+		}
+	}
 	if snap.ErrMsg != "" {
 		fmt.Fprintf(&b, "error: %s\n", snap.ErrMsg)
 	}

@@ -3,6 +3,7 @@ import { extractMonacoText, findQwenToolBody, getAdapterProfileName, getPlatform
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId } from './ws-linker';
 import { visualIndicator } from './visual-indicator';
+import { getDestructiveCommandWarning } from './destructive-warning';
 import { exposeAccessibilityTree, generateAccessibilityTree, getElementCoordinates, scrollToElement, clickElement, searchElements } from './accessibility-tree';
 import { SinglePacketWaiter } from './qwen-context-packet-waiter';
 import {
@@ -1256,6 +1257,19 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
     }
   }
   card.appendChild(argsBox);
+
+  // Destructive-command warning banner (exec_cmd only). Informational, does not
+  // block execution — surfaces what the command may do before the user clicks 执行.
+  if (String(data.name).toLowerCase() === 'exec_cmd') {
+    const cmdStr = typeof args.command === 'string' ? args.command : (typeof args.cmd === 'string' ? args.cmd : '');
+    const warning = getDestructiveCommandWarning(cmdStr);
+    if (warning) {
+      const warnBox = document.createElement('div');
+      warnBox.style.cssText = 'margin:8px 0;background:#3a2a1a;border:1px solid #f9b572;border-radius:6px;padding:8px;color:#f9b572;font-size:12px';
+      warnBox.textContent = `⚠️ 注意：${warning}`;
+      card.appendChild(warnBox);
+    }
+  }
 
   // streamBox: only shown once we actually start receiving live chunks.
   // exec_cmd uses this for both foreground streaming and background tasks.

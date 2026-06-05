@@ -31,7 +31,38 @@ func (t *ExecCmdTool) Name() string {
 }
 
 func (t *ExecCmdTool) Description() string {
-	return "Execute shell command in sandbox"
+	timeoutSec := 60
+	if t.config != nil && t.config.Timeout > 0 {
+		timeoutSec = t.config.Timeout
+	}
+	return fmt.Sprintf(`Executes a shell command and returns its output. Runs in a sandbox rooted at the working directory.
+
+The working directory persists between commands, but shell state (env vars, functions) does not.
+
+IMPORTANT: Avoid using this tool to run `+"`find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo`"+` unless explicitly instructed or after you have verified a dedicated tool cannot do the job. Prefer the dedicated tools — they give a better experience and are easier to review/approve:
+- Find files: use glob (NOT find or ls)
+- Search contents: use grep (NOT grep or rg)
+- Read files: use read_file (NOT cat/head/tail)
+- Edit files: use edit (NOT sed/awk)
+- Write files: use write_file (NOT echo >/cat <<EOF)
+- Communicate: output text directly (NOT echo/printf)
+
+# Instructions
+- If your command creates new dirs/files, first run `+"`ls`"+` to verify the parent directory exists and is correct.
+- Always quote paths containing spaces with double quotes.
+- Maintain your cwd by using absolute paths and avoiding `+"`cd`"+`. Use `+"`cd`"+` only if the user explicitly requests it.
+- Commands time out after %ds by default (configurable at server start).
+- When issuing multiple commands:
+  - Independent commands that can run in parallel: emit multiple exec_cmd calls. (When the host page serializes tool calls, chain with `+"`&&`"+` instead.)
+  - Commands that depend on each other: use a single call chained with `+"`&&`"+`.
+  - Use `+"`;`"+` only when running sequentially and you do not care if earlier commands fail.
+  - Do NOT use newlines to separate commands (newlines are ok inside quoted strings).
+- For long-running commands, set `+"`background: true`"+` instead of blocking; check task_output later. No trailing `+"`&`"+` needed.
+- Avoid unnecessary `+"`sleep`"+`:
+  - Do not sleep between commands that can run immediately.
+  - Do not retry failing commands in a sleep loop — diagnose the root cause.
+  - If you must poll an external process, use a check command (e.g. `+"`gh run view`"+`) rather than sleeping first; keep any needed sleep short (1-5s).
+- For git commits/PRs follow the Git Workflow guidance in the system prompt. NEVER skip hooks (--no-verify, --no-gpg-sign) or run destructive git commands (push --force, reset --hard, clean -f) unless the user explicitly asks.`, timeoutSec)
 }
 
 func (t *ExecCmdTool) Parameters() interface{} {
@@ -130,6 +161,25 @@ func (t *ExecCmdTool) finalizeForeground(result *Result, cmd string, output []by
 	}
 
 	if err != nil {
+		// Some commands use nonzero exit codes to convey information other than
+		// failure (grep exit 1 = no matches, diff exit 1 = files differ, test
+		// exit 1 = condition false). Apply command-specific semantics so we
+		// don't mislabel a working command as an error — otherwise the model
+		// thinks `grep foo file` "failed" when it simply found nothing.
+		if code, ok := exitCodeFrom(err); ok {
+			sem := interpretCommandResult(cmd, code)
+			if !sem.isError {
+				result.Status = "success"
+				if outputStr == "" {
+					outputStr = sem.message
+				}
+				if outputStr == "" {
+					outputStr = "empty"
+				}
+				result.Output = fmt.Sprintf("command: %s\n\n%s", cmd, outputStr)
+				return result
+			}
+		}
 		result.Status = "error"
 		result.Error = err.Error()
 		result.Output = outputStr
