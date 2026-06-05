@@ -41,6 +41,18 @@ describe('status-panel render', () => {
     expect(document.querySelector('[data-piercode-status-root]')).not.toBeNull();
   });
 
+  it('defers mount until DOMContentLoaded when body is missing (document_start)', () => {
+    // 模拟 document_start：body 尚未就绪。init 不应同步建 DOM。
+    const realBody = document.body;
+    Object.defineProperty(document, 'body', { value: null, configurable: true });
+    statusPanel.init();
+    expect(document.querySelector('[data-piercode-status-root]')).toBeNull();
+    // 恢复 body，派发 DOMContentLoaded → 面板补建。
+    Object.defineProperty(document, 'body', { value: realBody, configurable: true });
+    document.dispatchEvent(new window.Event('DOMContentLoaded'));
+    expect(document.querySelector('[data-piercode-status-root]')).not.toBeNull();
+  });
+
   it('shows provider and tokens when expanded', () => {
     statusPanel.init();
     statusPanel.setProvider('claude', 'claude');

@@ -465,10 +465,48 @@ type FillMethod = 'paste' | 'execCommand' | 'value' | 'prosemirror';
 interface SiteConfig {
   editor: string;
   sendBtn: string;
+  // CSS selector(s) identifying the "stop generating" control. Present when the
+  // stop state is expressible as plain CSS (most platforms). For platforms where
+  // CSS can't distinguish the stop state (text-only buttons, send/stop sharing a
+  // selector), leave stopBtn null and provide stopBtnMatch instead.
   stopBtn: string | null;
+  // Custom finder for platforms where stopBtn CSS is insufficient (e.g. Chat Z's
+  // text "跳过" button, AI Studio's Run/Stop button distinguished only by text).
+  // Returns the live stop element, or null when not generating. Takes priority
+  // over stopBtn when set.
+  stopBtnMatch?: () => HTMLElement | null;
   fillMethod: FillMethod;
   useObserver: boolean;
   responseSelector?: string;
+}
+
+// findStopElement resolves the active "stop generating" control for a site,
+// trying the custom matcher first then the CSS selector(s). Single source of
+// truth for both the "is the response still generating?" check and the actual
+// stop click, so the two can never disagree. Selector parse errors (e.g. :has()
+// on old Chromium) are swallowed — a missing stop control just means "treat as
+// not generating", which degrades to the settle-window fallback rather than
+// crashing the caller.
+function findStopElement(cfg: SiteConfig): HTMLElement | null {
+  if (cfg.stopBtnMatch) {
+    try {
+      const el = cfg.stopBtnMatch();
+      if (el) return el;
+    } catch {
+      // fall through to CSS
+    }
+  }
+  if (cfg.stopBtn) return querySelectorFirst(cfg.stopBtn);
+  return null;
+}
+
+// Shared helpers for custom stop matchers, kept module-level so getSiteConfig
+// can reference them without recreating closures on every call.
+function findButtonByExactText(text: string): HTMLElement | null {
+  for (const btn of Array.from(document.querySelectorAll('button'))) {
+    if (btn.textContent?.trim() === text && isVisibleElement(btn)) return btn as HTMLElement;
+  }
+  return null;
 }
 
 interface ToolExecutionResult {
@@ -966,14 +1004,24 @@ function getSiteConfig(): SiteConfig {
   const adapterSelector = platformAdapter.responseSelector;
 
   if (h.includes('kimi.com'))
-    return { editor: 'div.chat-input-editor[contenteditable="true"]', sendBtn: 'div.send-button-container', stopBtn: 'button[aria-label*="停止"], button[aria-label*="Stop"], .stop-button, [class*="stop-button"]', fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || '.segment-assistant' };
+    return { editor: 'div.chat-input-editor[contenteditable="true"]', sendBtn: 'div.send-button-container', stopBtn: '.send-button-container.stop, .send-button-container[class*="stop"]', fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || '.segment-assistant' };
   if (h.includes('chat.z.ai'))
-    return { editor: 'textarea#chat-input', sendBtn: 'button#send-message-button', stopBtn: 'button#stop-message-button, button[aria-label*="停止"], button[aria-label*="Stop"], [class*="stop"][role="button"]', fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || '#response-content-container' };
+    return {
+      editor: 'textarea#chat-input',
+      sendBtn: 'button#send-message-button',
+      // Chat Z 生成中显示文本按钮"跳过"(无稳定 class/aria-label，全是 Tailwind)。
+      // 用精确文本匹配；底部方块按钮 class 易变，不依赖。
+      stopBtn: null,
+      stopBtnMatch: () => findButtonByExactText('跳过') || findButtonByExactText('Skip'),
+      fillMethod: 'value',
+      useObserver: true,
+      responseSelector: adapterSelector || '#response-content-container'
+    };
   if (h.includes('claude.ai') || h.includes('free.easychat.top'))
     return {
       editor: 'div[contenteditable="true"][data-testid="chat-input"], div.ProseMirror[contenteditable="true"][aria-label*="Claude"], div.ProseMirror[contenteditable="true"]',
       sendBtn: 'button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled])',
-      stopBtn: 'button[aria-label="Stop response"], button[aria-label*="Stop"], button[aria-label*="停止"]',
+      stopBtn: 'button[aria-label="Stop response"], button[aria-label*="Stop response"]',
       fillMethod: 'execCommand',
       useObserver: true,
       responseSelector: adapterSelector || '.font-claude-response'
@@ -982,13 +1030,13 @@ function getSiteConfig(): SiteConfig {
     return {
       editor: 'div#prompt-textarea.ProseMirror[contenteditable="true"], div#prompt-textarea[contenteditable="true"], div.ProseMirror[contenteditable="true"][aria-label*="ChatGPT"], textarea[name="prompt-textarea"]',
       sendBtn: 'button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled]), button[aria-label*="提交"]:not([disabled])',
-      stopBtn: 'button[data-testid="stop-button"], button[aria-label*="Stop streaming"], button[aria-label*="Stop generating"], button[aria-label*="停止"]',
+      stopBtn: 'button[data-testid="stop-button"]',
       fillMethod: 'execCommand',
       useObserver: true,
       responseSelector: adapterSelector || '[data-message-author-role="assistant"] .markdown, [data-message-author-role="assistant"]'
     };
   if (h.includes('gemini.google.com'))
-    return { editor: 'div.ql-editor[contenteditable="true"]', sendBtn: 'button.send-button[aria-label*="发送"], button.send-button[aria-label*="Send"]', stopBtn: 'button.stop[aria-label*="停止"], button.stop[aria-label*="Stop"], button[aria-label*="停止回答"], button[aria-label*="Stop response"], button.send-button.stop', fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || 'model-response, .model-response-text, message-content' };
+    return { editor: 'div.ql-editor[contenteditable="true"]', sendBtn: 'button.send-button[aria-label*="发送"], button.send-button[aria-label*="Send"]', stopBtn: 'button[aria-label="停止回答"], button[aria-label*="停止回答"], button[aria-label*="Stop response"], button[aria-label*="Stop generating"]', fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || 'model-response, .model-response-text, message-content' };
   if (h.includes('qwen.ai') || h.includes('qwenlm.ai'))
     return {
       editor: [
@@ -1005,7 +1053,9 @@ function getSiteConfig(): SiteConfig {
         'button[aria-label*="发送"]:not([disabled])',
         'button[aria-label*="Send"]:not([disabled])'
       ].join(','),
-      stopBtn: 'button.stop-button, button[class*="stop-button"]',
+      // 结束后停止按钮仍在但带 disabled（class 与/或属性）。用 :not([disabled])
+      // 排除已结束态，避免被误判为"仍在生成"而永不提交。
+      stopBtn: 'button.stop-button:not([disabled]):not(.disabled)',
       fillMethod: 'value',
       useObserver: true,
       responseSelector: adapterSelector || '.qwen-chat-message-assistant'
@@ -1014,13 +1064,32 @@ function getSiteConfig(): SiteConfig {
     return {
       editor: 'textarea',
       sendBtn: 'button[data-track-id="home_send_btn"]',
-      stopBtn: 'button[data-track-id="home_stop_btn"], button[aria-label*="停止"], button[aria-label*="Stop"], [class*="stop-btn"]',
+      // Mimo 发送态与停止态共用同一 button[data-track-id="home_send_btn"]，
+      // 仅内部 SVG 不同：发送=纸飞机 viewBox="0 0 19 16"，停止=方块
+      // viewBox="0 0 24 24"。必须靠 :has() 区分，否则发送态会被误判为生成中
+      // 而导致工具结果永不提交。
+      stopBtn: 'button[data-track-id="home_send_btn"]:has(svg[viewBox="0 0 24 24"])',
       fillMethod: 'value',
       useObserver: true,
       responseSelector: adapterSelector || '.markdown-prose'
     };
   // Default: AI Studio
-  return { editor: 'textarea[placeholder*="Start typing a prompt"]', sendBtn: 'button.ctrl-enter-submits.ms-button-primary[type="submit"], button[aria-label*="Run"]', stopBtn: 'button[aria-label*="Stop"], button.stoppable-stop, ms-run-button button[aria-label*="Stop"]', fillMethod: 'value', useObserver: true, responseSelector: adapterSelector || 'ms-chat-turn' };
+  // AI Studio 的 Run/Stop 共用同一 ms-button-primary 按钮，仅文本区分：
+  // 非生成态文本 "Run"，生成态含 "Stop"。CSS 无法区分，用文本匹配 + 收窄到
+  // 该主按钮（避免误命中弹窗里的 Cancel 等）。
+  return {
+    editor: 'textarea[placeholder*="Start typing a prompt"]',
+    sendBtn: 'button.ctrl-enter-submits.ms-button-primary[type="submit"], button[aria-label*="Run"]',
+    stopBtn: null,
+    stopBtnMatch: () => {
+      const btn = document.querySelector('button.ms-button-primary') as HTMLElement | null;
+      if (btn && isVisibleElement(btn) && btn.textContent?.includes('Stop')) return btn;
+      return null;
+    },
+    fillMethod: 'value',
+    useObserver: true,
+    responseSelector: adapterSelector || 'ms-chat-turn'
+  };
 }
 
 if (!(window as any).__PIERCODE_LOADED__) {
@@ -1042,9 +1111,14 @@ if (!(window as any).__PIERCODE_LOADED__) {
     // storage 不可用时保持默认（非隐身），不阻塞初始化。
   }
   // 状态面板：显示操作状态/提供商/token/受控 tab。
-  statusPanel.init();
-  statusPanel.setProvider(platformAdapter.name, platformProfile);
-  startTokenRefresh();
+  // 包 try/catch：面板任何异常都不得中断后续 content 初始化（指示器/初始化按钮等）。
+  try {
+    statusPanel.init();
+    statusPanel.setProvider(platformAdapter.name, platformProfile);
+    startTokenRefresh();
+  } catch (err) {
+    console.warn('[PierCode] 状态面板初始化失败:', err);
+  }
   // Register WS dispatchers (tool_stream/done + question_ask/cancel) up
   // front so question popups can appear even before any ToolCard renders.
   ensureStreamDispatchers();
@@ -1614,10 +1688,10 @@ function startDOMObserver(_responseSelector: string) {
     }
   }
 
-  // AI 是否还在生成（仅在平台暴露 stopBtn 时可靠）。用于在静默窗口到点后
-  // 仍判断流是否真的结束；未结束则顺延，避免多工具被拆成两批提交。
+  // AI 是否还在生成（仅在平台暴露停止控件时可靠）。用于在静默窗口到点后
+  // 仍判断流是否真的结束；未结束则顺延，把同一响应的多个工具结果攒成一批提交。
   function isResponseGenerating(): boolean {
-    return isSendBlockedByRunningResponse(getSiteConfig().stopBtn);
+    return !!findStopElement(getSiteConfig());
   }
 
   function scheduleBatchExecution() {
@@ -2313,16 +2387,23 @@ function showToast(msg: string, durationMs = 3000): void {
 }
 
 function clickStopButton(): void {
-  const stopSel = getSiteConfig().stopBtn;
-  if (!stopSel) return;
-  const btn = document.querySelector(stopSel) as HTMLElement;
+  const btn = findStopElement(getSiteConfig());
   if (btn) btn.click();
 }
 
 
 function querySelectorFirst(selectors: string): HTMLElement | null {
   for (const sel of selectors.split(',').map(s => s.trim())) {
-    const el = document.querySelector(sel) as HTMLElement | null;
+    if (!sel) continue;
+    // Guard against selectors the engine can't parse (e.g. :has() on old
+    // Chromium). A throw here would otherwise crash callers like
+    // isResponseGenerating(); skip the bad selector and try the next one.
+    let el: HTMLElement | null;
+    try {
+      el = document.querySelector(sel) as HTMLElement | null;
+    } catch {
+      continue;
+    }
     if (el && isVisibleElement(el)) return el;
   }
   return null;
@@ -2373,14 +2454,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function isSendBlockedByRunningResponse(stopBtnSel: string | null): boolean {
-  return !!stopBtnSel && !!querySelectorFirst(stopBtnSel);
+function isSendBlockedByRunningResponse(siteConfig: SiteConfig): boolean {
+  return !!findStopElement(siteConfig);
 }
 
 async function clickSendWhenReady(siteConfig: SiteConfig, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!isSendBlockedByRunningResponse(siteConfig.stopBtn)) {
+    if (!isSendBlockedByRunningResponse(siteConfig)) {
       const sendBtn = querySelectorFirst(siteConfig.sendBtn);
       if (sendBtn) {
         sendBtn.click();
@@ -2390,7 +2471,7 @@ async function clickSendWhenReady(siteConfig: SiteConfig, timeoutMs: number): Pr
     await sleep(250);
   }
 
-  if (!isQwenPage() || !isSendBlockedByRunningResponse(siteConfig.stopBtn)) {
+  if (!isQwenPage() || !isSendBlockedByRunningResponse(siteConfig)) {
     const ed = querySelectorFirst(siteConfig.editor);
     if (ed) {
       return dispatchEnterAsSendFallback(ed);

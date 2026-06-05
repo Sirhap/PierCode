@@ -60,13 +60,23 @@ class StatusPanel {
     try {
       chrome.storage?.local?.get([PANEL_STORAGE_KEY], (res) => {
         this.expanded = res?.[PANEL_STORAGE_KEY] === true;
-        this.ensureDom();
-        this.paint();
+        this.mount();
       });
     } catch {
       // storage 不可用时落到下方同步构建。
     }
     // 同步构建一次，便于无 storage 的环境（测试）立即拿到 DOM。
+    this.mount();
+  }
+
+  // mount 构建 DOM。document_start 注入时 body 尚未就绪——挂 DOMContentLoaded 兜底，
+  // 避免 ensureDom 静默早退导致面板永不出现。
+  private mount(): void {
+    if (this.root) return;
+    if (typeof document !== 'undefined' && !document.body) {
+      document.addEventListener('DOMContentLoaded', () => { this.ensureDom(); this.paint(); }, { once: true });
+      return;
+    }
     this.ensureDom();
     this.paint();
   }
