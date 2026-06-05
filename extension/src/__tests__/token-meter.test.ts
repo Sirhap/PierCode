@@ -74,6 +74,28 @@ describe('computeMeter role classification', () => {
   });
 });
 
+describe('computeMeter platform-aware', () => {
+  it('applies claude factor (>= raw) to totals', async () => {
+    __resetTokenizerForTest();
+    void countTokens('warm');
+    await whenTokenizerReady();
+    const claude = computeMeter(ctx([{ role: 'user', content: 'hello world '.repeat(20), timestamp: 1 }]), 'claude');
+    const chatgpt = computeMeter(ctx([{ role: 'user', content: 'hello world '.repeat(20), timestamp: 1 }]), 'chatgpt');
+    expect(claude.total).toBeGreaterThanOrEqual(chatgpt.total);
+    expect(claude.accuracy).toBe('estimate');
+  });
+
+  it('chatgpt meter is exact tier', async () => {
+    __resetTokenizerForTest();
+    void countTokens('warm');
+    await whenTokenizerReady();
+    const m = computeMeter(ctx([{ role: 'assistant', content: 'reply text here', timestamp: 1 }]), 'chatgpt');
+    expect(m.accuracy).toBe('exact');
+    expect(m.output).toBeGreaterThan(0);
+    expect(m.input).toBe(0);
+  });
+});
+
 describe('token-meter platform accuracy tier', () => {
   it('chatgpt is exact', () => {
     expect(platformAccuracy('chatgpt', 'ready')).toBe('exact');
