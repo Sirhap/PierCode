@@ -9,7 +9,8 @@ description: >-
   read files, edit code, run commands, and drive the browser inside a permission-
   controlled working directory on your own machine.
 url: "https://sirhap.github.io"
-baseurl: "/PierCode"
+# Docs are served under /PierCode/docs (the Vite landing page owns /PierCode).
+baseurl: "/PierCode/docs"
 lang: en
 
 # jekyll-seo-tag reads these for <title>, meta description, Open Graph,

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>PierCode — Local AI Assistant Proxy for ChatGPT, Claude, Gemini & Qwen</title>
+  <meta name="description" content="Connect web-based AI assistants to your local filesystem and browser. PierCode is a Chrome extension plus a sandboxed Go server that lets ChatGPT, Claude, Gemini, Qwen, and Kimi read files, edit code, run commands, and automate the browser inside a permission-controlled working directory." />
+  <meta name="keywords" content="PierCode, local AI assistant, AI coding agent, Chrome extension AI, ChatGPT local filesystem, Claude code execution, Gemini local server, Qwen tools, browser AI proxy, sandboxed code execution, MCP alternative, Go server AI, Manifest V3" />
+  <link rel="canonical" href="https://sirhap.github.io/PierCode/" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#1e1e2e" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="PierCode — Local AI Assistant Proxy for ChatGPT, Claude, Gemini & Qwen" />
+  <meta property="og:description" content="Turn any web AI chat into a local coding agent. A Chrome extension + sandboxed Go server that lets ChatGPT, Claude, Gemini, and Qwen read files, edit code, run commands, and drive the browser on your machine." />
+  <meta property="og:url" content="https://sirhap.github.io/PierCode/" />
+  <meta property="og:site_name" content="PierCode" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="PierCode — Local AI Assistant Proxy" />
+  <meta name="twitter:description" content="Connect ChatGPT, Claude, Gemini & Qwen to your local filesystem and browser via a Chrome extension and a sandboxed Go server." />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "PierCode",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Windows, macOS, Linux",
+    "description": "Local AI assistant proxy connecting web-based AI (ChatGPT, Claude, Gemini, Qwen, Kimi) to your local filesystem and browser through a Chrome extension and a sandboxed Go server.",
+    "url": "https://sirhap.github.io/PierCode/",
+    "codeRepository": "https://github.com/Sirhap/PierCode",
+    "programmingLanguage": ["Go", "TypeScript"],
+    "license": "https://github.com/Sirhap/PierCode/blob/master/LICENSE",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+  }
+  </script>
+
+  <link rel="stylesheet" href="/src/styles/main.css" />
+  <noscript><style>.reveal{opacity:1 !important;transform:none !important}</style></noscript>
+</head>
+<body>
+  <canvas id="bg-grid" aria-hidden="true"></canvas>
+
+  <header class="nav">
+    <a class="brand" href="#top">
+      <span class="brand-mark">▌</span>Pier<span class="brand-accent">Code</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#platforms">Platforms</a>
+      <a href="#security">Security</a>
+      <a class="nav-cta" href="https://github.com/Sirhap/PierCode" target="_blank" rel="noopener">GitHub ★</a>
+    </nav>
+  </header>
+
+  <main id="top">
+
+    <!-- ── Hero ─────────────────────────────────────────────── -->
+    <section class="hero">
+      <div class="hero-copy reveal">
+        <div class="eyebrow">open-source · local-first</div>
+        <h1>Web AI, meet your<br><span class="grad">local machine</span></h1>
+        <p class="lede">
+          PierCode connects <strong>ChatGPT, Claude, Gemini, Qwen &amp; Kimi</strong>
+          to your filesystem and browser. The AI emits tool calls; a Chrome
+          extension proxies them to a sandboxed local server that reads files,
+          edits code, runs commands, and drives the browser — with your approval.
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/Sirhap/PierCode" target="_blank" rel="noopener">Get Started</a>
+          <a class="btn btn-ghost" href="/PierCode/docs/">Read the docs</a>
+        </div>
+        <div class="trust">No copy-paste. No cloud upload. Runs on <code>127.0.0.1</code>.</div>
+      </div>
+
+      <div class="hero-term reveal">
+        <div class="term">
+          <div class="term-bar"><span></span><span></span><span></span><i>piercode — zsh</i></div>
+          <div class="term-body" id="term-body"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── How it works ─────────────────────────────────────── -->
+    <section id="how" class="section">
+      <h2 class="reveal">How it works</h2>
+      <p class="section-sub reveal">Four steps, every tool call.</p>
+      <ol class="flow">
+        <li class="flow-step reveal"><span class="flow-n">1</span><h3>AI prints a tool block</h3><p>The assistant outputs a visible <code>piercode-tool</code> fenced JSON block in its reply.</p></li>
+        <li class="flow-step reveal"><span class="flow-n">2</span><h3>Extension detects it</h3><p>The Chrome extension spots the block and shows an approval card on the page.</p></li>
+        <li class="flow-step reveal"><span class="flow-n">3</span><h3>Local server executes</h3><p>A Go server on <code>127.0.0.1</code> validates and runs it inside the working-directory sandbox.</p></li>
+        <li class="flow-step reveal"><span class="flow-n">4</span><h3>Result returns</h3><p>Output flows back into the chat — the AI keeps working with real, local results.</p></li>
+      </ol>
+    </section>
+
+    <!-- ── Features ─────────────────────────────────────────── -->
+    <section id="features" class="section">
+      <h2 class="reveal">Real tools, not suggestions</h2>
+      <p class="section-sub reveal">A focused toolset, sandboxed and reviewable.</p>
+      <div class="cards" id="feature-cards"></div>
+    </section>
+
+    <!-- ── Platforms ────────────────────────────────────────── -->
+    <section id="platforms" class="section">
+      <h2 class="reveal">Works where you already chat</h2>
+      <p class="section-sub reveal">One extension, many AI surfaces.</p>
+      <div class="platforms" id="platform-wall"></div>
+    </section>
+
+    <!-- ── Security ─────────────────────────────────────────── -->
+    <section id="security" class="section">
+      <h2 class="reveal">Local by design</h2>
+      <p class="section-sub reveal">You decide what the AI can touch.</p>
+      <div class="sec-grid">
+        <div class="sec-item reveal"><div class="sec-ico">⊟</div><h3>Loopback only</h3><p>The server binds <code>127.0.0.1</code> and never exposes a public port.</p></div>
+        <div class="sec-item reveal"><div class="sec-ico">⚷</div><h3>Token auth</h3><p>Every request needs a per-launch bearer token stored in <code>~/.piercode</code>.</p></div>
+        <div class="sec-item reveal"><div class="sec-ico">▣</div><h3>Path sandbox</h3><p>Paths resolve through real-path checks and stay inside your working directory.</p></div>
+      </div>
+    </section>
+
+    <!-- ── Quick start ──────────────────────────────────────── -->
+    <section id="start" class="section">
+      <h2 class="reveal">Quick start</h2>
+      <p class="section-sub reveal">Three steps to a local AI agent.</p>
+      <div class="steps">
+        <div class="step reveal"><span class="step-n">1</span><div><h3>Run the server</h3><pre><code>go run ./cmd/server -dir .</code></pre></div></div>
+        <div class="step reveal"><span class="step-n">2</span><div><h3>Build the extension</h3><pre><code>cd extension &amp;&amp; npm install &amp;&amp; npm run build</code></pre></div></div>
+        <div class="step reveal"><span class="step-n">3</span><div><h3>Load it in Chrome</h3><pre><code>chrome://extensions → Load unpacked → extension/dist</code></pre></div></div>
+      </div>
+      <div class="cta-row center reveal">
+        <a class="btn btn-primary" href="https://github.com/Sirhap/PierCode" target="_blank" rel="noopener">Star on GitHub</a>
+        <a class="btn btn-ghost" href="/PierCode/docs/faq.html">Read the FAQ</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="brand"><span class="brand-mark">▌</span>Pier<span class="brand-accent">Code</span></div>
+    <nav>
+      <a href="https://github.com/Sirhap/PierCode" target="_blank" rel="noopener">GitHub</a>
+      <a href="/PierCode/docs/">Docs</a>
+      <a href="/PierCode/docs/faq.html">FAQ</a>
+      <a href="https://github.com/Sirhap/PierCode/blob/master/LICENSE" target="_blank" rel="noopener">License</a>
+    </nav>
+    <p class="fine">For learning and research only. Not a hardened sandbox for untrusted prompts.</p>
+  </footer>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -53,3 +53,7 @@ dist/
 
 # Superpowers brainstorm scratch
 .superpowers/
+
+# Landing page build output
+site/dist/
+site/node_modules/

@@ -1,0 +1,64 @@
+name: Deploy GitHub Pages
+
+# Builds the Vite landing page (site/) into the site root and the Jekyll docs
+# (docs/) into /docs, merges them into one artifact, and deploys to Pages.
+# Requires repo Settings → Pages → Source = "GitHub Actions".
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'site/**'
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deploy; let in-progress runs finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Landing page (Vite) → dist root ────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Build landing page
+        working-directory: site
+        run: |
+          npm ci
+          npm run build
+
+      # ── Docs (Jekyll) → dist/docs ──────────────────────────
+      - name: Build Jekyll docs
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: docs
+          destination: site/dist/docs
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
