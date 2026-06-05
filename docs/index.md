@@ -31,7 +31,7 @@ Web AI page (ChatGPT / Claude / Gemini / Qwen …)
 
 ## Getting Started
 
-See [development.md](development.md) for build instructions and [browser-full-test-plan.md](browser-full-test-plan.md) for browser automation tests. Source and releases are on [GitHub](https://github.com/Sirhap/PierCode).
+See the [development guide](development.html) for build instructions and the [browser test plan](browser-full-test-plan.html) for browser automation tests. New to PierCode? Read the [FAQ](faq.html). Source and releases are on [GitHub](https://github.com/Sirhap/PierCode).
 
 ## Contributing
 

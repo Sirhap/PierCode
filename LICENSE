@@ -1,0 +1,34 @@
+PierCode Research & Learning License
+
+Copyright (c) 2026 Sirhap
+
+This software and its associated documentation files (the "Software") are
+provided for LEARNING AND RESEARCH PURPOSES ONLY.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+the Software, to use, copy, modify, and study the Software for personal,
+educational, and research purposes, subject to the following conditions:
+
+1. NON-COMMERCIAL USE ONLY. The Software, in whole or in part, may not be used
+   for any commercial purpose, including but not limited to selling, sublicensing,
+   offering as a paid or ad-supported service, or incorporating it into a product
+   or service that is sold or monetized, without the prior written permission of
+   the copyright holder.
+
+2. ATTRIBUTION. The above copyright notice and this license notice shall be
+   included in all copies or substantial portions of the Software.
+
+3. NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO
+   EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES,
+   OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
+   ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.
+
+4. SECURITY NOTICE. The Software runs a local server that can read, write, and
+   execute within a chosen working directory. The blacklist of dangerous commands
+   is a backstop, not a security sandbox. Run it only in directories you are
+   willing to expose to the connected AI page, and at your own risk.
+
+中文摘要（以英文条款为准）：本项目仅供学习和研究使用，严禁任何商业用途。保留版权与许可声明，按现状提供，不承担任何担保责任。
