@@ -6,6 +6,8 @@ import {
   tokenAccuracy,
   whenTokenizerReady,
   __resetTokenizerForTest,
+  platformAccuracy,
+  platformFactor,
 } from '../content/token-meter';
 
 // js-tiktoken mock：每个 token = 4 字符（确定性，便于断言）。
@@ -69,5 +71,32 @@ describe('computeMeter role classification', () => {
   it('returns zeros for an empty conversation', () => {
     const meter = computeMeter(ctx([]));
     expect(meter).toMatchObject({ input: 0, output: 0, total: 0 });
+  });
+});
+
+describe('token-meter platform accuracy tier', () => {
+  it('chatgpt is exact', () => {
+    expect(platformAccuracy('chatgpt', 'ready')).toBe('exact');
+  });
+  it('qwen is approx when tokenizer ready', () => {
+    expect(platformAccuracy('qwen', 'ready')).toBe('approx');
+  });
+  it('claude is estimate when tokenizer ready', () => {
+    expect(platformAccuracy('claude', 'ready')).toBe('estimate');
+  });
+  it('any platform is estimate when tokenizer not ready', () => {
+    expect(platformAccuracy('chatgpt', 'failed')).toBe('estimate');
+  });
+});
+
+describe('token-meter platform factor', () => {
+  it('chatgpt factor is 1.0', () => {
+    expect(platformFactor('chatgpt')).toBe(1.0);
+  });
+  it('claude factor is 1.15', () => {
+    expect(platformFactor('claude')).toBe(1.15);
+  });
+  it('unknown platform falls back to 1.0', () => {
+    expect(platformFactor('totally-unknown')).toBe(1.0);
   });
 });

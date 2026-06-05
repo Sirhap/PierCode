@@ -3,7 +3,7 @@
 
 import { ConversationContext, estimateTokens } from './qwen-context-compress';
 
-export type TokenAccuracy = 'exact' | 'estimate';
+export type TokenAccuracy = 'exact' | 'approx' | 'estimate';
 
 export interface TokenMeter {
   input: number;
@@ -12,11 +12,40 @@ export interface TokenMeter {
   accuracy: TokenAccuracy;
 }
 
+export type LoadState = 'idle' | 'loading' | 'ready' | 'failed';
+
+// 各平台相对 o200k_base 的经验校正系数（混合中英文/代码）。保守初值，可后续标定。
+export const PLATFORM_TOKEN_FACTOR: Record<string, number> = {
+  chatgpt: 1.0,
+  qwen: 1.0,   // 用 cl100k_base 直接编码，不额外乘系数
+  gemini: 1.1,
+  claude: 1.15,
+};
+
+export function platformFactor(platform: string): number {
+  return PLATFORM_TOKEN_FACTOR[platform] ?? 1.0;
+}
+
+// 精度档：chatgpt+o200k=精确；qwen+cl100k=近似；gemini 系数=近似；其余估算。
+// tokenizer 未就绪一律 estimate。
+export function platformAccuracy(platform: string, state: LoadState): TokenAccuracy {
+  if (state !== 'ready') return 'estimate';
+  if (platform === 'chatgpt') return 'exact';
+  if (platform === 'qwen') return 'approx';
+  if (platform === 'gemini') return 'approx';
+  return 'estimate';
+}
+
 // tiktoken 编码器单例。null = 未加载；'failed' = 永久回退。
 type Encoder = { encode: (text: string) => number[] };
 let encoder: Encoder | null = null;
-let loadState: 'idle' | 'loading' | 'ready' | 'failed' = 'idle';
+let loadState: LoadState = 'idle';
 let loadPromise: Promise<void> | null = null;
+
+// tokenizerState 暴露加载状态，供面板/测试判断精度档。
+export function tokenizerState(): LoadState {
+  return loadState;
+}
 
 // ensureTiktoken 启动一次懒加载。同步路径不等待——首次调用期间返回字符估算，
 // 加载完成后的调用才用精确 token。失败永久回退，不重试风暴。
