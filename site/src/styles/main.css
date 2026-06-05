@@ -212,6 +212,66 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
 }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* ── Chat demo (in-page approval card) ───────────────── */
+.chat {
+  max-width: 640px;
+  margin: 0 auto;
+  background: var(--mantle);
+  border: 1px solid var(--surface);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 0 50px rgba(137, 180, 250, 0.12), 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+.chat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--crust);
+  border-bottom: 1px solid var(--surface);
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.chat-head .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
+.chat-body { padding: 18px; min-height: 320px; display: flex; flex-direction: column; gap: 12px; }
+.cb { max-width: 82%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; }
+.cb-user { align-self: flex-end; background: var(--surface); color: var(--text); border-bottom-right-radius: 4px; }
+.cb-ai { align-self: flex-start; background: var(--crust); border: 1px solid var(--surface); color: var(--subtext); border-bottom-left-radius: 4px; }
+.cb-result { border-color: rgba(166, 227, 161, 0.4); color: var(--text); }
+
+/* Approval card — mirrors the real extension card (content/index.ts). */
+.pc-card {
+  align-self: flex-start;
+  width: 100%;
+  max-width: 380px;
+  border: 1px solid #45475a;
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--base);
+  color: var(--text);
+  font-size: 13px;
+}
+.pc-enter { opacity: 0; transform: translateY(10px) scale(0.98); transition: opacity 0.4s, transform 0.4s; }
+.pc-in { opacity: 1; transform: none; }
+.pc-head { font-weight: 700; margin-bottom: 8px; }
+.pc-id { color: #888; font-size: 11px; font-weight: 400; }
+.pc-args { background: var(--crust); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+.pc-arg .pc-k { color: var(--blue); font-size: 11px; }
+.pc-arg .pc-v { color: var(--text); font-size: 12px; font-family: var(--mono); }
+.pc-btns { display: flex; gap: 8px; }
+.pc-run, .pc-bg, .pc-skip {
+  font: inherit; font-size: 12px; padding: 5px 14px; border-radius: 6px; cursor: pointer; border: none;
+  transition: box-shadow 0.2s, transform 0.1s;
+}
+.pc-run { background: #1677ff; color: #fff; }
+.pc-bg { background: var(--surface); color: var(--green); border: 1px solid var(--green); }
+.pc-skip { background: var(--surface); color: var(--text); border: 1px solid var(--surface2); }
+.pc-press { box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.45); transform: scale(0.96); }
+.pc-done { border-color: rgba(166, 227, 161, 0.5); box-shadow: 0 0 24px rgba(166, 227, 161, 0.15); }
+.pc-done .pc-run { background: #2e5e2a; color: var(--green); }
+.pc-done .pc-bg, .pc-done .pc-skip { display: none; }
+
 /* ── Flow ────────────────────────────────────────────── */
 .flow { list-style: none; display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
 .flow-step {

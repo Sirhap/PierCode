@@ -3,6 +3,7 @@ import { gsap } from 'gsap'
 import { ScrollTrigger } from 'gsap/ScrollTrigger'
 import { featureTools, platforms } from './data'
 import { runTerminal } from './terminal'
+import { runChatDemo } from './chatdemo'
 import { applyLang, getLang, setLang } from './i18n'
 
 gsap.registerPlugin(ScrollTrigger)
@@ -85,3 +86,6 @@ if (toggle) {
 
 const term = document.getElementById('term-body')
 if (term) runTerminal(term)
+
+const chat = document.getElementById('chat-body')
+if (chat) runChatDemo(chat)
