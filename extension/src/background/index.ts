@@ -177,6 +177,44 @@ function setBrowserRelayStatus(status: Omit<BrowserRelayStatus, 'controlledTabId
     updatedAt: Date.now(),
   };
   chrome.storage.local.set({ browserRelayStatus: next });
+  void broadcastControlledTab();
+}
+
+type ControlledTabMessage = {
+  type: 'PIERCODE_CONTROLLED_TAB';
+  info: { tabId: number; title: string; url: string } | null;
+};
+
+function buildControlledTabMessage(tab: chrome.tabs.Tab | null): ControlledTabMessage {
+  if (!tab || tab.id == null) return { type: 'PIERCODE_CONTROLLED_TAB', info: null };
+  return {
+    type: 'PIERCODE_CONTROLLED_TAB',
+    info: { tabId: tab.id, title: tab.title || '', url: tab.url || '' },
+  };
+}
+
+// broadcastControlledTab 把当前受控 tab 推给所有 content（面板用）。controlledTabId
+// 每次变化都伴随 setBrowserRelayStatus，故从那里统一广播。失败静默。
+async function broadcastControlledTab(): Promise<void> {
+  let msg: ControlledTabMessage;
+  if (controlledTabId == null) {
+    msg = { type: 'PIERCODE_CONTROLLED_TAB', info: null };
+  } else {
+    try {
+      const tab = await chrome.tabs.get(controlledTabId);
+      msg = buildControlledTabMessage(tab);
+    } catch {
+      msg = { type: 'PIERCODE_CONTROLLED_TAB', info: null };
+    }
+  }
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const t of tabs) {
+      if (t.id != null) chrome.tabs.sendMessage(t.id, msg).catch(() => {});
+    }
+  } catch {
+    // tabs API 不可用时静默。
+  }
 }
 
 function getAuthInfo(): Promise<AuthInfo | null> {
