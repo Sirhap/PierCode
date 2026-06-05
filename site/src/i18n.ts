@@ -22,15 +22,24 @@ export const strings: Dict = {
   'hero.cta2': { zh: '阅读文档', en: 'Read the docs' },
   'hero.trust': { zh: '无需复制粘贴。不上传云端。运行在', en: 'No copy-paste. No cloud upload. Runs on' },
 
-  'chat.h2': { zh: '就在你的 AI 对话里', en: 'Right inside your AI chat' },
-  'chat.sub': { zh: 'AI 输出工具调用，你点一下批准，结果当场回填。', en: 'The AI emits a tool call, you approve it, the result lands back in the chat.' },
-  'chat.usermsg': { zh: '帮我看下 main.go 写了啥', en: 'Show me what main.go contains' },
-  'chat.aimsg': { zh: '好的，我读一下这个文件：', en: 'Sure, let me read that file:' },
   'chat.approve': { zh: '执行', en: 'Run' },
   'chat.skip': { zh: '忽略', en: 'Skip' },
   'chat.bg': { zh: '后台执行', en: 'Background' },
-  'chat.result': { zh: '读取完成，main.go 是程序入口，调用 startServer()。', en: 'Done — main.go is the entry point, it calls startServer().' },
   'chat.badge': { zh: '✅ 已执行', en: '✅ Executed' },
+  'chat.warn': { zh: '⚠️ 注意：可能改写文件', en: '⚠️ Note: may modify the file' },
+
+  // User opening request
+  'chat.u1': { zh: '把服务器默认端口从 8080 改成 39527，然后跑下测试', en: 'Change the default port from 8080 to 39527, then run the tests' },
+  // AI intro lines + results, interleaved with tool cards
+  'chat.a1': { zh: '好的，先找到端口定义的位置：', en: 'Sure — first let me find where the port is defined:' },
+  'chat.r1': { zh: '找到 1 处：cmd/server/main.go:18', en: 'Found 1 match: cmd/server/main.go:18' },
+  'chat.a2': { zh: '读一下上下文确认：', en: 'Let me read the surrounding code:' },
+  'chat.r2': { zh: 'port := flag.Int("port", 8080, "listen port")', en: 'port := flag.Int("port", 8080, "listen port")' },
+  'chat.a3': { zh: '改这一行：', en: 'Applying the edit:' },
+  'chat.r3': { zh: '✓ 已替换 1 处：8080 → 39527', en: '✓ replaced 1 occurrence: 8080 → 39527' },
+  'chat.a4': { zh: '跑测试验证：', en: 'Running the tests:' },
+  'chat.r4': { zh: 'ok  github.com/sirhap/piercode  (cached)', en: 'ok  github.com/sirhap/piercode  (cached)' },
+  'chat.done': { zh: '端口已改为 39527，测试全部通过 ✅', en: 'Port is now 39527 and all tests pass ✅' },
 
   'how.h2': { zh: '工作原理', en: 'How it works' },
   'how.sub': { zh: '每次工具调用，四个步骤。', en: 'Four steps, every tool call.' },

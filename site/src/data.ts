@@ -21,18 +21,3 @@ export const platforms: { name: string; color: string }[] = [
   { name: 'Chat Z', color: '#22c55e' },
   { name: 'Mimo', color: '#f59e0b' },
 ]
-
-// Terminal "demo" lines. Each segment has a class for coloring.
-export type TermSeg = { t: string; c?: 'cmd' | 'ok' | 'dim' | 'out' }
-export const termScript: TermSeg[][] = [
-  [{ t: '$ ', c: 'dim' }, { t: 'grep "func main" cmd/', c: 'cmd' }],
-  [{ t: 'cmd/server/main.go:12', c: 'out' }],
-  [{ t: '$ ', c: 'dim' }, { t: 'read_file cmd/server/main.go', c: 'cmd' }],
-  [{ t: 'func main() { startServer() }', c: 'out' }],
-  [{ t: '$ ', c: 'dim' }, { t: 'edit  -port 8080 → 39527', c: 'cmd' }],
-  [{ t: '✓ edit applied', c: 'ok' }],
-  [{ t: '$ ', c: 'dim' }, { t: 'exec_cmd "go test ./..."', c: 'cmd' }],
-  [{ t: 'ok  github.com/sirhap/piercode', c: 'ok' }],
-  [{ t: '$ ', c: 'dim' }, { t: 'browser_snapshot', c: 'cmd' }],
-  [{ t: '✓ page captured · 42 nodes', c: 'ok' }],
-]
