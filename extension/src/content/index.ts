@@ -500,15 +500,6 @@ function findStopElement(cfg: SiteConfig): HTMLElement | null {
   return null;
 }
 
-// Shared helpers for custom stop matchers, kept module-level so getSiteConfig
-// can reference them without recreating closures on every call.
-function findButtonByExactText(text: string): HTMLElement | null {
-  for (const btn of Array.from(document.querySelectorAll('button'))) {
-    if (btn.textContent?.trim() === text && isVisibleElement(btn)) return btn as HTMLElement;
-  }
-  return null;
-}
-
 interface ToolExecutionResult {
   output: string;
   stopStream: boolean;
@@ -1009,10 +1000,9 @@ function getSiteConfig(): SiteConfig {
     return {
       editor: 'textarea#chat-input',
       sendBtn: 'button#send-message-button',
-      // Chat Z 生成中显示文本按钮"跳过"(无稳定 class/aria-label，全是 Tailwind)。
-      // 用精确文本匹配；底部方块按钮 class 易变，不依赖。
-      stopBtn: null,
-      stopBtnMatch: () => findButtonByExactText('跳过') || findButtonByExactText('Skip'),
+      // Chat Z 生成态：方块停止按钮的 class 全是 Tailwind（易变），但外层包了
+      // 稳定的 div[aria-label="停止"]。用它定位内部 button；兼容英文 aria-label="Stop"。
+      stopBtn: 'div[aria-label="停止"] button, div[aria-label="Stop"] button',
       fillMethod: 'value',
       useObserver: true,
       responseSelector: adapterSelector || '#response-content-container'
@@ -1074,15 +1064,16 @@ function getSiteConfig(): SiteConfig {
       responseSelector: adapterSelector || '.markdown-prose'
     };
   // Default: AI Studio
-  // AI Studio 的 Run/Stop 共用同一 ms-button-primary 按钮，仅文本区分：
-  // 非生成态文本 "Run"，生成态含 "Stop"。CSS 无法区分，用文本匹配 + 收窄到
-  // 该主按钮（避免误命中弹窗里的 Cancel 等）。
+  // AI Studio 的 Run/Stop 共用 ms-run-button 内的同一 button（type="button"，非
+  // submit），仅文本区分：非生成态 "Run"，生成态含 "Stop"。页面还有别的
+  // ms-button-primary（API key、Tools），不能用 document.querySelector 取第一个，
+  // 必须收窄到 ms-run-button button 再判文本。
   return {
     editor: 'textarea[placeholder*="Start typing a prompt"]',
-    sendBtn: 'button.ctrl-enter-submits.ms-button-primary[type="submit"], button[aria-label*="Run"]',
+    sendBtn: 'ms-run-button button.ctrl-enter-submits, button.ctrl-enter-submits.ms-button-primary, button[aria-label*="Run"]',
     stopBtn: null,
     stopBtnMatch: () => {
-      const btn = document.querySelector('button.ms-button-primary') as HTMLElement | null;
+      const btn = document.querySelector('ms-run-button button') as HTMLElement | null;
       if (btn && isVisibleElement(btn) && btn.textContent?.includes('Stop')) return btn;
       return null;
     },
@@ -1114,14 +1105,18 @@ if (!(window as any).__PIERCODE_LOADED__) {
     // storage 不可用时保持默认（非隐身），不阻塞初始化。
   }
   // 状态面板：显示操作状态/提供商/token/受控 tab。
-  // 包 try/catch：面板任何异常都不得中断后续 content 初始化（指示器/初始化按钮等）。
-  try {
-    statusPanel.init();
-    statusPanel.setProvider(platformAdapter.name, platformProfile);
-    startTokenRefresh();
-  } catch (err) {
-    console.warn('[PierCode] 状态面板初始化失败:', err);
-  }
+  // 用 queueMicrotask 延后：startTokenRefresh / tokenThreshold 依赖的 const/let
+  // 声明在本顶层块之后（TDZ），同步调用会抛 ReferenceError。微任务在整个模块求值
+  // 完成后执行，绕开 TDZ。try/catch 再兜底，面板异常绝不中断后续 content 初始化。
+  queueMicrotask(() => {
+    try {
+      statusPanel.init();
+      statusPanel.setProvider(platformAdapter.name, platformProfile);
+      startTokenRefresh();
+    } catch (err) {
+      console.warn('[PierCode] 状态面板初始化失败:', err);
+    }
+  });
   // Register WS dispatchers (tool_stream/done + question_ask/cancel) up
   // front so question popups can appear even before any ToolCard renders.
   ensureStreamDispatchers();
