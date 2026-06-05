@@ -1,10 +1,18 @@
-# PierCode - Local AI Assistant Proxy
+# PierCode — Local AI Assistant Proxy for ChatGPT, Claude, Gemini & Qwen
 
-PierCode is a local development tool that connects web-based AI assistants (ChatGPT, Claude, Qwen, etc.) to your local filesystem and browser via a Chrome extension and a sandboxed Go server. Execute safe file operations, commands, and browser interactions from AI outputs. Learn more in the [documentation](docs/index.md).
+> Connect web-based AI assistants to your **local filesystem and browser** through a **Chrome extension** and a **sandboxed Go server**.
 
+![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)
+![Manifest V3](https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4?logo=googlechrome&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-React%2018-3178C6?logo=typescript&logoColor=white)
+![License](https://img.shields.io/badge/license-research%20only-lightgrey)
 
+**PierCode** is an open-source local development tool that connects web-based AI assistants — **ChatGPT, Claude, Gemini, Qwen, Kimi**, and more — to your local filesystem and browser. The AI emits tool calls in its replies; a Chrome extension detects them and proxies them to a localhost Go server that executes sandboxed file, shell, and browser operations, then returns the results. It turns any web AI chat into a local coding agent that can read your repo, edit files, run tests, and drive the browser — no copy-pasting code back and forth. Learn more in the [documentation](docs/index.md).
+
+**Keywords:** local AI assistant · AI coding agent · ChatGPT to local filesystem · Claude code execution · browser AI proxy · sandboxed code execution · Chrome extension AI tools · Go server · Manifest V3 · MCP alternative.
 
 > **免责声明：本项目仅供学习和研究使用，严禁用于任何商业用途。**
+> **Disclaimer:** for learning and research only; commercial use is prohibited.
 
 PierCode 是一个本地开发辅助工具：通过浏览器扩展把网页版 AI 和本机 Go 服务连接起来，让 AI 可以在受限工作目录内请求读取文件、编辑文件、执行命令、搜索内容等工具能力。
 

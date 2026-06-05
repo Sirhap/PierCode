@@ -35,6 +35,12 @@ extension/*.crx
 extension/*.pem
 extension/dist/
 
+# Jekyll (GitHub Pages docs site) local build output
+docs/_site/
+docs/.jekyll-cache/
+docs/.jekyll-metadata
+.bundle/
+
 # OpenLink/omx build and dev tools
 .omx/
 .claude/

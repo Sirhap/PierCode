@@ -1,0 +1,40 @@
+# Jekyll config for the PierCode documentation site (GitHub Pages).
+# Serves the docs/ directory. In repo Settings → Pages, set Source to
+# "Deploy from a branch" → branch dev/master, folder /docs.
+
+title: "PierCode — Connect Web AI to Your Local Filesystem"
+description: >-
+  PierCode is a local AI assistant proxy: a Chrome extension plus a sandboxed Go
+  server that lets web-based AI assistants (ChatGPT, Claude, Gemini, Qwen, Kimi)
+  read files, edit code, run commands, and drive the browser inside a permission-
+  controlled working directory on your own machine.
+url: "https://sirhap.github.io"
+baseurl: "/PierCode"
+lang: en
+
+# jekyll-seo-tag reads these for <title>, meta description, Open Graph,
+# Twitter cards, canonical URLs, and SoftwareApplication JSON-LD.
+author:
+  name: Sirhap
+twitter:
+  card: summary_large_image
+logo: /assets/logo.png
+
+# GitHub Pages whitelists these plugins; no extra build setup needed.
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+# Surfaced by jekyll-seo-tag and usable in templates.
+repository: Sirhap/PierCode
+
+# Keep build output lean and avoid leaking dev files into the published site.
+exclude:
+  - test-runs
+  - "*.test.md"
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default

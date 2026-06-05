@@ -1,4 +1,9 @@
-# 开发指南
+---
+title: "PierCode Development Guide — Build the Go Server and Chrome Extension"
+description: "How to build and run PierCode from source: the Go server (go run ./cmd/server) and the Manifest V3 Chrome extension (npm run build), plus tests and verification."
+---
+
+# 开发指南 (Development Guide)
 
 ## 环境要求
 

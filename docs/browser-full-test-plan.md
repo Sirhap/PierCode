@@ -1,4 +1,9 @@
-# PierCode 浏览器与扩展全量测试计划
+---
+title: "PierCode Browser & Extension Test Plan"
+description: "Full manual test plan for PierCode's browser automation tools and Chrome extension integration across supported AI platforms."
+---
+
+# PierCode 浏览器与扩展全量测试计划 (Browser & Extension Test Plan)
 
 日期：2026-06-01
 
