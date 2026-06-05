@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -46,7 +45,6 @@ type WSManager struct {
 	clients        map[*clientConn]bool
 	clientsMu      sync.RWMutex
 	upgrader       websocket.Upgrader
-	broadcast      chan []byte
 	done           chan struct{}
 	closeOnce      sync.Once
 	allowedOrigins []string
@@ -57,7 +55,6 @@ type WSManager struct {
 func NewWSManager(allowedOrigins []string) *WSManager {
 	return &WSManager{
 		clients:        make(map[*clientConn]bool),
-		broadcast:      make(chan []byte, 100),
 		done:           make(chan struct{}),
 		allowedOrigins: append([]string(nil), allowedOrigins...),
 		upgrader: websocket.Upgrader{
@@ -241,22 +238,10 @@ func (m *WSManager) Broadcast(message []byte) {
 	}
 }
 
-// Start 启动广播循环（从 channel 读取并广播）
-func (m *WSManager) Start() {
-	go func() {
-		for {
-			select {
-			case msg, ok := <-m.broadcast:
-				if !ok {
-					return
-				}
-				m.Broadcast(msg)
-			case <-m.done:
-				return
-			}
-		}
-	}()
-}
+// Start is retained for API/test compatibility. Broadcasting no longer runs
+// through a single intermediate channel + drain goroutine; Send fans out to
+// every client directly (see Send). Nothing to start.
+func (m *WSManager) Start() {}
 
 // Close 关闭广播循环并断开所有客户端
 func (m *WSManager) Close() {
@@ -271,14 +256,15 @@ func (m *WSManager) Close() {
 	})
 }
 
-// Send 发送消息到广播队列（非阻塞）
+// Send fans a message out to every connected client. It no longer routes
+// through a shared buffered channel + single drain goroutine — that funnel
+// serialized all broadcasts and silently dropped messages (including
+// tool_stream chunks and tool_done) when a stdout-heavy task burst past the
+// buffer. Send is non-blocking: Broadcast delivers into each client's own
+// buffered send queue, and only a client whose own queue is full gets
+// disconnected. A healthy client never loses a message to a global-queue spike.
 func (m *WSManager) Send(message []byte) {
-	select {
-	case m.broadcast <- message:
-	default:
-		// 队列满时丢弃，避免阻塞主流程，但记录日志便于诊断丢失。
-		log.Printf("[PierCode][WS] ⚠️ 广播队列已满，丢弃 %d 字节消息", len(message))
-	}
+	m.Broadcast(message)
 }
 
 func (m *WSManager) SendToRole(role string, message []byte) bool {
