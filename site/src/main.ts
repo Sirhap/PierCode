@@ -1,8 +1,9 @@
 import './styles/main.css'
 import { gsap } from 'gsap'
 import { ScrollTrigger } from 'gsap/ScrollTrigger'
-import { features, platforms } from './data'
+import { featureTools, platforms } from './data'
 import { runTerminal } from './terminal'
+import { applyLang, getLang, setLang } from './i18n'
 
 gsap.registerPlugin(ScrollTrigger)
 
@@ -10,16 +11,18 @@ const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
 const isMobile = matchMedia('(max-width: 900px)').matches
 
 // ── Render data-driven sections ──────────────────────────
+// Cards carry data-i18n keys on title/desc so applyLang() localizes them; the
+// mono tool name stays literal (API names are not translated).
 function renderFeatures() {
   const root = document.getElementById('feature-cards')
   if (!root) return
-  root.innerHTML = features
+  root.innerHTML = featureTools
     .map(
-      (f) => `
+      (tool, i) => `
       <div class="card reveal">
-        <div class="card-tool">${f.tool}</div>
-        <h3>${f.title}</h3>
-        <p>${f.desc}</p>
+        <div class="card-tool">${tool}</div>
+        <h3 data-i18n="feat.${i + 1}t"></h3>
+        <p data-i18n="feat.${i + 1}d"></p>
       </div>`,
     )
     .join('')
@@ -69,8 +72,16 @@ function initBackground() {
 // ── Boot ─────────────────────────────────────────────────
 renderFeatures()
 renderPlatforms()
+applyLang(getLang()) // localize static + freshly-rendered nodes; default zh
 initReveals()
 initBackground()
+
+const toggle = document.getElementById('lang-toggle')
+if (toggle) {
+  toggle.addEventListener('click', () => {
+    setLang(getLang() === 'zh' ? 'en' : 'zh')
+  })
+}
 
 const term = document.getElementById('term-body')
 if (term) runTerminal(term)

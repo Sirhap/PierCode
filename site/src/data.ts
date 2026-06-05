@@ -1,12 +1,14 @@
 // Content data for the dynamically-rendered sections.
 
-export const features: { tool: string; title: string; desc: string }[] = [
-  { tool: 'read_file · write_file', title: 'Read & write code', desc: 'Inspect and create files inside the sandboxed working directory.' },
-  { tool: 'edit · apply_patch', title: 'Surgical edits', desc: 'Exact string replacements and multi-file contextual patches.' },
-  { tool: 'exec_cmd', title: 'Run commands', desc: 'Shell execution with path validation and a dangerous-command filter.' },
-  { tool: 'glob · grep', title: 'Search the repo', desc: 'Find files by pattern and search contents with regex.' },
-  { tool: 'browser_*', title: 'Drive the browser', desc: '~25 CDP tools — navigate, click, type, snapshot, screenshot, with approval.' },
-  { tool: 'todo_write · skill', title: 'Plan & extend', desc: 'Track multi-step work and load reusable skills on demand.' },
+// Tool names for the feature cards (literal, never translated). Card title and
+// description come from i18n keys feat.1t/feat.1d … in the same order.
+export const featureTools: string[] = [
+  'read_file · write_file',
+  'edit · apply_patch',
+  'exec_cmd',
+  'glob · grep',
+  'browser_*',
+  'todo_write · skill',
 ]
 
 export const platforms: { name: string; color: string }[] = [

@@ -84,6 +84,19 @@ body::after {
 .nav-links { display: flex; align-items: center; gap: 22px; font-size: 14px; }
 .nav-links a { color: var(--subtext); transition: color 0.2s; }
 .nav-links a:hover { color: var(--text); }
+.lang-toggle {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--subtext);
+  background: transparent;
+  border: 1px solid var(--surface);
+  border-radius: 7px;
+  padding: 5px 11px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+.lang-toggle:hover { color: var(--text); border-color: var(--blue); }
 .nav-cta {
   padding: 7px 14px;
   border: 1px solid var(--surface2);
