@@ -543,3 +543,61 @@ func TestApplyPatchFinalNewline(t *testing.T) {
 		}
 	})
 }
+
+func TestApplyPatchSupportsAdditionalAllowedDir(t *testing.T) {
+	cfg := testConfig(t)
+	extra := t.TempDir()
+	cfg.AdditionalAllowedDirs = []string{extra}
+	target := filepath.Join(extra, "patched.txt")
+
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Add File: " + target,
+		"+hello from patch",
+		"*** End Patch",
+	}, "\n")
+	res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{"patch": patch}))
+	if res.Status != "success" {
+		t.Fatalf("apply_patch into additional allowed dir failed: %s", res.Error)
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "hello from patch\n" {
+		t.Fatalf("unexpected file content: %q", raw)
+	}
+}
+
+func TestApplyPatchPermissionModes(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "project")
+	sibling := filepath.Join(parent, "sibling")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sibling, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t)
+	cfg.RootDir = root
+	cfg.InitialRootDir = root
+	target := filepath.Join(sibling, "patched-auto.txt")
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Add File: " + target,
+		"+auto patch",
+		"*** End Patch",
+	}, "\n")
+
+	res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{"patch": patch}))
+	if res.Status != "error" {
+		t.Fatalf("default mode should block sibling apply_patch, got %s", res.Status)
+	}
+
+	cfg.PermissionMode = "auto"
+	res = NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{"patch": patch}))
+	if res.Status != "success" {
+		t.Fatalf("auto mode should allow sibling apply_patch: %s", res.Error)
+	}
+}

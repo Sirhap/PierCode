@@ -17,6 +17,7 @@ export function findQwenToolBody(pre: Element): Element | null {
 export const qwenAdapter: PlatformAdapter = {
   name: 'qwen',
   match: () => location.hostname.includes('qwen.ai') || location.hostname.includes('qwenlm.ai'),
+  newSessionUrl: () => `${location.protocol}//${location.host}/`,
   responseSelector: '.qwen-chat-message-assistant, .response-message-content.phase-answer',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';

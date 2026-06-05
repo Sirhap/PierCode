@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/types"
 )
 
@@ -52,14 +51,7 @@ func (t *GlobTool) Execute(ctx *Context) *Result {
 		searchPath = "."
 	}
 
-	var safePath string
-	var err error
-	rootDir := ctx.EffectiveRootDir()
-	if filepath.IsAbs(searchPath) {
-		safePath, err = resolveAbsPath(searchPath, rootDir)
-	} else {
-		safePath, err = security.SafePath(rootDir, searchPath)
-	}
+	safePath, err := ctx.ResolvePath(searchPath)
 	if err != nil {
 		result.Status = "error"
 		result.Error = err.Error()

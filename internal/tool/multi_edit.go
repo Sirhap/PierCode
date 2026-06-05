@@ -4,11 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/types"
 )
 
@@ -79,13 +77,7 @@ func (t *MultiEditTool) Execute(ctx *Context) *Result {
 		return result
 	}
 
-	rootDir := ctx.EffectiveRootDir()
-	var safePath string
-	if filepath.IsAbs(path) {
-		safePath, err = resolveAbsPath(path, rootDir)
-	} else {
-		safePath, err = security.SafePath(rootDir, path)
-	}
+	safePath, err := ctx.ResolvePath(path)
 	if err != nil {
 		result.Status = "error"
 		result.Error = err.Error()
@@ -122,7 +114,7 @@ func (t *MultiEditTool) Execute(ctx *Context) *Result {
 
 	out := restoreLineStyle(content, style)
 	// Snapshot the prior state before writing so `undo` can restore it.
-	_ = snapshotPaths(rootDir, "multi_edit", safePath)
+	_ = snapshotPaths(ctx.EffectiveRootDir(), "multi_edit", safePath)
 	if err := os.WriteFile(safePath, []byte(out), 0644); err != nil {
 		result.Status = "error"
 		result.Error = err.Error()

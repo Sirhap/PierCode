@@ -2,14 +2,22 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS,
   DEFAULT_AUTO_EXECUTE,
+  DEFAULT_PERMISSION_MODE,
   DEFAULT_STEALTH_MODE,
   DEFAULT_QWEN_COMPRESSION_ENABLED,
   DEFAULT_QWEN_MAX_CONTEXT_TOKENS,
   DEFAULT_QWEN_MAX_SUMMARY_TOKENS,
   resolveAutoApproveBrowserActions,
   resolveAutoExecute,
+  resolvePermissionMode,
   resolveStealthMode,
   resolveQwenCompressionConfig,
+  DEFAULT_COMPRESSION_ENABLED,
+  DEFAULT_MAX_CONTEXT_TOKENS,
+  DEFAULT_MAX_SUMMARY_TOKENS,
+  DEFAULT_PLATFORM_THRESHOLDS,
+  resolveContextCompressionConfig,
+  thresholdForPlatform,
 } from '../settings';
 
 describe('resolveAutoExecute', () => {
@@ -51,6 +59,21 @@ describe('resolveStealthMode', () => {
   });
 });
 
+describe('resolvePermissionMode', () => {
+  it('defaults to default mode when unset or invalid', () => {
+    expect(DEFAULT_PERMISSION_MODE).toBe('default');
+    expect(resolvePermissionMode(undefined)).toBe('default');
+    expect(resolvePermissionMode(null)).toBe('default');
+    expect(resolvePermissionMode('invalid')).toBe('default');
+  });
+
+  it('preserves valid permission modes', () => {
+    expect(resolvePermissionMode('default')).toBe('default');
+    expect(resolvePermissionMode('auto')).toBe('auto');
+    expect(resolvePermissionMode('unrestricted')).toBe('unrestricted');
+  });
+});
+
 describe('resolveQwenCompressionConfig', () => {
   it('uses the Qwen compression defaults when unset', () => {
     expect(resolveQwenCompressionConfig(undefined)).toEqual({
@@ -70,5 +93,71 @@ describe('resolveQwenCompressionConfig', () => {
       maxContextTokens: 123,
       maxSummaryTokens: 45,
     });
+  });
+});
+
+describe('resolveContextCompressionConfig', () => {
+  it('uses defaults when both new and legacy config are absent', () => {
+    expect(resolveContextCompressionConfig(undefined)).toEqual({
+      enabled: DEFAULT_COMPRESSION_ENABLED,
+      perPlatformThresholds: { ...DEFAULT_PLATFORM_THRESHOLDS },
+      defaultMaxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
+      maxSummaryTokens: DEFAULT_MAX_SUMMARY_TOKENS,
+    });
+  });
+
+  it('migrates from legacy qwen config when new config is absent', () => {
+    const migrated = resolveContextCompressionConfig(undefined, {
+      enabled: false,
+      maxContextTokens: 333_000,
+      maxSummaryTokens: 7_000,
+    });
+    expect(migrated.enabled).toBe(false);
+    expect(migrated.perPlatformThresholds.qwen).toBe(333_000);
+    expect(migrated.maxSummaryTokens).toBe(7_000);
+    // 其他平台保留默认
+    expect(migrated.perPlatformThresholds.chatgpt).toBe(DEFAULT_PLATFORM_THRESHOLDS.chatgpt);
+  });
+
+  it('merges user overrides over platform defaults and drops invalid thresholds', () => {
+    const cfg = resolveContextCompressionConfig({
+      enabled: true,
+      perPlatformThresholds: { chatgpt: 64_000, qwen: -5, bogus: 'x' as unknown as number },
+      defaultMaxContextTokens: 90_000,
+      maxSummaryTokens: 12_000,
+    });
+    expect(cfg.perPlatformThresholds.chatgpt).toBe(64_000);
+    // 非法值被丢弃，回退默认
+    expect(cfg.perPlatformThresholds.qwen).toBe(DEFAULT_PLATFORM_THRESHOLDS.qwen);
+    expect(cfg.perPlatformThresholds.bogus).toBeUndefined();
+    expect(cfg.defaultMaxContextTokens).toBe(90_000);
+  });
+
+  it('falls back to defaults for invalid scalar fields', () => {
+    const cfg = resolveContextCompressionConfig({
+      enabled: 'yes' as unknown as boolean,
+      defaultMaxContextTokens: -1,
+      maxSummaryTokens: 0,
+    });
+    expect(cfg.enabled).toBe(DEFAULT_COMPRESSION_ENABLED);
+    expect(cfg.defaultMaxContextTokens).toBe(DEFAULT_MAX_CONTEXT_TOKENS);
+    expect(cfg.maxSummaryTokens).toBe(DEFAULT_MAX_SUMMARY_TOKENS);
+  });
+});
+
+describe('thresholdForPlatform', () => {
+  const cfg = resolveContextCompressionConfig({
+    enabled: true,
+    perPlatformThresholds: { chatgpt: 64_000 },
+    defaultMaxContextTokens: 90_000,
+    maxSummaryTokens: 12_000,
+  });
+
+  it('returns the per-platform threshold when set', () => {
+    expect(thresholdForPlatform(cfg, 'chatgpt')).toBe(64_000);
+  });
+
+  it('falls back to default for unlisted platforms', () => {
+    expect(thresholdForPlatform(cfg, 'unknown-platform')).toBe(90_000);
   });
 });

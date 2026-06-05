@@ -156,6 +156,72 @@ func TestWriteReadFile(t *testing.T) {
 	})
 }
 
+func TestAdditionalAllowedDirsForAbsoluteFileTools(t *testing.T) {
+	cfg := testConfig(t)
+	extra := t.TempDir()
+	cfg.AdditionalAllowedDirs = []string{extra}
+	target := filepath.Join(extra, "outside.txt")
+
+	w := NewWriteFileTool(cfg)
+	res := w.Execute(testCtx(cfg, map[string]interface{}{"path": target, "content": "from extra root"}))
+	if res.Status != "success" {
+		t.Fatalf("write into additional allowed dir failed: %s", res.Error)
+	}
+
+	r := NewReadFileTool(cfg)
+	res = r.Execute(testCtx(cfg, map[string]interface{}{"path": target, "line_numbers": false}))
+	if res.Status != "success" {
+		t.Fatalf("read from additional allowed dir failed: %s", res.Error)
+	}
+	if res.Output != "from extra root" {
+		t.Fatalf("unexpected read output: %q", res.Output)
+	}
+
+	blocked := filepath.Join(t.TempDir(), "blocked.txt")
+	res = w.Execute(testCtx(cfg, map[string]interface{}{"path": blocked, "content": "nope"}))
+	if res.Status != "error" {
+		t.Fatal("expected absolute path outside allowed roots to be blocked")
+	}
+}
+
+func TestPermissionModesForAbsoluteFileTools(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "project")
+	sibling := filepath.Join(parent, "sibling")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sibling, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &types.Config{RootDir: root, InitialRootDir: root, Timeout: 10}
+	w := NewWriteFileTool(cfg)
+
+	siblingTarget := filepath.Join(sibling, "auto.txt")
+	res := w.Execute(testCtx(cfg, map[string]interface{}{"path": siblingTarget, "content": "blocked"}))
+	if res.Status != "error" {
+		t.Fatalf("default mode should block sibling path, got %s", res.Status)
+	}
+
+	cfg.PermissionMode = "auto"
+	res = w.Execute(testCtx(cfg, map[string]interface{}{"path": siblingTarget, "content": "auto"}))
+	if res.Status != "success" {
+		t.Fatalf("auto mode should allow sibling path: %s", res.Error)
+	}
+
+	outsideTarget := filepath.Join(t.TempDir(), "unrestricted.txt")
+	res = w.Execute(testCtx(cfg, map[string]interface{}{"path": outsideTarget, "content": "still blocked"}))
+	if res.Status != "error" {
+		t.Fatalf("auto mode should still block unrelated path, got %s", res.Status)
+	}
+
+	cfg.PermissionMode = "unrestricted"
+	res = w.Execute(testCtx(cfg, map[string]interface{}{"path": outsideTarget, "content": "unrestricted"}))
+	if res.Status != "success" {
+		t.Fatalf("unrestricted mode should allow unrelated path: %s", res.Error)
+	}
+}
+
 func TestGlobTool(t *testing.T) {
 	cfg := testConfig(t)
 	os.WriteFile(filepath.Join(cfg.RootDir, "a.go"), []byte(""), 0644)

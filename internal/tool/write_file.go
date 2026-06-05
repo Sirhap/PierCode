@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/types"
 )
 
@@ -56,14 +55,7 @@ func (t *WriteFileTool) Execute(ctx *Context) *Result {
 	content, _ := ctx.Args["content"].(string)
 	mode, _ := ctx.Args["mode"].(string)
 
-	var safePath string
-	var err error
-	rootDir := ctx.EffectiveRootDir()
-	if filepath.IsAbs(path) {
-		safePath, err = resolveAbsPath(path, rootDir)
-	} else {
-		safePath, err = security.SafePath(rootDir, path)
-	}
+	safePath, err := ctx.ResolvePath(path)
 	if err != nil {
 		result.Status = "error"
 		result.Error = err.Error()
@@ -90,7 +82,7 @@ func (t *WriteFileTool) Execute(ctx *Context) *Result {
 		}
 	} else {
 		// Snapshot the prior state before overwriting so `undo` can restore it.
-		_ = snapshotPaths(rootDir, "write_file", safePath)
+		_ = snapshotPaths(ctx.EffectiveRootDir(), "write_file", safePath)
 		if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {
 			result.Status = "error"
 			result.Error = err.Error()

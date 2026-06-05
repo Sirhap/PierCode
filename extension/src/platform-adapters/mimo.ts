@@ -4,6 +4,7 @@ import type { PlatformAdapter } from './types';
 export const mimoAdapter: PlatformAdapter = {
   name: 'mimo',
   match: () => location.hostname.includes('aistudio.xiaomimimo.com'),
+  newSessionUrl: () => `${location.protocol}//${location.host}/`,
   responseSelector: '.markdown-prose',
   extractText: (el: Element, buf: string[]): boolean => {
     const pre = el.closest('pre[data-testid="shiki-container"]') || (el.tagName.toLowerCase() === 'pre' ? el : null);

@@ -20,6 +20,16 @@ import {
 import { QwenCompressionConfig, resolveQwenCompressionConfig } from './qwen-settings';
 import { dispatchEnterAsSendFallback } from './send-fallback';
 
+// 静默窗口解析器（内联，避免 content 引入 ../settings 触发 Rollup 共享分块，
+// 进而让 content.js 输出 ESM import —— MV3 classic content script 不允许）。
+const DEFAULT_BATCH_QUIET_MS = 400;
+const MIN_BATCH_QUIET_MS = 0;
+const MAX_BATCH_QUIET_MS = 5000;
+function resolveBatchQuietMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_BATCH_QUIET_MS;
+  return Math.min(MAX_BATCH_QUIET_MS, Math.max(MIN_BATCH_QUIET_MS, Math.round(value)));
+}
+
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
 const platformProfile = getAdapterProfileName(platformAdapter);
@@ -1131,12 +1141,17 @@ function hashStr(s: string): number {
 }
 
 function getConversationId(): string {
-  const m = location.pathname.match(/\/chat\/([^/?#]+)/) || location.search.match(/[?&]id=([^&]+)/);
-  return m ? m[1] : '__default__';
+  const m = location.pathname.match(/\/(?:chat|c)\/([^/?#]+)/) || location.search.match(/[?&]id=([^&]+)/);
+  return m ? m[1] : `${location.hostname}${location.pathname}${location.search}`;
+}
+
+function scopedExecutionKey(key: string): string {
+  return `${getPierCodeClientId()}:${key}`;
 }
 
 function isExecuted(key: string): boolean {
   try {
+    key = scopedExecutionKey(key);
     const store: Record<string, number> = JSON.parse(localStorage.getItem('piercode_executed') || '{}');
     return !!store[key];
   } catch { return false; }
@@ -1146,6 +1161,7 @@ const TTL = 7 * 24 * 60 * 60 * 1000;
 
 function markExecuted(key: string): void {
   try {
+    key = scopedExecutionKey(key);
     const store: Record<string, number> = JSON.parse(localStorage.getItem('piercode_executed') || '{}');
     const now = Date.now();
     for (const k of Object.keys(store)) {
@@ -1226,13 +1242,16 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   const args = data.args || {};
   const card = document.createElement('div');
   card.setAttribute('data-piercode-key', key);
-  card.style.cssText = 'border:1px solid #444;border-radius:8px;padding:12px;margin:8px 0;background:#1e1e2e;color:#cdd6f4;font-size:13px';
+  card.style.cssText = 'border:1px solid #313244;border-radius:10px;padding:12px 14px;margin:10px 0;background:#1e1e2e;color:#cdd6f4;font-size:13px;box-shadow:0 2px 10px rgba(0,0,0,0.25);font-family:system-ui,-apple-system,sans-serif';
 
   const header = document.createElement('div');
-  header.style.cssText = 'font-weight:bold;margin-bottom:8px';
-  header.append(document.createTextNode(`🔧 ${data.name} `));
+  header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px';
+  const nameBadge = document.createElement('span');
+  nameBadge.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-weight:600;font-size:13px;color:#89b4fa;background:#181825;border:1px solid #313244;border-radius:6px;padding:2px 8px';
+  nameBadge.textContent = `🔧 ${data.name}`;
+  header.appendChild(nameBadge);
   const callId = document.createElement('span');
-  callId.style.cssText = 'color:#888;font-size:11px';
+  callId.style.cssText = 'color:#6c7086;font-size:11px;font-family:monospace';
   callId.textContent = `#${getToolCallId(data)}`;
   header.appendChild(callId);
   card.appendChild(header);
@@ -1265,8 +1284,8 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
     const warning = getDestructiveCommandWarning(cmdStr);
     if (warning) {
       const warnBox = document.createElement('div');
-      warnBox.style.cssText = 'margin:8px 0;background:#3a2a1a;border:1px solid #f9b572;border-radius:6px;padding:8px;color:#f9b572;font-size:12px';
-      warnBox.textContent = `⚠️ 注意：${warning}`;
+      warnBox.style.cssText = 'margin:8px 0;background:#3a2a1a;border:1px solid #f9b572;border-left:3px solid #f9b572;border-radius:6px;padding:8px 10px;color:#f9b572;font-size:12px;line-height:1.45';
+      warnBox.textContent = `⚠️ 危险命令：${warning}`;
       card.appendChild(warnBox);
     }
   }
@@ -1291,19 +1310,19 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   }
 
   const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;gap:8px;margin-top:8px';
+  btnRow.style.cssText = 'display:flex;gap:8px;margin-top:10px;align-items:center';
   const execBtn = document.createElement('button');
   execBtn.textContent = '执行';
-  execBtn.style.cssText = 'padding:4px 12px;background:#1677ff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px';
+  execBtn.style.cssText = 'padding:5px 16px;background:#1677ff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600';
   const skipBtn = document.createElement('button');
   skipBtn.textContent = '忽略';
-  skipBtn.style.cssText = 'padding:4px 12px;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px';
+  skipBtn.style.cssText = 'padding:5px 12px;background:transparent;color:#9399b2;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px;margin-left:auto';
   btnRow.appendChild(execBtn);
   let bgBtn: HTMLButtonElement | null = null;
   if (String(data.name).toLowerCase() === 'exec_cmd') {
     bgBtn = document.createElement('button');
     bgBtn.textContent = '后台执行';
-    bgBtn.style.cssText = 'padding:4px 12px;background:#313244;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:6px;cursor:pointer;font-size:12px';
+    bgBtn.style.cssText = 'padding:5px 12px;background:transparent;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:6px;cursor:pointer;font-size:12px';
     btnRow.appendChild(bgBtn);
   }
   btnRow.appendChild(skipBtn);
@@ -1446,10 +1465,42 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
 function startDOMObserver(_responseSelector: string) {
   const processed = new Set<string>();
   const ignoredPreSessionContainers = new WeakSet<Element>();
+  // 内容脚本初始化那一刻就已存在的回复容器（历史对话）。任何在此之后**新出现**
+  // 的回复容器都视为本会话的新回复 —— 无论它来自插件注入、用户直接在网页里
+  // 提交、还是点"重新生成"。用它来自动激活会话，避免只靠 PIERCODE_PROMPT_SUBMITTED
+  // 事件（该事件只在插件注入提交时触发，用户直接提交/重新生成都不触发，导致
+  // 首次回复被当历史漏掉、只有二次触发才识别）。
+  const preInitContainers = new WeakSet<Element>();
+  // 记录每个 preInit 容器在初始化时的文本长度。"重新生成"常常**原地复用**旧容器
+  // 并重写其文本，此时容器仍在快照里，但文本长度会先归零再增长 —— 据此识别原地
+  // 重新生成并激活会话。
+  const preInitTextLen = new WeakMap<Element, number>();
+  let preInitMarked = false;
   const markCurrentResponsesAsHistory = () => {
     document.querySelectorAll(responseContainerSelector()).forEach(el => {
       ignoredPreSessionContainers.add(el);
+      preInitContainers.add(el);
+      preInitTextLen.set(el, (el.textContent || '').length);
     });
+    preInitMarked = true;
+  };
+  // 若容器是初始化后新出现的回复（不在 preInit 快照里），或是被原地重写的旧容器
+  // （重新生成），自动激活会话。返回 true 表示已激活/会话处于活跃。
+  const activateIfFreshResponse = (container: Element): boolean => {
+    if (isResponseSessionActive()) return true;
+    // 快照尚未建立时不能判断"新旧"，保守地不激活（交给 markCurrentResponsesAsHistory）。
+    if (!preInitMarked) return false;
+    if (preInitContainers.has(container)) {
+      // 原地重新生成检测：文本相对初始快照显著变化（被清空重写）。
+      const baseline = preInitTextLen.get(container) ?? 0;
+      const nowLen = (container.textContent || '').length;
+      if (nowLen >= baseline) return false;
+      // 文本变短 = 被清空准备重写 → 视为新回复，且后续不再用旧基线拦截。
+      preInitContainers.delete(container);
+      preInitTextLen.delete(container);
+    }
+    activateResponseSession();
+    return true;
   };
   window.addEventListener('PIERCODE_PROMPT_SUBMITTED', activateResponseSession);
   window.addEventListener('PIERCODE_BACKEND_CONNECTED', () => {
@@ -1482,10 +1533,13 @@ function startDOMObserver(_responseSelector: string) {
   let submitTimer: ReturnType<typeof setTimeout> | null = null;
   let batchExecuting = false;
   const batchOutputs: string[] = [];
-  let batchWaitMs = 1500;
-  chrome.storage.local.get(['batchWaitMs']).then(r => { if (r.batchWaitMs) batchWaitMs = r.batchWaitMs; }).catch(() => {});
+  // 静默窗口：流式输出停止后等待 quietMs 再触发批量执行/提交。
+  // 取代旧的固定 batchWaitMs 双等待 —— 既把一次响应里的多个工具调用聚成一批，
+  // 又能在慢速响应时自动顺延（每来一个新工具/新变动就重置计时）。
+  let quietMs = 400;
+  chrome.storage.local.get(['batchQuietMs']).then(r => { quietMs = resolveBatchQuietMs(r.batchQuietMs); }).catch(() => {});
   chrome.storage.onChanged.addListener((changes) => {
-    if ('batchWaitMs' in changes) batchWaitMs = changes.batchWaitMs!.newValue ?? 1500;
+    if ('batchQuietMs' in changes) quietMs = resolveBatchQuietMs(changes.batchQuietMs!.newValue);
   });
 
   function clearSubmitTimer() {
@@ -1495,17 +1549,27 @@ function startDOMObserver(_responseSelector: string) {
     }
   }
 
+  // AI 是否还在生成（仅在平台暴露 stopBtn 时可靠）。用于在静默窗口到点后
+  // 仍判断流是否真的结束；未结束则顺延，避免多工具被拆成两批提交。
+  function isResponseGenerating(): boolean {
+    return isSendBlockedByRunningResponse(getSiteConfig().stopBtn);
+  }
+
   function scheduleBatchExecution() {
     if (batchExecuting) return;
     if (batchTimer) clearTimeout(batchTimer);
     batchTimer = setTimeout(() => {
+      batchTimer = null;
+      // 流仍在生成 → 顺延，等更多工具调用一起执行。
+      if (isResponseGenerating()) { scheduleBatchExecution(); return; }
       executeBatch();
-    }, batchWaitMs);
+    }, quietMs);
   }
 
   function scheduleToBatch(toolCall: any, key: string) {
     clearSubmitTimer();
     pendingBatch.push({ data: ensureToolCallId(toolCall, key), key });
+    // 每来一个新工具就重置静默计时，确保同一响应里的多个工具聚成一批。
     scheduleBatchExecution();
   }
 
@@ -1515,16 +1579,18 @@ function startDOMObserver(_responseSelector: string) {
     submitTimer = setTimeout(() => {
       submitTimer = null;
       if (batchExecuting) return;
+      // 还有待执行工具，或流仍在生成 → 不提交，重新进入批量流程。
       if (pendingBatch.length > 0) {
         scheduleBatchExecution();
         return;
       }
+      if (isResponseGenerating()) { scheduleFinalSubmit(); return; }
       const combinedOutput = batchOutputs.join('\n\n');
       batchOutputs.length = 0;
       if (combinedOutput) {
         fillAndSend(prepareToolOutputForChat(combinedOutput), true);
       }
-    }, batchWaitMs);
+    }, quietMs);
   }
 
   function prepareToolOutputForChat(output: string): string {
@@ -1658,8 +1724,10 @@ function startDOMObserver(_responseSelector: string) {
           }
         }
 
-        // 流式渲染中：内容可能不完整，静默跳过等下次 Observer 触发再解析
+        // 流式渲染中：内容可能不完整，跳过本次解析。安排一次兜底重扫，
+        // 防止工具块是响应最后一段、后续无变动时永久漏掉。
         if (!codeText.trim().endsWith('}')) {
+          if (sourceEl) scheduleSettleRetry(sourceEl);
           continue;
         }
         const data = parseJsonFenceToolCall(codeText) || tryParseToolJSON(codeText);
@@ -1709,8 +1777,9 @@ function startDOMObserver(_responseSelector: string) {
         }
         const codeText = lines.join('\n').replace(/\u00A0/g, ' ').trim();
 
-        // 流式渲染中：内容可能不完整，静默跳过等下次 Observer 触发再解析
+        // 流式渲染中：内容可能不完整，跳过本次解析并安排兜底重扫。
         if (!codeText.trim().endsWith('}')) {
+          if (sourceEl) scheduleSettleRetry(sourceEl);
           continue;
         }
         const data = parseJsonFenceToolCall(codeText) || tryParseToolJSON(codeText);
@@ -1744,8 +1813,9 @@ function startDOMObserver(_responseSelector: string) {
         const jsonStr = fenceMatch[1];
         // 清理 fence 内容：去除不可见字符和非断空格，去除首尾空白
         const cleanedJsonStr = jsonStr.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, ' ').trim();
-        // 流式渲染中：内容可能不完整，静默跳过
+        // 流式渲染中：内容可能不完整，跳过本次解析并安排兜底重扫。
         if (!cleanedJsonStr.endsWith('}')) {
+          if (sourceEl) scheduleSettleRetry(sourceEl);
           continue;
         }
         const data = parseJsonFenceToolCall(cleanedJsonStr) || tryParseToolJSON(cleanedJsonStr);
@@ -1878,18 +1948,18 @@ function startDOMObserver(_responseSelector: string) {
     notifyResponseLoading(el);
     const mc = findResponseContainer(el);
     if (mc) {
-      if (!isResponseSessionActive()) {
-        ignoredPreSessionContainers.add(mc);
-      } else {
+      if (activateIfFreshResponse(mc)) {
         scheduleActiveScan(mc);
+      } else {
+        ignoredPreSessionContainers.add(mc);
       }
     }
     if (el.nodeType === Node.ELEMENT_NODE) {
       el.querySelectorAll?.(responseContainerSelector()).forEach(container => {
-        if (!isResponseSessionActive()) {
-          ignoredPreSessionContainers.add(container);
-        } else {
+        if (activateIfFreshResponse(container)) {
           scheduleActiveScan(container);
+        } else {
+          ignoredPreSessionContainers.add(container);
         }
       });
     }
@@ -1942,6 +2012,21 @@ function startDOMObserver(_responseSelector: string) {
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
   const pendingContainers = new Set<Element>();
+
+  // 兜底重扫：当一次扫描里检测到工具块但内容尚未流完（未以 } 收尾）而被静默
+  // 跳过时，主动安排一次重扫，避免"工具块是响应最后一段、后续无 DOM 变动 →
+  // 永远不再触发扫描 → 工具静默漏掉"的情况。每个容器只保留一个待重扫计时。
+  const settleRetryTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
+  function scheduleSettleRetry(container: Element): void {
+    if (settleRetryTimers.has(container)) return;
+    const t = setTimeout(() => {
+      settleRetryTimers.delete(container);
+      if (!isResponseSessionActive()) return;
+      if (ignoredPreSessionContainers.has(container)) return;
+      scanText(getCleanText(container), container);
+    }, 600);
+    settleRetryTimers.set(container, t);
+  }
 
   // 块级标签：遍历到这些元素时在前面插入换行
   const BLOCK_TAGS = new Set(['P', 'DIV', 'BR', 'LI', 'TR', 'PRE', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
@@ -2017,10 +2102,10 @@ function startDOMObserver(_responseSelector: string) {
       if (mutation.type === 'characterData') {
         const container = findResponseContainer((mutation.target as Text).parentElement);
         if (container) {
-          if (!isResponseSessionActive()) {
-            ignoredPreSessionContainers.add(container);
-          } else {
+          if (activateIfFreshResponse(container)) {
             scheduleActiveScan(container);
+          } else {
+            ignoredPreSessionContainers.add(container);
           }
         }
       } else {
@@ -2137,27 +2222,6 @@ function clickStopButton(): void {
   if (btn) btn.click();
 }
 
-function showCountdownToast(ms: number, onFire: () => void): void {
-  const toast = document.createElement('div');
-  toast.style.cssText = 'position:fixed;bottom:130px;right:20px;z-index:2147483647;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-radius:10px;padding:10px 14px;font-size:13px;display:flex;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,0.4)';
-  const label = document.createElement('span');
-  const cancelBtn = document.createElement('button');
-  cancelBtn.textContent = '取消';
-  cancelBtn.style.cssText = 'background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:6px;padding:2px 8px;cursor:pointer;font-size:12px';
-  toast.appendChild(label);
-  toast.appendChild(cancelBtn);
-  document.body.appendChild(toast);
-
-  let remaining = Math.ceil(ms / 1000);
-  let cancelled = false;
-  label.textContent = `${remaining}s 后自动提交`;
-  const interval = setInterval(() => {
-    remaining--;
-    label.textContent = `${remaining}s 后自动提交`;
-    if (remaining <= 0) { clearInterval(interval); toast.remove(); if (!cancelled) onFire(); }
-  }, 1000);
-  cancelBtn.onclick = () => { cancelled = true; clearInterval(interval); toast.remove(); };
-}
 
 function querySelectorFirst(selectors: string): HTMLElement | null {
   for (const sel of selectors.split(',').map(s => s.trim())) {
@@ -2273,18 +2337,13 @@ async function fillAndSend(result: string, autoSend = false, options: { forceSen
 
   if (autoSend) {
     if (!checkContext()) return true;
-    const cfg = await chrome.storage.local.get(['autoSend', 'delayMin', 'delayMax']);
+    const cfg = await chrome.storage.local.get(['autoSend']);
     if (cfg.autoSend === false && !options.forceSend) return true;
 
-    if (options.immediate) {
-      const clicked = await clickSendWhenReady(siteConfig, isQwenPage() ? 90000 : 5000);
-      if (!clicked) return false;
-    } else {
-      const min = (cfg.delayMin ?? 1) * 1000;
-      const max = (cfg.delayMax ?? 4) * 1000;
-      const delay = Math.random() * (max - min) + min;
-      showCountdownToast(delay, () => { void clickSendWhenReady(siteConfig, 5000); });
-    }
+    // 自动提交一律即时发送（已移除随机延迟设置）。生成中时 clickSendWhenReady
+    // 会等到 stop 按钮消失再点，Qwen 给更长的等待窗口。
+    const clicked = await clickSendWhenReady(siteConfig, isQwenPage() ? 90000 : 5000);
+    if (!clicked && options.immediate) return false;
   }
   return true;
 }

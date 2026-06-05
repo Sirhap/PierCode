@@ -70,13 +70,15 @@ describe('popup advanced options', () => {
     vi.restoreAllMocks();
   });
 
-  it('keeps advanced-only options hidden until the section is expanded', async () => {
+  it('keeps sandbox/safety options hidden until advanced is expanded', async () => {
     await renderPopup();
 
     expect(document.body.textContent).toContain('高级选项');
+    // 审批类设置（自动审批浏览器操作）现在常驻"自动化 / 审批"分组，首屏可见。
+    expect(document.body.textContent).toContain('自动审批浏览器操作');
+    // 沙箱/安全类（限制在工作区、隐身模式）默认折叠在高级选项内。
+    expect(document.body.textContent).not.toContain('限制在工作区');
     expect(document.body.textContent).not.toContain('隐身模式');
-    expect(document.body.textContent).not.toContain('自动审批浏览器操作');
-    expect(document.body.textContent).not.toContain('自动提交随机延迟');
 
     await act(async () => {
       const advancedButton = Array.from(document.querySelectorAll('button')).find((button) =>
@@ -85,9 +87,8 @@ describe('popup advanced options', () => {
       advancedButton?.click();
     });
 
+    expect(document.body.textContent).toContain('限制在工作区');
     expect(document.body.textContent).toContain('隐身模式');
-    expect(document.body.textContent).toContain('自动审批浏览器操作');
-    expect(document.body.textContent).toContain('自动提交随机延迟');
   });
 
   it('persists the stealth mode default on first load', async () => {

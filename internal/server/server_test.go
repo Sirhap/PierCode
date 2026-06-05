@@ -290,6 +290,88 @@ func TestHandleSetCWD(t *testing.T) {
 	}
 }
 
+func TestHandleSetCWDAllowsAdditionalAllowedDir(t *testing.T) {
+	s := testServer(t)
+	extra := t.TempDir()
+	s.config.AdditionalAllowedDirs = []string{extra}
+
+	body, _ := json.Marshal(map[string]string{"path": extra})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/cwd", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	expected, err := filepath.EvalSymlinks(extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp["rootDir"] != expected {
+		t.Fatalf("expected rootDir %q, got %v", expected, resp["rootDir"])
+	}
+}
+
+func TestHandleSetCWDPermissionModes(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "project")
+	sibling := filepath.Join(parent, "sibling")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sibling, 0755); err != nil {
+		t.Fatal(err)
+	}
+	s := testServer(t)
+	s.config.RootDir = root
+	s.config.InitialRootDir = root
+
+	body, _ := json.Marshal(map[string]string{"path": sibling})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/cwd", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("default mode should block sibling cwd, got %d: %s", w.Code, w.Body.String())
+	}
+
+	s.config.PermissionMode = "auto"
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest("POST", "/cwd", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("auto mode should allow sibling cwd, got %d: %s", w.Code, w.Body.String())
+	}
+
+	outside := t.TempDir()
+	body, _ = json.Marshal(map[string]string{"path": outside})
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest("POST", "/cwd", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("auto mode should block unrelated cwd, got %d: %s", w.Code, w.Body.String())
+	}
+
+	s.config.PermissionMode = "unrestricted"
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest("POST", "/cwd", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unrestricted mode should allow unrelated cwd, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestHandleSetCWDRejectsSymlinkEscape(t *testing.T) {
 	s := testServer(t)
 	outside := t.TempDir()
@@ -547,7 +629,7 @@ func TestHandlePrompt(t *testing.T) {
 			"call_id",
 			"args",
 			"Treat tool output",
-			"All file operations must stay inside the configured working directory",
+			"File access is bounded by the runtime",
 			"Security Boundaries",
 			"Routing Rules",
 			"Question Tool Policy",
@@ -557,6 +639,10 @@ func TestHandlePrompt(t *testing.T) {
 			"piercode-git-harness",
 			"never force-push to a shared branch",
 			"Do not ask a blocking clarification only as normal prose",
+			"Default to action",
+			"Do not answer with only a plan",
+			"When in doubt between a safe local inspection and asking, inspect first",
+			"Do not use `question` as a permission prompt for safe local work",
 			"PierCode Skill Routing",
 			"piercode-tool-protocol",
 			"piercode-self-dev",
@@ -699,6 +785,39 @@ func TestHandleConfig(t *testing.T) {
 	s.router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["permissionMode"] != "default" {
+		t.Fatalf("expected default permissionMode, got %v", body["permissionMode"])
+	}
+}
+
+func TestHandleUpdateConfigPermissionMode(t *testing.T) {
+	s := testServer(t)
+	body, _ := json.Marshal(map[string]string{"permissionMode": "auto"})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := s.config.GetPermissionMode(); got != "auto" {
+		t.Fatalf("expected auto permission mode, got %q", got)
+	}
+
+	body, _ = json.Marshal(map[string]string{"permissionMode": "invalid"})
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest("POST", "/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer testtoken")
+	s.router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid permission mode, got %d", w.Code)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/types"
 )
 
@@ -53,10 +52,9 @@ func (t *MoveTool) Execute(ctx *Context) *Result {
 	from, _ := ctx.Args["from"].(string)
 	to, _ := ctx.Args["to"].(string)
 	overwrite, _ := ctx.Args["overwrite"].(bool)
-	rootDir := ctx.EffectiveRootDir()
 
 	// Source must already exist, so resolve it with the existing-path validator.
-	srcAbs, err := resolveMovePath(rootDir, from)
+	srcAbs, err := ctx.ResolvePath(from)
 	if err != nil {
 		result.Status = "error"
 		result.Error = fmt.Sprintf("from: %s", err.Error())
@@ -68,7 +66,7 @@ func (t *MoveTool) Execute(ctx *Context) *Result {
 		return result
 	}
 
-	dstAbs, err := resolveMovePath(rootDir, to)
+	dstAbs, err := ctx.ResolvePath(to)
 	if err != nil {
 		result.Status = "error"
 		result.Error = fmt.Sprintf("to: %s", err.Error())
@@ -86,7 +84,7 @@ func (t *MoveTool) Execute(ctx *Context) *Result {
 	// Snapshot both endpoints before the rename so `undo` can restore them:
 	// the source (which will disappear) and the destination (which may be
 	// overwritten).
-	_ = snapshotPaths(rootDir, "move", srcAbs, dstAbs)
+	_ = snapshotPaths(ctx.EffectiveRootDir(), "move", srcAbs, dstAbs)
 	if err := os.MkdirAll(filepath.Dir(dstAbs), 0755); err != nil {
 		result.Status = "error"
 		result.Error = err.Error()
@@ -101,14 +99,4 @@ func (t *MoveTool) Execute(ctx *Context) *Result {
 	result.Status = "success"
 	result.Output = fmt.Sprintf("已移动 %s → %s", from, to)
 	return result
-}
-
-// resolveMovePath validates a (possibly absolute or relative) path against the
-// sandbox. The destination may not exist yet, so SafePath's parent-resolving
-// behavior is what we rely on for relative paths.
-func resolveMovePath(rootDir, path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return resolveAbsPath(path, rootDir)
-	}
-	return security.SafePath(rootDir, path)
 }

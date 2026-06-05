@@ -83,6 +83,57 @@ func TestTaskManagerStartCapturesOutputAndCompletes(t *testing.T) {
 	}
 }
 
+func TestTaskManagerPreservesSourceClientID(t *testing.T) {
+	skipOnWindows(t)
+	tm := NewTaskManager()
+	defer tm.Close()
+
+	id, err := tm.Start(tool.TaskSpec{
+		CallID:         "task-route-test",
+		SourceClientID: "client-a",
+		Command:        "echo ok",
+		Dir:            t.TempDir(),
+		Timeout:        5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	select {
+	case <-tm.Get(id).Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("task did not finish in time")
+	}
+
+	if got := tm.SourceClientID(id); got != "client-a" {
+		t.Fatalf("expected client-a from SourceClientID, got %q", got)
+	}
+	if got := tm.Get(id).Snapshot().SourceClientID; got != "client-a" {
+		t.Fatalf("expected client-a in task summary, got %q", got)
+	}
+
+	found := false
+	for _, snap := range tm.Snapshots() {
+		if snap.ID == id {
+			found = true
+			if snap.SourceClientID != "client-a" {
+				t.Fatalf("expected client-a in task snapshot, got %q", snap.SourceClientID)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected task %s in snapshots", id)
+	}
+
+	snap, _, _, ok := tm.GetSnapshot(id)
+	if !ok {
+		t.Fatalf("expected GetSnapshot(%s) to succeed", id)
+	}
+	if snap.SourceClientID != "client-a" {
+		t.Fatalf("expected client-a in GetSnapshot, got %q", snap.SourceClientID)
+	}
+}
+
 func TestTaskManagerStopCancelsRunning(t *testing.T) {
 	skipOnWindows(t)
 	tm := NewTaskManager()

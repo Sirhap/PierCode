@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -41,11 +42,8 @@ func (r *Registry) List() []ToolInfo {
 
 	list := make([]ToolInfo, 0, len(r.tools))
 	for _, tool := range r.tools {
-		list = append(list, ToolInfo{
-			Name:        tool.Name(),
-			Description: tool.Description(),
-			Parameters:  tool.Parameters(),
-		})
+		list = append(list, InfoFor(tool))
 	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 	return list
 }

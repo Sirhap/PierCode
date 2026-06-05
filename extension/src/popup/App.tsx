@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, DEFAULT_STEALTH_MODE, resolveAutoApproveBrowserActions, resolveAutoExecute, resolveStealthMode } from '../settings'
+import { useEffect, useState, type ReactNode } from 'react'
+import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, DEFAULT_BATCH_QUIET_MS, DEFAULT_PERMISSION_MODE, DEFAULT_STEALTH_MODE, MAX_BATCH_QUIET_MS, MIN_BATCH_QUIET_MS, type PermissionMode, resolveAutoApproveBrowserActions, resolveAutoExecute, resolveBatchQuietMs, resolvePermissionMode, resolveStealthMode } from '../settings'
 
 const DEFAULT_PORT = 39527
 
@@ -83,6 +83,54 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
   })
 }
 
+// ── 复用 UI 原子组件 ──────────────────────────────────────────────────────────
+
+// 开关行。risk=true 时用琥珀色表示"打开会降低安全/审批保护"。
+function Toggle({
+  label, checked, onChange, risk = false, desc,
+}: {
+  label: string; checked: boolean; onChange: (v: boolean) => void; risk?: boolean; desc?: string;
+}) {
+  const onColor = risk ? 'bg-amber-500' : 'bg-blue-600'
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <span className="text-sm text-gray-200">{label}</span>
+        {desc && <div className="text-[11px] leading-snug text-gray-500 mt-0.5">{desc}</div>}
+      </div>
+      <button
+        onClick={() => onChange(!checked)}
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        className={`relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 mt-0.5 ${checked ? onColor : 'bg-gray-600'}`}
+      >
+        <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
+      </button>
+    </div>
+  )
+}
+
+// 分组容器：标题 + 卡片化内容。把零散设置归类，降低认知负担。
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] font-medium uppercase tracking-wider text-gray-500">{title}</div>
+      <div className="space-y-3 rounded-lg border border-gray-800 bg-gray-900/50 p-3">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+// 风险提示条（琥珀=注意，红=危险）。仅在对应高风险项开启时出现。
+function RiskNote({ tone = 'warn', children }: { tone?: 'warn' | 'danger'; children: ReactNode }) {
+  const cls = tone === 'danger'
+    ? 'border-red-500/40 bg-red-500/10 text-red-200'
+    : 'border-amber-500/30 bg-amber-500/10 text-amber-100'
+  return <div className={`rounded-md border px-3 py-2 text-[11px] leading-snug ${cls}`}>{children}</div>
+}
+
 export default function App() {
   const [status, setStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking')
   const [token, setToken] = useState('')
@@ -93,11 +141,11 @@ export default function App() {
   const [autoSend, setAutoSend] = useState(true)
   const [autoExecute, setAutoExecute] = useState(DEFAULT_AUTO_EXECUTE)
   const [autoApproveBrowserActions, setAutoApproveBrowserActions] = useState(DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS)
-  const [delayMin, setDelayMin] = useState(1)
-  const [delayMax, setDelayMax] = useState(4)
+  const [batchQuietMs, setBatchQuietMs] = useState(DEFAULT_BATCH_QUIET_MS)
   const [browserRelay, setBrowserRelay] = useState<BrowserRelayStatus>({})
   const [hasStoredAuth, setHasStoredAuth] = useState(false)
   const [stealthMode, setStealthMode] = useState(DEFAULT_STEALTH_MODE)
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(DEFAULT_PERMISSION_MODE)
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
   useEffect(() => {
@@ -108,7 +156,7 @@ export default function App() {
   }, [toast])
 
   useEffect(() => {
-    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'delayMin', 'delayMax', 'stealthMode'], (result) => {
+    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'batchQuietMs', 'stealthMode'], (result) => {
       const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
       if (result.authToken && savedUrl) {
         setHasStoredAuth(true)
@@ -127,8 +175,9 @@ export default function App() {
       const nextAutoApproveBrowserActions = resolveAutoApproveBrowserActions(result.autoApproveBrowserActions)
       setAutoApproveBrowserActions(nextAutoApproveBrowserActions)
       if (result.autoApproveBrowserActions === undefined) chrome.storage.local.set({ autoApproveBrowserActions: nextAutoApproveBrowserActions })
-      if (result.delayMin !== undefined) setDelayMin(result.delayMin)
-      if (result.delayMax !== undefined) setDelayMax(result.delayMax)
+      const nextBatchQuietMs = resolveBatchQuietMs(result.batchQuietMs)
+      setBatchQuietMs(nextBatchQuietMs)
+      if (result.batchQuietMs === undefined) chrome.storage.local.set({ batchQuietMs: nextBatchQuietMs })
       const nextStealthMode = resolveStealthMode(result.stealthMode)
       setStealthMode(nextStealthMode)
       if (result.stealthMode === undefined) chrome.storage.local.set({ stealthMode: nextStealthMode })
@@ -217,6 +266,13 @@ export default function App() {
         // 如果需要展示工作目录，应该走鉴权后的 /config（这里暂不展示）。
         const headers: Record<string, string> = {}
         if (authToken) headers.Authorization = `Bearer ${authToken}`
+        const configRes = await fetch(`${url}/config`, { headers })
+        if (configRes.status === 401) throw new Error('unauthorized')
+        if (configRes.ok) {
+          const config = await configRes.json()
+          setPermissionMode(resolvePermissionMode(config?.permissionMode))
+        }
+
         const statsRes = await fetch(`${url}/stats`, { headers })
         if (statsRes.status === 401) throw new Error('unauthorized')
         if (!statsRes.ok) throw new Error(`stats HTTP ${statsRes.status}`)
@@ -324,17 +380,38 @@ export default function App() {
     chrome.storage.local.set({ autoApproveBrowserActions: val })
   }
 
-  const handleDelayChange = (min: number, max: number) => {
-    const safeMin = Math.max(0, min)
-    const safeMax = Math.max(safeMin, max)
-    setDelayMin(safeMin)
-    setDelayMax(safeMax)
-    chrome.storage.local.set({ delayMin: safeMin, delayMax: safeMax })
+  const handleBatchQuietMsChange = (ms: number) => {
+    const safe = resolveBatchQuietMs(ms)
+    setBatchQuietMs(safe)
+    chrome.storage.local.set({ batchQuietMs: safe })
   }
 
   const handleStealthModeChange = (val: boolean) => {
     setStealthMode(val)
     chrome.storage.local.set({ stealthMode: val })
+  }
+
+  const handlePermissionModeChange = (mode: PermissionMode) => {
+    setPermissionMode(mode)
+    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort'], async result => {
+      const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
+      if (!result.authToken || !savedUrl) return
+      try {
+        const res = await fetch(`${savedUrl}/config`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${result.authToken}`,
+          },
+          body: JSON.stringify({ permissionMode: mode }),
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        setToast({ msg: '权限模式已更新', type: 'success' })
+      } catch (error) {
+        console.error('[PierCode] update permission mode failed:', error)
+        setToast({ msg: '权限模式更新失败', type: 'error' })
+      }
+    })
   }
 
   const statusColor = status === 'connected' ? 'bg-emerald-400' : status === 'checking' ? 'bg-yellow-400' : 'bg-red-400'
@@ -420,26 +497,51 @@ export default function App() {
       {/* Divider */}
       <div className="border-t border-gray-800 my-3" />
 
-      {/* 常用开关 */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-gray-300">自动执行工具</span>
-          <button
-            onClick={() => handleAutoExecuteChange(!autoExecute)}
-            className={`relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 ${autoExecute ? 'bg-blue-600' : 'bg-gray-600'}`}
-          >
-            <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transition-transform duration-200 ${autoExecute ? 'translate-x-5' : 'translate-x-0.5'}`} />
-          </button>
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-gray-300">自动提交</span>
-          <button
-            onClick={() => handleAutoSendChange(!autoSend)}
-            className={`relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 ${autoSend ? 'bg-blue-600' : 'bg-gray-600'}`}
-          >
-            <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transition-transform duration-200 ${autoSend ? 'translate-x-5' : 'translate-x-0.5'}`} />
-          </button>
-        </div>
+      {/* 设置区：按"自动化/审批"与"沙箱/安全"两类分组，高风险项加警示 */}
+      <div className="space-y-4">
+        {/* ── 自动化 / 审批 ── 决定"要不要手动确认" ── */}
+        <Section title="自动化 / 审批">
+          <Toggle
+            label="自动执行工具"
+            desc="工具调用卡片自动执行，无需手动点"
+            checked={autoExecute}
+            onChange={handleAutoExecuteChange}
+            risk
+          />
+          {autoExecute && (
+            <div className="flex items-center gap-2 pl-0.5">
+              <span className="text-[11px] text-gray-400 flex-shrink-0">静默窗口</span>
+              <input
+                type="number"
+                min={MIN_BATCH_QUIET_MS}
+                max={MAX_BATCH_QUIET_MS}
+                step={50}
+                value={batchQuietMs}
+                onChange={(e) => handleBatchQuietMsChange(Number(e.target.value))}
+                className="w-16 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-xs text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
+              />
+              <span className="text-[11px] text-gray-500">ms · 0 = 流停即执行</span>
+            </div>
+          )}
+
+          <Toggle
+            label="自动提交"
+            desc="工具结果回填后自动发送给 AI"
+            checked={autoSend}
+            onChange={handleAutoSendChange}
+          />
+
+          <Toggle
+            label="自动审批浏览器操作"
+            desc="点击 / 输入 / 导航等审批自动允许"
+            checked={autoApproveBrowserActions}
+            onChange={handleAutoApproveBrowserActionsChange}
+            risk
+          />
+          {autoApproveBrowserActions && (
+            <RiskNote>浏览器操作将自动允许、不再弹审批。请只在可信页面使用。</RiskNote>
+          )}
+        </Section>
 
         {/* 高级选项（默认折叠，减少首屏干扰） */}
         <button
@@ -455,81 +557,58 @@ export default function App() {
           高级选项
         </button>
 
+        {/* ── 沙箱 / 安全 ── 决定"能访问到哪、页面留不留痕" ── */}
         {advancedOpen && (
-          <div className="space-y-3 pl-1">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-300">隐身模式</span>
-              <button
-                onClick={() => handleStealthModeChange(!stealthMode)}
-                className={`relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 ${stealthMode ? 'bg-indigo-500' : 'bg-gray-600'}`}
-                title="关闭页面脉冲边框与大块徽章，仅留角落迷你圆点，并随机化注入元素 id"
-              >
-                <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transition-transform duration-200 ${stealthMode ? 'translate-x-5' : 'translate-x-0.5'}`} />
-              </button>
-            </div>
+          <Section title="沙箱 / 安全">
+            <Toggle
+              label="限制在工作区"
+              desc={permissionMode === 'unrestricted' ? '已关闭：工具可访问本机任意路径' : '工具只能访问工作区与手动追加的目录'}
+              checked={permissionMode !== 'unrestricted'}
+              onChange={(on) => handlePermissionModeChange(on ? 'default' : 'unrestricted')}
+            />
+            {permissionMode === 'unrestricted' && (
+              <RiskNote tone="danger">
+                沙箱已关闭：工具可读写本机任意目录。请只在完全可信的任务中使用。
+              </RiskNote>
+            )}
+
+            <Toggle
+              label="隐身模式"
+              desc="仅留角落迷你圆点，注入元素 id 随机化"
+              checked={stealthMode}
+              onChange={handleStealthModeChange}
+            />
             {stealthMode && (
-              <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-100">
-                页面上仅保留右下角迷你圆点（点击可停止），注入元素 id 随机化。
+              <div className="rounded-md border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-[11px] leading-snug text-indigo-100">
+                页面上仅保留右下角迷你圆点（点击可停止），关闭脉冲边框与大块徽章。
               </div>
             )}
-
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-300">自动审批浏览器操作</span>
-              <button
-                onClick={() => handleAutoApproveBrowserActionsChange(!autoApproveBrowserActions)}
-                className={`relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 ${autoApproveBrowserActions ? 'bg-amber-500' : 'bg-gray-600'}`}
-                title="开启后，点击、输入、导航等浏览器审批会自动允许"
-              >
-                <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transition-transform duration-200 ${autoApproveBrowserActions ? 'translate-x-5' : 'translate-x-0.5'}`} />
-              </button>
-            </div>
-            {autoApproveBrowserActions && (
-              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                浏览器操作将自动允许，请只在可信页面使用。
-              </div>
-            )}
-
-            {autoSend && (
-              <div className="bg-gray-900 rounded-lg p-3 space-y-2">
-                <span className="text-xs text-gray-400">自动提交随机延迟（秒）</span>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min={0}
-                    value={delayMin}
-                    onChange={(e) => handleDelayChange(Number(e.target.value), delayMax)}
-                    className="w-16 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-sm text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
-                  />
-                  <span className="text-gray-500 text-sm">~</span>
-                  <input
-                    type="number"
-                    min={0}
-                    value={delayMax}
-                    onChange={(e) => handleDelayChange(delayMin, Number(e.target.value))}
-                    className="w-16 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-sm text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
-                  />
-                  <span className="text-xs text-gray-500">秒</span>
-                </div>
-              </div>
-            )}
-          </div>
+          </Section>
         )}
       </div>
 
-      {/* Info */}
-      {info && <div className="mt-3 text-xs text-gray-500 truncate" title={info}>{info}</div>}
+      {/* Info：状态详情，最多两行，不截断关键信息 */}
+      {info && (
+        <div
+          className="mt-3 text-xs leading-snug text-gray-500 line-clamp-2"
+          title={info}
+        >
+          {info}
+        </div>
+      )}
 
       <div className="mt-3 rounded-lg border border-gray-800 bg-gray-900 p-3 text-xs text-gray-400">
         <div className="flex items-center justify-between">
-          <span>浏览器控制</span>
-          <span className={browserRelay.state === 'open' ? 'text-emerald-300' : 'text-gray-500'}>
-            {browserRelay.state === 'open' ? 'relay 已连接' : 'relay 未连接'}
+          <span className="font-medium text-gray-300">浏览器控制</span>
+          <span className={`inline-flex items-center gap-1.5 ${browserRelay.state === 'open' ? 'text-emerald-300' : 'text-gray-500'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${browserRelay.state === 'open' ? 'bg-emerald-400' : 'bg-gray-600'}`} />
+            {browserRelay.state === 'open' ? '已连接' : '未连接'}
           </span>
         </div>
         {browserRelay.controlledTabId ? (
-          <div className="mt-1 text-gray-500">受控 tabId={browserRelay.controlledTabId}</div>
+          <div className="mt-1 text-gray-500">已接管标签页 #{browserRelay.controlledTabId}</div>
         ) : (
-          <div className="mt-1 text-gray-500">尚未选择受控标签页</div>
+          <div className="mt-1 text-gray-500">尚未接管任何标签页（AI 触发浏览器操作时自动接管）</div>
         )}
         {browserRelay.lastError && <div className="mt-1 truncate text-red-300">{browserRelay.lastError}</div>}
       </div>

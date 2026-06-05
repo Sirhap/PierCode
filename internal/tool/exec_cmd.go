@@ -35,7 +35,7 @@ func (t *ExecCmdTool) Description() string {
 	if t.config != nil && t.config.Timeout > 0 {
 		timeoutSec = t.config.Timeout
 	}
-	return fmt.Sprintf(`Executes a shell command and returns its output. Runs in a sandbox rooted at the working directory.
+	return fmt.Sprintf(`Executes a shell command and returns its output. Starts in the configured working directory; shell access is not an OS-level sandbox.
 
 The working directory persists between commands, but shell state (env vars, functions) does not.
 
@@ -228,10 +228,11 @@ func (t *ExecCmdTool) executeBackground(ctx *Context, cmd string, result *Result
 		}
 	}
 	spec := TaskSpec{
-		CallID:  callID,
-		Command: cmd,
-		Dir:     t.config.GetRootDir(),
-		Timeout: taskTimeout,
+		CallID:         callID,
+		SourceClientID: ctx.SourceClientID,
+		Command:        cmd,
+		Dir:            t.config.GetRootDir(),
+		Timeout:        taskTimeout,
 	}
 	id, err := ctx.TaskRunner.Start(spec)
 	if err != nil {

@@ -81,29 +81,41 @@ func New(config *types.Config) *Server {
 	// connected extension / TUI sees live stdout and completion notices.
 	if tm := s.executor.Tasks(); tm != nil {
 		tm.SubscribeChunks(func(taskID, callID, stream, text string) {
+			clientID := tm.SourceClientID(taskID)
 			payload, err := json.Marshal(gin.H{
-				"type":    "tool_stream",
-				"task_id": taskID,
-				"call_id": callID,
-				"stream":  stream,
-				"text":    text,
+				"type":      "tool_stream",
+				"task_id":   taskID,
+				"call_id":   callID,
+				"client_id": clientID,
+				"stream":    stream,
+				"text":      text,
 			})
 			if err == nil {
-				s.ws.Send(payload)
+				if clientID != "" {
+					s.ws.SendToID(clientID, payload)
+				} else {
+					s.ws.Send(payload)
+				}
 			}
 		})
 		tm.SubscribeDone(func(taskID, callID string, exitCode int, status string, errMsg string, durationMs int64) {
+			clientID := tm.SourceClientID(taskID)
 			payload, err := json.Marshal(gin.H{
 				"type":        "tool_done",
 				"task_id":     taskID,
 				"call_id":     callID,
+				"client_id":   clientID,
 				"exit_code":   exitCode,
 				"status":      status,
 				"error":       errMsg,
 				"duration_ms": durationMs,
 			})
 			if err == nil {
-				s.ws.Send(payload)
+				if clientID != "" {
+					s.ws.SendToID(clientID, payload)
+				} else {
+					s.ws.Send(payload)
+				}
 			}
 		})
 	}
@@ -157,6 +169,7 @@ func (s *Server) setupRoutes() {
 	// 长期凭据不能这样暴露。WS 仍允许 query 是一次性接受 + 立即升级。
 	s.router.POST("/auth", s.handleAuth)
 	s.router.GET("/config", s.handleConfig)
+	s.router.POST("/config", s.handleUpdateConfig)
 	s.router.POST("/cwd", s.handleSetCWD)
 	s.router.GET("/tools", s.handleListTools)
 	s.router.POST("/exec", s.handleExec)
@@ -213,9 +226,32 @@ func (s *Server) handleAuth(c *gin.Context) {
 
 func (s *Server) handleConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"rootDir": s.config.GetRootDir(),
-		"timeout": s.config.Timeout,
+		"rootDir":               s.config.GetRootDir(),
+		"additionalAllowedDirs": s.config.GetAdditionalAllowedDirs(),
+		"permissionMode":        s.config.GetPermissionMode(),
+		"timeout":               s.config.Timeout,
 	})
+}
+
+func (s *Server) handleUpdateConfig(c *gin.Context) {
+	var req struct {
+		PermissionMode string `json:"permissionMode"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	mode := strings.TrimSpace(req.PermissionMode)
+	if mode == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "permissionMode is required"})
+		return
+	}
+	if types.NormalizePermissionMode(mode) != mode {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid permissionMode"})
+		return
+	}
+	s.config.SetPermissionMode(mode)
+	c.JSON(http.StatusOK, gin.H{"permissionMode": mode})
 }
 
 func (s *Server) handleStats(c *gin.Context) {
@@ -251,9 +287,7 @@ func (s *Server) handlePrompt(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "init prompt not embedded"})
 		return
 	}
-	content = profile.Render(rootDir, s.executor.ListTools(), skill.LoadInfos(rootDir))
-
-	content = append(content, []byte("\n\n初始化回复：\n你好，我是 piercode，请问有什么可以帮你？")...)
+	content = profile.RenderWithSandbox(rootDir, s.config.GetPermissionMode(), s.config.GetAdditionalAllowedDirs(), s.executor.ListTools(), skill.LoadInfos(rootDir))
 
 	c.String(http.StatusOK, string(content))
 }
@@ -301,16 +335,24 @@ func (s *Server) handleSetCWD(c *gin.Context) {
 		return
 	}
 
-	// Restrict /cwd to subdirectories of the initial startup RootDir. Use real
-	// paths so symlinks or junctions under the workspace cannot escape it.
+	// Restrict /cwd to subdirectories of the initial startup RootDir or an
+	// explicitly added directory. Use real paths so symlinks or junctions under
+	// an allowed root cannot escape it.
 	initialRoot := s.config.InitialRootDir
 	if initialRoot == "" {
 		initialRoot = s.config.GetRootDir()
 	}
-	if initialRoot != "" {
-		safePath, err := security.SafeAbsPath(absPath, initialRoot)
+	allowedRoots := append([]string{initialRoot}, s.config.GetAdditionalAllowedDirs()...)
+	if s.config.GetPermissionMode() == "auto" {
+		parent := filepath.Dir(initialRoot)
+		if parent != initialRoot && filepath.Dir(parent) != parent {
+			allowedRoots = append(allowedRoots, parent)
+		}
+	}
+	if s.config.GetPermissionMode() != "unrestricted" && len(allowedRoots) > 0 {
+		safePath, err := security.SafeAbsPath(absPath, allowedRoots...)
 		if err != nil {
-			c.JSON(http.StatusForbidden, gin.H{"error": "path must be within the initial working directory"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "path must be within an allowed working directory"})
 			return
 		}
 		absPath = safePath
@@ -371,13 +413,18 @@ func (s *Server) handleExec(c *gin.Context) {
 	// connected extension can render it live in the corresponding ToolCard.
 	streamer := func(stream, text string) {
 		payload, err := json.Marshal(gin.H{
-			"type":    "tool_stream",
-			"call_id": req.CallID,
-			"stream":  stream,
-			"text":    text,
+			"type":      "tool_stream",
+			"call_id":   req.CallID,
+			"client_id": req.SourceClientID,
+			"stream":    stream,
+			"text":      text,
 		})
 		if err == nil {
-			s.ws.Send(payload)
+			if req.SourceClientID != "" {
+				s.ws.SendToID(req.SourceClientID, payload)
+			} else {
+				s.ws.Send(payload)
+			}
 		}
 	}
 	resp := s.executor.ExecuteWithStream(ctx, &req, streamer)

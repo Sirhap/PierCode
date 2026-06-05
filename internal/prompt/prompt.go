@@ -3,6 +3,7 @@ package prompt
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -13,7 +14,7 @@ import (
 
 func Render(template []byte, rootDir string, tools []tool.ToolInfo) []byte {
 	content := renderBody(template, tools)
-	content = strings.ReplaceAll(content, "{{SYSTEM_INFO}}", BuildSystemInfo(rootDir))
+	content = strings.ReplaceAll(content, "{{SYSTEM_INFO}}", BuildSystemInfo(rootDir, "", nil))
 	return []byte(content)
 }
 
@@ -24,11 +25,41 @@ func renderBody(template []byte, tools []tool.ToolInfo) string {
 	return strings.ReplaceAll(string(template), "{{TOOLS}}", BuildToolsDoc(tools))
 }
 
-func BuildSystemInfo(rootDir string) string {
+func BuildSystemInfo(rootDir, permissionMode string, additionalAllowedDirs []string) string {
 	hostname, _ := os.Hostname()
-	return fmt.Sprintf("- 操作系统: %s/%s\n- 工作目录: %s\n- 主机名: %s\n- 当前时间: %s",
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "- 操作系统: %s/%s\n- 工作目录: %s\n- 主机名: %s\n- 当前时间: %s",
 		runtime.GOOS, runtime.GOARCH, rootDir, hostname,
 		time.Now().Format("2006-01-02 15:04"))
+	sb.WriteString("\n")
+	sb.WriteString(buildSandboxInfo(rootDir, permissionMode, additionalAllowedDirs))
+	return sb.String()
+}
+
+// buildSandboxInfo describes the runtime file-access boundary so the model knows
+// the actual allowed roots instead of assuming the strictest single-root case.
+// The server enforces the real boundary; this only tells the model where it can
+// reach so it attempts in-bounds paths instead of self-refusing.
+func buildSandboxInfo(rootDir, permissionMode string, additionalAllowedDirs []string) string {
+	switch permissionMode {
+	case "unrestricted":
+		return "- 文件权限: unrestricted —— 文件操作不受 workspace 限制，可读写任意绝对路径。无需自我预判越界，直接发起操作。"
+	case "auto":
+		parent := filepath.Dir(rootDir)
+		base := fmt.Sprintf("- 文件权限: auto —— 允许工作目录及其父目录 (%s) 下的文件操作。", parent)
+		if len(additionalAllowedDirs) > 0 {
+			base += " 额外允许目录: " + strings.Join(additionalAllowedDirs, "、") + "。"
+		}
+		base += " 是否越界由服务端裁决，不要自我预判——目标在允许范围内就直接操作。"
+		return base
+	default:
+		base := "- 文件权限: default —— 文件操作限工作目录。"
+		if len(additionalAllowedDirs) > 0 {
+			base += " 额外允许目录: " + strings.Join(additionalAllowedDirs, "、") + "（这些目录可正常读写）。"
+		}
+		base += " 是否越界由服务端裁决，不要自我预判——不确定时直接发起操作，服务端会放行或返回错误。"
+		return base
+	}
 }
 
 func BuildToolsDoc(tools []tool.ToolInfo) string {
@@ -72,9 +103,9 @@ func BuildToolsDoc(tools []tool.ToolInfo) string {
 		}
 		fmt.Fprintf(&sb, "- `browser_*` (%d tools): page automation — tabs, navigation, snapshot, click, type, screenshot, wait, etc. Call `tool_help` with {\"query\":\"browser\"} to list them, or {\"tool\":\"browser_click\"} for one tool's parameters.", browserCount)
 	}
-		sb.WriteString("\n\nTool-call JSON must have exactly these top-level fields: `name`, `call_id`, and `args`. Do not use `tool`, `operation`, `action`, `id`, `parameters`, or `input` as top-level fields.\n")
-		sb.WriteString("\nCommon minimum argument schemas: `list_dir` uses {\"path\":\".\"}; `read_file` uses {\"path\":\"README.md\"}; `glob` uses {\"pattern\":\"**/*.go\"}; `grep` uses {\"path\":\".\",\"pattern\":\"regex\"}; `tool_help` uses {\"name\":\"list_dir\"}; `skill` uses {\"name\":\"piercode-tool-protocol\"}. Never call `list_dir`, `read_file`, `glob`, or `grep` with empty `args`.\n")
-		sb.WriteString("\nCall format: when you actually execute a tool, output one visible `piercode-tool` fenced JSON block with fields `name`, `call_id`, and `args`. Do not output executable tool blocks for explanations or examples; non-executed examples must use a `text` fence.\n")
+	sb.WriteString("\n\nTool-call JSON must have exactly these top-level fields: `name`, `call_id`, and `args`. Do not use `tool`, `operation`, `action`, `id`, `parameters`, or `input` as top-level fields.\n")
+	sb.WriteString("\nCommon minimum argument schemas: `list_dir` uses {\"path\":\".\"}; `read_file` uses {\"path\":\"README.md\"}; `glob` uses {\"pattern\":\"**/*.go\"}; `grep` uses {\"path\":\".\",\"pattern\":\"regex\"}; `tool_help` uses {\"tool\":\"list_dir\"}; `skill` uses {\"skill\":\"piercode-tool-protocol\"}. Never call `list_dir`, `read_file`, `glob`, or `grep` with empty `args`.\n")
+	sb.WriteString("\nCall format: when you actually execute a tool, output one visible `piercode-tool` fenced JSON block with fields `name`, `call_id`, and `args`. Do not output executable tool blocks for explanations or examples; non-executed examples must use a `text` fence.\n")
 	return sb.String()
 }
 

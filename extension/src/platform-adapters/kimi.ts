@@ -4,6 +4,7 @@ import type { PlatformAdapter } from './types';
 export const kimiAdapter: PlatformAdapter = {
   name: 'kimi',
   match: () => location.hostname.includes('kimi.com'),
+  newSessionUrl: () => `${location.protocol}//${location.host}/`,
   responseSelector: '.segment-assistant',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';

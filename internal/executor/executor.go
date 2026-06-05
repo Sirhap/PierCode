@@ -202,12 +202,17 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	// RootDir between e.g. SafePath() and the actual write — the path resolves
 	// against root A but writes land under root B.
 	rootSnapshot := e.config.GetRootDir()
+	additionalRootsSnapshot := e.config.GetAdditionalAllowedDirs()
+	permissionModeSnapshot := e.config.GetPermissionMode()
+	callCtx := tool.ContextWithSourceClientID(ctx, req.SourceClientID)
 	toolCtx := &tool.Context{
-		Context:    ctx,
-		Args:       toolArgs,
-		Config:     e.config,
-		RootDir:    rootSnapshot,
-		TaskRunner: e.tasks,
+		Context:               callCtx,
+		Args:                  toolArgs,
+		Config:                e.config,
+		RootDir:               rootSnapshot,
+		AdditionalAllowedDirs: additionalRootsSnapshot,
+		PermissionMode:        permissionModeSnapshot,
+		TaskRunner:            e.tasks,
 	}
 	e.browserMu.RLock()
 	toolCtx.Browser = e.browser
@@ -272,7 +277,7 @@ func (e *Executor) appendPromptGuidance(resp *types.ToolResponse, n int64, profi
 	profile := e.profiles.Select(profileID)
 	resp.Output += profile.GuidanceFor(n, func() []byte {
 		rootDir := e.config.GetRootDir()
-		return profile.Render(rootDir, e.ListTools(), skill.LoadInfos(rootDir))
+		return profile.RenderWithSandbox(rootDir, e.config.GetPermissionMode(), e.config.GetAdditionalAllowedDirs(), e.ListTools(), skill.LoadInfos(rootDir))
 	})
 }
 
@@ -298,7 +303,7 @@ func (e *Executor) ListTools() []tool.ToolInfo {
 }
 
 func (e *Executor) lockForTool(name string) func() {
-	if isReadOnlyTool(name) {
+	if t, ok := e.registry.Get(name); ok && toolIsReadOnly(t) {
 		e.toolMu.RLock()
 		return e.toolMu.RUnlock
 	}
@@ -306,7 +311,14 @@ func (e *Executor) lockForTool(name string) func() {
 	return e.toolMu.Unlock
 }
 
-func isReadOnlyTool(name string) bool {
+func toolIsReadOnly(t tool.Tool) bool {
+	if provider, ok := t.(tool.MetadataProvider); ok {
+		return provider.Metadata().ReadOnly
+	}
+	return isReadOnlyToolName(t.Name())
+}
+
+func isReadOnlyToolName(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question", "tool_help",
 		"todo_read", "task_list", "task_output", "browser_tabs", "browser_snapshot",

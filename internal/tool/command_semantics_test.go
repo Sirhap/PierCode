@@ -54,14 +54,14 @@ func TestInterpretCommandResult(t *testing.T) {
 
 func TestExtractLastBaseCommand(t *testing.T) {
 	cases := map[string]string{
-		"grep foo":                    "grep",
-		"cat f | grep foo":            "grep",
-		"ls && grep foo":             "grep",
-		"a; b; diff x y":              "diff",
-		"  rg   pattern  ":            "rg",
-		"/usr/bin/grep foo":           "grep",
-		"FOO=bar grep x":              "grep",
-		"":                            "",
+		"grep foo":          "grep",
+		"cat f | grep foo":  "grep",
+		"ls && grep foo":    "grep",
+		"a; b; diff x y":    "diff",
+		"  rg   pattern  ":  "rg",
+		"/usr/bin/grep foo": "grep",
+		"FOO=bar grep x":    "grep",
+		"":                  "",
 	}
 	for in, want := range cases {
 		if got := extractLastBaseCommand(in); got != want {

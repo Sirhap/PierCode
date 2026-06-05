@@ -97,6 +97,20 @@ func TestRenderedToolDocsAreCompactRouteIndex(t *testing.T) {
 	}
 }
 
+func TestRenderedToolDocsUseCurrentArgumentNames(t *testing.T) {
+	doc := BuildToolsDoc([]tool.ToolInfo{
+		{Name: "skill", Description: "load skill"},
+		{Name: "tool_help", Description: "show help"},
+	})
+
+	if !strings.Contains(doc, "`tool_help` uses {\"tool\":\"list_dir\"}") || !strings.Contains(doc, "`skill` uses {\"skill\":\"piercode-tool-protocol\"}") {
+		t.Fatalf("expected current argument names in tool docs, got:\n%s", doc)
+	}
+	if strings.Contains(doc, "{\"name\":\"list_dir\"}") || strings.Contains(doc, "{\"name\":\"piercode-tool-protocol\"}") {
+		t.Fatalf("rendered tool docs must not advertise stale name args, got:\n%s", doc)
+	}
+}
+
 func TestBrowserToolsCollapseIntoCategoryLine(t *testing.T) {
 	var tools []tool.ToolInfo
 	tools = append(tools,

@@ -5,12 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
 
-	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/types"
 )
 
@@ -30,7 +28,7 @@ func (t *ReadFileTool) Description() string {
 	return `Reads a file from the local filesystem. Prefer this over running cat/head/tail via exec_cmd.
 
 Usage:
-- The path must be inside the configured working directory.
+	- The path must be inside the configured working directory or an explicitly added directory.
 - By default reads up to 2000 lines from the start. Use offset and limit to read a specific window of a large file; read only the part you need.
 - Each line is returned prefixed with its line number and a tab (` + "`<lineno>\\t`" + `), like cat -n. When you later edit, match only the content AFTER the tab — never include the line number prefix in an edit.
 - Lines longer than the display limit are truncated.
@@ -74,14 +72,7 @@ func (t *ReadFileTool) Execute(ctx *Context) *Result {
 		showLineNumbers = v
 	}
 
-	var safePath string
-	var err error
-	rootDir := ctx.EffectiveRootDir()
-	if filepath.IsAbs(path) {
-		safePath, err = resolveAbsPath(path, rootDir)
-	} else {
-		safePath, err = security.SafePath(rootDir, path)
-	}
+	safePath, err := ctx.ResolvePath(path)
 	if err != nil {
 		result.Status = "error"
 		result.Error = err.Error()

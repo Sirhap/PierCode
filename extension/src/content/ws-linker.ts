@@ -22,6 +22,7 @@ export type ToolStreamMessage = {
   type: 'tool_stream';
   task_id?: string;
   call_id?: string;
+  client_id?: string;
   stream: 'stdout' | 'stderr';
   text: string;
 };
@@ -30,6 +31,7 @@ export type ToolDoneMessage = {
   type: 'tool_done';
   task_id?: string;
   call_id?: string;
+  client_id?: string;
   exit_code: number;
   status: string;
   error?: string;
@@ -39,6 +41,7 @@ export type ToolDoneMessage = {
 export type QuestionAskMessage = {
   type: 'question_ask';
   call_id: string;
+  client_id?: string;
   question: string;
   options?: unknown[];
 };
@@ -46,6 +49,7 @@ export type QuestionAskMessage = {
 export type QuestionCancelMessage = {
   type: 'question_cancel';
   call_id: string;
+  client_id?: string;
   reason?: string;
 };
 
@@ -53,6 +57,7 @@ export type BrowserApprovalAskMessage = {
   type: 'browser_approval_ask';
   approval_id: string;
   call_id?: string;
+  client_id?: string;
   action: string;
   tab?: { tabId?: number; title?: string; url?: string };
   target: string;
@@ -64,11 +69,13 @@ export type BrowserApprovalDoneMessage = {
   type: 'browser_approval_done';
   approval_id: string;
   call_id?: string;
+  client_id?: string;
 };
 
 export type BrowserAttachmentUploadMessage = {
   type: 'browser_attachment_upload';
   call_id: string;
+  client_id?: string;
   path: string;
   name: string;
   mimeType: string;
@@ -107,6 +114,10 @@ function getOrCreateClientId(): string {
 
 export function getPierCodeClientId(): string {
   return PAGE_CLIENT_ID;
+}
+
+function isForThisPage(msg: { client_id?: string }): boolean {
+  return !msg.client_id || msg.client_id === PAGE_CLIENT_ID;
 }
 
 export function onToolStream(handler: StreamHandler): () => void {
@@ -495,30 +506,37 @@ function connectWebSocket(apiUrl: string, token: string) {
         if (msg.type === "inject" && msg.text) {
           handleInjectMessage(msg.text);
         } else if (msg.type === "tool_stream" && typeof msg.text === "string") {
+		  if (!isForThisPage(msg)) return;
           for (const handler of streamHandlers.slice()) {
             try { handler(msg as ToolStreamMessage); } catch (e) { console.error(e); }
           }
         } else if (msg.type === "tool_done") {
+		  if (!isForThisPage(msg)) return;
           for (const handler of doneHandlers.slice()) {
             try { handler(msg as ToolDoneMessage); } catch (e) { console.error(e); }
           }
         } else if (msg.type === "question_ask" && typeof msg.call_id === "string") {
+		  if (!isForThisPage(msg)) return;
           for (const handler of questionAskHandlers.slice()) {
             try { handler(msg as QuestionAskMessage); } catch (e) { console.error(e); }
           }
         } else if (msg.type === "question_cancel" && typeof msg.call_id === "string") {
+		  if (!isForThisPage(msg)) return;
           for (const handler of questionCancelHandlers.slice()) {
             try { handler(msg as QuestionCancelMessage); } catch (e) { console.error(e); }
           }
         } else if (msg.type === "browser_approval_ask" && typeof msg.approval_id === "string") {
+		  if (!isForThisPage(msg)) return;
           for (const handler of browserApprovalAskHandlers.slice()) {
             try { handler(msg as BrowserApprovalAskMessage); } catch (e) { console.error(e); }
           }
         } else if (msg.type === "browser_approval_done" && typeof msg.approval_id === "string") {
+		  if (!isForThisPage(msg)) return;
           for (const handler of browserApprovalDoneHandlers.slice()) {
             try { handler(msg as BrowserApprovalDoneMessage); } catch (e) { console.error(e); }
           }
         } else if (msg.type === "browser_attachment_upload" && typeof msg.call_id === "string") {
+		  if (!isForThisPage(msg)) return;
           for (const handler of browserAttachmentUploadHandlers.slice()) {
             try { handler(msg as BrowserAttachmentUploadMessage); } catch (e) { console.error(e); }
           }

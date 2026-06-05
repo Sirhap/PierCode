@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/types"
 )
 
@@ -66,14 +64,7 @@ func (t *EditTool) Execute(ctx *Context) *Result {
 	newStr, _ := ctx.Args["new_string"].(string)
 	replaceAll, _ := ctx.Args["replace_all"].(bool)
 
-	var safePath string
-	var err error
-	rootDir := ctx.EffectiveRootDir()
-	if filepath.IsAbs(path) {
-		safePath, err = resolveAbsPath(path, rootDir)
-	} else {
-		safePath, err = security.SafePath(rootDir, path)
-	}
+	safePath, err := ctx.ResolvePath(path)
 	if err != nil {
 		result.Status = "error"
 		result.Error = err.Error()
@@ -138,7 +129,7 @@ func (t *EditTool) Execute(ctx *Context) *Result {
 	}
 
 	// Snapshot the prior state before writing so `undo` can restore it.
-	_ = snapshotPaths(rootDir, "edit", safePath)
+	_ = snapshotPaths(ctx.EffectiveRootDir(), "edit", safePath)
 	if err := os.WriteFile(safePath, outBytes, 0644); err != nil {
 		result.Status = "error"
 		result.Error = err.Error()

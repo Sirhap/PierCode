@@ -3,11 +3,9 @@ package tool
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/types"
 )
 
@@ -45,14 +43,7 @@ func (t *ListDirTool) Execute(ctx *Context) *Result {
 	result := &Result{StartTime: time.Now()}
 	path, _ := ctx.Args["path"].(string)
 
-	var safePath string
-	var err error
-	rootDir := ctx.EffectiveRootDir()
-	if filepath.IsAbs(path) {
-		safePath, err = resolveAbsPath(path, rootDir)
-	} else {
-		safePath, err = security.SafePath(rootDir, path)
-	}
+	safePath, err := ctx.ResolvePath(path)
 	if err != nil {
 		result.Status = "error"
 		result.Error = err.Error()

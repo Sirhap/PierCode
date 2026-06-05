@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sirhap/piercode/internal/security"
@@ -16,6 +17,14 @@ type Tool interface {
 	Parameters() interface{}
 	Validate(args map[string]interface{}) error
 	Execute(ctx *Context) *Result
+}
+
+type ToolMetadata struct {
+	ReadOnly bool `json:"readOnly"`
+}
+
+type MetadataProvider interface {
+	Metadata() ToolMetadata
 }
 
 type Context struct {
@@ -31,6 +40,11 @@ type Context struct {
 	// caller's intended workspace. Tools that legitimately need the live
 	// value can still hit Config directly.
 	RootDir string
+
+	// AdditionalAllowedDirs is a request-entry snapshot of Config's extra sandbox
+	// roots. Tools combine it with RootDir for absolute path validation.
+	AdditionalAllowedDirs []string
+	PermissionMode        string
 
 	// Streamer, if set, receives incremental stdout/stderr chunks from a
 	// long-running tool (currently only exec_cmd). stream is "stdout" or
@@ -59,6 +73,28 @@ type Context struct {
 	SourceClientID string
 }
 
+type sourceClientIDContextKey struct{}
+
+func ContextWithSourceClientID(ctx context.Context, clientID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(clientID) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, sourceClientIDContextKey{}, clientID)
+}
+
+func SourceClientIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(sourceClientIDContextKey{}).(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
 // EffectiveRootDir returns the snapshot RootDir captured by the executor at
 // request entry. Falls back to Config.GetRootDir() (and finally "") so callers
 // outside the executor (tests, direct invocation) continue to work.
@@ -75,6 +111,50 @@ func (c *Context) EffectiveRootDir() string {
 	return ""
 }
 
+func (c *Context) EffectiveAllowedRoots() []string {
+	rootDir := c.EffectiveRootDir()
+	roots := make([]string, 0, 1+len(c.AdditionalAllowedDirs))
+	if rootDir != "" {
+		roots = append(roots, rootDir)
+	}
+	if c.EffectivePermissionMode() == "auto" {
+		parent := filepath.Dir(rootDir)
+		if parent != rootDir && filepath.Dir(parent) != parent {
+			roots = append(roots, parent)
+		}
+	}
+	if len(c.AdditionalAllowedDirs) > 0 {
+		roots = append(roots, c.AdditionalAllowedDirs...)
+	} else if c.Config != nil {
+		roots = append(roots, c.Config.GetAdditionalAllowedDirs()...)
+	}
+	return roots
+}
+
+func (c *Context) EffectivePermissionMode() string {
+	if c == nil {
+		return "default"
+	}
+	if c.PermissionMode != "" {
+		return types.NormalizePermissionMode(c.PermissionMode)
+	}
+	if c.Config != nil {
+		return c.Config.GetPermissionMode()
+	}
+	return "default"
+}
+
+func (c *Context) ResolvePath(path string) (string, error) {
+	rootDir := c.EffectiveRootDir()
+	if c.EffectivePermissionMode() == "unrestricted" {
+		return unrestrictedPath(rootDir, path)
+	}
+	if filepath.IsAbs(path) || strings.HasPrefix(path, "~/") {
+		return resolveAbsPath(path, c.EffectiveAllowedRoots())
+	}
+	return security.SafePath(rootDir, path)
+}
+
 // TaskRunner is the minimal background-task surface the tool package depends
 // on. The real implementation lives in the executor package; declaring the
 // interface here keeps tools free of an executor import.
@@ -89,24 +169,26 @@ type TaskRunner interface {
 // TaskSnapshot mirrors executor.TaskSummary in a tool-package-local form so
 // task_list / task_output tools can render results without a package cycle.
 type TaskSnapshot struct {
-	ID         string
-	CallID     string
-	Command    string
-	Status     string
-	StartedAt  string
-	EndedAt    string
-	ExitCode   int
-	ErrMsg     string
-	StdoutSize int
-	StderrSize int
+	ID             string
+	CallID         string
+	SourceClientID string
+	Command        string
+	Status         string
+	StartedAt      string
+	EndedAt        string
+	ExitCode       int
+	ErrMsg         string
+	StdoutSize     int
+	StderrSize     int
 }
 
 // TaskSpec describes a single background command launch.
 type TaskSpec struct {
-	CallID  string
-	Command string
-	Dir     string
-	Timeout time.Duration
+	CallID         string
+	SourceClientID string
+	Command        string
+	Dir            string
+	Timeout        time.Duration
 	// OnChunk, OnDone are invoked from the task's own goroutine.
 	OnChunk func(stream, text string)
 	OnDone  func(exitCode int, durationMs int64, errMsg string)
@@ -125,6 +207,19 @@ type ToolInfo struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
 	Parameters  interface{} `json:"parameters,omitempty"`
+	ReadOnly    bool        `json:"readOnly"`
+}
+
+func InfoFor(tool Tool) ToolInfo {
+	info := ToolInfo{
+		Name:        tool.Name(),
+		Description: tool.Description(),
+		Parameters:  tool.Parameters(),
+	}
+	if provider, ok := tool.(MetadataProvider); ok {
+		info.ReadOnly = provider.Metadata().ReadOnly
+	}
+	return info
 }
 
 type BrowserController interface {
@@ -544,14 +639,29 @@ type BrowserGetAttributesRequest struct {
 	Styles     []string
 }
 
-// resolveAbsPath validates an absolute path against RootDir and common allowed roots (~/.claude, ~/.piercode, ~/.agent).
-func resolveAbsPath(path, rootDir string) (string, error) {
+// resolveAbsPath validates an absolute path against allowed workspace roots and
+// common tool-state roots (~/.claude, ~/.piercode, ~/.agent).
+func resolveAbsPath(path string, roots []string) (string, error) {
 	home, _ := os.UserHomeDir()
-	roots := []string{
-		rootDir,
+	allowed := append([]string(nil), roots...)
+	allowed = append(allowed,
 		filepath.Join(home, ".claude"),
 		filepath.Join(home, ".piercode"),
 		filepath.Join(home, ".agent"),
+	)
+	return security.SafeAbsPath(path, allowed...)
+}
+
+func unrestrictedPath(rootDir, path string) (string, error) {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(home, path[2:])
 	}
-	return security.SafeAbsPath(path, roots...)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(rootDir, path)
+	}
+	return filepath.Abs(path)
 }

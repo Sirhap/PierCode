@@ -4,6 +4,7 @@ import type { PlatformAdapter } from './types';
 export const chatZAdapter: PlatformAdapter = {
   name: 'chatz',
   match: () => location.hostname.includes('chat.z.ai'),
+  newSessionUrl: () => `${location.protocol}//${location.host}/`,
   responseSelector: '#response-content-container',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';

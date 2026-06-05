@@ -45,7 +45,7 @@ func grepLikeSemantic(exitCode int) semanticResult {
 
 var commandSemantics = map[string]commandSemantic{
 	// grep family: exit 1 means no matches, not an error.
-	"grep": grepLikeSemantic,
+	"grep":  grepLikeSemantic,
 	"egrep": grepLikeSemantic,
 	"fgrep": grepLikeSemantic,
 	"rg":    grepLikeSemantic,

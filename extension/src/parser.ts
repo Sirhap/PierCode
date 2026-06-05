@@ -10,7 +10,7 @@ export function parseJsonFenceToolCall(jsonStr: string): any | null {
   if (!obj || !obj.name || typeof obj.name !== 'string') return null;
   return {
     name: obj.name,
-    callId: obj.call_id || null,
+    callId: obj.call_id || obj.callId || null,
     args: obj.args || {}
   };
 }

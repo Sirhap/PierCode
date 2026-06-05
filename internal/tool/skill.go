@@ -39,7 +39,23 @@ func (t *SkillTool) Parameters() interface{} {
 		"skill": "string (optional) - skill name to load; omit to list available skills",
 	}
 }
-func (t *SkillTool) Validate(args map[string]interface{}) error { return nil }
+func (t *SkillTool) Validate(args map[string]interface{}) error {
+	for key := range args {
+		if key == "skill" {
+			continue
+		}
+		if key == "name" {
+			return fmt.Errorf("unknown parameter %q; use %q for the skill name", key, "skill")
+		}
+		return fmt.Errorf("unknown parameter %q", key)
+	}
+	if v, ok := args["skill"]; ok && v != nil {
+		if _, ok := v.(string); !ok {
+			return fmt.Errorf("skill must be a string")
+		}
+	}
+	return nil
+}
 
 func (t *SkillTool) Execute(ctx *Context) *Result {
 	result := &Result{StartTime: time.Now()}

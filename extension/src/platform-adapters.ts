@@ -10,7 +10,7 @@ import { qwenAdapter } from './platform-adapters/qwen';
 import type { PlatformAdapter } from './platform-adapters/types';
 
 export type { ExtractedCodeText, PlatformAdapter } from './platform-adapters/types';
-export { getAdapterProfileName } from './platform-adapters/types';
+export { getAdapterProfileName, getAdapterNewSessionUrl } from './platform-adapters/types';
 export { extractCodeMirror6Text, extractMonacoText } from './platform-adapters/shared';
 export { aiStudioAdapter } from './platform-adapters/aistudio';
 export { chatGPTAdapter } from './platform-adapters/chatgpt';

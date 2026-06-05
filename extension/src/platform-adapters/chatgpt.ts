@@ -4,6 +4,7 @@ import type { PlatformAdapter } from './types';
 export const chatGPTAdapter: PlatformAdapter = {
   name: 'chatgpt',
   match: () => location.hostname.includes('chatgpt.com') || location.hostname.includes('chat.openai.com'),
+  newSessionUrl: () => `${location.protocol}//${location.host}/`,
   responseSelector: '[data-message-author-role="assistant"] .markdown, [data-message-author-role="assistant"]',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';

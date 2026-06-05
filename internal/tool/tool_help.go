@@ -29,6 +29,15 @@ func (t *ToolHelpTool) Parameters() interface{} {
 }
 
 func (t *ToolHelpTool) Validate(args map[string]interface{}) error {
+	for key := range args {
+		switch key {
+		case "tool", "query":
+		case "name":
+			return fmt.Errorf("unknown parameter %q; use %q for exact tool docs or %q for search", key, "tool", "query")
+		default:
+			return fmt.Errorf("unknown parameter %q", key)
+		}
+	}
 	if v, ok := args["tool"]; ok && v != nil {
 		if _, ok := v.(string); !ok {
 			return fmt.Errorf("tool must be a string")
@@ -87,10 +96,10 @@ func (t *ToolHelpTool) Execute(ctx *Context) *Result {
 
 func (t *ToolHelpTool) findTool(name string) (ToolInfo, bool) {
 	if tool, ok := t.registry.Get(name); ok {
-		return ToolInfo{Name: tool.Name(), Description: tool.Description(), Parameters: tool.Parameters()}, true
+		return InfoFor(tool), true
 	}
 	if tool, ok := t.registry.Get(strings.ToLower(name)); ok {
-		return ToolInfo{Name: tool.Name(), Description: tool.Description(), Parameters: tool.Parameters()}, true
+		return InfoFor(tool), true
 	}
 	for _, info := range t.registry.List() {
 		if strings.EqualFold(info.Name, name) {
@@ -114,6 +123,9 @@ func renderDetailedToolHelp(info ToolInfo) string {
 			fmt.Fprintf(&sb, "- %s: %s\n", key, params[key])
 		}
 		sb.WriteString("\n")
+	}
+	if info.ReadOnly {
+		sb.WriteString("Metadata:\n- readOnly: true\n\n")
 	}
 	sb.WriteString("Call format: when executing, output one visible `piercode-tool` fenced JSON block with `name`, `call_id`, and `args`. Do not output executable tool blocks as examples; use a `text` fence for non-executed examples.")
 	return sb.String()

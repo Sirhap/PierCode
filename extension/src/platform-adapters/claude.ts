@@ -4,6 +4,7 @@ import type { PlatformAdapter } from './types';
 export const claudeAdapter: PlatformAdapter = {
   name: 'claude',
   match: () => location.hostname.includes('claude.ai') || location.hostname.includes('free.easychat.top'),
+  newSessionUrl: () => `${location.protocol}//${location.host}/new`,
   responseSelector: '.font-claude-response, .standard-markdown',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';

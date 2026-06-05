@@ -145,10 +145,14 @@ func (r *ProfileRegistry) defaultProfile() Profile {
 }
 
 func (p Profile) Render(rootDir string, tools []tool.ToolInfo, skills []skill.Info) []byte {
+	return p.RenderWithSandbox(rootDir, "", nil, tools, skills)
+}
+
+func (p Profile) RenderWithSandbox(rootDir, permissionMode string, additionalAllowedDirs []string, tools []tool.ToolInfo, skills []skill.Info) []byte {
 	body := p.renderBodyCached(rootDir, tools, skills)
-	// Stamp the volatile timestamp last so the cached body can be reused across
-	// calls within the same minute / tool set.
-	out := strings.ReplaceAll(string(body), systemInfoPlaceholder, BuildSystemInfo(rootDir))
+	// Stamp the volatile timestamp + sandbox info last so the cached body can be
+	// reused across calls within the same minute / tool set.
+	out := strings.ReplaceAll(string(body), systemInfoPlaceholder, BuildSystemInfo(rootDir, permissionMode, additionalAllowedDirs))
 	return []byte(out)
 }
 

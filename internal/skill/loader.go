@@ -57,6 +57,7 @@ func SkillDirs(rootDir string) []string {
 		filepath.Join(home, ".piercode", "skills"),
 		filepath.Join(home, ".agent", "skills"),
 		filepath.Join(home, ".claude", "skills"),
+		filepath.Join(home, ".agents", "skills"),
 	}
 }
 
@@ -193,7 +194,9 @@ func parse(path, content string) Info {
 		return Info{Name: name, Description: description}
 	}
 	front := content[3 : end+3]
-	for _, line := range strings.Split(front, "\n") {
+	lines := strings.Split(front, "\n")
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		line = strings.TrimSpace(line)
 		if k, v, ok := strings.Cut(line, ":"); ok {
 			v = strings.TrimSpace(v)
@@ -201,7 +204,24 @@ func parse(path, content string) Info {
 			case "name":
 				name = v
 			case "description":
-				description = v
+				if v == ">" || v == "|" {
+					var parts []string
+					for i+1 < len(lines) {
+						next := lines[i+1]
+						if strings.TrimSpace(next) == "" {
+							i++
+							continue
+						}
+						if !strings.HasPrefix(next, " ") && !strings.HasPrefix(next, "\t") {
+							break
+						}
+						parts = append(parts, strings.TrimSpace(next))
+						i++
+					}
+					description = strings.Join(parts, " ")
+				} else {
+					description = strings.Trim(v, "\"'")
+				}
 			}
 		}
 	}

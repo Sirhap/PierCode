@@ -376,11 +376,8 @@ func NewBrowserPDFTool() Tool {
 			if outputPath == "" {
 				outputPath = filepath.Join(ctx.EffectiveRootDir(), ".piercode", "pdfs")
 			} else {
-				if !filepath.IsAbs(outputPath) {
-					outputPath = filepath.Join(ctx.EffectiveRootDir(), outputPath)
-				}
 				var err error
-				outputPath, err = resolveAbsPath(outputPath, ctx.EffectiveRootDir())
+				outputPath, err = ctx.ResolvePath(outputPath)
 				if err != nil {
 					return "", err
 				}
@@ -412,7 +409,7 @@ func NewBrowserUploadTool() Tool {
 		},
 		validate: validateBrowserUpload,
 		execute: func(ctx *Context) (string, error) {
-			paths, err := resolveUploadPaths(ctx.Args, ctx.EffectiveRootDir())
+			paths, err := resolveUploadPaths(ctx, ctx.Args)
 			if err != nil {
 				return "", err
 			}
@@ -557,17 +554,14 @@ func validateDragEndpoint(args map[string]interface{}, prefix string) error {
 	return nil
 }
 
-func resolveUploadPaths(args map[string]interface{}, rootDir string) ([]string, error) {
+func resolveUploadPaths(ctx *Context, args map[string]interface{}) ([]string, error) {
 	paths := stringListArg(args, "paths")
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("paths is required")
 	}
 	resolved := make([]string, 0, len(paths))
 	for _, path := range paths {
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(rootDir, path)
-		}
-		safePath, err := resolveAbsPath(path, rootDir)
+		safePath, err := ctx.ResolvePath(path)
 		if err != nil {
 			return nil, err
 		}

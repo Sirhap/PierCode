@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/types"
 )
 
@@ -69,7 +68,7 @@ func (t *ApplyPatchTool) Execute(ctx *Context) *Result {
 		return result
 	}
 
-	plans, err := planPatch(ctx.EffectiveRootDir(), ops)
+	plans, err := planPatch(ctx, ops)
 	if err != nil {
 		result.Status = "error"
 		result.Error = err.Error()
@@ -409,7 +408,7 @@ func joinContentLines(lines []string, style lineStyle) string {
 	return joined
 }
 
-func planPatch(rootDir string, ops []patchOp) ([]patchPlan, error) {
+func planPatch(ctx *Context, ops []patchOp) ([]patchPlan, error) {
 	if len(ops) == 0 {
 		return nil, errors.New("patch contains no operations")
 	}
@@ -427,7 +426,7 @@ func planPatch(rootDir string, ops []patchOp) ([]patchPlan, error) {
 	order := []string{}
 
 	getState := func(path string) (*fileState, error) {
-		absPath, err := resolvePatchPath(rootDir, path)
+		absPath, err := resolvePatchPath(ctx, path)
 		if err != nil {
 			return nil, err
 		}
@@ -536,14 +535,11 @@ func applyFinalNewline(content, mode string) string {
 	}
 }
 
-func resolvePatchPath(rootDir, path string) (string, error) {
+func resolvePatchPath(ctx *Context, path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", errors.New("path is required")
 	}
-	if filepath.IsAbs(path) {
-		return resolveAbsPath(path, rootDir)
-	}
-	return security.SafePath(rootDir, path)
+	return ctx.ResolvePath(path)
 }
 
 // applyPatchHunk locates hunk.oldLines as a contiguous run of whole lines within

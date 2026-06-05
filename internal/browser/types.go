@@ -37,6 +37,7 @@ type ApprovalAsk struct {
 	Type       string      `json:"type"`
 	ApprovalID string      `json:"approval_id"`
 	CallID     string      `json:"call_id,omitempty"`
+	ClientID   string      `json:"client_id,omitempty"`
 	Action     string      `json:"action"`
 	Tab        interface{} `json:"tab,omitempty"`
 	Target     string      `json:"target"`

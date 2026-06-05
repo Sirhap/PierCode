@@ -78,9 +78,19 @@ func TestValidateMethods(t *testing.T) {
 		}
 	})
 
-	t.Run("SkillTool validate always passes", func(t *testing.T) {
-		if err := NewSkillTool(cfg).Validate(map[string]interface{}{}); err != nil {
+	t.Run("SkillTool validate arguments", func(t *testing.T) {
+		tool := NewSkillTool(cfg)
+		if err := tool.Validate(map[string]interface{}{}); err != nil {
 			t.Errorf("unexpected error: %v", err)
+		}
+		if err := tool.Validate(map[string]interface{}{"skill": "caveman"}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if err := tool.Validate(map[string]interface{}{"skill": 1}); err == nil {
+			t.Error("expected error")
+		}
+		if err := tool.Validate(map[string]interface{}{"name": "caveman"}); err == nil || !strings.Contains(err.Error(), "skill") {
+			t.Fatalf("expected helpful name error, got %v", err)
 		}
 	})
 
@@ -91,6 +101,9 @@ func TestValidateMethods(t *testing.T) {
 		}
 		if err := tool.Validate(map[string]interface{}{"tool": 1}); err == nil {
 			t.Error("expected error")
+		}
+		if err := tool.Validate(map[string]interface{}{"name": "read_file"}); err == nil || !strings.Contains(err.Error(), "tool") {
+			t.Fatalf("expected helpful name error, got %v", err)
 		}
 	})
 }

@@ -133,7 +133,7 @@ export function extractAllToolCalls(text: string, buf: string[]): number {
       const jsonStr = text.substring(start, end + 1).trim();
       try {
         const parsed = JSON.parse(jsonStr);
-        if (parsed.name && parsed.call_id && parsed.args) {
+		if (parsed.name && (parsed.args || parsed.arguments)) {
           pushPierCodeTool(buf, jsonStr);
           count++;
         }

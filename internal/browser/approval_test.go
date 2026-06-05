@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sirhap/piercode/internal/tool"
 )
 
 func TestApprovalManagerRejectsAndBroadcastsDone(t *testing.T) {
@@ -68,6 +70,49 @@ func TestApprovalManagerContextCancelBroadcastsDone(t *testing.T) {
 		t.Fatalf("unmarshal done payload: %v", err)
 	}
 	if done.Type != "browser_approval_done" || done.CallID != "cancel-call" {
+		t.Fatalf("unexpected done payload: %#v", done)
+	}
+}
+
+func TestApprovalManagerIncludesClientIDFromContext(t *testing.T) {
+	var payloads [][]byte
+	var manager *ApprovalManager
+	manager = NewApprovalManager(func(payload []byte) {
+		payloads = append(payloads, append([]byte(nil), payload...))
+		var ask ApprovalAsk
+		if err := json.Unmarshal(payload, &ask); err == nil && ask.Type == "browser_approval_ask" {
+			go manager.Deliver(ApprovalAnswer{
+				ApprovalID: ask.ApprovalID,
+				Approved:   true,
+			})
+		}
+	})
+
+	ctx := tool.ContextWithSourceClientID(context.Background(), "client-a")
+	if err := manager.Ask(ctx, ApprovalAsk{CallID: "approval-route-test", Action: "Route browser action"}); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if len(payloads) != 2 {
+		t.Fatalf("expected ask and done payloads, got %d", len(payloads))
+	}
+
+	var ask ApprovalAsk
+	if err := json.Unmarshal(payloads[0], &ask); err != nil {
+		t.Fatalf("unmarshal ask payload: %v", err)
+	}
+	if ask.Type != "browser_approval_ask" || ask.CallID != "approval-route-test" || ask.ClientID != "client-a" {
+		t.Fatalf("unexpected ask payload: %#v", ask)
+	}
+
+	var done struct {
+		Type     string `json:"type"`
+		CallID   string `json:"call_id"`
+		ClientID string `json:"client_id"`
+	}
+	if err := json.Unmarshal(payloads[1], &done); err != nil {
+		t.Fatalf("unmarshal done payload: %v", err)
+	}
+	if done.Type != "browser_approval_done" || done.CallID != "approval-route-test" || done.ClientID != "client-a" {
 		t.Fatalf("unexpected done payload: %#v", done)
 	}
 }

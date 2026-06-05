@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sirhap/piercode/internal/tool"
 )
 
 type ApprovalManager struct {
@@ -19,14 +21,16 @@ type ApprovalManager struct {
 }
 
 type pendingApproval struct {
-	callID string
-	ch     chan ApprovalAnswer
+	callID   string
+	clientID string
+	ch       chan ApprovalAnswer
 }
 
 type approvalDone struct {
 	Type       string `json:"type"`
 	ApprovalID string `json:"approval_id"`
 	CallID     string `json:"call_id,omitempty"`
+	ClientID   string `json:"client_id,omitempty"`
 }
 
 func NewApprovalManager(broadcast func([]byte)) *ApprovalManager {
@@ -43,6 +47,9 @@ func (m *ApprovalManager) Ask(ctx context.Context, ask ApprovalAsk) error {
 	if ask.ApprovalID == "" {
 		ask.ApprovalID = fmt.Sprintf("browser_approval_%d_%d", time.Now().UnixNano(), m.seq.Add(1))
 	}
+	if ask.ClientID == "" {
+		ask.ClientID = tool.SourceClientIDFromContext(ctx)
+	}
 	ask.Type = "browser_approval_ask"
 	if len(ask.Options) == 0 {
 		ask.Options = []string{"允许", "拒绝"}
@@ -50,11 +57,11 @@ func (m *ApprovalManager) Ask(ctx context.Context, ask ApprovalAsk) error {
 
 	ch := make(chan ApprovalAnswer, 1)
 	m.mu.Lock()
-	m.pending[ask.ApprovalID] = pendingApproval{callID: ask.CallID, ch: ch}
+	m.pending[ask.ApprovalID] = pendingApproval{callID: ask.CallID, clientID: ask.ClientID, ch: ch}
 	m.mu.Unlock()
 	defer func() {
 		m.deletePending(ask.ApprovalID)
-		m.broadcastDone(ask.ApprovalID, ask.CallID)
+		m.broadcastDone(ask.ApprovalID, ask.CallID, ask.ClientID)
 	}()
 
 	payload, err := json.Marshal(ask)
@@ -104,7 +111,7 @@ func (m *ApprovalManager) deletePending(id string) {
 	m.mu.Unlock()
 }
 
-func (m *ApprovalManager) broadcastDone(approvalID, callID string) {
+func (m *ApprovalManager) broadcastDone(approvalID, callID, clientID string) {
 	if m == nil || m.broadcast == nil || approvalID == "" {
 		return
 	}
@@ -112,6 +119,7 @@ func (m *ApprovalManager) broadcastDone(approvalID, callID string) {
 		Type:       "browser_approval_done",
 		ApprovalID: approvalID,
 		CallID:     callID,
+		ClientID:   clientID,
 	})
 	if err != nil {
 		return
