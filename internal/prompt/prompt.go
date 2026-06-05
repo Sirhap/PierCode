@@ -12,10 +12,16 @@ import (
 )
 
 func Render(template []byte, rootDir string, tools []tool.ToolInfo) []byte {
-	content := string(template)
+	content := renderBody(template, tools)
 	content = strings.ReplaceAll(content, "{{SYSTEM_INFO}}", BuildSystemInfo(rootDir))
-	content = strings.ReplaceAll(content, "{{TOOLS}}", BuildToolsDoc(tools))
 	return []byte(content)
+}
+
+// renderBody substitutes the cacheable placeholders (currently {{TOOLS}}) and
+// intentionally leaves {{SYSTEM_INFO}} in place so the caller can stamp the
+// volatile timestamp after a cache lookup.
+func renderBody(template []byte, tools []tool.ToolInfo) string {
+	return strings.ReplaceAll(string(template), "{{TOOLS}}", BuildToolsDoc(tools))
 }
 
 func BuildSystemInfo(rootDir string) string {
@@ -35,11 +41,36 @@ func BuildToolsDoc(tools []tool.ToolInfo) string {
 	var sb strings.Builder
 	sb.WriteString("This is a compact route index, not full API documentation. Before first use of an unfamiliar or parameter-sensitive tool, call `tool_help` with the exact tool name to read detailed parameters.\n\n")
 	sb.WriteString("Available operations:\n")
-	for i, t := range tools {
-		if i > 0 {
+
+	// Collapse the large browser_* family into one category pointer instead of
+	// listing ~40 individual lines that are irrelevant to non-browser tasks. The
+	// model expands the family on demand via `tool_help` (query/tool both work).
+	// Below the threshold, keep them inline — collapsing 1-2 saves nothing.
+	const browserCollapseThreshold = 3
+	var browserCount int
+	for _, t := range tools {
+		if strings.HasPrefix(t.Name, "browser_") {
+			browserCount++
+		}
+	}
+	collapseBrowser := browserCount >= browserCollapseThreshold
+
+	first := true
+	for _, t := range tools {
+		if collapseBrowser && strings.HasPrefix(t.Name, "browser_") {
+			continue
+		}
+		if !first {
 			sb.WriteString("\n")
 		}
+		first = false
 		sb.WriteString(fmt.Sprintf("- `%s`: %s", t.Name, firstLine(t.Description)))
+	}
+	if collapseBrowser {
+		if !first {
+			sb.WriteString("\n")
+		}
+		fmt.Fprintf(&sb, "- `browser_*` (%d tools): page automation — tabs, navigation, snapshot, click, type, screenshot, wait, etc. Call `tool_help` with {\"query\":\"browser\"} to list them, or {\"tool\":\"browser_click\"} for one tool's parameters.", browserCount)
 	}
 		sb.WriteString("\n\nTool-call JSON must have exactly these top-level fields: `name`, `call_id`, and `args`. Do not use `tool`, `operation`, `action`, `id`, `parameters`, or `input` as top-level fields.\n")
 		sb.WriteString("\nCommon minimum argument schemas: `list_dir` uses {\"path\":\".\"}; `read_file` uses {\"path\":\"README.md\"}; `glob` uses {\"pattern\":\"**/*.go\"}; `grep` uses {\"path\":\".\",\"pattern\":\"regex\"}; `tool_help` uses {\"name\":\"list_dir\"}; `skill` uses {\"name\":\"piercode-tool-protocol\"}. Never call `list_dir`, `read_file`, `glob`, or `grep` with empty `args`.\n")

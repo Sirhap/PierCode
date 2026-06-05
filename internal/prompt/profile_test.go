@@ -97,6 +97,84 @@ func TestRenderedToolDocsAreCompactRouteIndex(t *testing.T) {
 	}
 }
 
+func TestBrowserToolsCollapseIntoCategoryLine(t *testing.T) {
+	var tools []tool.ToolInfo
+	tools = append(tools,
+		tool.ToolInfo{Name: "read_file", Description: "read a file"},
+		tool.ToolInfo{Name: "exec_cmd", Description: "run a command"},
+	)
+	for _, n := range []string{"browser_click", "browser_type", "browser_snapshot", "browser_navigate", "browser_wait"} {
+		tools = append(tools, tool.ToolInfo{Name: n, Description: "browser op " + n})
+	}
+
+	doc := BuildToolsDoc(tools)
+
+	// Core tools still listed individually.
+	if !strings.Contains(doc, "`read_file`") || !strings.Contains(doc, "`exec_cmd`") {
+		t.Fatalf("core tools must stay listed, got:\n%s", doc)
+	}
+	// Browser tools collapse: no per-tool line, one category pointer instead.
+	if strings.Contains(doc, "`browser_click`") || strings.Contains(doc, "`browser_snapshot`") {
+		t.Fatalf("browser tools should be collapsed, not listed individually, got:\n%s", doc)
+	}
+	if !strings.Contains(doc, "browser_") || !strings.Contains(doc, "tool_help") {
+		t.Fatalf("expected a browser_* category pointer routed through tool_help, got:\n%s", doc)
+	}
+	// The count should be surfaced so the model knows how many exist.
+	if !strings.Contains(doc, "5") {
+		t.Fatalf("expected browser tool count in the category line, got:\n%s", doc)
+	}
+}
+
+func TestFewBrowserToolsNotCollapsed(t *testing.T) {
+	// Below the threshold, keep them inline — collapsing 1-2 tools saves nothing
+	// and hides them for no benefit.
+	tools := []tool.ToolInfo{
+		{Name: "read_file", Description: "read"},
+		{Name: "browser_click", Description: "click"},
+	}
+	doc := BuildToolsDoc(tools)
+	if !strings.Contains(doc, "`browser_click`") {
+		t.Fatalf("a single browser tool should stay listed, got:\n%s", doc)
+	}
+}
+
+func TestRenderBodyCacheReusesAndBustsCorrectly(t *testing.T) {
+	// Use a tool name that does NOT appear in BuildToolsDoc's static schema
+	// footer, so a presence check actually reflects the tool list.
+	p := Profile{ID: "cachetest", Prompt: []byte("body {{TOOLS}} {{SYSTEM_INFO}}")}
+	toolsA := []tool.ToolInfo{{Name: "read_file", Description: "read"}}
+	toolsB := []tool.ToolInfo{{Name: "read_file", Description: "read"}, {Name: "zzz_unique_tool", Description: "search"}}
+
+	b1 := p.renderBodyCached("/repo", toolsA, nil)
+	b2 := p.renderBodyCached("/repo", toolsA, nil)
+	// Same inputs → identical backing slice returned from cache.
+	if &b1[0] != &b2[0] {
+		t.Error("expected cache hit to return the same cached slice")
+	}
+
+	// Different tool set → cache miss → different content (includes the new tool).
+	b3 := p.renderBodyCached("/repo", toolsB, nil)
+	if strings.Contains(string(b1), "zzz_unique_tool") {
+		t.Error("toolsA body should not contain the toolsB-only tool")
+	}
+	if !strings.Contains(string(b3), "zzz_unique_tool") {
+		t.Error("toolsB body should contain its tool")
+	}
+
+	// The cached body keeps the SYSTEM_INFO placeholder so Render can re-stamp it.
+	if !strings.Contains(string(b1), systemInfoPlaceholder) {
+		t.Error("cached body must retain {{SYSTEM_INFO}} for fresh timestamping")
+	}
+	full := string(p.Render("/repo", toolsA, nil))
+	if strings.Contains(full, systemInfoPlaceholder) {
+		t.Error("Render output must have substituted {{SYSTEM_INFO}}")
+	}
+	if !strings.Contains(full, "工作目录") {
+		t.Error("Render output should contain rendered system info")
+	}
+}
+
 func TestProfileRegistryCanFilterToolsAndSkills(t *testing.T) {
 	registry := NewProfileRegistry([]byte("default {{TOOLS}}"))
 	registry.Register(Profile{

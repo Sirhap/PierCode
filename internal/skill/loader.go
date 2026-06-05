@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 type Info struct {
@@ -13,6 +15,36 @@ type Info struct {
 	Description string
 	Dir         string
 	Location    string // absolute path to SKILL.md
+}
+
+// LoadInfos is hot: /prompt, /skills, and every periodic prompt re-injection
+// call it, and each call stats 7 dirs and reads+parses every SKILL.md. Skills
+// almost never change mid-session, so cache results per rootDir with a short
+// TTL. The TTL bounds staleness (a freshly written skill shows up within
+// cacheTTL) without paying the disk walk on every request.
+const cacheTTL = 3 * time.Second
+
+type loadCacheEntry struct {
+	infos []Info
+	at    time.Time
+}
+
+var (
+	loadCacheMu sync.Mutex
+	loadCache   = map[string]loadCacheEntry{}
+)
+
+// InvalidateCache drops the cached skill listing for rootDir (or all roots when
+// rootDir is empty). Call after writing a skill if you need it visible
+// immediately rather than within the TTL.
+func InvalidateCache(rootDir string) {
+	loadCacheMu.Lock()
+	defer loadCacheMu.Unlock()
+	if rootDir == "" {
+		loadCache = map[string]loadCacheEntry{}
+		return
+	}
+	delete(loadCache, rootDir)
 }
 
 func SkillDirs(rootDir string) []string {
@@ -29,6 +61,23 @@ func SkillDirs(rootDir string) []string {
 }
 
 func LoadInfos(rootDir string) []Info {
+	loadCacheMu.Lock()
+	if e, ok := loadCache[rootDir]; ok && time.Since(e.at) < cacheTTL {
+		infos := e.infos
+		loadCacheMu.Unlock()
+		return infos
+	}
+	loadCacheMu.Unlock()
+
+	infos := loadInfosUncached(rootDir)
+
+	loadCacheMu.Lock()
+	loadCache[rootDir] = loadCacheEntry{infos: infos, at: time.Now()}
+	loadCacheMu.Unlock()
+	return infos
+}
+
+func loadInfosUncached(rootDir string) []Info {
 	seen := map[string]Info{}
 	var order []string
 
@@ -79,7 +128,11 @@ func Get(rootDir, name string) (Info, bool) {
 	if strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
 		return Info{}, false
 	}
-	for _, info := range LoadInfos(rootDir) {
+	// Resolve a named skill against disk directly, not the cached listing. This
+	// path runs when the model actually loads a skill (cold, infrequent), and
+	// must see a skill written moments earlier (e.g. via write_file) without
+	// waiting out the LoadInfos cache TTL. Only the bulk listing is cached.
+	for _, info := range loadInfosUncached(rootDir) {
 		if strings.EqualFold(info.Name, name) {
 			return info, true
 		}

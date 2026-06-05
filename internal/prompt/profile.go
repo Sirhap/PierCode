@@ -2,7 +2,11 @@ package prompt
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"hash/fnv"
 	"strings"
+	"sync"
 
 	"github.com/sirhap/piercode/internal/skill"
 	"github.com/sirhap/piercode/internal/tool"
@@ -10,6 +14,56 @@ import (
 )
 
 const skillsPlaceholder = "{{SKILLS}}"
+
+// systemInfoPlaceholder carries volatile content (current time) so it must be
+// re-stamped on every render. The cache below stores prompts with this token
+// still present, then substitutes it last — letting the expensive tool/skill
+// doc build be reused while keeping the timestamp fresh.
+const systemInfoPlaceholder = "{{SYSTEM_INFO}}"
+
+// renderCache memoizes the heavy part of Render (tool sort + route-index build +
+// skills doc + append) keyed by what actually affects it. The timestamp is NOT
+// part of the body — it is substituted after the cache lookup.
+type renderCacheKey struct {
+	profileID  string
+	rootDir    string
+	toolsHash  uint64
+	skillsHash uint64
+}
+
+var (
+	renderCacheMu sync.Mutex
+	renderCache   = map[renderCacheKey][]byte{}
+)
+
+func hashTools(tools []tool.ToolInfo) uint64 {
+	h := fnv.New64a()
+	for _, t := range tools {
+		h.Write([]byte(t.Name))
+		h.Write([]byte{0})
+		h.Write([]byte(t.Description))
+		h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
+func hashSkills(skills []skill.Info) uint64 {
+	h := fnv.New64a()
+	for _, s := range skills {
+		h.Write([]byte(s.Name))
+		h.Write([]byte{0})
+		h.Write([]byte(s.Description))
+		h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
+// promptFingerprint folds the profile's own prompt bytes into the cache key so a
+// profile that overrides the prompt does not collide with another.
+func promptFingerprint(b []byte) uint64 {
+	sum := sha256.Sum256(b)
+	return binary.LittleEndian.Uint64(sum[:8])
+}
 
 const DefaultProfileID = "default"
 
@@ -91,13 +145,46 @@ func (r *ProfileRegistry) defaultProfile() Profile {
 }
 
 func (p Profile) Render(rootDir string, tools []tool.ToolInfo, skills []skill.Info) []byte {
+	body := p.renderBodyCached(rootDir, tools, skills)
+	// Stamp the volatile timestamp last so the cached body can be reused across
+	// calls within the same minute / tool set.
+	out := strings.ReplaceAll(string(body), systemInfoPlaceholder, BuildSystemInfo(rootDir))
+	return []byte(out)
+}
+
+// renderBodyCached produces the prompt with {{SYSTEM_INFO}} still present, so
+// the expensive tool/skill doc build is reused while the timestamp stays fresh.
+// Cache key covers everything that changes the body: profile identity + prompt
+// bytes, rootDir, and the tool/skill fingerprints.
+func (p Profile) renderBodyCached(rootDir string, tools []tool.ToolInfo, skills []skill.Info) []byte {
 	filteredTools := p.FilterTools(tools)
-	content := Render(p.Prompt, rootDir, filteredTools)
-	content = AppendSkillsDoc(content, p.FilterSkills(skills))
+	filteredSkills := p.FilterSkills(skills)
+
+	key := renderCacheKey{
+		profileID:  p.ID,
+		rootDir:    rootDir,
+		toolsHash:  hashTools(filteredTools) ^ promptFingerprint(p.Prompt) ^ promptFingerprint(p.PromptAppend),
+		skillsHash: hashSkills(filteredSkills),
+	}
+
+	renderCacheMu.Lock()
+	if cached, ok := renderCache[key]; ok {
+		renderCacheMu.Unlock()
+		return cached
+	}
+	renderCacheMu.Unlock()
+
+	// Build with {{SYSTEM_INFO}} retained (renderBody only substitutes {{TOOLS}}).
+	content := []byte(renderBody(p.Prompt, filteredTools))
+	content = AppendSkillsDoc(content, filteredSkills)
 	if len(p.PromptAppend) > 0 {
 		content = append(content, []byte("\n\n")...)
-		content = append(content, Render(p.PromptAppend, rootDir, filteredTools)...)
+		content = append(content, []byte(renderBody(p.PromptAppend, filteredTools))...)
 	}
+
+	renderCacheMu.Lock()
+	renderCache[key] = content
+	renderCacheMu.Unlock()
 	return content
 }
 

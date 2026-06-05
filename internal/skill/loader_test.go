@@ -57,6 +57,34 @@ func TestLoadInfos(t *testing.T) {
 	}
 }
 
+func TestLoadInfosCaching(t *testing.T) {
+	root := t.TempDir()
+	mk := func(name string) {
+		dir := filepath.Join(root, ".skills", name)
+		os.MkdirAll(dir, 0755)
+		os.WriteFile(filepath.Join(dir, "SKILL.md"),
+			[]byte("---\nname: "+name+"\ndescription: x\n---\n"), 0644)
+	}
+
+	mk("first")
+	if got := len(LoadInfos(root)); got != 1 {
+		t.Fatalf("expected 1 skill, got %d", got)
+	}
+
+	// Add a second skill. Without invalidation the cache still serves the old
+	// listing (proves caching is active).
+	mk("second")
+	if got := len(LoadInfos(root)); got != 1 {
+		t.Errorf("expected cached listing of 1, got %d", got)
+	}
+
+	// After invalidation the new skill is visible.
+	InvalidateCache(root)
+	if got := len(LoadInfos(root)); got != 2 {
+		t.Errorf("expected 2 skills after invalidate, got %d", got)
+	}
+}
+
 func TestProjectPierCodeSkillsAreDiscoverable(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
