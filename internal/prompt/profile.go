@@ -109,6 +109,15 @@ func DefaultProfileRegistry(defaultPrompt []byte) *ProfileRegistry {
 		PromptAppend:   prompts.QwenPromptAppend,
 		ContextHandoff: qwenContextPacketReminder,
 	})
+	// Worker profile: a sub-agent dispatched into its own AI tab. It inherits
+	// the default prompt, gets the worker role + result-packet contract via
+	// PromptAppend, and the periodic result-packet reminder via ContextHandoff.
+	// spawn_agent (Phase B) selects this profile when seeding a new tab.
+	registry.Register(Profile{
+		ID:             "worker",
+		PromptAppend:   prompts.WorkerPromptAppend,
+		ContextHandoff: workerResultPacketReminder,
+	})
 	return registry
 }
 

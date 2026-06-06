@@ -18,6 +18,11 @@ const (
 	// qwenContextPacketReminder is wired onto the qwen profile's ContextHandoff
 	// in DefaultProfileRegistry; it is not referenced by adapter id anywhere.
 	qwenContextPacketReminder = "\n\n[Qwen 上下文迁移提示] 如果你判断当前会话上下文接近上限，或 PierCode 要求压缩上下文，只输出一个 ```piercode-context fenced JSON block；JSON 内包含 version、reason、goal、completed、current_state、key_files、evidence、pending、constraints、next_action；不要输出 XML wrapper，不要输出 `piercode-tool`，不要继续原任务。PierCode 会解析该 packet、打开新会话并发送过去。"
+
+	// workerResultPacketReminder is wired onto the worker profile's ContextHandoff
+	// in DefaultProfileRegistry. It nudges a dispatched worker to close out with
+	// the result packet the coordinator is waiting on.
+	workerResultPacketReminder = "\n\n[Worker 结果回传提示] 你是 PierCode worker，只负责手头这一个自包含任务。任务完成、失败或受阻时，只输出一个 ```piercode-agent-result fenced JSON block（字段：version、agent_id、status=completed|failed|blocked、summary、result、evidence、files_changed）；不要套 `piercode-tool`，不要输出多个 block，不要在 packet 前后加解释；输出后停止。coordinator 看不到你的会话，result/evidence 要自包含。"
 )
 
 // GuidanceFor returns the guidance text to append to the n-th AI-originated tool

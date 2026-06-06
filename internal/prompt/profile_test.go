@@ -274,6 +274,32 @@ func TestEmbeddedDefaultPromptSubstitutesSkillsPlaceholder(t *testing.T) {
 	}
 }
 
+func TestWorkerProfileCarriesResultPacketContract(t *testing.T) {
+	registry := DefaultProfileRegistry(prompts.DefaultPrompt)
+	profile := registry.Select("worker")
+	if profile.ID != "worker" {
+		t.Fatalf("expected worker profile, got %q", profile.ID)
+	}
+
+	rendered := string(profile.Render("C:/repo", nil, nil))
+	// Worker role + result packet contract must both be present.
+	if !strings.Contains(rendered, "PierCode Worker Role") {
+		t.Fatalf("worker prompt should carry the worker role section, got tail %q", tail(rendered))
+	}
+	if !strings.Contains(rendered, "piercode-agent-result") {
+		t.Fatalf("worker prompt should describe the result packet fence, got tail %q", tail(rendered))
+	}
+	// Default operating contract is inherited (not replaced) via PromptAppend.
+	if !strings.Contains(rendered, "PierCode") {
+		t.Fatalf("worker prompt should inherit the default prompt body, got tail %q", tail(rendered))
+	}
+
+	// The per-call handoff reminder is wired and mentions the packet.
+	if !strings.Contains(profile.ContextHandoff, "piercode-agent-result") {
+		t.Fatalf("worker ContextHandoff should remind about the result packet, got %q", profile.ContextHandoff)
+	}
+}
+
 func TestProfileRenderAppendsMemoryOutsideCache(t *testing.T) {
 	root := t.TempDir()
 	memDir := filepath.Join(root, ".piercode")

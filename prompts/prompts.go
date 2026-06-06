@@ -7,3 +7,6 @@ var DefaultPrompt []byte
 
 //go:embed qwen_append.txt
 var QwenPromptAppend []byte
+
+//go:embed worker_append.txt
+var WorkerPromptAppend []byte
