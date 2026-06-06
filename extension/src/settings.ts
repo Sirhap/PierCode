@@ -38,9 +38,11 @@ export const DEFAULT_QWEN_COMPRESSION_ENABLED = true;
 export const DEFAULT_QWEN_MAX_CONTEXT_TOKENS = 1_000_000;
 export const DEFAULT_QWEN_MAX_SUMMARY_TOKENS = 65_536;
 
-// 全平台上下文压缩配置。阈值按平台分别设置，键 = PlatformAdapter.name。
-// 未列出的平台回退 defaultMaxContextTokens。默认阈值按各平台真实上下文窗口的
-// 保守值预设（单位 token，统一 GPT tokenizer 当量）。
+// 全平台上下文压缩配置。真源同时存在于内容脚本叶子 content/qwen-settings.ts
+// （MV3 classic content script 不能 import 本文件，且 popup 经本文件引到那个叶子
+// 会让 Rollup 把它拆成 content.js 也要 import 的共享 chunk，破坏 classic 脚本——
+// 见 content/index.ts 顶部说明）。因此这里保留一份等价实现给 popup/background/测试，
+// 与叶子文件保持同步（改默认值/校验逻辑时两处都改）。
 export const DEFAULT_COMPRESSION_ENABLED = true;
 export const DEFAULT_MAX_CONTEXT_TOKENS = 128_000;
 export const DEFAULT_MAX_SUMMARY_TOKENS = 65_536;
@@ -55,37 +57,6 @@ export const DEFAULT_PLATFORM_THRESHOLDS: Record<string, number> = {
   chatz: 128_000,
   mimo: 128_000,
 };
-
-export function resolveAutoExecute(value: unknown): boolean {
-  return typeof value === 'boolean' ? value : DEFAULT_AUTO_EXECUTE;
-}
-
-export function resolveAutoApproveBrowserActions(value: unknown): boolean {
-  return typeof value === 'boolean' ? value : DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS;
-}
-
-export interface QwenCompressionConfig {
-  enabled: boolean;
-  maxContextTokens: number;
-  maxSummaryTokens: number;
-}
-
-export function resolveQwenCompressionConfig(value: unknown): QwenCompressionConfig {
-  const defaults: QwenCompressionConfig = {
-    enabled: DEFAULT_QWEN_COMPRESSION_ENABLED,
-    maxContextTokens: DEFAULT_QWEN_MAX_CONTEXT_TOKENS,
-    maxSummaryTokens: DEFAULT_QWEN_MAX_SUMMARY_TOKENS
-  };
-  if (!value || typeof value !== 'object') return defaults;
-  const cfg = value as Partial<QwenCompressionConfig>;
-  return {
-    enabled: typeof cfg.enabled === 'boolean' ? cfg.enabled : defaults.enabled,
-    maxContextTokens: typeof cfg.maxContextTokens === 'number' && cfg.maxContextTokens > 0
-      ? cfg.maxContextTokens : defaults.maxContextTokens,
-    maxSummaryTokens: typeof cfg.maxSummaryTokens === 'number' && cfg.maxSummaryTokens > 0
-      ? cfg.maxSummaryTokens : defaults.maxSummaryTokens
-  };
-}
 
 export interface ContextCompressionConfig {
   enabled: boolean;
@@ -152,3 +123,35 @@ export function thresholdForPlatform(config: ContextCompressionConfig, platform:
   const t = config.perPlatformThresholds[platform];
   return typeof t === 'number' && t > 0 ? t : config.defaultMaxContextTokens;
 }
+
+export function resolveAutoExecute(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : DEFAULT_AUTO_EXECUTE;
+}
+
+export function resolveAutoApproveBrowserActions(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS;
+}
+
+export interface QwenCompressionConfig {
+  enabled: boolean;
+  maxContextTokens: number;
+  maxSummaryTokens: number;
+}
+
+export function resolveQwenCompressionConfig(value: unknown): QwenCompressionConfig {
+  const defaults: QwenCompressionConfig = {
+    enabled: DEFAULT_QWEN_COMPRESSION_ENABLED,
+    maxContextTokens: DEFAULT_QWEN_MAX_CONTEXT_TOKENS,
+    maxSummaryTokens: DEFAULT_QWEN_MAX_SUMMARY_TOKENS
+  };
+  if (!value || typeof value !== 'object') return defaults;
+  const cfg = value as Partial<QwenCompressionConfig>;
+  return {
+    enabled: typeof cfg.enabled === 'boolean' ? cfg.enabled : defaults.enabled,
+    maxContextTokens: typeof cfg.maxContextTokens === 'number' && cfg.maxContextTokens > 0
+      ? cfg.maxContextTokens : defaults.maxContextTokens,
+    maxSummaryTokens: typeof cfg.maxSummaryTokens === 'number' && cfg.maxSummaryTokens > 0
+      ? cfg.maxSummaryTokens : defaults.maxSummaryTokens
+  };
+}
+

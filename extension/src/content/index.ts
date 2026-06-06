@@ -1,5 +1,5 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
-import { extractMonacoText, findQwenToolBody, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
+import { extractMonacoText, findQwenToolBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId } from './ws-linker';
 import { visualIndicator } from './visual-indicator';
@@ -12,14 +12,18 @@ import {
   compactToolOutputForChat,
   ConversationContext,
   compressAndPrepareNewSession,
+  extractContextPacketFields,
   formatPacketHandoffPrompt,
   formatPierCodeContextPacketPrompt,
   formatQwenCompressedContextPrompt,
   parsePierCodeContextPacket,
-  PierCodeContextPacket,
-  shouldCompress
+  PierCodeContextPacket
 } from './qwen-context-compress';
-import { QwenCompressionConfig, resolveQwenCompressionConfig } from './qwen-settings';
+import {
+  ContextCompressionConfig,
+  resolveContextCompressionConfig,
+  thresholdForPlatform,
+} from './qwen-settings';
 import { dispatchEnterAsSendFallback } from './send-fallback';
 import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
 
@@ -48,15 +52,32 @@ const CONTEXT_INVALID_MESSAGE = '扩展已失效，请刷新页面';
 let lastContextInvalidNoticeAt = 0;
 let responseSessionActivatedAt = 0;
 
-// Qwen 上下文压缩状态 (仅 Qwen 平台启用)
+// 上下文压缩状态（全平台启用，按平台阈值触发；packet 自压缩仅 Qwen 走 DOM 重扫
+// 兜底，其余平台靠模型按提示词输出 packet）。
 let qwenConversationCtx: ConversationContext | null = null;
 let compressionInProgress = false;
-let qwenCompressionConfigCache: QwenCompressionConfig | null = null;
+let compressionConfigCache: ContextCompressionConfig | null = null;
+// 熔断器（借鉴 Claude Code MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES）：连续 N 次压缩
+// 失败就停止触发，根治"无限压缩/无限开新会话"——避免上下文不可恢复时每条消息
+// 都徒劳重试。成功一次即重置。
+const MAX_COMPRESSION_FAILURES = 3;
+let compressionConsecutiveFailures = 0;
 const qwenContextPacketWaiter = new SinglePacketWaiter<PierCodeContextPacket>();
 const handledContextPacketHashes = new Set<number>();
+// 注入新会话的首条 handoff payload 体积大（含整个 initPrompt），会被当成 user
+// 消息计入预算。设此一次性标记让那一条不触发压缩，避免"刚注入初始化就立刻又压缩"
+// 的环（尤其低阈值时）。仍计入预算用于显示，只是不触发。
+let suppressNextCompressionTrigger = false;
 
-function updateQwenContext(role: 'user' | 'assistant' | 'system', content: string, sourceKey?: string): void {
-  if (platformAdapter.name !== 'qwen') return;
+// 是否对当前平台启用上下文压缩。目前 Qwen + ChatGPT 已验证 DOM 捕获/新会话注入；
+// 其余平台默认关闭，避免误触发把没追踪全的上下文压坏。
+const COMPRESSION_PLATFORMS = new Set(['qwen', 'chatgpt']);
+function isCompressionPlatform(): boolean {
+  return COMPRESSION_PLATFORMS.has(platformAdapter.name);
+}
+
+function updateQwenContext(role: 'user' | 'assistant' | 'system', content: string, sourceKey?: string, sourceEl?: Element): void {
+  if (!isCompressionPlatform()) return;
   const clean = content.trim();
   if (!clean) return;
   if (!qwenConversationCtx) {
@@ -82,14 +103,20 @@ function updateQwenContext(role: 'user' | 'assistant' | 'system', content: strin
     qwenConversationCtx.totalChars += clean.length;
   }
 
-  if (role === 'assistant' && maybeHandleQwenContextPacket(clean)) {
+  if (role === 'assistant' && maybeHandleQwenContextPacket(clean, sourceEl)) {
+    return;
+  }
+  // 注入的首条 handoff(user)消费抑制标记，不触发压缩。只针对 user：assistant
+  // 流式更新不该吃掉这枚标记，否则注入后第一段模型回应反而成了"被抑制"的那条。
+  if (role === 'user' && suppressNextCompressionTrigger) {
+    suppressNextCompressionTrigger = false;
     return;
   }
   void maybeTriggerQwenContextCompression();
 }
 
-function maybeHandleQwenContextPacket(text: string): boolean {
-  if (platformAdapter.name !== 'qwen') return false;
+function maybeHandleQwenContextPacket(text: string, sourceEl?: Element): boolean {
+  if (!isCompressionPlatform()) return false;
   const packet = parsePierCodeContextPacket(text);
   if (!packet) return false;
 
@@ -97,11 +124,20 @@ function maybeHandleQwenContextPacket(text: string): boolean {
   if (handledContextPacketHashes.has(packetHash)) return true;
   handledContextPacketHashes.add(packetHash);
 
+  // 不管走哪条路径，先把裸 JSON 换成可读卡片（有 sourceEl 时锚到该响应）。
+  if (sourceEl) renderContextPacketCard(packet, sourceEl, packetHash);
+
   if (qwenContextPacketWaiter.resolve(packet)) {
     return true;
   }
 
   if (compressionInProgress) {
+    return true;
+  }
+
+  // 熔断后不再为模型自发的 packet 开新会话，避免发送失败循环里模型反复吐包→反复
+  // 开会话。卡片已渲染，用户仍能手动复制。
+  if (compressionConsecutiveFailures >= MAX_COMPRESSION_FAILURES) {
     return true;
   }
 
@@ -121,22 +157,48 @@ function clearPendingContextPacketWaiter(): void {
   qwenContextPacketWaiter.cancel();
 }
 
-async function loadQwenCompressionConfig(): Promise<QwenCompressionConfig> {
-  if (qwenCompressionConfigCache) return qwenCompressionConfigCache;
-  if (!checkContext()) return resolveQwenCompressionConfig(undefined);
+async function loadCompressionConfig(): Promise<ContextCompressionConfig> {
+  if (compressionConfigCache) return compressionConfigCache;
+  if (!checkContext()) return resolveContextCompressionConfig(undefined);
   try {
-    const stored = await chrome.storage.local.get(['qwenCompressionConfig']);
-    qwenCompressionConfigCache = resolveQwenCompressionConfig(stored.qwenCompressionConfig);
+    const stored = await chrome.storage.local.get(['contextCompressionConfig', 'qwenCompressionConfig']);
+    compressionConfigCache = resolveContextCompressionConfig(
+      stored.contextCompressionConfig,
+      stored.qwenCompressionConfig
+    );
   } catch {
-    qwenCompressionConfigCache = resolveQwenCompressionConfig(undefined);
+    compressionConfigCache = resolveContextCompressionConfig(undefined);
   }
-  return qwenCompressionConfigCache;
+  return compressionConfigCache;
+}
+
+// 当前平台阈值。
+function platformThreshold(config: ContextCompressionConfig): number {
+  return thresholdForPlatform(config, platformAdapter.name);
+}
+
+// 把通用配置 + 当前平台阈值，折成压缩提示词/本地摘要函数需要的旧形状
+// （maxContextTokens 用平台阈值，maxSummaryTokens 用通用值）。
+function legacyShapeForPlatform(config: ContextCompressionConfig): {
+  enabled: boolean;
+  maxContextTokens: number;
+  maxSummaryTokens: number;
+} {
+  return {
+    enabled: config.enabled,
+    maxContextTokens: platformThreshold(config),
+    maxSummaryTokens: config.maxSummaryTokens,
+  };
 }
 
 if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'local' && 'qwenCompressionConfig' in changes) {
-      qwenCompressionConfigCache = resolveQwenCompressionConfig(changes.qwenCompressionConfig.newValue);
+    if (areaName === 'local' && ('contextCompressionConfig' in changes || 'qwenCompressionConfig' in changes)) {
+      compressionConfigCache = null; // 先失效缓存（含旧→新迁移）
+      // tokenThreshold() 是同步读缓存：清 null 后若不主动重填，会回退到
+      // STATUS_PANEL_FALLBACK_THRESHOLD，导致 popup 改阈值后小点不跟着变。
+      // 立即重读 storage 重填缓存，再即时刷新一次小点。
+      void loadCompressionConfig().then(() => refreshTokenMeterNow());
     }
     if (areaName === 'local' && 'stealthMode' in changes) {
       visualIndicator.configure({ stealth: resolveStealthMode(changes.stealthMode.newValue) });
@@ -147,28 +209,38 @@ if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
 
 async function maybeTriggerQwenContextCompression(): Promise<void> {
   if (!qwenConversationCtx || compressionInProgress) return;
-  const config = await loadQwenCompressionConfig();
+  if (!isCompressionPlatform()) return;
+  // 熔断：连续多次压缩失败后停手，不再触发，避免无限重试/无限开新会话。
+  if (compressionConsecutiveFailures >= MAX_COMPRESSION_FAILURES) {
+    return;
+  }
+  const config = await loadCompressionConfig();
   if (!config.enabled) return;
-  if (shouldCompress(qwenConversationCtx, config.maxContextTokens)) {
+  // 用精确 token 计量（tiktoken，未就绪回退字符估算）判断是否到阈值，
+  // 取代旧的纯字符 shouldCompress。
+  const used = computeMeter(qwenConversationCtx, platformAdapter.name).total;
+  if (used >= platformThreshold(config)) {
     await triggerContextCompression(config);
   }
 }
 
-async function triggerContextCompression(config?: QwenCompressionConfig): Promise<void> {
+async function triggerContextCompression(config?: ContextCompressionConfig): Promise<void> {
   if (!qwenConversationCtx || compressionInProgress) return;
-  const resolvedConfig = config || await loadQwenCompressionConfig();
+  const resolvedConfig = config || await loadCompressionConfig();
   if (!resolvedConfig.enabled) return;
+  const legacyConfig = legacyShapeForPlatform(resolvedConfig);
   compressionInProgress = true;
-  showToast('上下文接近上限，正在请求 Qwen 压缩...', 5000);
+  compressionStatusCard.set('requesting');
 
   try {
     // 让模型自压缩：第一次按标准提示词，超时未出包则用更强约束重试一次，
     // 仍失败才退化到本地 DOM 摘要兜底（质量低很多）。
-    const basePrompt = formatPierCodeContextPacketPrompt(qwenConversationCtx, resolvedConfig);
+    const basePrompt = formatPierCodeContextPacketPrompt(qwenConversationCtx, legacyConfig);
     let packet = await requestContextPacketFromModel(basePrompt, 60000);
     if (!packet) {
-      console.warn('[PierCode] Qwen 首次未按时输出上下文包，加强约束重试一次');
-      const strictPrompt = '⚠️ 上次未按格式输出。现在只允许输出一个 `piercode-context` fenced JSON，'
+      console.warn('[PierCode] 首次未按时输出上下文包，加强约束重试一次');
+      compressionStatusCard.set('retrying');
+      const strictPrompt = '现在只允许输出一个 `piercode-context` fenced JSON，'
         + '不要任何解释、寒暄、Markdown 标题或工具调用。\n\n' + basePrompt;
       packet = await requestContextPacketFromModel(strictPrompt, 45000);
     }
@@ -178,22 +250,33 @@ async function triggerContextCompression(config?: QwenCompressionConfig): Promis
       return;
     }
 
-    console.warn('[PierCode] Qwen 两次未输出上下文包，使用本地摘要兜底');
+    console.warn('[PierCode] 两次未输出上下文包，使用本地摘要兜底');
+    compressionStatusCard.set('local_fallback');
     const { summary, newContext } = await compressAndPrepareNewSession(
       qwenConversationCtx,
       (s) => console.log('[PierCode] 生成摘要:', s.slice(0, 200) + '...'),
-      resolvedConfig
+      legacyConfig
     );
     qwenConversationCtx = newContext;
     const initPrompt = await fetchInitPromptForCurrentProfile();
     const payload = formatQwenCompressedContextPrompt(summary, initPrompt);
-    await openNewSessionWithPayload(payload, '上下文已本地压缩，并已发送到新的 Qwen 会话');
+    await openNewSessionWithPayload(payload, '上下文已本地压缩，并已发送到新会话');
   } catch (err) {
     console.error('[PierCode] 压缩失败:', err);
-    showToast('上下文压缩失败', 5000);
+    compressionConsecutiveFailures += 1;
+    compressionStatusCard.set('failed', String(err).slice(0, 80));
+    maybeWarnCompressionCircuitBreaker();
   } finally {
     clearPendingContextPacketWaiter();
     compressionInProgress = false;
+  }
+}
+
+// 熔断触发时提示一次，让用户知道为什么不再自动压缩。
+function maybeWarnCompressionCircuitBreaker(): void {
+  if (compressionConsecutiveFailures >= MAX_COMPRESSION_FAILURES) {
+    console.warn(`[PierCode] 压缩连续失败 ${compressionConsecutiveFailures} 次，已熔断，停止自动压缩`);
+    compressionStatusCard.set('failed', '连续失败已熔断，暂停自动压缩');
   }
 }
 
@@ -225,7 +308,7 @@ async function openContextPacketInNewSession(packet: PierCodeContextPacket, reas
     // 模型 packet 已是成型的 ```piercode-context 块，原样转发，不二次套壳。
     const initPrompt = await fetchInitPromptForCurrentProfile();
     const payload = formatPacketHandoffPrompt(packetText, initPrompt);
-    await openNewSessionWithPayload(payload, '上下文已压缩，并已发送到新的 Qwen 会话');
+    await openNewSessionWithPayload(payload, '已发送到新会话');
   } finally {
     compressionInProgress = wasInProgress;
   }
@@ -233,21 +316,26 @@ async function openContextPacketInNewSession(packet: PierCodeContextPacket, reas
 
 // 在新标签开会话并把最终 payload 注入。payload 由调用方按路径(packet/本地摘要)构造好。
 async function openNewSessionWithPayload(payload: string, successMessage: string): Promise<void> {
+  compressionStatusCard.set('opening');
   try {
     await navigator.clipboard.writeText(payload);
   } catch {}
 
   const result = await openQwenCompressedContextSession(payload);
   if (result.ok) {
-    showToast(successMessage, 8000);
+    // 成功一次即重置熔断计数。两条压缩路径(packet/本地兜底)都过这里。
+    compressionConsecutiveFailures = 0;
+    compressionStatusCard.set('done', successMessage);
   } else {
-    showToast('上下文已压缩，新会话发送失败，摘要已尝试复制到剪贴板', 8000);
-    console.warn('[PierCode] 新 Qwen 会话发送失败:', result.error);
+    compressionConsecutiveFailures += 1;
+    compressionStatusCard.set('failed', '新会话发送失败，摘要已复制到剪贴板');
+    console.warn('[PierCode] 新会话发送失败:', result.error);
+    maybeWarnCompressionCircuitBreaker();
   }
 }
 
 function qwenNewSessionUrl(): string {
-  return `${location.protocol}//${location.host}/`;
+  return getAdapterNewSessionUrl(platformAdapter);
 }
 
 async function openQwenCompressedContextSession(text: string): Promise<{ ok: boolean; error?: string }> {
@@ -275,8 +363,12 @@ async function fillCompressedContextWhenReady(text: string): Promise<boolean> {
       // 先等输入区稳定，再用 immediate 发送（会主动等发送按钮可点），
       // 单次填充避免重试把文本追加成重复内容。
       await new Promise(resolve => setTimeout(resolve, 800));
+      // 这条注入的 handoff 体积大，标记为"不触发压缩"，避免刚注入就再压一轮。
+      suppressNextCompressionTrigger = true;
       const sent = await fillAndSend(text, true, { forceSend: true, immediate: true });
       if (!sent) {
+        // 没发出去就没人消费标记，清掉免得误抑制下一条真用户消息。
+        suppressNextCompressionTrigger = false;
         console.warn('[PierCode] 压缩上下文已填入但发送失败（editor 消失或发送按钮未启用）');
       }
       return sent;
@@ -1226,20 +1318,19 @@ function hashStr(s: string): number {
   return h >>> 0;
 }
 
-// qwen 压缩阈值（与 settings.DEFAULT_QWEN_MAX_CONTEXT_TOKENS 同值）。这里内联，
-// 避免 content 引入 ../settings 触发 Rollup 共享分块（见文件顶部说明）。
-const STATUS_PANEL_QWEN_THRESHOLD = 1_000_000;
-const STATUS_PANEL_DEFAULT_THRESHOLD = 128_000;
+// 状态面板 token 阈值：优先用已加载的压缩配置（按平台），未加载完成前回退
+// 通用默认。config 由 startTokenRefresh 异步预热进 compressionConfigCache。
+const STATUS_PANEL_FALLBACK_THRESHOLD = 128_000;
 
 function tokenThreshold(): number {
-  if (platformAdapter.name === 'qwen') return STATUS_PANEL_QWEN_THRESHOLD;
-  return STATUS_PANEL_DEFAULT_THRESHOLD;
+  if (compressionConfigCache) return platformThreshold(compressionConfigCache);
+  return STATUS_PANEL_FALLBACK_THRESHOLD;
 }
 
 // scanConversation 扫描页面会话，分类 user/assistant 消息供 token 计量。
-// qwen 复用已维护的 qwenConversationCtx；其他平台按选择器扫 DOM。
+// 压缩平台（qwen/chatgpt）复用已维护的 qwenConversationCtx；其他平台按选择器扫 DOM。
 function scanConversation(): ConversationContext {
-  if (platformAdapter.name === 'qwen' && qwenConversationCtx) {
+  if (isCompressionPlatform() && qwenConversationCtx) {
     return qwenConversationCtx;
   }
   const messages: ConversationContext['messages'] = [];
@@ -1259,17 +1350,20 @@ function scanConversation(): ConversationContext {
 }
 
 let tokenRefreshTimer: ReturnType<typeof setInterval> | null = null;
+// 立刻按当前 ctx + 阈值刷新状态面板小点。模块级，便于阈值变更后即时重画，
+// 不必等下一个 3s tick。
+function refreshTokenMeterNow(): void {
+  try {
+    const ctx = scanConversation();
+    const meter = computeMeter(ctx, platformAdapter.name);
+    statusPanel.setMeter(meter, tokenThreshold());
+  } catch {}
+}
 function startTokenRefresh(): void {
   if (tokenRefreshTimer) return;
-  const refresh = () => {
-    try {
-      const ctx = scanConversation();
-      const meter = computeMeter(ctx, platformAdapter.name);
-      statusPanel.setMeter(meter, tokenThreshold());
-    } catch {}
-  };
-  refresh();
-  tokenRefreshTimer = setInterval(refresh, 3000);
+  void loadCompressionConfig(); // 预热缓存，让 tokenThreshold 用上真实平台阈值
+  refreshTokenMeterNow();
+  tokenRefreshTimer = setInterval(refreshTokenMeterNow, 3000);
 }
 
 function getConversationId(): string {
@@ -1597,6 +1691,113 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   anchor.insertBefore(card, messageContent);
 }
 
+// 把 piercode-context 包渲染成完整字段卡（带复制按钮），替代聊天里的裸 JSON。
+// 锚定到响应消息上方，packetHash 去重防止流式重扫重复插卡。
+function renderContextPacketCard(packet: PierCodeContextPacket, sourceEl: Element, packetHash: number): void {
+  const messageContent = sourceEl.closest('message-content') ?? sourceEl.closest('.prose') ?? sourceEl;
+  const anchor = messageContent.parentElement ?? sourceEl.parentElement;
+  if (!anchor) return;
+
+  const cardKey = `ctx:${packetHash}`;
+  if (anchor.querySelector(`[data-piercode-key="${CSS.escape(cardKey)}"]`)) return;
+
+  const fields = extractContextPacketFields(packet);
+  const card = document.createElement('div');
+  card.setAttribute('data-piercode-key', cardKey);
+  card.style.cssText = 'border:1px solid #45475a;border-left:3px solid #cba6f7;border-radius:10px;padding:12px 14px;margin:10px 0;background:#1e1e2e;color:#cdd6f4;font-size:13px;box-shadow:0 2px 10px rgba(0,0,0,0.25);font-family:system-ui,-apple-system,sans-serif';
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px';
+  const badge = document.createElement('span');
+  badge.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-weight:600;font-size:13px;color:#cba6f7;background:#181825;border:1px solid #45475a;border-radius:6px;padding:2px 8px';
+  badge.textContent = '📦 上下文已压缩';
+  header.appendChild(badge);
+  if (fields.reason) {
+    const reasonTag = document.createElement('span');
+    reasonTag.style.cssText = 'color:#6c7086;font-size:11px;font-family:monospace';
+    reasonTag.textContent = fields.reason;
+    header.appendChild(reasonTag);
+  }
+  card.appendChild(header);
+
+  const body = document.createElement('div');
+  body.style.cssText = 'background:#181825;border-radius:6px;padding:8px 10px';
+
+  const addTextRow = (label: string, value: string) => {
+    if (!value.trim()) return;
+    const row = document.createElement('div');
+    row.style.cssText = 'margin-bottom:8px';
+    const lab = document.createElement('div');
+    lab.style.cssText = 'color:#89b4fa;font-size:11px;margin-bottom:2px';
+    lab.textContent = label;
+    const val = document.createElement('div');
+    val.style.cssText = 'color:#cdd6f4;font-size:12px;white-space:pre-wrap;word-break:break-word';
+    val.textContent = value;
+    row.append(lab, val);
+    body.appendChild(row);
+  };
+  const addListRow = (label: string, items: string[]) => {
+    if (!items.length) return;
+    const row = document.createElement('div');
+    row.style.cssText = 'margin-bottom:8px';
+    const lab = document.createElement('div');
+    lab.style.cssText = 'color:#89b4fa;font-size:11px;margin-bottom:2px';
+    lab.textContent = `${label} (${items.length})`;
+    row.appendChild(lab);
+    const ul = document.createElement('ul');
+    ul.style.cssText = 'margin:0;padding-left:18px;color:#cdd6f4;font-size:12px';
+    for (const item of items) {
+      const li = document.createElement('li');
+      li.style.cssText = 'margin-bottom:2px;white-space:pre-wrap;word-break:break-word';
+      li.textContent = item;
+      ul.appendChild(li);
+    }
+    row.appendChild(ul);
+    body.appendChild(row);
+  };
+
+  addTextRow('目标', fields.goal);
+  addListRow('关键技术概念', fields.key_concepts);
+  addListRow('关键文件', fields.key_files);
+  addListRow('错误与修复', fields.errors_fixes);
+  addListRow('问题求解', fields.problem_solving);
+  addListRow('用户消息', fields.user_messages);
+  addTextRow('当前状态', fields.current_state);
+  addListRow('已完成', fields.completed);
+  addListRow('证据', fields.evidence);
+  addListRow('待办', fields.pending);
+  addListRow('约束', fields.constraints);
+  addTextRow('下一步', fields.next_action);
+  // 本地摘要包：没有结构化字段，只有 context 文本。
+  addTextRow('摘要', fields.context);
+
+  // 解析不出任何字段时，至少展示原始内容，避免空卡。
+  if (!body.childElementCount) {
+    addTextRow('原始内容', packet.content);
+  }
+  card.appendChild(body);
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:8px;margin-top:10px;align-items:center';
+  const copyBtn = document.createElement('button');
+  copyBtn.textContent = '复制';
+  copyBtn.style.cssText = 'padding:5px 16px;background:#cba6f7;color:#11111b;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600';
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(packet.raw || packet.content);
+      copyBtn.textContent = '已复制';
+      setTimeout(() => { copyBtn.textContent = '复制'; }, 1500);
+    } catch {
+      copyBtn.textContent = '复制失败';
+      setTimeout(() => { copyBtn.textContent = '复制'; }, 1500);
+    }
+  };
+  btnRow.appendChild(copyBtn);
+  card.appendChild(btnRow);
+
+  anchor.insertBefore(card, messageContent);
+}
+
 function startDOMObserver(_responseSelector: string) {
   const processed = new Set<string>();
   const ignoredPreSessionContainers = new WeakSet<Element>();
@@ -1759,7 +1960,7 @@ function startDOMObserver(_responseSelector: string) {
   }
 
   function prepareToolOutputForChat(output: string): string {
-    if (platformAdapter.name !== 'qwen') return output;
+    if (!isCompressionPlatform()) return output;
     const compacted = compactToolOutputForChat(output);
     if (compacted.compacted) {
       showToast('工具结果过长，已压缩后回填', 5000);
@@ -1922,7 +2123,7 @@ function startDOMObserver(_responseSelector: string) {
       }
       // 更新 Qwen 上下文追踪 (assistant 响应)
       if (platformAdapter.name === 'qwen' && sourceEl) {
-        updateQwenContext('assistant', text, aiResponseLogKey(sourceEl));
+        updateQwenContext('assistant', text, aiResponseLogKey(sourceEl), sourceEl);
       }
       scheduleAIResponseLog(sourceEl, text);
       // 只有 Qwen DOM 专用路径真正解析到工具时才结束；否则继续走通用
@@ -2057,7 +2258,14 @@ function startDOMObserver(_responseSelector: string) {
       if (aiLastLoggedText.get(sourceEl) === clean) return;
       aiLastLoggedText.set(sourceEl, clean);
       aiLastSentAt.set(sourceEl, Date.now());
-      sendAIResponseLog(aiResponseLogKey(sourceEl), clean);
+      const logKey = aiResponseLogKey(sourceEl);
+      sendAIResponseLog(logKey, clean);
+      // 非 Qwen 压缩平台（如 ChatGPT）的 assistant 上下文在这里捕获 —— Qwen 走
+      // 专用 DOM 路径捕获原始文本，避免重复计入。updateQwenContext 内部按
+      // sourceKey 去重，会随流式增量原地更新同一条消息。
+      if (isCompressionPlatform() && platformAdapter.name !== 'qwen') {
+        updateQwenContext('assistant', clean, logKey, sourceEl);
+      }
     };
     if (delay === 0) {
       send();
@@ -2374,6 +2582,59 @@ function showQuestionPopup(question: string, options: string[]): Promise<string>
     panel.style.zIndex = '2147483647';
   });
 }
+
+// 压缩进度持久卡：替代一闪而过的 toast，常驻右下角分阶段显示压缩状态，
+// 让用户能看到"请求模型中→重试中→本地兜底中→完成/失败"整条链路。
+type CompressionPhase = 'requesting' | 'retrying' | 'local_fallback' | 'opening' | 'done' | 'failed';
+const COMPRESSION_PHASE_META: Record<CompressionPhase, { icon: string; color: string; label: string }> = {
+  requesting:     { icon: '⏳', color: '#f9e2af', label: '正在请求模型压缩上下文…' },
+  retrying:       { icon: '🔁', color: '#fab387', label: '模型未按时输出，正在加强约束重试…' },
+  local_fallback: { icon: '🧩', color: '#fab387', label: '模型两次未输出，正在本地摘要兜底…' },
+  opening:        { icon: '🚀', color: '#89b4fa', label: '正在打开新会话并注入压缩上下文…' },
+  done:           { icon: '✅', color: '#a6e3a1', label: '上下文已压缩并迁移到新会话' },
+  failed:         { icon: '❌', color: '#f38ba8', label: '上下文压缩失败' },
+};
+
+const compressionStatusCard = (() => {
+  let el: HTMLDivElement | null = null;
+  let iconEl: HTMLSpanElement | null = null;
+  let textEl: HTMLSpanElement | null = null;
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function ensure(): HTMLDivElement | null {
+    if (!document.body) return null;
+    if (el) return el;
+    el = document.createElement('div');
+    el.style.cssText = 'position:fixed;bottom:210px;right:20px;z-index:2147483647;display:flex;align-items:center;gap:8px;max-width:320px;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-left:3px solid #cba6f7;border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.4;box-shadow:0 4px 16px rgba(0,0,0,0.4);font-family:system-ui,-apple-system,sans-serif';
+    iconEl = document.createElement('span');
+    iconEl.style.cssText = 'font-size:15px;flex-shrink:0';
+    textEl = document.createElement('span');
+    el.append(iconEl, textEl);
+    document.body.appendChild(el);
+    return el;
+  }
+
+  function set(phase: CompressionPhase, detail?: string): void {
+    const node = ensure();
+    if (!node || !iconEl || !textEl) return;
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    const meta = COMPRESSION_PHASE_META[phase];
+    iconEl.textContent = meta.icon;
+    node.style.borderLeftColor = meta.color;
+    textEl.textContent = detail ? `${meta.label}（${detail}）` : meta.label;
+    // 终态自动消失；中间态常驻。
+    if (phase === 'done' || phase === 'failed') {
+      hideTimer = setTimeout(() => clear(), 6000);
+    }
+  }
+
+  function clear(): void {
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    if (el) { el.remove(); el = null; iconEl = null; textEl = null; }
+  }
+
+  return { set, clear };
+})();
 
 function showToast(msg: string, durationMs = 3000): void {
   if (!document.body) return;
@@ -2808,10 +3069,8 @@ function attachInputListener(editorEl: HTMLElement) {
     if (text === lastPromptText && now - lastPromptAt < 1500) return;
     lastPromptText = text;
     lastPromptAt = now;
-    // 更新 Qwen 上下文追踪 (user 输入)
-    if (platformAdapter.name === 'qwen') {
-      updateQwenContext('user', text);
-    }
+    // 更新上下文追踪 (user 输入)；updateQwenContext 内部按平台门控
+    updateQwenContext('user', text);
     sendUserPromptLog(`user:${getConversationId()}:${now}`, text);
   }
 

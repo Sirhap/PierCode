@@ -161,3 +161,32 @@ describe('thresholdForPlatform', () => {
     expect(thresholdForPlatform(cfg, 'unknown-platform')).toBe(90_000);
   });
 });
+
+// 通用压缩配置在 settings.ts 与 content/qwen-settings.ts 各存一份（content 不能
+// 经 settings.ts 引到叶子，否则 Rollup 把叶子拆成 content.js 也要 import 的共享
+// chunk，破坏 MV3 classic 脚本）。这里守护两份实现/默认值不漂移。
+describe('settings.ts <-> content/qwen-settings.ts compression parity', () => {
+  it('produces identical defaults and resolution across both copies', async () => {
+    const leaf = await import('../content/qwen-settings');
+
+    expect(leaf.DEFAULT_COMPRESSION_ENABLED).toBe(DEFAULT_COMPRESSION_ENABLED);
+    expect(leaf.DEFAULT_MAX_CONTEXT_TOKENS).toBe(DEFAULT_MAX_CONTEXT_TOKENS);
+    expect(leaf.DEFAULT_MAX_SUMMARY_TOKENS).toBe(DEFAULT_MAX_SUMMARY_TOKENS);
+    expect(leaf.DEFAULT_PLATFORM_THRESHOLDS).toEqual(DEFAULT_PLATFORM_THRESHOLDS);
+
+    const samples: Array<[unknown, unknown]> = [
+      [undefined, undefined],
+      [undefined, { enabled: false, maxContextTokens: 333_000, maxSummaryTokens: 7_000 }],
+      [{ enabled: true, perPlatformThresholds: { chatgpt: 64_000, qwen: -5, bogus: 'x' }, defaultMaxContextTokens: 90_000, maxSummaryTokens: 12_000 }, undefined],
+      [{ enabled: 'yes', defaultMaxContextTokens: -1, maxSummaryTokens: 0 }, undefined],
+    ];
+    for (const [value, legacy] of samples) {
+      expect(leaf.resolveContextCompressionConfig(value, legacy))
+        .toEqual(resolveContextCompressionConfig(value, legacy));
+    }
+
+    const cfg = resolveContextCompressionConfig({ perPlatformThresholds: { chatgpt: 64_000 }, defaultMaxContextTokens: 90_000 });
+    expect(leaf.thresholdForPlatform(cfg, 'chatgpt')).toBe(thresholdForPlatform(cfg, 'chatgpt'));
+    expect(leaf.thresholdForPlatform(cfg, 'unknown')).toBe(thresholdForPlatform(cfg, 'unknown'));
+  });
+});

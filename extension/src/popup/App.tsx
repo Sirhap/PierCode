@@ -1,7 +1,19 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, DEFAULT_BATCH_QUIET_MS, DEFAULT_PERMISSION_MODE, DEFAULT_STEALTH_MODE, MAX_BATCH_QUIET_MS, MIN_BATCH_QUIET_MS, type PermissionMode, resolveAutoApproveBrowserActions, resolveAutoExecute, resolveBatchQuietMs, resolvePermissionMode, resolveStealthMode } from '../settings'
+import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, DEFAULT_BATCH_QUIET_MS, DEFAULT_PERMISSION_MODE, DEFAULT_PLATFORM_THRESHOLDS, DEFAULT_STEALTH_MODE, MAX_BATCH_QUIET_MS, MIN_BATCH_QUIET_MS, type ContextCompressionConfig, type PermissionMode, resolveAutoApproveBrowserActions, resolveAutoExecute, resolveBatchQuietMs, resolveContextCompressionConfig, resolvePermissionMode, resolveStealthMode } from '../settings'
 
 const DEFAULT_PORT = 39527
+
+// 当前启用上下文压缩的平台（与 content/index.ts 的 COMPRESSION_PLATFORMS 对齐）。
+const COMPRESSION_PLATFORM_LABELS: Array<{ key: string; label: string }> = [
+  { key: 'qwen', label: 'Qwen' },
+  { key: 'chatgpt', label: 'ChatGPT' },
+]
+
+// thresholdOf 取某平台阈值：优先用户配置，否则全局默认。
+function thresholdOf(cfg: ContextCompressionConfig, platform: string): number {
+  const t = cfg.perPlatformThresholds[platform]
+  return typeof t === 'number' && t > 0 ? t : cfg.defaultMaxContextTokens
+}
 
 export function normalizeAuthUrl(raw: string): { baseUrl: string; token: string; port: number } {
   const trimmed = raw.trim()
@@ -147,6 +159,7 @@ export default function App() {
   const [stealthMode, setStealthMode] = useState(DEFAULT_STEALTH_MODE)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(DEFAULT_PERMISSION_MODE)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [compression, setCompression] = useState<ContextCompressionConfig>(() => resolveContextCompressionConfig(undefined))
 
   useEffect(() => {
     if (toast) {
@@ -156,7 +169,7 @@ export default function App() {
   }, [toast])
 
   useEffect(() => {
-    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'batchQuietMs', 'stealthMode'], (result) => {
+    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'batchQuietMs', 'stealthMode', 'contextCompressionConfig', 'qwenCompressionConfig'], (result) => {
       const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
       if (result.authToken && savedUrl) {
         setHasStoredAuth(true)
@@ -181,6 +194,8 @@ export default function App() {
       const nextStealthMode = resolveStealthMode(result.stealthMode)
       setStealthMode(nextStealthMode)
       if (result.stealthMode === undefined) chrome.storage.local.set({ stealthMode: nextStealthMode })
+      // 上下文压缩配置：新键缺失时从旧 qwenCompressionConfig 迁移。
+      setCompression(resolveContextCompressionConfig(result.contextCompressionConfig, result.qwenCompressionConfig))
     })
   }, [])
 
@@ -391,6 +406,26 @@ export default function App() {
     chrome.storage.local.set({ stealthMode: val })
   }
 
+  // 持久化压缩配置：写回后 content 侧的 storage.onChanged 监听会失效缓存并按新值重算。
+  const persistCompression = (next: ContextCompressionConfig) => {
+    setCompression(next)
+    chrome.storage.local.set({ contextCompressionConfig: next })
+  }
+
+  const handleCompressionEnabledChange = (enabled: boolean) => {
+    persistCompression({ ...compression, enabled })
+  }
+
+  // 阈值输入：万 token 为单位更好读（1 = 1万 tokens）。空/非法回退平台默认。
+  const handlePlatformThresholdChange = (platform: string, wan: number) => {
+    const fallback = DEFAULT_PLATFORM_THRESHOLDS[platform] ?? compression.defaultMaxContextTokens
+    const tokens = Number.isFinite(wan) && wan > 0 ? Math.round(wan * 10_000) : fallback
+    persistCompression({
+      ...compression,
+      perPlatformThresholds: { ...compression.perPlatformThresholds, [platform]: tokens },
+    })
+  }
+
   const handlePermissionModeChange = (mode: PermissionMode) => {
     setPermissionMode(mode)
     chrome.storage.local.get(['authToken', 'apiUrl', 'authPort'], async result => {
@@ -581,6 +616,39 @@ export default function App() {
             {stealthMode && (
               <div className="rounded-md border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-[11px] leading-snug text-indigo-100">
                 页面上仅保留右下角迷你圆点（点击可停止），关闭脉冲边框与大块徽章。
+              </div>
+            )}
+          </Section>
+        )}
+
+        {/* ── 上下文压缩 ── 会话 token 到阈值时让模型压缩并迁移到新会话 ── */}
+        {advancedOpen && (
+          <Section title="上下文压缩">
+            <Toggle
+              label="启用上下文压缩"
+              desc="会话 token 接近阈值时，自动让模型压缩并迁移到新会话（目前 Qwen / ChatGPT）"
+              checked={compression.enabled}
+              onChange={handleCompressionEnabledChange}
+            />
+            {compression.enabled && (
+              <div className="space-y-1.5">
+                {COMPRESSION_PLATFORM_LABELS.map(({ key, label }) => (
+                  <div key={key} className="flex items-center gap-2 pl-0.5">
+                    <span className="text-[11px] text-gray-400 w-16 flex-shrink-0">{label}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={Math.round(thresholdOf(compression, key) / 10_000)}
+                      onChange={(e) => handlePlatformThresholdChange(key, Number(e.target.value))}
+                      className="w-20 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-xs text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
+                    />
+                    <span className="text-[11px] text-gray-500">万 tokens</span>
+                  </div>
+                ))}
+                <div className="text-[11px] leading-snug text-gray-500 pl-0.5">
+                  到阈值后请模型输出 piercode-context 包，失败回退本地摘要，并在新标签接续会话。
+                </div>
               </div>
             )}
           </Section>

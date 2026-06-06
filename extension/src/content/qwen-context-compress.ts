@@ -17,12 +17,27 @@ export interface PierCodeContextPacket {
   raw: string;
 }
 
-export interface QwenCompressedContextHandoff {
-  version: number;
-  reason: 'compressed_context_handoff';
+// 渲染卡片用的结构化字段。模型自压缩包带 goal/pending/... ；本地摘要包只有
+// context/instruction。缺失字段统一回退为空字符串/空数组，调用方按需隐藏空行。
+export interface ContextPacketFields {
+  reason: string;
+  goal: string;
+  current_state: string;
+  next_action: string;
   context: string;
   instruction: string;
+  completed: string[];
+  key_concepts: string[];
+  key_files: string[];
+  errors_fixes: string[];
+  problem_solving: string[];
+  user_messages: string[];
+  evidence: string[];
+  pending: string[];
+  constraints: string[];
 }
+
+const CONTEXT_PACKET_INNER_JSON_RE = /```(?:json)?\s*\n([\s\S]*?)\n```/i;
 
 const CONTEXT_PACKET_RE = /<piercode_context_packet\b([^>]*)>([\s\S]*?)<\/piercode_context_packet>/i;
 const CONTEXT_PACKET_ATTR_RE = /([a-zA-Z_:][\w:.-]*)\s*=\s*"([^"]*)"/g;
@@ -78,70 +93,193 @@ export function parsePierCodeContextPacket(text: string): PierCodeContextPacket 
   };
 }
 
+// 把已解析的 packet 拆成卡片字段。content 可能是裸 JSON（fence 路径）或被
+// ```json 围栏包住（旧 XML 路径）。解析失败时返回全空字段而不抛错，让卡片至少
+// 能显示 raw 文本兜底。
+export function extractContextPacketFields(packet: PierCodeContextPacket): ContextPacketFields {
+  const empty: ContextPacketFields = {
+    reason: packet.attrs.reason || '',
+    goal: '', current_state: '', next_action: '', context: '', instruction: '',
+    completed: [], key_concepts: [], key_files: [], errors_fixes: [],
+    problem_solving: [], user_messages: [], evidence: [], pending: [], constraints: [],
+  };
+
+  let jsonText = packet.content.trim();
+  const innerFence = jsonText.match(CONTEXT_PACKET_INNER_JSON_RE);
+  if (innerFence) jsonText = innerFence[1].trim();
+
+  let obj: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(jsonText) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return empty;
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return empty;
+  }
+
+  const str = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v));
+  const arr = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map(item => (typeof item === 'string' ? item : JSON.stringify(item))) : [];
+
+  return {
+    reason: str(obj.reason) || empty.reason,
+    goal: str(obj.goal),
+    current_state: str(obj.current_state),
+    next_action: str(obj.next_action),
+    context: str(obj.context),
+    instruction: str(obj.instruction),
+    completed: arr(obj.completed),
+    key_concepts: arr(obj.key_concepts),
+    key_files: arr(obj.key_files),
+    errors_fixes: arr(obj.errors_fixes),
+    problem_solving: arr(obj.problem_solving),
+    user_messages: arr(obj.user_messages),
+    evidence: arr(obj.evidence),
+    pending: arr(obj.pending),
+    constraints: arr(obj.constraints),
+  };
+}
+
+// NO_TOOLS 首部约束。借鉴 Claude Code：把"只输出文本、不调工具、工具调用会被拒绝"
+// 放最前面且明确后果，能显著降低模型压缩时误调工具/写解释的概率。
+const NO_TOOLS_PREAMBLE = [
+  '【最高优先级】本回合只允许输出文本，不要调用任何工具。',
+  '- 不要输出 `piercode-tool`，不要 Read/Bash/Grep/Edit/Write 或任何工具。',
+  '- 你已经拥有压缩所需的全部上下文（就在上面的对话里）。',
+  '- 工具调用会被拒绝并浪费你唯一的回合，导致任务失败。',
+  '- 整个回复必须是纯文本：一个 <analysis> 块，后跟一个 `piercode-context` fenced JSON 块。',
+].join('\n');
+
+// NO_TOOLS 尾部约束（三明治结尾）。模型读到提示词末尾时再强化一次。
+const NO_TOOLS_TRAILER = [
+  '提醒：不要调用任何工具，只输出纯文本——先 <analysis> 块，再 `piercode-context` JSON 块。',
+  '工具调用会被拒绝，你会失败。',
+].join('\n');
+
+// 逐条分析草稿指令。借鉴 Claude Code <analysis> 思路：让模型先按时间顺序逐条
+// 复盘（草稿），再产出结构化包。<analysis> 在 fenced JSON 之外，
+// parsePierCodeContextPacket 只取 fence，草稿自动不进新会话上下文。
+const ANALYSIS_INSTRUCTION = [
+  '先在 <analysis>...</analysis> 里逐条复盘整段对话（这是草稿，不会进入新会话）：',
+  '1. 按时间顺序分析每条消息，识别：',
+  '   - 用户的明确请求与意图',
+  '   - 你的应对方式与关键决策、技术概念、代码模式',
+  '   - 具体细节：文件名、完整代码片段、函数签名、文件改动',
+  '   - 遇到的错误及修复方式',
+  '   - 用户的明确反馈，尤其是要求你换做法的地方',
+  '2. 复核技术准确性与完整性。',
+].join('\n');
+
 export function formatPierCodeContextPacketPrompt(ctx: ConversationContext, config: QwenCompressionConfig): string {
   const messageCount = ctx.messages.length;
   const estimatedTokens = estimateContextTokens(ctx);
-  const lastUser = [...ctx.messages].reverse().find(m => m.role === 'user')?.content.trim();
 
   return [
-    'PierCode 上下文即将达到上限。请压缩当前会话上下文，用于迁移到新的 Qwen 会话。',
+    NO_TOOLS_PREAMBLE,
     '',
-    '必须严格遵守：',
-    '1. 只输出一个 Markdown fenced JSON block，语言名必须是 `piercode-context`；不要输出解释、寒暄或 Markdown 标题。',
-    '2. 不要输出 `piercode-tool`，不要调用任何工具，不要继续执行原任务。',
-    '3. JSON 内容要足够让新会话无缝继续：version、reason、目标、已完成、当前状态、关键文件/命令/测试、待办、约束、下一步。',
-    '4. 保留关键路径、错误信息、测试结果、用户明确偏好；删除重复日志和冗长工具输出。',
+    'PierCode 上下文即将达到上限。请创建当前会话的详细压缩摘要，用于无缝迁移到一个全新的会话。',
+    '务必详尽捕获技术细节、代码模式、架构决策，确保新会话不丢上下文即可继续开发。',
+    '',
+    ANALYSIS_INSTRUCTION,
+    '',
+    '然后只输出一个 `piercode-context` fenced JSON（不要解释、寒暄、Markdown 标题）。',
+    'JSON 必须覆盖以下 9 段（映射到对应字段）：',
+    '1. 主要请求与意图 → goal：用户所有明确请求和意图',
+    '2. 关键技术概念 → key_concepts：涉及的技术、框架、概念',
+    '3. 文件与代码 → key_files：检查/修改/创建的文件，含完整关键代码片段与为何重要',
+    '4. 错误与修复 → errors_fixes：遇到的错误及修复方式，含用户相关反馈',
+    '5. 问题求解 → problem_solving：已解决的问题与进行中的排查',
+    '6. 全部用户消息 → user_messages：列出所有非工具结果的用户消息（理解意图变化的关键）',
+    '7. 待办 → pending：被明确要求做的待办',
+    '8. 当前工作 → current_state + completed：紧接本次压缩前在做什么、已完成且有证据的事项',
+    '9. 下一步 → next_action：与用户最近明确请求一致的下一步，并引用最近对话原文防止偏移',
+    '',
+    '保留关键路径、错误信息、测试结果、用户明确偏好；删除重复日志和冗长工具输出。',
     '',
     `当前 PierCode 估算：${estimatedTokens} tokens / 阈值 ${config.maxContextTokens} tokens，消息数 ${messageCount}。`,
-    lastUser ? `最近用户输入摘要：${truncateToTokens(lastUser, 512)}` : '',
     '',
     '输出格式必须是：',
+    '<analysis>',
+    '（你的逐条复盘草稿，覆盖上述各点）',
+    '</analysis>',
     '```piercode-context',
     '{',
     '  "version": 1,',
     '  "reason": "piercode_requested",',
-    '  "goal": "当前用户目标和成功标准",',
+    '  "goal": "用户所有明确请求和意图（成功标准）",',
+    '  "key_concepts": ["关键技术概念/框架"],',
+    '  "key_files": ["文件路径 + 为何重要 + 关键代码片段"],',
+    '  "errors_fixes": ["错误描述 + 修复方式 + 用户反馈"],',
+    '  "problem_solving": ["已解决的问题 + 进行中的排查"],',
+    '  "user_messages": ["所有非工具结果的用户消息"],',
     '  "completed": ["已经完成且有证据的事项"],',
     '  "current_state": "当前会话/代码/浏览器状态",',
-    '  "key_files": ["关键文件绝对路径或仓库相对路径"],',
-    '  "evidence": ["关键命令、测试结果、浏览器观察结果"],',
     '  "pending": ["下一步待办"],',
     '  "constraints": ["用户偏好、安全约束、不能丢的上下文"],',
-    '  "next_action": "新会话接手后的第一步"',
+    '  "next_action": "新会话接手后的第一步（引用最近对话原文）"',
     '}',
     '```',
+    '',
+    NO_TOOLS_TRAILER,
   ].filter(Boolean).join('\n');
 }
 
 // Packet handoff: 模型已输出成型的 ```piercode-context 围栏块，原样转发，
 // 不再二次套壳（避免把结构化字段压成 context 字段里的转义字符串）。
 // 仅用于"模型自压缩"路径；纯文本本地摘要走 formatQwenCompressedContextPrompt。
-export function formatPacketHandoffPrompt(packetRaw: string, initPrompt = ''): string {
-  return [
-    '请从下面的 PierCode 压缩上下文继续当前会话，按其中的 next_action / pending 接续执行。',
-    '',
-    packetRaw.trim(),
-    initPrompt.trim() ? '\n\n---\n' : '',
-    initPrompt.trim(),
-  ].filter(part => part !== '').join('\n');
+// 新会话 handoff 开场白。带 init 时强调分两段，避免把初始化和压缩上下文混成一团；
+// 没有 init 时不提"运行说明"，免得空指引。
+function handoffIntro(hasInit: boolean): string {
+  return hasInit
+    ? '这是一个由 PierCode 压缩并迁移过来的新会话。下面分两段：先是上次会话的压缩上下文，再是本会话的运行说明。请先读懂压缩上下文，再按运行说明继续执行。'
+    : '这是一个由 PierCode 压缩并迁移过来的新会话。请从下面的压缩上下文继续，按其中的 next_action / pending 接续执行。';
 }
 
-export function formatQwenCompressedContextPrompt(summary: string, initPrompt = ''): string {
-  const contextPayload: QwenCompressedContextHandoff = {
-    version: 1,
-    reason: 'compressed_context_handoff',
-    context: summary.trim(),
-    instruction: '继续执行用户后续任务。'
-  };
-  return [
-    '请从下面的 PierCode 压缩上下文继续当前会话。',
+// 把注入新会话的历史 packet 围栏语言名从 piercode-context 改成
+// piercode-context-archived。防无限环：新会话若复读/回显该围栏，
+// parsePierCodeContextPacket 只认 piercode-context，archived 不会被当成新压缩
+// 信号，从而不会触发"再开新会话"。模型仍能读懂 archived 块内容。
+export function archiveContextFence(text: string): string {
+  return text.replace(/```piercode-context(?=\s*\n)/g, '```piercode-context-archived');
+}
+
+export function formatPacketHandoffPrompt(packetRaw: string, initPrompt = ''): string {
+  const init = initPrompt.trim();
+  const parts: string[] = [
+    handoffIntro(Boolean(init)),
     '',
-    '```piercode-context',
-    JSON.stringify(contextPayload, null, 2),
-    '```',
-    initPrompt.trim() ? '\n\n---\n' : '',
-    initPrompt.trim(),
-  ].filter(part => part !== '').join('\n');
+    '===== 上次会话压缩上下文（按其中的 next_action / pending 接续执行）=====',
+    archiveContextFence(packetRaw.trim()),
+  ];
+  if (init) {
+    parts.push(
+      '',
+      '===== 本会话运行说明（初始化）=====',
+      init,
+    );
+  }
+  return parts.join('\n');
+}
+
+// 本地摘要兜底 handoff：摘要是给模型读的纯文本，直接原样发，不套 piercode-context
+// JSON。早先套 JSON 会把摘要里的真换行经 JSON.stringify 转义成字面 "\n"，注入
+// 新会话后人看到一坨 \n。纯文本直发保留真换行，可读。
+export function formatQwenCompressedContextPrompt(summary: string, initPrompt = ''): string {
+  const init = initPrompt.trim();
+  const parts: string[] = [
+    handoffIntro(Boolean(init)),
+    '',
+    '===== 上次会话压缩上下文 =====',
+    summary.trim(),
+  ];
+  if (init) {
+    parts.push(
+      '',
+      '===== 本会话运行说明（初始化）=====',
+      init,
+    );
+  }
+  return parts.join('\n');
 }
 
 // 生成摘要: 保留系统提示和最近上下文, 输出顺序保持原会话顺序。
