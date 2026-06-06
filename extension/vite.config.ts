@@ -14,6 +14,9 @@ export default defineConfig({
         if (existsSync('dist/src/popup/index.html')) {
           copyFileSync('dist/src/popup/index.html', 'dist/popup.html')
         }
+        if (existsSync('dist/src/hub/index.html')) {
+          copyFileSync('dist/src/hub/index.html', 'dist/hub.html')
+        }
       }
     }
   ],
@@ -23,6 +26,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         popup: resolve(__dirname, 'src/popup/index.html'),
+        hub: resolve(__dirname, 'src/hub/index.html'),
         content: resolve(__dirname, 'src/content/index.ts'),
         injected: resolve(__dirname, 'src/injected/index.ts'),
         pageBridge: resolve(__dirname, 'src/page-bridge/index.ts'),

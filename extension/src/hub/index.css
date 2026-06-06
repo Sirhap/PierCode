@@ -1,0 +1,82 @@
+html, body, #root {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.hub-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #11111b;
+  color: #cdd6f4;
+}
+
+.hub-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 12px;
+  background: #1e1e2e;
+  border-bottom: 1px solid #313244;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+.hub-title { font-weight: 600; }
+.hub-hint { font-size: 12px; opacity: 0.6; }
+.hub-add { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.hub-add-btn {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid #45475a;
+  background: #313244;
+  color: #cdd6f4;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.hub-add-btn:hover { background: #45475a; }
+
+.hub-grid {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+.hub-pane {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid #313244;
+}
+.hub-pane:last-child { border-right: 0; }
+.hub-pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 8px;
+  background: #181825;
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.hub-pane-name { font-weight: 600; }
+.hub-pane-worker { font-weight: 400; opacity: 0.7; }
+.hub-pane-ctrl button {
+  background: transparent;
+  border: 0;
+  color: #cdd6f4;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 12px;
+}
+.hub-pane-ctrl button:disabled { opacity: 0.3; cursor: default; }
+.hub-pane-frame {
+  flex: 1 1 auto;
+  border: 0;
+  width: 100%;
+  background: #fff;
+}
+.hub-empty {
+  margin: auto;
+  opacity: 0.5;
+}

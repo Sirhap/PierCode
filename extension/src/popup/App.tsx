@@ -529,6 +529,16 @@ export default function App() {
         </div>
       </div>
 
+      {/* Multi-AI Hub: opens a page that embeds several AI sites side by side so
+          they all run in the foreground at once (workers no longer throttle in
+          background tabs). */}
+      <button
+        onClick={() => chrome.runtime.sendMessage({ type: 'OPEN_HUB' })}
+        className="w-full mb-4 rounded-md border border-indigo-700 bg-indigo-900/40 px-3 py-2 text-sm text-indigo-100 hover:bg-indigo-800/60 transition-colors cursor-pointer"
+      >
+        🗂️ 打开多 AI 工作台
+      </button>
+
       {/* Connect form */}
       {(status !== 'connected' || reconfig) && (
         <div className="mb-4 space-y-2">

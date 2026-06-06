@@ -1,4 +1,5 @@
 import { browserRelayWsUrl, isAiPageUrl } from './browser-relay-utils';
+import { applyFrameUnlock } from './frame-unlock';
 import {
   DOWNLOAD_STORAGE_KEY,
   MAX_DOWNLOAD_RECORDS,
@@ -1036,6 +1037,19 @@ function errorMessage(error: unknown): string {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === 'OPEN_HUB') {
+    // Re-assert the frame-unlock rules (in case the SW was asleep) then open the
+    // Hub page in its own tab. The Hub's iframes live in this one active tab, so
+    // every embedded AI site stays visible/unthrottled and streams at once.
+    applyFrameUnlock()
+      .catch(err => console.warn('[PierCode] frame-unlock on OPEN_HUB failed', err))
+      .finally(() => {
+        chrome.tabs.create({ url: chrome.runtime.getURL('hub.html') })
+          .then(tab => sendResponse({ ok: true, tabId: tab.id }))
+          .catch(error => sendResponse({ ok: false, error: String(error) }));
+      });
+    return true;
+  }
   if (msg.type === 'FETCH') {
     const { url, options } = msg;
     fetch(url, options)
@@ -1189,6 +1203,12 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
 });
 
 connectBrowserRelay();
+
+// Install the iframe-unlock DNR rules + register the Hub-frame content scripts so
+// the Hub page can embed AI sites. Scoped to the extension's own initiator, so a
+// user browsing the AI sites in normal tabs is unaffected. Safe to run on every
+// service-worker wake (idempotent: it clears its own prior rules/scripts first).
+applyFrameUnlock().catch(err => console.warn('[PierCode] frame-unlock setup failed', err));
 
 async function focusSenderTab(sender: chrome.runtime.MessageSender, options?: { forceFocus?: boolean }): Promise<{ ok: boolean }> {
   // Default: do NOT steal window focus. Only activate tab if explicitly requested.
