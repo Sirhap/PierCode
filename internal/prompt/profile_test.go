@@ -278,16 +278,37 @@ func TestSkillsListUsesConciseDescriptions(t *testing.T) {
 
 func TestGuidanceDoesNotReinjectFullPromptWhenDisabled(t *testing.T) {
 	profile := Profile{Prompt: []byte("full prompt")}
+	renderFull := func() []byte { return []byte("rendered full prompt") }
 
-	guidance := profile.GuidanceFor(20, func() []byte {
-		return []byte("rendered full prompt")
-	})
-
-	if strings.Contains(guidance, "系统重新注入提示词") || strings.Contains(guidance, "rendered full prompt") {
-		t.Fatalf("full prompt reinjection should be disabled, got %q", guidance)
+	// Even at turn 20 — the old reinjection trigger — the full prompt must not
+	// be re-embedded now that the cadence is disabled.
+	for _, n := range []int64{20, 40, 60} {
+		guidance := profile.GuidanceFor(n, renderFull)
+		if strings.Contains(guidance, "系统重新注入提示词") || strings.Contains(guidance, "rendered full prompt") {
+			t.Fatalf("full prompt reinjection should be disabled at n=%d, got %q", n, guidance)
+		}
 	}
-	if !strings.Contains(guidance, "piercode-tool") || !strings.Contains(guidance, "tool_help") {
-		t.Fatalf("compact operating reminder should still be present, got %q", guidance)
+
+	// Turn 1 always primes the protocol with the compact operating reminder.
+	first := profile.GuidanceFor(1, renderFull)
+	if !strings.Contains(first, "piercode-tool") || !strings.Contains(first, "tool_help") {
+		t.Fatalf("turn 1 should carry the compact operating reminder, got %q", first)
+	}
+}
+
+func TestOperatingReminderCadence(t *testing.T) {
+	profile := Profile{Prompt: []byte("full prompt")}
+	renderFull := func() []byte { return nil }
+	const marker = "[系统提示]"
+	for _, on := range []int64{1, 4, 7, 10} {
+		if !strings.Contains(profile.GuidanceFor(on, renderFull), marker) {
+			t.Fatalf("turn %d should carry operating reminder", on)
+		}
+	}
+	for _, off := range []int64{2, 3, 5, 6, 8, 9} {
+		if strings.Contains(profile.GuidanceFor(off, renderFull), marker) {
+			t.Fatalf("turn %d should NOT carry operating reminder", off)
+		}
 	}
 }
 

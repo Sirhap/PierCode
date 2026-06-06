@@ -13,6 +13,18 @@ type ToolRequest struct {
 	Profile         string                 `json:"profile,omitempty"`
 	SourceClientID  string                 `json:"client_id,omitempty"`
 	ConversationURL string                 `json:"conversation_url,omitempty"`
+	// WithGuidance gates whether the executor appends prompt guidance to this
+	// call's output. The extension sets it false on every tool in an
+	// auto-executed batch except the last, so a multi-tool turn carries the
+	// reminder once instead of N times. nil (field absent) means "yes" — older
+	// clients and direct /exec callers keep the previous behavior.
+	WithGuidance *bool `json:"with_guidance,omitempty"`
+}
+
+// GuidanceEnabled reports whether prompt guidance should be appended. Absent
+// (nil) defaults to true for backward compatibility.
+func (r *ToolRequest) GuidanceEnabled() bool {
+	return r.WithGuidance == nil || *r.WithGuidance
 }
 
 func (r *ToolRequest) UnmarshalJSON(data []byte) error {
@@ -27,11 +39,13 @@ func (r *ToolRequest) UnmarshalJSON(data []byte) error {
 		Adapter         string                 `json:"adapter,omitempty"`
 		ClientID        string                 `json:"client_id,omitempty"`
 		ConversationURL string                 `json:"conversation_url,omitempty"`
+		WithGuidance    *bool                  `json:"with_guidance,omitempty"`
 	}
 	var v raw
 	if err := json.Unmarshal(data, &v); err != nil {
 		return err
 	}
+	r.WithGuidance = v.WithGuidance
 	r.Name = v.Name
 	if v.CallID != "" {
 		r.CallID = v.CallID

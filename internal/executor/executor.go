@@ -16,11 +16,16 @@ import (
 )
 
 type Executor struct {
-	config    *types.Config
-	registry  *tool.Registry
-	profiles  *prompt.ProfileRegistry
-	callCount atomic.Int64
-	toolMu    sync.RWMutex
+	config   *types.Config
+	registry *tool.Registry
+	profiles *prompt.ProfileRegistry
+	// guidanceCounts tracks per-conversation AI tool-call counts so the periodic
+	// guidance cadence (operating reminder every few turns, checkpoint every
+	// fifth) follows each conversation's own progress instead of a single global
+	// counter shared across all tabs/workers. Keyed by conversation URL, falling
+	// back to client id, then a shared bucket.
+	guidanceCounts sync.Map // map[string]*atomic.Int64
+	toolMu         sync.RWMutex
 	// logger is read from Execute on every tool call (potentially many
 	// goroutines) and written from SetLogger at startup or when the TUI
 	// reconfigures. atomic.Pointer keeps the read path lock-free and
@@ -156,6 +161,7 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserEmulateTool())
 	e.registry.Register(tool.NewBrowserGetAttributesTool())
 	e.registry.Register(tool.NewSpawnAgentTool())
+	e.registry.Register(tool.NewListAgentsTool())
 	e.registry.Register(tool.NewSendToAgentTool())
 	e.registry.Register(tool.NewStopAgentTool())
 	e.registry.Register(tool.NewToolHelpTool(e.registry))
@@ -283,15 +289,32 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	// 提示词。改为只信任二进制内嵌的 DefaultPrompt（prompts/prompts.go 通过
 	// //go:embed 提供）。
 	// Only inject operating reminders when the call originates from an AI
-	// client (SourceClientID is set). Direct /exec API calls from the TUI,
-	// CLI, or E2E tests should return clean tool output without prompt
-	// guidance appended.
-	if req.SourceClientID != "" {
-		n := e.callCount.Add(1)
+	// client (SourceClientID is set) AND this call opted in. The extension
+	// clears WithGuidance on every tool of an auto-executed batch except the
+	// last, so a multi-tool turn carries the reminder once, not once per tool.
+	// Direct /exec API calls from the CLI or E2E tests have no SourceClientID
+	// and get clean output.
+	if req.SourceClientID != "" && req.GuidanceEnabled() {
+		n := e.nextGuidanceCount(req)
 		e.appendPromptGuidance(resp, n, req.Profile)
 	}
 
 	return resp
+}
+
+// nextGuidanceCount returns the per-conversation guidance counter, incremented.
+// Keyed by conversation URL so each conversation's cadence follows its own turn
+// count; falls back to client id, then a shared bucket, when the URL is absent.
+func (e *Executor) nextGuidanceCount(req *types.ToolRequest) int64 {
+	key := strings.TrimSpace(req.ConversationURL)
+	if key == "" {
+		key = strings.TrimSpace(req.SourceClientID)
+	}
+	if key == "" {
+		key = "_shared"
+	}
+	v, _ := e.guidanceCounts.LoadOrStore(key, new(atomic.Int64))
+	return v.(*atomic.Int64).Add(1)
 }
 
 // ResolveProfile returns the prompt profile for the given adapter/profile id

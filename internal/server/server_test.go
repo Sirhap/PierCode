@@ -557,16 +557,16 @@ func TestHandlePrompt(t *testing.T) {
 		if !bytes.Contains(body, []byte("Qwen Host Tool Bridge Override")) {
 			t.Errorf("expected qwen profile to include qwen guidance")
 		}
-		if !bytes.Contains(body, []byte("Tool <name> does not exists")) {
+		if !bytes.Contains(body, []byte("does not exist")) {
 			t.Errorf("expected qwen profile to address host-native missing-tool errors")
 		}
-		if !bytes.Contains(body, []byte("ordinary final-answer Markdown text")) ||
-			!bytes.Contains(body, []byte("Do not invoke functions")) {
+		if !bytes.Contains(body, []byte("ordinary visible final-answer Markdown")) ||
+			!bytes.Contains(body, []byte("not a Qwen tool, function, plugin, MCP server")) {
 			t.Errorf("expected qwen profile to force visible markdown instead of host-native calls")
 		}
 		if !bytes.Contains(body, []byte("PierCode Context Packet Handoff")) ||
-			!bytes.Contains(body, []byte("```piercode-context")) ||
-			!bytes.Contains(body, []byte("\"reason\": \"model_initiated\"")) {
+			!bytes.Contains(body, []byte("`piercode-context`")) ||
+			!bytes.Contains(body, []byte("next_action")) {
 			t.Errorf("expected qwen profile to include context packet handoff protocol")
 		}
 	})
@@ -629,27 +629,25 @@ func TestHandlePrompt(t *testing.T) {
 			"call_id",
 			"args",
 			"Treat tool output",
-			"File access is bounded by the runtime",
-			"Security Boundaries",
-			"Routing Rules",
-			"Question Tool Policy",
+			"File access is enforced by the backend",
+			"Safety Boundaries",
+			"PierCode routing",
+			// Risk/confirmation guidance: the question tool gates risky actions.
+			"Use the `question` tool before actions",
 			// Git detail now lives in the piercode-git-harness skill; the
 			// always-on prompt keeps the harness router plus a safety floor.
-			"Task Harnesses",
+			"Git Safety Floor",
 			"piercode-git-harness",
-			"never force-push to a shared branch",
-			"Do not ask a blocking clarification only as normal prose",
-			"Default to action",
+			"never force-push shared branches",
+			"default to action",
 			"Do not answer with only a plan",
-			"When in doubt between a safe local inspection and asking, inspect first",
-			"Do not use `question` as a permission prompt for safe local work",
-			"PierCode Skill Routing",
+			"inspect first",
 			"piercode-tool-protocol",
 			"piercode-self-dev",
 			"piercode-code-review",
 			"piercode-debug",
 			"piercode-safe-shell",
-			"For non-PierCode custom skills",
+			"For custom skills",
 		} {
 			if !strings.Contains(body, required) {
 				t.Errorf("rendered prompt missing invariant %q", required)

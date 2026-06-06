@@ -2,9 +2,13 @@ package prompt
 
 import "strings"
 
-// Cadence for per-call guidance appended to AI-originated tool results.
+// Cadence for per-turn guidance appended to AI-originated tool results. The
+// counter is per-conversation (see Executor.nextGuidanceCount) and counts
+// guidance-bearing turns, not individual tool calls — a multi-tool turn
+// increments it once. n starts at 1.
 const (
-	fullPromptReinjectEvery = 0
+	fullPromptReinjectEvery = 0 // full-prompt reinjection disabled (was 20; bloated long sessions)
+	operatingReminderEvery  = 3 // operating reminder on turn 1, then every 3rd turn
 	taskCheckpointEvery     = 5
 )
 
@@ -37,7 +41,9 @@ func (p Profile) GuidanceFor(n int64, renderFull func() []byte) string {
 	if reinjectEvery > 0 && n%reinjectEvery == 0 && len(p.Prompt) > 0 {
 		b.WriteString("\n\n[系统重新注入提示词]\n")
 		b.Write(renderFull())
-	} else {
+	} else if (n-1)%operatingReminderEvery == 0 {
+		// Turn 1, 4, 7, … — first turn always primes the protocol, then a light
+		// refresh every few turns instead of on every single turn.
 		b.WriteString(operatingReminder)
 	}
 	if n%taskCheckpointEvery == 0 {

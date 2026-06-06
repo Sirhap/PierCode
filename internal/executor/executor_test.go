@@ -249,52 +249,127 @@ func extractBackgroundTaskID(t *testing.T, output string) string {
 }
 
 func TestExecutorPromptGuidance(t *testing.T) {
-	t.Run("tool responses include operating reminder when called from AI client", func(t *testing.T) {
+	helper := func() func() *types.ToolResponse {
 		e := New(testConfig(t))
-		resp := e.Execute(context.Background(), &types.ToolRequest{
-			Name:           "list_dir",
-			CallID:         "list1a",
-			Args:           map[string]interface{}{"path": "."},
-			SourceClientID: "ai-page-1",
-		})
-		for _, want := range []string{"[系统提示]", "piercode-tool", "sandbox", "piercode-*", "测试或明确证据"} {
+		return func() *types.ToolResponse {
+			return e.Execute(context.Background(), &types.ToolRequest{
+				Name:            "list_dir",
+				CallID:          "listg",
+				Args:            map[string]interface{}{"path": "."},
+				SourceClientID:  "ai-page-1",
+				ConversationURL: "https://chat/c1",
+			})
+		}
+	}
+
+	t.Run("first AI tool turn includes operating reminder", func(t *testing.T) {
+		exec := helper()
+		resp := exec()
+		for _, want := range []string{"[系统提示]", "piercode-tool", "tool_help"} {
 			if !strings.Contains(resp.Output, want) {
 				t.Fatalf("expected reminder to contain %q, got %q", want, resp.Output)
 			}
 		}
 	})
 
-	t.Run("every fifth tool response asks for task checkpoint when called from AI client", func(t *testing.T) {
-		e := New(testConfig(t))
+	t.Run("operating reminder appears on turn 1 then every third turn, not every turn", func(t *testing.T) {
+		exec := helper()
+		const marker = "[系统提示]"
+		// Operating reminder rides turns 1, 4, 7 (n-1 divisible by 3); the
+		// turns in between stay clean.
+		got := map[int]bool{}
+		for i := 1; i <= 7; i++ {
+			got[i] = strings.Contains(exec().Output, marker)
+		}
+		for _, on := range []int{1, 4, 7} {
+			if !got[on] {
+				t.Fatalf("turn %d should carry operating reminder", on)
+			}
+		}
+		for _, off := range []int{2, 3, 6} {
+			if got[off] {
+				t.Fatalf("turn %d should NOT carry operating reminder", off)
+			}
+		}
+	})
+
+	t.Run("every fifth AI turn asks for task checkpoint", func(t *testing.T) {
+		exec := helper()
 		var resp *types.ToolResponse
 		for i := 0; i < 5; i++ {
-			resp = e.Execute(context.Background(), &types.ToolRequest{
-				Name:           "list_dir",
-				CallID:         "list5a",
-				Args:           map[string]interface{}{"path": "."},
-				SourceClientID: "ai-page-1",
-			})
+			resp = exec()
 		}
-		for _, want := range []string{"[任务状态快照提示]", "已改文件", "验证结果", "todo_write"} {
+		for _, want := range []string{"[任务状态快照提示]", "已改文件", "todo"} {
 			if !strings.Contains(resp.Output, want) {
 				t.Fatalf("expected checkpoint reminder to contain %q, got %q", want, resp.Output)
 			}
 		}
 	})
 
-		t.Run("qwen tool responses do not include context packet reminder", func(t *testing.T) {
+	t.Run("per-conversation counter: each conversation gets its own first-turn reminder", func(t *testing.T) {
+		e := New(testConfig(t))
+		call := func(conv string) *types.ToolResponse {
+			return e.Execute(context.Background(), &types.ToolRequest{
+				Name:            "list_dir",
+				CallID:          "listpc",
+				Args:            map[string]interface{}{"path": "."},
+				SourceClientID:  "ai-page-1",
+				ConversationURL: conv,
+			})
+		}
+		// Conversation A advances three turns (turn 3 has no operating reminder).
+		call("https://chat/a")
+		call("https://chat/a")
+		_ = call("https://chat/a")
+		// Conversation B's first turn must still carry the reminder — a global
+		// counter would put B on "turn 4" and the cadence would diverge.
+		respB := call("https://chat/b")
+		if !strings.Contains(respB.Output, "[系统提示]") {
+			t.Fatalf("conversation B turn 1 should carry operating reminder, got %q", respB.Output)
+		}
+	})
+
+	t.Run("batch flag: only the guidance-bearing call gets the reminder", func(t *testing.T) {
+		e := New(testConfig(t))
+		no := false
+		mid := e.Execute(context.Background(), &types.ToolRequest{
+			Name:            "list_dir",
+			CallID:          "listb1",
+			Args:            map[string]interface{}{"path": "."},
+			SourceClientID:  "ai-page-1",
+			ConversationURL: "https://chat/batch",
+			WithGuidance:    &no,
+		})
+		if strings.Contains(mid.Output, "[系统提示]") {
+			t.Fatalf("mid-batch tool (WithGuidance=false) should not carry reminder, got %q", mid.Output)
+		}
+		last := e.Execute(context.Background(), &types.ToolRequest{
+			Name:            "list_dir",
+			CallID:          "listb2",
+			Args:            map[string]interface{}{"path": "."},
+			SourceClientID:  "ai-page-1",
+			ConversationURL: "https://chat/batch",
+			// WithGuidance nil => enabled
+		})
+		if !strings.Contains(last.Output, "[系统提示]") {
+			t.Fatalf("batch's guidance-bearing tool should carry reminder, got %q", last.Output)
+		}
+	})
+
+	t.Run("qwen tool responses do not include context packet reminder", func(t *testing.T) {
 		e := New(testConfig(t))
 		resp := e.Execute(context.Background(), &types.ToolRequest{
-			Name:           "list_dir",
-			CallID:         "qwen1a",
-			Args:           map[string]interface{}{"path": "."},
-			SourceClientID: "ai-page-1",
-			Profile:        "qwen",
+			Name:            "list_dir",
+			CallID:          "qwen1a",
+			Args:            map[string]interface{}{"path": "."},
+			SourceClientID:  "ai-page-1",
+			ConversationURL: "https://qwen/c1",
+			Profile:         "qwen",
 		})
-			for _, forbidden := range []string{"[Qwen 上下文迁移提示]", "不要输出 XML wrapper"} {
-				if strings.Contains(resp.Output, forbidden) {
-					t.Fatalf("qwen tool response should not contain context packet reminder %q, got %q", forbidden, resp.Output)
-				}
+		for _, forbidden := range []string{"[Qwen 上下文迁移提示]", "不要输出 XML wrapper"} {
+			if strings.Contains(resp.Output, forbidden) {
+				t.Fatalf("qwen tool response should not contain context packet reminder %q, got %q", forbidden, resp.Output)
+			}
 		}
 	})
 
@@ -313,28 +388,22 @@ func TestExecutorPromptGuidance(t *testing.T) {
 		}
 	})
 
-	t.Run("every twentieth tool response reinjects embedded prompt when called from AI client", func(t *testing.T) {
+	t.Run("full-prompt reinjection is disabled", func(t *testing.T) {
 		cfg := testConfig(t)
 		cfg.DefaultPrompt = []byte("system {{SYSTEM_INFO}}\noperations {{TOOLS}}")
 		e := New(cfg)
 		var resp *types.ToolResponse
 		for i := 0; i < 20; i++ {
 			resp = e.Execute(context.Background(), &types.ToolRequest{
-				Name:           "list_dir",
-				CallID:         "list20a",
-				Args:           map[string]interface{}{"path": "."},
-				SourceClientID: "ai-page-1",
+				Name:            "list_dir",
+				CallID:          "list20a",
+				Args:            map[string]interface{}{"path": "."},
+				SourceClientID:  "ai-page-1",
+				ConversationURL: "https://chat/reinject",
 			})
 		}
-		for _, want := range []string{"[系统重新注入提示词]", "system - 操作系统:", "operations This is a compact route index", "`tool_help`", "[任务状态快照提示]"} {
-			if !strings.Contains(resp.Output, want) {
-				t.Fatalf("expected reinjected prompt to contain %q, got %q", want, resp.Output)
-			}
-		}
-		for _, forbidden := range []string{"{{SYSTEM_INFO}}", "{{TOOLS}}"} {
-			if strings.Contains(resp.Output, forbidden) {
-				t.Fatalf("expected placeholder %q to be rendered, got %q", forbidden, resp.Output)
-			}
+		if strings.Contains(resp.Output, "[系统重新注入提示词]") {
+			t.Fatalf("full-prompt reinjection should be disabled, got %q", resp.Output)
 		}
 	})
 }

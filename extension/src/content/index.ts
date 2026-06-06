@@ -1570,7 +1570,7 @@ async function executeToolCallRaw(toolCall: any): Promise<string | null> {
   return name ? `### ${name} #${callId}\n${output}` : output;
 }
 
-async function executeToolCallReturn(toolCall: any): Promise<ToolExecutionResult> {
+async function executeToolCallReturn(toolCall: any, withGuidance = true): Promise<ToolExecutionResult> {
   if (!checkContext(true)) return { output: '', stopStream: false, sendable: false };
   if (toolCall.name === 'question') {
     const q: string = toolCall.args?.question ?? '';
@@ -1587,7 +1587,7 @@ async function executeToolCallReturn(toolCall: any): Promise<ToolExecutionResult
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
     if (!apiUrl) return { output: '请先在插件中配置 API 地址', stopStream: false, sendable: true };
 
-    const request = withPlatformProfile(toolCall);
+    const request = withPlatformProfile(toolCall, withGuidance);
     const response = await bgFetch(apiEndpoint(apiUrl, '/exec'), {
       method: 'POST',
       headers,
@@ -2300,7 +2300,8 @@ function startDOMObserver(_responseSelector: string) {
         const batch = pendingBatch;
         pendingBatch = [];
 
-        for (const item of batch) {
+        for (let i = 0; i < batch.length; i++) {
+          const item = batch[i];
           const { data: toolCall, key } = item;
           if (isExecuted(key)) continue;
 
@@ -2309,7 +2310,11 @@ function startDOMObserver(_responseSelector: string) {
           const btnEl = cardEl?.querySelector('button') as HTMLButtonElement | null;
           if (btnEl) { btnEl.disabled = true; btnEl.textContent = '执行中...'; }
 
-          const { output, stopStream, sendable } = await executeToolCallReturn(toolCall);
+          // Carry the server's prompt guidance on at most one tool per turn: the
+          // last tool of this drain when nothing else is queued. Other tools opt
+          // out so the AI sees the operating reminder once, not once per tool.
+          const withGuidance = i === batch.length - 1 && pendingBatch.length === 0;
+          const { output, stopStream, sendable } = await executeToolCallReturn(toolCall, withGuidance);
           if (sendable) {
             markExecuted(key);
           }
@@ -2900,8 +2905,14 @@ function apiEndpointForProfile(apiUrl: string, path: string): string {
   return `${apiEndpoint(apiUrl, path)}${sep}adapter=${encodeURIComponent(platformProfile)}`;
 }
 
-function withPlatformProfile(toolCall: any): any {
-  return { ...toolCall, profile: platformProfile, client_id: getPierCodeClientId(), conversation_url: observeConversationURL() };
+function withPlatformProfile(toolCall: any, withGuidance = true): any {
+  const request: any = { ...toolCall, profile: platformProfile, client_id: getPierCodeClientId(), conversation_url: observeConversationURL() };
+  // Server appends prompt guidance to the response of every guidance-enabled
+  // call. In an auto-executed batch we only want it on ONE tool of the turn, so
+  // the AI sees the reminder once, not once per tool. Mark the others false;
+  // omit the field when enabled so older servers default to the prior behavior.
+  if (!withGuidance) request.with_guidance = false;
+  return request;
 }
 
 async function fetchInitPromptForCurrentProfile(): Promise<string> {
