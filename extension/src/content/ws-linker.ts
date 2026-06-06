@@ -1,5 +1,7 @@
 // ws-linker.ts: 负责与 PierCode 后端建立 WebSocket 连接并处理输入注入
 
+import { getCanonicalConversationURL, isConversationURLForCurrentPage, observeConversationURL } from './conversation-scope';
+
 let ws: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 let configuredApiUrl = '';
@@ -26,6 +28,7 @@ export type ToolStreamMessage = {
   task_id?: string;
   call_id?: string;
   client_id?: string;
+  conversation_url?: string;
   stream: 'stdout' | 'stderr';
   text: string;
 };
@@ -35,6 +38,7 @@ export type ToolDoneMessage = {
   task_id?: string;
   call_id?: string;
   client_id?: string;
+  conversation_url?: string;
   exit_code: number;
   status: string;
   error?: string;
@@ -45,6 +49,7 @@ export type QuestionAskMessage = {
   type: 'question_ask';
   call_id: string;
   client_id?: string;
+  conversation_url?: string;
   question: string;
   options?: unknown[];
 };
@@ -53,6 +58,7 @@ export type QuestionCancelMessage = {
   type: 'question_cancel';
   call_id: string;
   client_id?: string;
+  conversation_url?: string;
   reason?: string;
 };
 
@@ -61,6 +67,7 @@ export type BrowserApprovalAskMessage = {
   approval_id: string;
   call_id?: string;
   client_id?: string;
+  conversation_url?: string;
   action: string;
   tab?: { tabId?: number; title?: string; url?: string };
   target: string;
@@ -73,12 +80,14 @@ export type BrowserApprovalDoneMessage = {
   approval_id: string;
   call_id?: string;
   client_id?: string;
+  conversation_url?: string;
 };
 
 export type BrowserAttachmentUploadMessage = {
   type: 'browser_attachment_upload';
   call_id: string;
   client_id?: string;
+  conversation_url?: string;
   path: string;
   name: string;
   mimeType: string;
@@ -101,6 +110,9 @@ const browserApprovalAskHandlers: BrowserApprovalAskHandler[] = [];
 const browserApprovalDoneHandlers: BrowserApprovalDoneHandler[] = [];
 const browserAttachmentUploadHandlers: BrowserAttachmentUploadHandler[] = [];
 const answeredBrowserApprovals = new Set<string>();
+type PendingInject = { text: string; awaitReady: boolean; conversationURL?: string };
+const pendingInjects: PendingInject[] = [];
+let conversationURLWatcher: number | null = null;
 
 function getOrCreateClientId(): string {
   try {
@@ -119,8 +131,39 @@ export function getPierCodeClientId(): string {
   return PAGE_CLIENT_ID;
 }
 
-function isForThisPage(msg: { client_id?: string }): boolean {
+function isForThisClient(msg: { client_id?: string }): boolean {
   return !msg.client_id || msg.client_id === PAGE_CLIENT_ID;
+}
+
+function isForThisPage(msg: { client_id?: string; conversation_url?: string }): boolean {
+  return isForThisClient(msg) && isConversationURLForCurrentPage(msg.conversation_url);
+}
+
+function queuePendingInject(text: string, awaitReady: boolean, conversationURL?: string) {
+  pendingInjects.push({ text, awaitReady, conversationURL });
+  if (pendingInjects.length > 20) pendingInjects.splice(0, pendingInjects.length - 20);
+}
+
+function flushPendingInjects() {
+  for (let i = 0; i < pendingInjects.length;) {
+    const item = pendingInjects[i];
+    if (!isConversationURLForCurrentPage(item.conversationURL)) {
+      i++;
+      continue;
+    }
+    pendingInjects.splice(i, 1);
+    void handleInjectMessage(item.text, item.awaitReady);
+  }
+}
+
+function startConversationURLWatcher() {
+  if (conversationURLWatcher !== null) return;
+  observeConversationURL();
+  conversationURLWatcher = window.setInterval(() => {
+    const before = getCanonicalConversationURL();
+    const after = observeConversationURL();
+    if (before !== after || pendingInjects.length) flushPendingInjects();
+  }, 500);
 }
 
 export function onToolStream(handler: StreamHandler): () => void {
@@ -349,13 +392,28 @@ export function workerAgentId(): string {
 // backing vars to avoid a TDZ ReferenceError at module init.
 workerAgentId();
 
-async function focusCurrentTabForSend(): Promise<void> {
-  if (!isQwenPage()) return;
+// activateSelfTabForInject brings this tab to the foreground so a server-driven
+// inject can reliably fill (execCommand needs real focus) and click send. Used
+// for all inject types incl. the coordinator callback, regardless of platform.
+async function activateSelfTabForInject(): Promise<void> {
   try {
     await chrome.runtime.sendMessage({ type: "FOCUS_SELF", forceFocus: false });
     await new Promise(resolve => window.setTimeout(resolve, 150));
   } catch (error) {
-    console.warn("[PierCode] 激活 Qwen 标签页失败，继续尝试发送:", error);
+    console.warn("[PierCode] inject 前激活标签页失败，继续尝试:", error);
+  }
+}
+
+async function focusCurrentTabForSend(): Promise<void> {
+  // Worker tabs live in the background; filling a contenteditable via execCommand
+  // needs document focus, so a worker must activate its own tab before the seed /
+  // follow-up inject. Qwen also needs activation for its send flow.
+  if (!isQwenPage() && !workerAgentId()) return;
+  try {
+    await chrome.runtime.sendMessage({ type: "FOCUS_SELF", forceFocus: false });
+    await new Promise(resolve => window.setTimeout(resolve, 150));
+  } catch (error) {
+    console.warn("[PierCode] 激活标签页失败，继续尝试发送:", error);
   }
 }
 
@@ -544,6 +602,11 @@ function connectWebSocket(apiUrl: string, token: string) {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === "inject" && msg.text) {
+          if (!isForThisClient(msg)) return;
+          if (!isConversationURLForCurrentPage(msg.conversation_url)) {
+            queuePendingInject(msg.text, msg.await_ready === true, msg.conversation_url);
+            return;
+          }
           handleInjectMessage(msg.text, msg.await_ready === true);
         } else if (msg.type === "tool_stream" && typeof msg.text === "string") {
 		  if (!isForThisPage(msg)) return;
@@ -674,24 +737,41 @@ function fillTargetInput(targetInput: HTMLTextAreaElement | HTMLInputElement | H
   setContentEditableValue(targetInput, text);
 }
 
-function clickSendButton(config: InjectConfig, targetInput: HTMLElement, attempts = 0) {
-  const sendBtn = querySelectorFirst(config.sendBtn);
-  if (sendBtn) {
-    sendBtn.click();
-    return;
-  }
-  if (attempts >= 50) {
-    targetInput.dispatchEvent(new KeyboardEvent("keydown", {
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+function dispatchEnterAsSendFallback(targetInput: HTMLElement): boolean {
+  targetInput.focus();
+  const view = targetInput.ownerDocument.defaultView;
+  const KeyboardEventCtor = view?.KeyboardEvent ?? KeyboardEvent;
+  let handled = false;
+  for (const type of ["keydown", "keypress", "keyup"]) {
+    const event = new KeyboardEventCtor(type, {
       key: "Enter",
       code: "Enter",
       keyCode: 13,
       which: 13,
       bubbles: true,
-      cancelable: true
-    }));
-    return;
+      cancelable: true,
+    });
+    targetInput.dispatchEvent(event);
+    handled = handled || event.defaultPrevented;
   }
-  window.setTimeout(() => clickSendButton(config, targetInput, attempts + 1), 100);
+  return handled;
+}
+
+async function clickSendButton(config: InjectConfig, targetInput: HTMLElement): Promise<boolean> {
+  const deadline = Date.now() + (isQwenPage() ? 90000 : 10000);
+  while (Date.now() < deadline) {
+    const sendBtn = querySelectorFirst(config.sendBtn);
+    if (sendBtn) {
+      sendBtn.click();
+      return true;
+    }
+    await sleep(250);
+  }
+  return dispatchEnterAsSendFallback(targetInput);
 }
 
 // waitForEditor polls for the chat input to mount, up to 30s. Used for worker
@@ -722,6 +802,13 @@ async function handleInjectMessage(text: string, awaitReady = false) {
     console.warn("[PierCode] 注入内容为空，已跳过");
     return;
   }
+  // Server-driven injects (worker seed, compression handoff, and crucially the
+  // coordinator's <task-notification> callback) must fill + auto-submit even when
+  // the tab is in the background. execCommand-based fill needs real document
+  // focus, which the visibility shim can't fake — so activate this tab regardless
+  // of platform before injecting. Injects are deliberate and infrequent, so the
+  // brief focus is acceptable.
+  await activateSelfTabForInject();
   await focusCurrentTabForSend();
   const config = getInjectConfig();
   let targetInput = querySelectorFirst(config.editor);
@@ -737,7 +824,12 @@ async function handleInjectMessage(text: string, awaitReady = false) {
 
   fillTargetInput(targetInput, cleanText, config.fillMethod);
   window.dispatchEvent(new CustomEvent("PIERCODE_PROMPT_SUBMITTED", { detail: cleanText }));
-  window.setTimeout(() => clickSendButton(config, targetInput), 100);
+  await sleep(100);
+  const sent = await clickSendButton(config, targetInput);
+  if (!sent) {
+    console.warn("[PierCode] 内容已注入，但未能确认发送按钮点击成功");
+    return;
+  }
 
   console.log("[PierCode] ✅ 内容已注入并提交到输入框");
 }
@@ -746,7 +838,7 @@ export function sendAIResponseLog(key: string, text: string): void {
   const trimmed = text.trim();
   if (!trimmed || !ws || ws.readyState !== WebSocket.OPEN) return;
   try {
-    ws.send(JSON.stringify({ type: "ai_log", key, text: trimmed }));
+	    ws.send(JSON.stringify({ type: "ai_log", key, text: trimmed, conversation_url: observeConversationURL() }));
   } catch (error) {
     console.warn("[PierCode] AI 响应日志回传失败:", error);
   }
@@ -756,7 +848,7 @@ export function sendUserPromptLog(key: string, text: string): void {
   const trimmed = text.trim();
   if (!trimmed || !ws || ws.readyState !== WebSocket.OPEN) return;
   try {
-    ws.send(JSON.stringify({ type: "user_log", key, text: trimmed }));
+	    ws.send(JSON.stringify({ type: "user_log", key, text: trimmed, conversation_url: observeConversationURL() }));
   } catch (error) {
     console.warn("[PierCode] 用户输入日志回传失败:", error);
   }
@@ -770,7 +862,7 @@ export function sendQuestionAnswer(callID: string, answer: string): boolean {
 		return false;
 	}
   try {
-    ws.send(JSON.stringify({ type: "question_answer", call_id: callID, answer }));
+    ws.send(JSON.stringify({ type: "question_answer", call_id: callID, answer, conversation_url: observeConversationURL() }));
     return true;
   } catch (error) {
     console.warn("[PierCode] question_answer 发送失败:", error);
@@ -786,7 +878,7 @@ export function sendQuestionCancel(callID: string, reason = "user_cancelled"): b
 		return false;
 	}
 	try {
-		ws.send(JSON.stringify({ type: "question_cancel", call_id: callID, reason }));
+			ws.send(JSON.stringify({ type: "question_cancel", call_id: callID, reason, conversation_url: observeConversationURL() }));
 		return true;
 	} catch (error) {
 		console.warn("[PierCode] question_cancel 发送失败:", error);
@@ -801,7 +893,7 @@ export function sendBrowserApprovalAnswer(approvalID: string, approved: boolean,
   }
   if (answeredBrowserApprovals.has(approvalID)) return true;
   try {
-    ws.send(JSON.stringify({ type: "browser_approval_answer", approval_id: approvalID, approved, reason }));
+	    ws.send(JSON.stringify({ type: "browser_approval_answer", approval_id: approvalID, approved, reason, conversation_url: observeConversationURL() }));
     answeredBrowserApprovals.add(approvalID);
     return true;
   } catch (error) {
@@ -819,7 +911,7 @@ export function sendAgentResult(agentId: string, status: string, summary: string
     return false;
   }
   try {
-    ws.send(JSON.stringify({ type: "agent_result", agent_id: agentId, status, summary, result }));
+	    ws.send(JSON.stringify({ type: "agent_result", agent_id: agentId, status, summary, result, conversation_url: observeConversationURL() }));
     return true;
   } catch (error) {
     console.warn("[PierCode] agent_result 发送失败:", error);
@@ -829,11 +921,50 @@ export function sendAgentResult(agentId: string, status: string, summary: string
 
 // 初始化
 export function initWsLinker() {
-  // 页面加载完成后尝试连接
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => startConnection());
-  } else {
-    startConnection();
+  startConversationURLWatcher();
+  // Resolve the worker agent id BEFORE connecting the WS. The id is encoded in
+  // the worker tab URL (?piercode_agent=<id>), but AI-site SPAs may strip the
+  // query before this content script captures it — so the WS would connect
+  // without ?agent=, the server would never bind/seed the worker, and the task
+  // would never be typed into the input. As a durable fallback, ask the
+  // background (which created the tab and parsed the id from the create URL)
+  // for this tab's agent id and persist it before connecting.
+  void ensureWorkerAgentIdResolved().finally(() => {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => startConnection());
+    } else {
+      startConnection();
+    }
+  });
+}
+
+// ensureWorkerAgentIdResolved fills in the worker agent id from the background
+// when the URL/sessionStorage didn't carry it. No-op (fast) for ordinary pages
+// and for worker pages that already have the id.
+async function ensureWorkerAgentIdResolved(): Promise<void> {
+  if (workerAgentId()) return; // already known (URL or sessionStorage)
+  try {
+    const res = await new Promise<{ agentId?: string } | undefined>(resolve => {
+      try {
+        chrome.runtime.sendMessage({ type: "GET_WORKER_AGENT_ID" }, reply => {
+          if (chrome.runtime.lastError) { resolve(undefined); return; }
+          resolve(reply);
+        });
+      } catch { resolve(undefined); }
+    });
+    const id = (res?.agentId || "").trim();
+    if (id) {
+      try { window.sessionStorage.setItem(WORKER_AGENT_STORAGE_KEY, id); } catch {}
+      cachedWorkerAgentId = id; // refresh the module cache so workerAgentId() returns it
+      // Notify the content script: it may have already decided this was NOT a
+      // worker page (URL query was stripped before index.ts read it) and skipped
+      // worker behavior (force-autoExecute, activate session). Let it re-apply.
+      try {
+        window.dispatchEvent(new CustomEvent("PIERCODE_WORKER_AGENT_RESOLVED", { detail: id }));
+      } catch {}
+    }
+  } catch {
+    // background unreachable; fall back to whatever the URL gave us (possibly none)
   }
 }
 
@@ -869,7 +1000,7 @@ export function sendBrowserAttachmentUploadResult(callID: string, ok: boolean, e
     return false;
   }
   try {
-    ws.send(JSON.stringify({ type: "browser_attachment_upload_result", call_id: callID, ok, error }));
+	    ws.send(JSON.stringify({ type: "browser_attachment_upload_result", call_id: callID, ok, error, conversation_url: observeConversationURL() }));
     return true;
   } catch (err) {
     console.warn("[PierCode] attachment upload result 发送失败:", err);

@@ -82,13 +82,15 @@ func New(config *types.Config) *Server {
 	if tm := s.executor.Tasks(); tm != nil {
 		tm.SubscribeChunks(func(taskID, callID, stream, text string) {
 			clientID := tm.SourceClientID(taskID)
+			conversationURL := tm.ConversationURL(taskID)
 			payload, err := json.Marshal(gin.H{
-				"type":      "tool_stream",
-				"task_id":   taskID,
-				"call_id":   callID,
-				"client_id": clientID,
-				"stream":    stream,
-				"text":      text,
+				"type":             "tool_stream",
+				"task_id":          taskID,
+				"call_id":          callID,
+				"client_id":        clientID,
+				"conversation_url": conversationURL,
+				"stream":           stream,
+				"text":             text,
 			})
 			if err == nil {
 				if clientID != "" {
@@ -100,15 +102,17 @@ func New(config *types.Config) *Server {
 		})
 		tm.SubscribeDone(func(taskID, callID string, exitCode int, status string, errMsg string, durationMs int64) {
 			clientID := tm.SourceClientID(taskID)
+			conversationURL := tm.ConversationURL(taskID)
 			payload, err := json.Marshal(gin.H{
-				"type":        "tool_done",
-				"task_id":     taskID,
-				"call_id":     callID,
-				"client_id":   clientID,
-				"exit_code":   exitCode,
-				"status":      status,
-				"error":       errMsg,
-				"duration_ms": durationMs,
+				"type":             "tool_done",
+				"task_id":          taskID,
+				"call_id":          callID,
+				"client_id":        clientID,
+				"conversation_url": conversationURL,
+				"exit_code":        exitCode,
+				"status":           status,
+				"error":            errMsg,
+				"duration_ms":      durationMs,
 			})
 			if err == nil {
 				if clientID != "" {
@@ -413,11 +417,12 @@ func (s *Server) handleExec(c *gin.Context) {
 	// connected extension can render it live in the corresponding ToolCard.
 	streamer := func(stream, text string) {
 		payload, err := json.Marshal(gin.H{
-			"type":      "tool_stream",
-			"call_id":   req.CallID,
-			"client_id": req.SourceClientID,
-			"stream":    stream,
-			"text":      text,
+			"type":             "tool_stream",
+			"call_id":          req.CallID,
+			"client_id":        req.SourceClientID,
+			"conversation_url": req.ConversationURL,
+			"stream":           stream,
+			"text":             text,
 		})
 		if err == nil {
 			if req.SourceClientID != "" {
@@ -563,7 +568,7 @@ func (s *Server) buildWorkerSeed(agentID, task string) string {
 	rootDir := s.config.GetRootDir()
 	prompt := string(profile.RenderWithSandbox(rootDir, s.config.GetPermissionMode(), s.config.GetAdditionalAllowedDirs(), s.executor.ListTools(), skill.LoadInfos(rootDir)))
 	return fmt.Sprintf(
-		"%s\n\n---\n\n## Your Task (agent_id: %s)\n\nEcho this exact agent_id in your result packet's `agent_id` field when you finish.\n\n%s",
+		"%s\n\n---\n\n## Worker Transport Reminder\n\nYou are in a browser AI page, but local project work is only available through visible Markdown `piercode-tool` blocks executed by the PierCode extension. Do not use host-native tools, Code Interpreter, Python sandbox, or hidden function calls for filesystem/shell/search/edit/test work. Before claiming that a local path is missing or inaccessible, you must have a PierCode tool result proving it.\n\n## Your Task (agent_id: %s)\n\nEcho this exact agent_id in your result packet's `agent_id` field when you finish.\n\n%s",
 		prompt, agentID, task,
 	)
 }
@@ -728,7 +733,7 @@ func (s *Server) handleAgentResult(agentID, status, summary, result string) {
 		summary = rec.Description
 	}
 	notification := buildTaskNotification(rec.AgentID, string(rec.Status), summary, result)
-	payload, err := json.Marshal(gin.H{"type": "inject", "text": notification})
+	payload, err := json.Marshal(gin.H{"type": "inject", "text": notification, "conversation_url": rec.DispatcherConversationURL})
 	if err != nil {
 		return
 	}

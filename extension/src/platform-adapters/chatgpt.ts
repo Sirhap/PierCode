@@ -1,4 +1,4 @@
-import { extractAllToolCalls, pushPierCodeTool } from './shared';
+import { extractAllToolCalls, pushPierCodeAgentResult, pushPierCodeTool } from './shared';
 import type { PlatformAdapter } from './types';
 
 export const chatGPTAdapter: PlatformAdapter = {
@@ -17,6 +17,10 @@ export const chatGPTAdapter: PlatformAdapter = {
         const count = extractAllToolCalls(text, buf);
         if (count > 0) return true;
       }
+    }
+
+    if ((tag === 'pre' || tag === 'code') && classAttr.includes('language-piercode-agent-result')) {
+      return pushPierCodeAgentResult(buf, el.textContent || '', true);
     }
 
     if ((tag === 'pre' || tag === 'code') &&

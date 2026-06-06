@@ -56,6 +56,16 @@ export function estimateContextTokens(ctx: ConversationContext): number {
   return ctx.messages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0);
 }
 
+export function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return trimFixed(n / 1_000_000, 2) + 'm';
+  if (n >= 1_000) return trimFixed(n / 1_000, 1) + 'k';
+  return String(n);
+}
+
+function trimFixed(n: number, digits: number): string {
+  return n.toFixed(digits).replace(/\.0+$|(?<=[1-9])0+$/, '');
+}
+
 export function parsePierCodeContextPacket(text: string): PierCodeContextPacket | null {
   const fenceMatch = text.match(CONTEXT_PACKET_FENCE_RE);
   if (fenceMatch) {
@@ -196,7 +206,7 @@ export function formatPierCodeContextPacketPrompt(ctx: ConversationContext, conf
     '',
     '保留关键路径、错误信息、测试结果、用户明确偏好；删除重复日志和冗长工具输出。',
     '',
-    `当前 PierCode 估算：${estimatedTokens} tokens / 阈值 ${config.maxContextTokens} tokens，消息数 ${messageCount}。`,
+    `当前 PierCode 估算：${formatTokenCount(estimatedTokens)} tokens / 阈值 ${formatTokenCount(config.maxContextTokens)} tokens，消息数 ${messageCount}。`,
     '',
     '输出格式必须是：',
     '<analysis>',
@@ -231,7 +241,7 @@ export function formatPierCodeContextPacketPrompt(ctx: ConversationContext, conf
 // 没有 init 时不提"运行说明"，免得空指引。
 function handoffIntro(hasInit: boolean): string {
   return hasInit
-    ? '这是一个由 PierCode 压缩并迁移过来的新会话。下面分两段：先是上次会话的压缩上下文，再是本会话的运行说明。请先读懂压缩上下文，再按运行说明继续执行。'
+    ? '这是一个由 PierCode 压缩并迁移过来的新会话。下面分两段：先是本会话的运行说明（初始化），再是上次会话的压缩上下文。请先读懂运行说明（工具协议/约束），再按压缩上下文里的 next_action / pending 继续执行。'
     : '这是一个由 PierCode 压缩并迁移过来的新会话。请从下面的压缩上下文继续，按其中的 next_action / pending 接续执行。';
 }
 
@@ -245,12 +255,11 @@ export function archiveContextFence(text: string): string {
 
 export function formatPacketHandoffPrompt(packetRaw: string, initPrompt = ''): string {
   const init = initPrompt.trim();
-  const parts: string[] = [
-    handoffIntro(Boolean(init)),
-    '',
-    '===== 上次会话压缩上下文（按其中的 next_action / pending 接续执行）=====',
-    archiveContextFence(packetRaw.trim()),
-  ];
+  // Init (tool protocol / run instructions) must come BEFORE the compressed
+  // context: the model needs the operating contract loaded first, then the
+  // task state to resume. Putting context first left the model without the
+  // tool protocol when it tried to act on next_action.
+  const parts: string[] = [handoffIntro(Boolean(init))];
   if (init) {
     parts.push(
       '',
@@ -258,6 +267,11 @@ export function formatPacketHandoffPrompt(packetRaw: string, initPrompt = ''): s
       init,
     );
   }
+  parts.push(
+    '',
+    '===== 上次会话压缩上下文（按其中的 next_action / pending 接续执行）=====',
+    archiveContextFence(packetRaw.trim()),
+  );
   return parts.join('\n');
 }
 
@@ -266,12 +280,8 @@ export function formatPacketHandoffPrompt(packetRaw: string, initPrompt = ''): s
 // 新会话后人看到一坨 \n。纯文本直发保留真换行，可读。
 export function formatQwenCompressedContextPrompt(summary: string, initPrompt = ''): string {
   const init = initPrompt.trim();
-  const parts: string[] = [
-    handoffIntro(Boolean(init)),
-    '',
-    '===== 上次会话压缩上下文 =====',
-    summary.trim(),
-  ];
+  // Same ordering rule as the packet handoff: init first, context after.
+  const parts: string[] = [handoffIntro(Boolean(init))];
   if (init) {
     parts.push(
       '',
@@ -279,6 +289,11 @@ export function formatQwenCompressedContextPrompt(summary: string, initPrompt = 
       init,
     );
   }
+  parts.push(
+    '',
+    '===== 上次会话压缩上下文 =====',
+    summary.trim(),
+  );
   return parts.join('\n');
 }
 

@@ -15,6 +15,25 @@ function thresholdOf(cfg: ContextCompressionConfig, platform: string): number {
   return typeof t === 'number' && t > 0 ? t : cfg.defaultMaxContextTokens
 }
 
+function formatTokenThresholdInput(tokens: number): string {
+  if (tokens >= 1_000) return trimFixed(tokens / 1_000, 1)
+  return String(Math.round(tokens))
+}
+
+function parseTokenThresholdInput(raw: string, fallback: number): number {
+  const text = raw.trim().toLowerCase()
+  if (!text) return fallback
+  const match = text.match(/^(\d+(?:\.\d+)?)$/)
+  if (!match) return fallback
+  const value = Number(match[1])
+  if (!Number.isFinite(value) || value <= 0) return fallback
+  return Math.round(value * 1_000)
+}
+
+function trimFixed(n: number, digits: number): string {
+  return n.toFixed(digits).replace(/\.0+$|(?<=[1-9])0+$/, '')
+}
+
 export function normalizeAuthUrl(raw: string): { baseUrl: string; token: string; port: number } {
   const trimmed = raw.trim()
   // 容错：用户可能只粘了 token（64 位 hex），而非完整认证 URL。
@@ -160,6 +179,7 @@ export default function App() {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(DEFAULT_PERMISSION_MODE)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [compression, setCompression] = useState<ContextCompressionConfig>(() => resolveContextCompressionConfig(undefined))
+  const [draftThresholds, setDraftThresholds] = useState<Record<string, string>>({})
 
   useEffect(() => {
     if (toast) {
@@ -416,14 +436,40 @@ export default function App() {
     persistCompression({ ...compression, enabled })
   }
 
-  // 阈值输入：万 token 为单位更好读（1 = 1万 tokens）。空/非法回退平台默认。
-  const handlePlatformThresholdChange = (platform: string, wan: number) => {
+  const handleCompressionTriggerModeChange = (confirm: boolean) => {
+    persistCompression({ ...compression, triggerMode: confirm ? 'confirm' : 'auto' })
+  }
+
+  const handleCompressionHandoffModeChange = (manual: boolean) => {
+    persistCompression({ ...compression, handoffMode: manual ? 'manual' : 'auto' })
+  }
+
+  // 阈值输入框以 k tokens 为单位，存储层仍保存完整 token 数。
+  const handlePlatformThresholdChange = (platform: string, raw: string) => {
     const fallback = DEFAULT_PLATFORM_THRESHOLDS[platform] ?? compression.defaultMaxContextTokens
-    const tokens = Number.isFinite(wan) && wan > 0 ? Math.round(wan * 10_000) : fallback
+    const tokens = parseTokenThresholdInput(raw, fallback)
     persistCompression({
       ...compression,
       perPlatformThresholds: { ...compression.perPlatformThresholds, [platform]: tokens },
     })
+  }
+
+  const getDraftThreshold = (key: string) =>
+    draftThresholds[key] ?? formatTokenThresholdInput(thresholdOf(compression, key))
+
+  const handleDraftThresholdChange = (key: string, val: string) =>
+    setDraftThresholds((prev) => ({ ...prev, [key]: val }))
+
+  const commitDraftThreshold = (key: string) => {
+    const raw = draftThresholds[key]
+    if (raw !== undefined) {
+      handlePlatformThresholdChange(key, raw)
+      setDraftThresholds((prev) => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
+    }
   }
 
   const handlePermissionModeChange = (mode: PermissionMode) => {
@@ -631,6 +677,22 @@ export default function App() {
               onChange={handleCompressionEnabledChange}
             />
             {compression.enabled && (
+              <Toggle
+                label="到阈值先确认"
+                desc="到阈值时弹卡让你选「压缩」或「跳过继续执行」；关闭则直接自动压缩"
+                checked={compression.triggerMode === 'confirm'}
+                onChange={handleCompressionTriggerModeChange}
+              />
+            )}
+            {compression.enabled && (
+              <Toggle
+                label="手动迁移（仅复制）"
+                desc="压缩出包后只复制到剪贴板，由你自己打开新会话粘贴；关闭则自动开新标签并发送"
+                checked={compression.handoffMode === 'manual'}
+                onChange={handleCompressionHandoffModeChange}
+              />
+            )}
+            {compression.enabled && (
               <div className="space-y-1.5">
                 {COMPRESSION_PLATFORM_LABELS.map(({ key, label }) => (
                   <div key={key} className="flex items-center gap-2 pl-0.5">
@@ -639,11 +701,15 @@ export default function App() {
                       type="number"
                       min={1}
                       step={1}
-                      value={Math.round(thresholdOf(compression, key) / 10_000)}
-                      onChange={(e) => handlePlatformThresholdChange(key, Number(e.target.value))}
-                      className="w-20 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-xs text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
+                      value={getDraftThreshold(key)}
+                      onChange={(e) => handleDraftThresholdChange(key, e.target.value)}
+                      onBlur={() => commitDraftThreshold(key)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                      }}
+                      className="w-24 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-xs text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
                     />
-                    <span className="text-[11px] text-gray-500">万 tokens</span>
+                    <span className="text-[11px] text-gray-500">k</span>
                   </div>
                 ))}
                 <div className="text-[11px] leading-snug text-gray-500 pl-0.5">

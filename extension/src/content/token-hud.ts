@@ -17,9 +17,13 @@ function ratioStyle(total: number, threshold: number): Ratio {
 }
 
 function fmt(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  if (n >= 1_000_000) return trimFixed(n / 1_000_000, 2) + 'm';
+  if (n >= 1_000) return trimFixed(n / 1_000, 1) + 'k';
   return String(n);
+}
+
+function trimFixed(n: number, digits: number): string {
+  return n.toFixed(digits).replace(/\.0+$|(?<=[1-9])0+$/, '');
 }
 
 class TokenHud {
@@ -29,6 +33,12 @@ class TokenHud {
   private expanded = false;
   private stealth = false;
   private last: { meter: TokenMeter; threshold: number; platform: string } | null = null;
+  private onDocumentMouseDown = (event: MouseEvent) => {
+    if (!this.expanded || !this.root) return;
+    const target = event.target;
+    if (target instanceof Node && this.root.contains(target)) return;
+    this.collapse();
+  };
 
   init(): void {
     if (this.root || typeof document === 'undefined') return;
@@ -56,8 +66,11 @@ class TokenHud {
   }
 
   destroy(): void {
+    document.removeEventListener('mousedown', this.onDocumentMouseDown, true);
     this.root?.remove();
     this.root = this.dot = this.panel = null;
+    this.expanded = false;
+    this.last = null;
   }
 
   private render(): void {
@@ -68,6 +81,7 @@ class TokenHud {
   private ensureDom(): void {
     if (this.root || typeof document === 'undefined' || !document.body) return;
     const root = document.createElement('div');
+    root.setAttribute('data-piercode-token-root', '');
     root.style.cssText = `all: initial; position: fixed; right: 16px; bottom: 16px; z-index: ${Z};`;
 
     const dot = document.createElement('button');
@@ -93,6 +107,7 @@ class TokenHud {
     root.appendChild(panel);
     root.appendChild(dot);
     document.body.appendChild(root);
+    document.addEventListener('mousedown', this.onDocumentMouseDown, true);
 
     this.root = root;
     this.dot = dot;
@@ -104,6 +119,14 @@ class TokenHud {
     this.expanded = !this.expanded;
     try {
       chrome.storage?.local?.set({ [HUD_STORAGE_KEY]: this.expanded });
+    } catch {}
+    this.paint();
+  }
+
+  private collapse(): void {
+    this.expanded = false;
+    try {
+      chrome.storage?.local?.set({ [HUD_STORAGE_KEY]: false });
     } catch {}
     this.paint();
   }

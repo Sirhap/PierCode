@@ -6,25 +6,27 @@ import (
 )
 
 type ToolRequest struct {
-	Name           string                 `json:"name"`
-	CallID         string                 `json:"call_id,omitempty"`
-	Args           map[string]interface{} `json:"args"`
-	Reason         string                 `json:"reason,omitempty"`
-	Profile        string                 `json:"profile,omitempty"`
-	SourceClientID string                 `json:"client_id,omitempty"`
+	Name            string                 `json:"name"`
+	CallID          string                 `json:"call_id,omitempty"`
+	Args            map[string]interface{} `json:"args"`
+	Reason          string                 `json:"reason,omitempty"`
+	Profile         string                 `json:"profile,omitempty"`
+	SourceClientID  string                 `json:"client_id,omitempty"`
+	ConversationURL string                 `json:"conversation_url,omitempty"`
 }
 
 func (r *ToolRequest) UnmarshalJSON(data []byte) error {
 	type raw struct {
-		Name      string                 `json:"name"`
-		CallID    string                 `json:"call_id"`
-		CallIDAlt string                 `json:"callId"`
-		Args      map[string]interface{} `json:"args"`
-		Arguments map[string]interface{} `json:"arguments"`
-		Reason    string                 `json:"reason,omitempty"`
-		Profile   string                 `json:"profile,omitempty"`
-		Adapter   string                 `json:"adapter,omitempty"`
-		ClientID  string                 `json:"client_id,omitempty"`
+		Name            string                 `json:"name"`
+		CallID          string                 `json:"call_id"`
+		CallIDAlt       string                 `json:"callId"`
+		Args            map[string]interface{} `json:"args"`
+		Arguments       map[string]interface{} `json:"arguments"`
+		Reason          string                 `json:"reason,omitempty"`
+		Profile         string                 `json:"profile,omitempty"`
+		Adapter         string                 `json:"adapter,omitempty"`
+		ClientID        string                 `json:"client_id,omitempty"`
+		ConversationURL string                 `json:"conversation_url,omitempty"`
 	}
 	var v raw
 	if err := json.Unmarshal(data, &v); err != nil {
@@ -43,6 +45,7 @@ func (r *ToolRequest) UnmarshalJSON(data []byte) error {
 		r.Profile = v.Adapter
 	}
 	r.SourceClientID = v.ClientID
+	r.ConversationURL = v.ConversationURL
 	if v.Args != nil {
 		r.Args = v.Args
 	} else {

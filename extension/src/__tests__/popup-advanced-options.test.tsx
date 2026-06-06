@@ -97,4 +97,20 @@ describe('popup advanced options', () => {
     expect(storageSet).toHaveBeenCalledWith({ stealthMode: false });
     expect(storageData.stealthMode).toBe(false);
   });
+
+  it('shows context compression thresholds as numeric k-token inputs', async () => {
+    await renderPopup();
+
+    await act(async () => {
+      const advancedButton = Array.from(document.querySelectorAll('button')).find((button) =>
+        button.textContent?.includes('高级选项')
+      ) as HTMLButtonElement | undefined;
+      advancedButton?.click();
+    });
+
+    const thresholdInputs = Array.from(document.querySelectorAll('input[type="number"]')) as HTMLInputElement[];
+    expect(thresholdInputs.map((input) => input.value)).toEqual(['256', '128']);
+    expect(thresholdInputs.map((input) => input.step)).toEqual(['1', '1']);
+    expect(Array.from(document.querySelectorAll('span')).filter((span) => span.textContent === 'k')).toHaveLength(2);
+  });
 });

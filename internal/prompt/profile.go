@@ -105,9 +105,8 @@ func DefaultProfileRegistry(defaultPrompt []byte) *ProfileRegistry {
 	// trusted embedded prompt bytes, not files from the writable workspace.
 	registry := NewProfileRegistry(defaultPrompt)
 	registry.Register(Profile{
-		ID:             "qwen",
-		PromptAppend:   prompts.QwenPromptAppend,
-		ContextHandoff: qwenContextPacketReminder,
+		ID:           "qwen",
+		PromptAppend: prompts.QwenPromptAppend,
 	})
 	// Worker profile: a sub-agent dispatched into its own AI tab. It inherits
 	// the default prompt, gets the worker role + result-packet contract via

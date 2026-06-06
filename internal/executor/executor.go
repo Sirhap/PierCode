@@ -247,6 +247,7 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 		toolCtx.BroadcastToClient = *bp
 	}
 	toolCtx.SourceClientID = req.SourceClientID
+	toolCtx.ConversationURL = req.ConversationURL
 
 	unlock := e.lockForTool(req.Name)
 	result := t.Execute(toolCtx)

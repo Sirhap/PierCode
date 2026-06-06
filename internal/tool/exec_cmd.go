@@ -228,11 +228,12 @@ func (t *ExecCmdTool) executeBackground(ctx *Context, cmd string, result *Result
 		}
 	}
 	spec := TaskSpec{
-		CallID:         callID,
-		SourceClientID: ctx.SourceClientID,
-		Command:        cmd,
-		Dir:            t.config.GetRootDir(),
-		Timeout:        taskTimeout,
+		CallID:          callID,
+		SourceClientID:  ctx.SourceClientID,
+		ConversationURL: ctx.ConversationURL,
+		Command:         cmd,
+		Dir:             t.config.GetRootDir(),
+		Timeout:         taskTimeout,
 	}
 	id, err := ctx.TaskRunner.Start(spec)
 	if err != nil {

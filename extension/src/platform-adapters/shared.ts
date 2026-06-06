@@ -22,6 +22,13 @@ export function pushPierCodeTool(buf: string[], text: string, trim = false): boo
   return true;
 }
 
+export function pushPierCodeAgentResult(buf: string[], text: string, trim = false): boolean {
+  const code = trim ? text.trim() : text;
+  if (!code) return false;
+  buf.push('\n```piercode-agent-result\n' + code + '\n```\n');
+  return true;
+}
+
 export function extractMonacoText(container: Element): ExtractedCodeText {
   const hasOverflow = !!container.querySelector('.mtkoverflow');
 

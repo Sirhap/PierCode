@@ -87,13 +87,15 @@ func TestTaskManagerPreservesSourceClientID(t *testing.T) {
 	skipOnWindows(t)
 	tm := NewTaskManager()
 	defer tm.Close()
+	conversationURL := "https://chat.qwen.ai/c/task-route-test"
 
 	id, err := tm.Start(tool.TaskSpec{
-		CallID:         "task-route-test",
-		SourceClientID: "client-a",
-		Command:        "echo ok",
-		Dir:            t.TempDir(),
-		Timeout:        5 * time.Second,
+		CallID:          "task-route-test",
+		SourceClientID:  "client-a",
+		ConversationURL: conversationURL,
+		Command:         "echo ok",
+		Dir:             t.TempDir(),
+		Timeout:         5 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -108,8 +110,14 @@ func TestTaskManagerPreservesSourceClientID(t *testing.T) {
 	if got := tm.SourceClientID(id); got != "client-a" {
 		t.Fatalf("expected client-a from SourceClientID, got %q", got)
 	}
+	if got := tm.ConversationURL(id); got != conversationURL {
+		t.Fatalf("expected %q from ConversationURL, got %q", conversationURL, got)
+	}
 	if got := tm.Get(id).Snapshot().SourceClientID; got != "client-a" {
 		t.Fatalf("expected client-a in task summary, got %q", got)
+	}
+	if got := tm.Get(id).Snapshot().ConversationURL; got != conversationURL {
+		t.Fatalf("expected conversation url in task summary, got %q", got)
 	}
 
 	found := false
@@ -118,6 +126,9 @@ func TestTaskManagerPreservesSourceClientID(t *testing.T) {
 			found = true
 			if snap.SourceClientID != "client-a" {
 				t.Fatalf("expected client-a in task snapshot, got %q", snap.SourceClientID)
+			}
+			if snap.ConversationURL != conversationURL {
+				t.Fatalf("expected conversation url in task snapshot, got %q", snap.ConversationURL)
 			}
 		}
 	}
@@ -131,6 +142,9 @@ func TestTaskManagerPreservesSourceClientID(t *testing.T) {
 	}
 	if snap.SourceClientID != "client-a" {
 		t.Fatalf("expected client-a in GetSnapshot, got %q", snap.SourceClientID)
+	}
+	if snap.ConversationURL != conversationURL {
+		t.Fatalf("expected conversation url in GetSnapshot, got %q", snap.ConversationURL)
 	}
 }
 

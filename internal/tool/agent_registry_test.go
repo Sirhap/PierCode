@@ -8,12 +8,20 @@ import (
 
 func TestAgentRegistryCreateBindAndResult(t *testing.T) {
 	r := NewAgentRegistry()
-	rec := r.Create("dispatcher-1", "qwen", "chat.qwen.ai", "fix bug", "the task")
+	dispatcherURL := "https://chat.qwen.ai/c/abc"
+	rec := r.Create("dispatcher-1", dispatcherURL, "qwen", "chat.qwen.ai", "fix bug", "the task")
 	if rec.AgentID == "" {
 		t.Fatal("Create should generate an agent id")
 	}
 	if rec.Status != AgentPending {
 		t.Fatalf("new agent should be pending, got %s", rec.Status)
+	}
+	if rec.DispatcherConversationURL != dispatcherURL {
+		t.Fatalf("dispatcher conversation url = %q, want %q", rec.DispatcherConversationURL, dispatcherURL)
+	}
+	summaries := r.List("dispatcher-1")
+	if len(summaries) != 1 || summaries[0].DispatcherConversationURL != dispatcherURL {
+		t.Fatalf("summary should preserve dispatcher conversation url, got %+v", summaries)
 	}
 
 	if !r.BindWorker(rec.AgentID, "worker-9") {
@@ -42,7 +50,7 @@ func TestAgentRegistryResultStatusMapping(t *testing.T) {
 	}
 	for packetStatus, want := range cases {
 		r := NewAgentRegistry()
-		rec := r.Create("d", "qwen", "", "x", "y")
+		rec := r.Create("d", "", "qwen", "", "x", "y")
 		got, ok := r.RecordResult(rec.AgentID, packetStatus, "r")
 		if !ok || got.Status != want {
 			t.Errorf("status %q -> %s, want %s", packetStatus, got.Status, want)
@@ -68,9 +76,9 @@ func TestAgentRegistryUnknownAgent(t *testing.T) {
 
 func TestAgentRegistryListByDispatcher(t *testing.T) {
 	r := NewAgentRegistry()
-	r.Create("d1", "qwen", "", "a", "t")
-	r.Create("d1", "chatgpt", "", "b", "t")
-	r.Create("d2", "qwen", "", "c", "t")
+	r.Create("d1", "", "qwen", "", "a", "t")
+	r.Create("d1", "", "chatgpt", "", "b", "t")
+	r.Create("d2", "", "qwen", "", "c", "t")
 
 	if got := len(r.List("d1")); got != 2 {
 		t.Errorf("d1 should have 2 agents, got %d", got)
@@ -91,7 +99,7 @@ func TestAgentRegistryConcurrentCreate(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			rec := r.Create(fmt.Sprintf("d%d", n), "qwen", "", "x", "y")
+			rec := r.Create(fmt.Sprintf("d%d", n), "", "qwen", "", "x", "y")
 			ids <- rec.AgentID
 		}(i)
 	}
@@ -111,7 +119,7 @@ func TestAgentRegistryConcurrentCreate(t *testing.T) {
 
 func TestAgentRegistryMarkSeededOnce(t *testing.T) {
 	r := NewAgentRegistry()
-	rec := r.Create("d", "qwen", "", "x", "y")
+	rec := r.Create("d", "", "qwen", "", "x", "y")
 	if !r.MarkSeeded(rec.AgentID) {
 		t.Fatal("first MarkSeeded should win")
 	}
@@ -125,7 +133,7 @@ func TestAgentRegistryMarkSeededOnce(t *testing.T) {
 
 func TestAgentRegistryIsWorkerClient(t *testing.T) {
 	r := NewAgentRegistry()
-	rec := r.Create("dispatcher-1", "qwen", "", "x", "y")
+	rec := r.Create("dispatcher-1", "", "qwen", "", "x", "y")
 	if r.IsWorkerClient("dispatcher-1") {
 		t.Error("dispatcher should not be flagged as a worker")
 	}
@@ -143,7 +151,7 @@ func TestAgentRegistryIsWorkerClient(t *testing.T) {
 
 func TestSpawnAgentRefusesWorkerCaller(t *testing.T) {
 	r := NewAgentRegistry()
-	rec := r.Create("d", "qwen", "", "x", "y")
+	rec := r.Create("d", "", "qwen", "", "x", "y")
 	r.BindWorker(rec.AgentID, "worker-c")
 
 	spawn := NewSpawnAgentTool()

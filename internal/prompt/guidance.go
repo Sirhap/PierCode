@@ -15,10 +15,6 @@ const (
 
 	taskCheckpointReminder = "\n\n[任务状态快照提示] 如果当前任务已跨多步或上下文变长，请在下一次回复中简短保留：目标、已完成事项、已改文件、验证结果、下一步/阻塞；必要时用 `todo_write`/`todo_read` 同步待办。"
 
-	// qwenContextPacketReminder is wired onto the qwen profile's ContextHandoff
-	// in DefaultProfileRegistry; it is not referenced by adapter id anywhere.
-	qwenContextPacketReminder = "\n\n[Qwen 上下文迁移提示] 如果你判断当前会话上下文接近上限，或 PierCode 要求压缩上下文，只输出一个 ```piercode-context fenced JSON block；JSON 内包含 version、reason、goal、completed、current_state、key_files、evidence、pending、constraints、next_action；不要输出 XML wrapper，不要输出 `piercode-tool`，不要继续原任务。PierCode 会解析该 packet、打开新会话并发送过去。"
-
 	// workerResultPacketReminder is wired onto the worker profile's ContextHandoff
 	// in DefaultProfileRegistry. It nudges a dispatched worker to close out with
 	// the result packet the coordinator is waiting on.

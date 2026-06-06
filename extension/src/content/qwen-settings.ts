@@ -51,11 +51,31 @@ export const DEFAULT_PLATFORM_THRESHOLDS: Record<string, number> = {
   mimo: 128_000,
 };
 
+// triggerMode: 到阈值后是直接自动压缩('auto')，还是弹确认卡让用户选择是否压缩
+// ('confirm'，默认)。confirm 下不选「压缩」就继续执行任务，不打断。
+// handoffMode: 压缩出包后，自动填入并发送到新会话('auto'，默认)，还是只把包复制
+// 到剪贴板、由用户自己打开新会话粘贴('manual')。manual 下不自动开标签、不自动发送。
+export type CompressionTriggerMode = 'auto' | 'confirm';
+export type CompressionHandoffMode = 'auto' | 'manual';
+
+export const DEFAULT_COMPRESSION_TRIGGER_MODE: CompressionTriggerMode = 'confirm';
+export const DEFAULT_COMPRESSION_HANDOFF_MODE: CompressionHandoffMode = 'auto';
+
 export interface ContextCompressionConfig {
   enabled: boolean;
   perPlatformThresholds: Record<string, number>;
   defaultMaxContextTokens: number;
   maxSummaryTokens: number;
+  triggerMode: CompressionTriggerMode;
+  handoffMode: CompressionHandoffMode;
+}
+
+function sanitizeTriggerMode(value: unknown): CompressionTriggerMode {
+  return value === 'auto' || value === 'confirm' ? value : DEFAULT_COMPRESSION_TRIGGER_MODE;
+}
+
+function sanitizeHandoffMode(value: unknown): CompressionHandoffMode {
+  return value === 'auto' || value === 'manual' ? value : DEFAULT_COMPRESSION_HANDOFF_MODE;
 }
 
 function sanitizeThresholds(value: unknown): Record<string, number> {
@@ -81,6 +101,8 @@ export function resolveContextCompressionConfig(
     perPlatformThresholds: { ...DEFAULT_PLATFORM_THRESHOLDS },
     defaultMaxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
     maxSummaryTokens: DEFAULT_MAX_SUMMARY_TOKENS,
+    triggerMode: DEFAULT_COMPRESSION_TRIGGER_MODE,
+    handoffMode: DEFAULT_COMPRESSION_HANDOFF_MODE,
   };
 
   if (!value || typeof value !== 'object') {
@@ -91,6 +113,8 @@ export function resolveContextCompressionConfig(
         perPlatformThresholds: { ...DEFAULT_PLATFORM_THRESHOLDS, qwen: legacy.maxContextTokens },
         defaultMaxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
         maxSummaryTokens: legacy.maxSummaryTokens,
+        triggerMode: DEFAULT_COMPRESSION_TRIGGER_MODE,
+        handoffMode: DEFAULT_COMPRESSION_HANDOFF_MODE,
       };
     }
     return defaults;
@@ -108,6 +132,8 @@ export function resolveContextCompressionConfig(
       typeof cfg.maxSummaryTokens === 'number' && cfg.maxSummaryTokens > 0
         ? Math.round(cfg.maxSummaryTokens)
         : defaults.maxSummaryTokens,
+    triggerMode: sanitizeTriggerMode(cfg.triggerMode),
+    handoffMode: sanitizeHandoffMode(cfg.handoffMode),
   };
 }
 

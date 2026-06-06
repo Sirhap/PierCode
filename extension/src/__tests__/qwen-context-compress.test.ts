@@ -6,6 +6,7 @@ import {
   extractContextPacketFields,
   formatPacketHandoffPrompt,
   formatPierCodeContextPacketPrompt,
+  formatTokenCount,
   formatQwenCompressedContextPrompt,
   generateSummary,
   parsePierCodeContextPacket,
@@ -45,6 +46,13 @@ describe('qwen context compression helpers', () => {
 
   it('estimates mixed text tokens without returning zero for non-empty text', () => {
     expect(estimateTokens('hello 世界')).toBeGreaterThan(0);
+  });
+
+  it('formats token counts with compact k/m units', () => {
+    expect(formatTokenCount(999)).toBe('999');
+    expect(formatTokenCount(128_000)).toBe('128k');
+    expect(formatTokenCount(1_000_000)).toBe('1m');
+    expect(formatTokenCount(1_250_000)).toBe('1.25m');
   });
 
   it('keeps compressed summaries within the requested token budget', () => {
@@ -162,6 +170,17 @@ describe('qwen context compression helpers', () => {
     expect(prompt).toContain('不要输出 `piercode-tool`');
   });
 
+  it('shows compact token counts in the compression request', () => {
+    const prompt = formatPierCodeContextPacketPrompt({
+      messages: [{ role: 'user', content: 'a'.repeat(512_000), timestamp: 1 }],
+      totalChars: 0,
+      lastCompressedAt: 0,
+    }, { enabled: true, maxContextTokens: 1_000_000, maxSummaryTokens: 100 });
+
+    expect(prompt).toContain('阈值 1m tokens');
+    expect(prompt).not.toContain('阈值 1000000 tokens');
+  });
+
   it('asks for a chronological <analysis> scratchpad before the JSON packet', () => {
     const prompt = formatPierCodeContextPacketPrompt({
       messages: [{ role: 'user', content: 'x', timestamp: 1 }],
@@ -232,17 +251,19 @@ describe('qwen context compression helpers', () => {
     expect(payload).not.toContain('```piercode-context');
     expect(payload).not.toContain('compressed_context_handoff');
     expect(payload).not.toContain('<compressed_context>');
-    expect(payload.indexOf('压缩上下文')).toBeLessThan(payload.indexOf('INIT PROMPT'));
+    // init 段必须在压缩上下文段之前：模型需要先加载工具协议/运行说明，再接续任务状态。
+    // 用 ===== 段落标题比较，避免被开场白里同时出现的两个词干扰。
+    expect(payload.indexOf('运行说明（初始化）')).toBeLessThan(payload.indexOf('上次会话压缩上下文'));
   });
 
   it('labels init vs compressed-context sections so they are not confused', () => {
     const payload = formatQwenCompressedContextPrompt('压缩摘要', 'INIT PROMPT');
 
     // 必须明确区分"运行说明(初始化)"和"上次会话压缩上下文"，否则新会话会把
-    // 两段当成一团。压缩上下文段落必须出现在运行说明段落之前。
+    // 两段当成一团。运行说明段落必须出现在压缩上下文段落之前。
     expect(payload).toContain('运行说明');
     expect(payload).toContain('压缩上下文');
-    expect(payload.indexOf('压缩上下文')).toBeLessThan(payload.indexOf('运行说明'));
+    expect(payload.indexOf('运行说明（初始化）')).toBeLessThan(payload.indexOf('上次会话压缩上下文'));
   });
 
   it('omits the init-prompt section entirely when no init prompt is provided', () => {
@@ -279,9 +300,10 @@ describe('qwen context compression helpers', () => {
     const payload = formatPacketHandoffPrompt(packetRaw, 'INIT PROMPT');
 
     // 初始化(运行说明)和上次会话压缩上下文必须分段标注，避免混在一起。
+    // 运行说明在前，压缩上下文在后。
     expect(payload).toContain('运行说明');
     expect(payload).toContain('压缩上下文');
-    expect(payload.indexOf('压缩上下文')).toBeLessThan(payload.indexOf('运行说明'));
+    expect(payload.indexOf('运行说明（初始化）')).toBeLessThan(payload.indexOf('上次会话压缩上下文'));
   });
 
   it('omits the init-prompt section in packet handoff when no init prompt', () => {

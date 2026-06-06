@@ -6,6 +6,8 @@ const { window } = dom;
 globalThis.window = window as any;
 globalThis.document = window.document;
 globalThis.HTMLElement = window.HTMLElement;
+globalThis.Node = window.Node;
+globalThis.MouseEvent = window.MouseEvent;
 
 const storage = new Map<string, unknown>();
 (globalThis as any).chrome = {
@@ -56,11 +58,12 @@ describe('status-panel render', () => {
   it('shows provider and tokens when expanded', () => {
     statusPanel.init();
     statusPanel.setProvider('claude', 'claude');
-    statusPanel.setMeter({ input: 100, output: 50, total: 150, accuracy: 'estimate' }, 1000);
+    statusPanel.setMeter({ input: 100_000, output: 50_000, total: 150_000, accuracy: 'estimate' }, 1_000_000);
     statusPanel.expandForTest();
     const text = document.querySelector('[data-piercode-status-root]')!.textContent!;
     expect(text).toContain('claude');
-    expect(text).toContain('150');
+    expect(text).toContain('150k');
+    expect(text).toContain('1m');
   });
 
   it('renders controlled tab info', () => {
@@ -77,5 +80,21 @@ describe('status-panel render', () => {
     statusPanel.configure({ stealth: true });
     const root = document.querySelector('[data-piercode-status-root]') as HTMLElement;
     expect(root.style.display).toBe('none');
+  });
+
+  it('collapses when clicking outside the panel', () => {
+    statusPanel.init();
+    statusPanel.setProvider('chatgpt', 'chatgpt');
+    const root = document.querySelector('[data-piercode-status-root]') as HTMLElement;
+    const dot = root.querySelector('button') as HTMLButtonElement;
+
+    dot.click();
+    expect(root.textContent).toContain('PierCode 状态');
+
+    document.body.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+
+    const panel = root.querySelector('div') as HTMLElement;
+    expect(panel.style.display).toBe('none');
+    expect(storage.get('statusPanelExpanded')).toBe(false);
   });
 });

@@ -30,15 +30,16 @@ const (
 // Task is a single background command launch. It is safe for concurrent
 // reads via Snapshot; mutation happens only from the task's own goroutine.
 type Task struct {
-	ID             string
-	CallID         string
-	SourceClientID string
-	Command        string
-	Dir            string
-	StartedAt      time.Time
-	EndedAt        time.Time
-	ExitCode       int
-	ErrMsg         string
+	ID              string
+	CallID          string
+	SourceClientID  string
+	ConversationURL string
+	Command         string
+	Dir             string
+	StartedAt       time.Time
+	EndedAt         time.Time
+	ExitCode        int
+	ErrMsg          string
 
 	mu        sync.Mutex
 	status    TaskStatus
@@ -51,17 +52,18 @@ type Task struct {
 
 // TaskSummary is a JSON-friendly snapshot, used by /tasks endpoints.
 type TaskSummary struct {
-	ID             string `json:"id"`
-	CallID         string `json:"call_id,omitempty"`
-	SourceClientID string `json:"client_id,omitempty"`
-	Command        string `json:"command"`
-	Status         string `json:"status"`
-	StartedAt      string `json:"started_at"`
-	EndedAt        string `json:"ended_at,omitempty"`
-	ExitCode       int    `json:"exit_code,omitempty"`
-	ErrMsg         string `json:"error,omitempty"`
-	StdoutSize     int    `json:"stdout_size"`
-	StderrSize     int    `json:"stderr_size"`
+	ID              string `json:"id"`
+	CallID          string `json:"call_id,omitempty"`
+	SourceClientID  string `json:"client_id,omitempty"`
+	ConversationURL string `json:"conversation_url,omitempty"`
+	Command         string `json:"command"`
+	Status          string `json:"status"`
+	StartedAt       string `json:"started_at"`
+	EndedAt         string `json:"ended_at,omitempty"`
+	ExitCode        int    `json:"exit_code,omitempty"`
+	ErrMsg          string `json:"error,omitempty"`
+	StdoutSize      int    `json:"stdout_size"`
+	StderrSize      int    `json:"stderr_size"`
 }
 
 // Snapshot returns the current state of the task in a JSON-friendly form.
@@ -69,16 +71,17 @@ func (t *Task) Snapshot() TaskSummary {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	s := TaskSummary{
-		ID:             t.ID,
-		CallID:         t.CallID,
-		SourceClientID: t.SourceClientID,
-		Command:        t.Command,
-		Status:         string(t.status),
-		StartedAt:      t.StartedAt.Format(time.RFC3339),
-		ExitCode:       t.ExitCode,
-		ErrMsg:         t.ErrMsg,
-		StdoutSize:     len(t.stdoutBuf),
-		StderrSize:     len(t.stderrBuf),
+		ID:              t.ID,
+		CallID:          t.CallID,
+		SourceClientID:  t.SourceClientID,
+		ConversationURL: t.ConversationURL,
+		Command:         t.Command,
+		Status:          string(t.status),
+		StartedAt:       t.StartedAt.Format(time.RFC3339),
+		ExitCode:        t.ExitCode,
+		ErrMsg:          t.ErrMsg,
+		StdoutSize:      len(t.stdoutBuf),
+		StderrSize:      len(t.stderrBuf),
 	}
 	if !t.EndedAt.IsZero() {
 		s.EndedAt = t.EndedAt.Format(time.RFC3339)
@@ -321,15 +324,16 @@ func (m *TaskManager) Start(spec tool.TaskSpec) (string, error) {
 	}
 
 	t := &Task{
-		ID:             id,
-		CallID:         spec.CallID,
-		SourceClientID: spec.SourceClientID,
-		Command:        spec.Command,
-		Dir:            spec.Dir,
-		StartedAt:      time.Now(),
-		status:         TaskRunning,
-		cancel:         cancel,
-		doneCh:         make(chan struct{}),
+		ID:              id,
+		CallID:          spec.CallID,
+		SourceClientID:  spec.SourceClientID,
+		ConversationURL: spec.ConversationURL,
+		Command:         spec.Command,
+		Dir:             spec.Dir,
+		StartedAt:       time.Now(),
+		status:          TaskRunning,
+		cancel:          cancel,
+		doneCh:          make(chan struct{}),
 	}
 
 	m.mu.Lock()
@@ -355,6 +359,18 @@ func (m *TaskManager) SourceClientID(id string) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.SourceClientID
+}
+
+func (m *TaskManager) ConversationURL(id string) string {
+	m.mu.RLock()
+	t, ok := m.tasks[id]
+	m.mu.RUnlock()
+	if !ok {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.ConversationURL
 }
 
 // Stop cancels a running task. Returns ErrTaskNotFound if the id is unknown
@@ -763,16 +779,17 @@ func (m *TaskManager) GetSnapshot(id string) (tool.TaskSnapshot, string, string,
 
 func taskSummaryToSnapshot(s TaskSummary) tool.TaskSnapshot {
 	return tool.TaskSnapshot{
-		ID:             s.ID,
-		CallID:         s.CallID,
-		SourceClientID: s.SourceClientID,
-		Command:        s.Command,
-		Status:         s.Status,
-		StartedAt:      s.StartedAt,
-		EndedAt:        s.EndedAt,
-		ExitCode:       s.ExitCode,
-		ErrMsg:         s.ErrMsg,
-		StdoutSize:     s.StdoutSize,
-		StderrSize:     s.StderrSize,
+		ID:              s.ID,
+		CallID:          s.CallID,
+		SourceClientID:  s.SourceClientID,
+		ConversationURL: s.ConversationURL,
+		Command:         s.Command,
+		Status:          s.Status,
+		StartedAt:       s.StartedAt,
+		EndedAt:         s.EndedAt,
+		ExitCode:        s.ExitCode,
+		ErrMsg:          s.ErrMsg,
+		StdoutSize:      s.StdoutSize,
+		StderrSize:      s.StderrSize,
 	}
 }

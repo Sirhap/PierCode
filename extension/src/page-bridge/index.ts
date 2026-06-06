@@ -1,9 +1,30 @@
 const MONACO_REQUEST = 'PIERCODE_MONACO_TEXT_REQUEST';
 const MONACO_RESPONSE = 'PIERCODE_MONACO_TEXT_RESPONSE';
 
+// Keep-alive visibility shim. Chrome heavily throttles background tabs and —
+// worse — AI sites themselves listen for `visibilitychange` / `document.hidden`
+// to pause their streaming (SSE) response rendering when the tab is not focused.
+// That is why a worker tab (or any background AI tab) "stops returning streaming
+// output" until brought to the front. We spoof the page into believing it is
+// always visible/focused and swallow the hide signals, so generation keeps
+// flowing in the background. (Electron multi-AI apps like ai-gate get this for
+// free because hidden BrowserViews are not throttled; a Chrome extension must
+// fake it at the page level.)
+//
+// Applied to every supported AI host, not just Qwen. The hosts list mirrors the
+// manifest content_scripts matches.
+const KEEP_ALIVE_HOSTS = [
+  'qwen.ai', 'qwenlm.ai',
+  'chatgpt.com', 'chat.openai.com',
+  'claude.ai', 'free.easychat.top',
+  'gemini.google.com', 'aistudio.google.com',
+  'kimi.com', 'chat.z.ai',
+  'aistudio.xiaomimimo.com',
+];
+
 function installKeepAliveVisibilityShim(): void {
   const host = location.hostname.toLowerCase();
-  if (!host.includes('qwen.ai') && !host.includes('qwenlm.ai')) return;
+  if (!KEEP_ALIVE_HOSTS.some(h => host.includes(h))) return;
   if ((window as any).__PIERCODE_KEEP_ALIVE_SHIM__) return;
   (window as any).__PIERCODE_KEEP_ALIVE_SHIM__ = true;
 

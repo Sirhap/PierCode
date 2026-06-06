@@ -58,11 +58,27 @@ export const DEFAULT_PLATFORM_THRESHOLDS: Record<string, number> = {
   mimo: 128_000,
 };
 
+export type CompressionTriggerMode = 'auto' | 'confirm';
+export type CompressionHandoffMode = 'auto' | 'manual';
+
+export const DEFAULT_COMPRESSION_TRIGGER_MODE: CompressionTriggerMode = 'confirm';
+export const DEFAULT_COMPRESSION_HANDOFF_MODE: CompressionHandoffMode = 'auto';
+
 export interface ContextCompressionConfig {
   enabled: boolean;
   perPlatformThresholds: Record<string, number>;
   defaultMaxContextTokens: number;
   maxSummaryTokens: number;
+  triggerMode: CompressionTriggerMode;
+  handoffMode: CompressionHandoffMode;
+}
+
+function sanitizeTriggerMode(value: unknown): CompressionTriggerMode {
+  return value === 'auto' || value === 'confirm' ? value : DEFAULT_COMPRESSION_TRIGGER_MODE;
+}
+
+function sanitizeHandoffMode(value: unknown): CompressionHandoffMode {
+  return value === 'auto' || value === 'manual' ? value : DEFAULT_COMPRESSION_HANDOFF_MODE;
 }
 
 function sanitizeThresholds(value: unknown): Record<string, number> {
@@ -88,6 +104,8 @@ export function resolveContextCompressionConfig(
     perPlatformThresholds: { ...DEFAULT_PLATFORM_THRESHOLDS },
     defaultMaxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
     maxSummaryTokens: DEFAULT_MAX_SUMMARY_TOKENS,
+    triggerMode: DEFAULT_COMPRESSION_TRIGGER_MODE,
+    handoffMode: DEFAULT_COMPRESSION_HANDOFF_MODE,
   };
 
   if (!value || typeof value !== 'object') {
@@ -98,6 +116,8 @@ export function resolveContextCompressionConfig(
         perPlatformThresholds: { ...DEFAULT_PLATFORM_THRESHOLDS, qwen: legacy.maxContextTokens },
         defaultMaxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
         maxSummaryTokens: legacy.maxSummaryTokens,
+        triggerMode: DEFAULT_COMPRESSION_TRIGGER_MODE,
+        handoffMode: DEFAULT_COMPRESSION_HANDOFF_MODE,
       };
     }
     return defaults;
@@ -115,6 +135,8 @@ export function resolveContextCompressionConfig(
       typeof cfg.maxSummaryTokens === 'number' && cfg.maxSummaryTokens > 0
         ? Math.round(cfg.maxSummaryTokens)
         : defaults.maxSummaryTokens,
+    triggerMode: sanitizeTriggerMode(cfg.triggerMode),
+    handoffMode: sanitizeHandoffMode(cfg.handoffMode),
   };
 }
 

@@ -103,6 +103,8 @@ describe('resolveContextCompressionConfig', () => {
       perPlatformThresholds: { ...DEFAULT_PLATFORM_THRESHOLDS },
       defaultMaxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
       maxSummaryTokens: DEFAULT_MAX_SUMMARY_TOKENS,
+      triggerMode: 'confirm',
+      handoffMode: 'auto',
     });
   });
 
@@ -131,6 +133,16 @@ describe('resolveContextCompressionConfig', () => {
     expect(cfg.perPlatformThresholds.qwen).toBe(DEFAULT_PLATFORM_THRESHOLDS.qwen);
     expect(cfg.perPlatformThresholds.bogus).toBeUndefined();
     expect(cfg.defaultMaxContextTokens).toBe(90_000);
+  });
+
+  it('keeps valid trigger/handoff modes and rejects invalid ones', () => {
+    const valid = resolveContextCompressionConfig({ triggerMode: 'auto', handoffMode: 'manual' });
+    expect(valid.triggerMode).toBe('auto');
+    expect(valid.handoffMode).toBe('manual');
+
+    const invalid = resolveContextCompressionConfig({ triggerMode: 'nope', handoffMode: 42 as unknown as string });
+    expect(invalid.triggerMode).toBe('confirm');
+    expect(invalid.handoffMode).toBe('auto');
   });
 
   it('falls back to defaults for invalid scalar fields', () => {
@@ -179,6 +191,8 @@ describe('settings.ts <-> content/qwen-settings.ts compression parity', () => {
       [undefined, { enabled: false, maxContextTokens: 333_000, maxSummaryTokens: 7_000 }],
       [{ enabled: true, perPlatformThresholds: { chatgpt: 64_000, qwen: -5, bogus: 'x' }, defaultMaxContextTokens: 90_000, maxSummaryTokens: 12_000 }, undefined],
       [{ enabled: 'yes', defaultMaxContextTokens: -1, maxSummaryTokens: 0 }, undefined],
+      [{ enabled: true, triggerMode: 'auto', handoffMode: 'manual' }, undefined],
+      [{ triggerMode: 'bogus', handoffMode: 99 }, undefined],
     ];
     for (const [value, legacy] of samples) {
       expect(leaf.resolveContextCompressionConfig(value, legacy))

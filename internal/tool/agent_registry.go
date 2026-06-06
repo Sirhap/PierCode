@@ -23,42 +23,45 @@ const (
 // is the coordinator AI page that spawned it; the worker is the new AI page that
 // runs the task. Both are WebSocket clients identified by their client id.
 type AgentRecord struct {
-	AgentID            string
-	DispatcherClientID string // coordinator page that spawned this worker
-	WorkerClientID     string // worker page; empty until bound
-	Platform           string // target AI platform (e.g. "qwen", "chatgpt")
-	Host               string // worker tab host, used for late binding
-	Description        string
-	Task               string
-	Status             AgentStatus
-	CreatedAt          time.Time
-	BoundAt            time.Time
-	EndedAt            time.Time
-	LastResult         string // last result packet text from the worker
-	seeded             bool   // task already injected once; guards reconnect re-seed
+	AgentID                   string
+	DispatcherClientID        string // coordinator page that spawned this worker
+	DispatcherConversationURL string
+	WorkerClientID            string // worker page; empty until bound
+	Platform                  string // target AI platform (e.g. "qwen", "chatgpt")
+	Host                      string // worker tab host, used for late binding
+	Description               string
+	Task                      string
+	Status                    AgentStatus
+	CreatedAt                 time.Time
+	BoundAt                   time.Time
+	EndedAt                   time.Time
+	LastResult                string // last result packet text from the worker
+	seeded                    bool   // task already injected once; guards reconnect re-seed
 }
 
 // AgentSummary is a JSON-friendly snapshot for tool output and /agents routes.
 type AgentSummary struct {
-	AgentID            string `json:"agent_id"`
-	DispatcherClientID string `json:"dispatcher_client_id,omitempty"`
-	WorkerClientID     string `json:"worker_client_id,omitempty"`
-	Platform           string `json:"platform,omitempty"`
-	Description        string `json:"description,omitempty"`
-	Status             string `json:"status"`
-	CreatedAt          string `json:"created_at"`
-	EndedAt            string `json:"ended_at,omitempty"`
+	AgentID                   string `json:"agent_id"`
+	DispatcherClientID        string `json:"dispatcher_client_id,omitempty"`
+	DispatcherConversationURL string `json:"dispatcher_conversation_url,omitempty"`
+	WorkerClientID            string `json:"worker_client_id,omitempty"`
+	Platform                  string `json:"platform,omitempty"`
+	Description               string `json:"description,omitempty"`
+	Status                    string `json:"status"`
+	CreatedAt                 string `json:"created_at"`
+	EndedAt                   string `json:"ended_at,omitempty"`
 }
 
 func (r *AgentRecord) summary() AgentSummary {
 	s := AgentSummary{
-		AgentID:            r.AgentID,
-		DispatcherClientID: r.DispatcherClientID,
-		WorkerClientID:     r.WorkerClientID,
-		Platform:           r.Platform,
-		Description:        r.Description,
-		Status:             string(r.Status),
-		CreatedAt:          r.CreatedAt.Format(time.RFC3339),
+		AgentID:                   r.AgentID,
+		DispatcherClientID:        r.DispatcherClientID,
+		DispatcherConversationURL: r.DispatcherConversationURL,
+		WorkerClientID:            r.WorkerClientID,
+		Platform:                  r.Platform,
+		Description:               r.Description,
+		Status:                    string(r.Status),
+		CreatedAt:                 r.CreatedAt.Format(time.RFC3339),
 	}
 	if !r.EndedAt.IsZero() {
 		s.EndedAt = r.EndedAt.Format(time.RFC3339)
@@ -81,19 +84,20 @@ func NewAgentRegistry() *AgentRegistry {
 
 // Create registers a new pending agent and returns its record. The agent id is
 // generated here so spawn_agent can seed it into the worker's task prompt.
-func (r *AgentRegistry) Create(dispatcherClientID, platform, host, description, task string) *AgentRecord {
+func (r *AgentRegistry) Create(dispatcherClientID, dispatcherConversationURL, platform, host, description, task string) *AgentRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seq++
 	rec := &AgentRecord{
-		AgentID:            fmt.Sprintf("agent-%d-%d", time.Now().UnixNano(), r.seq),
-		DispatcherClientID: dispatcherClientID,
-		Platform:           platform,
-		Host:               host,
-		Description:        description,
-		Task:               task,
-		Status:             AgentPending,
-		CreatedAt:          time.Now(),
+		AgentID:                   fmt.Sprintf("agent-%d-%d", time.Now().UnixNano(), r.seq),
+		DispatcherClientID:        dispatcherClientID,
+		DispatcherConversationURL: dispatcherConversationURL,
+		Platform:                  platform,
+		Host:                      host,
+		Description:               description,
+		Task:                      task,
+		Status:                    AgentPending,
+		CreatedAt:                 time.Now(),
 	}
 	r.agents[rec.AgentID] = rec
 	return rec

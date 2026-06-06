@@ -883,10 +883,26 @@ async function listBrowserTabs(includeAiPages: boolean): Promise<{ tabs: ReturnT
   };
 }
 
+// Maps a worker tab id to its agent id. spawn_agent encodes the id into the tab
+// URL (?piercode_agent=<id>), but AI-site SPAs may strip the query before the
+// content script reads it. The background parses it from the create URL here so
+// the worker content can recover it durably via GET_WORKER_AGENT_ID.
+const workerAgentIdByTabId = new Map<number, string>();
+
+function parsePiercodeAgentId(url: string): string {
+  try {
+    return new URL(url).searchParams.get('piercode_agent') || '';
+  } catch {
+    return '';
+  }
+}
+
 async function createControlledTab(url: string) {
   const tab = await chrome.tabs.create({ url: url || 'about:blank', active: false });
   if (!tab.id) throw new Error('created tab has no id');
   controlledTabId = tab.id;
+  const agentId = parsePiercodeAgentId(url);
+  if (agentId) workerAgentIdByTabId.set(tab.id, agentId);
   await waitForTabComplete(tab.id, 30000).catch(() => undefined);
   const fresh = await chrome.tabs.get(tab.id);
   setBrowserRelayStatus({ state: browserWs?.readyState === WebSocket.OPEN ? 'open' : 'closed' });
@@ -1050,6 +1066,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     });
     return true;
   }
+  if (msg.type === 'GET_WORKER_AGENT_ID') {
+    // Worker content asks for its agent id when the URL query was stripped by the
+    // site SPA before it could read ?piercode_agent. Look it up by the sender's
+    // tab id (recorded at createControlledTab).
+    const tabId = _sender?.tab?.id;
+    const agentId = typeof tabId === 'number' ? (workerAgentIdByTabId.get(tabId) || '') : '';
+    sendResponse({ agentId });
+    return true;
+  }
+  if (msg.type === 'GET_CONTROLLED_TAB') {
+    if (controlledTabId == null) {
+      sendResponse({ type: 'PIERCODE_CONTROLLED_TAB', info: null });
+    } else {
+      chrome.tabs.get(controlledTabId)
+        .then(tab => sendResponse(buildControlledTabMessage(tab)))
+        .catch(() => sendResponse({ type: 'PIERCODE_CONTROLLED_TAB', info: null }));
+    }
+    return true;
+  }
   if (msg.type === 'FOCUS_SELF') {
     // FOCUS_SELF from content script: default to non-intrusive mode
     focusSenderTab(_sender, { forceFocus: msg.forceFocus === true })
@@ -1110,6 +1145,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 chrome.tabs.onRemoved.addListener(tabId => {
   attachedTabs.delete(tabId);
   perTabQueues.delete(tabId);
+  workerAgentIdByTabId.delete(tabId);
   if (controlledTabId === tabId) {
     controlledTabId = null;
     setBrowserRelayStatus({ state: browserWs?.readyState === WebSocket.OPEN ? 'open' : 'closed' });
@@ -1120,6 +1156,7 @@ chrome.tabs.onRemoved.addListener(tabId => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (controlledTabId !== tabId) return;
   if (changeInfo.url || changeInfo.title || changeInfo.status === 'complete') {
+    void broadcastControlledTab();
     sendBrowserMessage({
       type: 'browser_event',
       event: 'tab_updated',

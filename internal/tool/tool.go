@@ -70,7 +70,8 @@ type Context struct {
 
 	// SourceClientID is the WebSocket client id of the AI page that initiated
 	// this tool call, when the call came through the browser extension.
-	SourceClientID string
+	SourceClientID  string
+	ConversationURL string
 
 	// Agents, if set, is the registry of dispatched worker agents. The
 	// spawn_agent / send_to_agent / stop_agent tools use it to track and
@@ -175,26 +176,28 @@ type TaskRunner interface {
 // TaskSnapshot mirrors executor.TaskSummary in a tool-package-local form so
 // task_list / task_output tools can render results without a package cycle.
 type TaskSnapshot struct {
-	ID             string
-	CallID         string
-	SourceClientID string
-	Command        string
-	Status         string
-	StartedAt      string
-	EndedAt        string
-	ExitCode       int
-	ErrMsg         string
-	StdoutSize     int
-	StderrSize     int
+	ID              string
+	CallID          string
+	SourceClientID  string
+	ConversationURL string
+	Command         string
+	Status          string
+	StartedAt       string
+	EndedAt         string
+	ExitCode        int
+	ErrMsg          string
+	StdoutSize      int
+	StderrSize      int
 }
 
 // TaskSpec describes a single background command launch.
 type TaskSpec struct {
-	CallID         string
-	SourceClientID string
-	Command        string
-	Dir            string
-	Timeout        time.Duration
+	CallID          string
+	SourceClientID  string
+	ConversationURL string
+	Command         string
+	Dir             string
+	Timeout         time.Duration
 	// OnChunk, OnDone are invoked from the task's own goroutine.
 	OnChunk func(stream, text string)
 	OnDone  func(exitCode int, durationMs int64, errMsg string)

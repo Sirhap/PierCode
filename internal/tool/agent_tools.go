@@ -78,7 +78,7 @@ func NewSpawnAgentTool() Tool {
 				platform = defaultPlatformFor(ctx.SourceClientID)
 			}
 
-			rec := ctx.Agents.Create(ctx.SourceClientID, platform, "", desc, task)
+			rec := ctx.Agents.Create(ctx.SourceClientID, ctx.ConversationURL, platform, "", desc, task)
 			workerURL, err := resolvePlatformURL(platform, rec.AgentID)
 			if err != nil {
 				ctx.Agents.SetStatus(rec.AgentID, AgentFailed)

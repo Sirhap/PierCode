@@ -2,6 +2,7 @@ import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseTo
 import { extractMonacoText, findQwenToolBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, sendAgentResult } from './ws-linker';
+import { isConversationURLForCurrentPage, observeConversationURL, getConversationKey } from './conversation-scope';
 import { visualIndicator } from './visual-indicator';
 import { statusPanel, type ControlledTabInfo } from './status-panel';
 import { computeMeter } from './token-meter';
@@ -16,6 +17,7 @@ import {
   formatPacketHandoffPrompt,
   formatPierCodeContextPacketPrompt,
   formatQwenCompressedContextPrompt,
+  formatTokenCount,
   parsePierCodeContextPacket,
   PierCodeContextPacket
 } from './qwen-context-compress';
@@ -51,6 +53,16 @@ const MONACO_REQUEST = 'PIERCODE_MONACO_TEXT_REQUEST';
 const MONACO_RESPONSE = 'PIERCODE_MONACO_TEXT_RESPONSE';
 
 let pageBridgeInjected = false;
+
+// Inject page-bridge as early as possible (document_start). It installs the
+// keep-alive visibility shim in page context BEFORE the AI site's own scripts
+// attach their `visibilitychange`/`document.hidden` listeners — otherwise a
+// background/worker tab gets throttled and the site pauses its streaming
+// response. Must run before the site mounts; later injection (post-init) is too
+// late to beat the site's listeners on some platforms.
+try {
+  injectPageBridgeEarly();
+} catch {}
 let monacoIdSeq = 0;
 let monacoRequestSeq = 0;
 const CONTEXT_INVALID_MESSAGE = '扩展已失效，请刷新页面';
@@ -62,6 +74,8 @@ let responseSessionActivatedAt = 0;
 let qwenConversationCtx: ConversationContext | null = null;
 let compressionInProgress = false;
 let compressionConfigCache: ContextCompressionConfig | null = null;
+let lastObservedConversationURL = '';
+const conversationCtxByURL = new Map<string, ConversationContext>();
 // 熔断器（借鉴 Claude Code MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES）：连续 N 次压缩
 // 失败就停止触发，根治"无限压缩/无限开新会话"——避免上下文不可恢复时每条消息
 // 都徒劳重试。成功一次即重置。
@@ -73,6 +87,31 @@ const handledContextPacketHashes = new Set<number>();
 // 消息计入预算。设此一次性标记让那一条不触发压缩，避免"刚注入初始化就立刻又压缩"
 // 的环（尤其低阈值时）。仍计入预算用于显示，只是不触发。
 let suppressNextCompressionTrigger = false;
+// confirm 模式下，用户已对「当前这一轮超阈值」做过选择（压缩或跳过），在 token
+// 进一步增长越过下一格之前不再重复弹卡，避免每条消息都打断。压缩成功或会话切换时重置。
+let compressionConfirmPending = false;
+let compressionPromptedAtTokens = 0;
+// Set true when the user clicks 取消 on the in-progress compression card. Each
+// await boundary in triggerContextCompression checks it and bails early so a slow
+// model packet / new-session open can be abandoned mid-flight.
+let compressionAborted = false;
+
+// cancelCompression aborts an in-flight compression: stops waiting on the model
+// packet and signals the run to abandon at its next checkpoint.
+function cancelCompression(): void {
+  if (!compressionInProgress) return;
+  compressionAborted = true;
+  clearPendingContextPacketWaiter();
+  compressionStatusCard.set('cancelled');
+}
+
+// confirm 模式：到阈值后是否需要再次弹确认卡。用户点「跳过」后，要等 token 比上次
+// 提示时显著增长（再涨 10%）才再次提示，否则视为同一轮，不重复打断。
+function shouldPromptCompressionAgain(usedTokens: number): boolean {
+  if (compressionConfirmPending) return false;
+  if (compressionPromptedAtTokens === 0) return true;
+  return usedTokens >= compressionPromptedAtTokens * 1.1;
+}
 
 // 是否对当前平台启用上下文压缩。目前 Qwen + ChatGPT 已验证 DOM 捕获/新会话注入；
 // 其余平台默认关闭，避免误触发把没追踪全的上下文压坏。
@@ -81,8 +120,29 @@ function isCompressionPlatform(): boolean {
   return COMPRESSION_PLATFORMS.has(platformAdapter.name);
 }
 
+function syncConversationStateForCurrentURL(): void {
+  // Key conversation state by the migration-stable conversation key, not the raw
+  // URL. Otherwise the /new -> /chat/<uuid> flip would re-key mid-conversation,
+  // orphaning the history built on /new and resetting the token meter to empty.
+  const current = getConversationKey();
+  if (!current || current === lastObservedConversationURL) return;
+
+  if (lastObservedConversationURL && qwenConversationCtx) {
+    conversationCtxByURL.set(lastObservedConversationURL, qwenConversationCtx);
+  }
+
+  lastObservedConversationURL = current;
+  qwenConversationCtx = conversationCtxByURL.get(current) ?? null;
+  handledContextPacketHashes.clear();
+  // New conversation surface: forget any pending compression confirm prompt.
+  compressionConfirmPending = false;
+  compressionPromptedAtTokens = 0;
+  compressionConfirmCard.dismiss();
+}
+
 function updateQwenContext(role: 'user' | 'assistant' | 'system', content: string, sourceKey?: string, sourceEl?: Element): void {
   if (!isCompressionPlatform()) return;
+  syncConversationStateForCurrentURL();
   const clean = content.trim();
   if (!clean) return;
   if (!qwenConversationCtx) {
@@ -106,6 +166,9 @@ function updateQwenContext(role: 'user' | 'assistant' | 'system', content: strin
   } else {
     qwenConversationCtx.messages.push({ role, content: clean, timestamp: Date.now() });
     qwenConversationCtx.totalChars += clean.length;
+  }
+  if (lastObservedConversationURL) {
+    conversationCtxByURL.set(lastObservedConversationURL, qwenConversationCtx);
   }
 
   if (role === 'assistant' && maybeHandleQwenContextPacket(clean, sourceEl)) {
@@ -224,9 +287,27 @@ async function maybeTriggerQwenContextCompression(): Promise<void> {
   // 用精确 token 计量（tiktoken，未就绪回退字符估算）判断是否到阈值，
   // 取代旧的纯字符 shouldCompress。
   const used = computeMeter(qwenConversationCtx, platformAdapter.name).total;
-  if (used >= platformThreshold(config)) {
-    await triggerContextCompression(config);
+  if (used < platformThreshold(config)) return;
+
+  if (config.triggerMode === 'confirm') {
+    // 手动确认模式：弹卡让用户选「压缩」还是「跳过继续执行」。不自动压缩。
+    if (!shouldPromptCompressionAgain(used)) return;
+    compressionConfirmPending = true;
+    compressionPromptedAtTokens = used;
+    compressionConfirmCard.show(used, platformThreshold(config), {
+      onCompress: () => {
+        compressionConfirmPending = false;
+        void triggerContextCompression(config);
+      },
+      onSkip: () => {
+        compressionConfirmPending = false;
+        // 保留 compressionPromptedAtTokens，等再涨 10% 才重新提示。
+      },
+    });
+    return;
   }
+
+  await triggerContextCompression(config);
 }
 
 async function triggerContextCompression(config?: ContextCompressionConfig): Promise<void> {
@@ -235,19 +316,26 @@ async function triggerContextCompression(config?: ContextCompressionConfig): Pro
   if (!resolvedConfig.enabled) return;
   const legacyConfig = legacyShapeForPlatform(resolvedConfig);
   compressionInProgress = true;
-  compressionStatusCard.set('requesting');
+  compressionAborted = false;
+  // Starting a real compression run clears the confirm-prompt gate.
+  compressionConfirmPending = false;
+  compressionPromptedAtTokens = 0;
+  compressionConfirmCard.dismiss();
+  compressionStatusCard.set('requesting', undefined, { onCancel: cancelCompression });
 
   try {
     // 让模型自压缩：第一次按标准提示词，超时未出包则用更强约束重试一次，
     // 仍失败才退化到本地 DOM 摘要兜底（质量低很多）。
     const basePrompt = formatPierCodeContextPacketPrompt(qwenConversationCtx, legacyConfig);
     let packet = await requestContextPacketFromModel(basePrompt, 60000);
+    if (compressionAborted) return;
     if (!packet) {
       console.warn('[PierCode] 首次未按时输出上下文包，加强约束重试一次');
-      compressionStatusCard.set('retrying');
+      compressionStatusCard.set('retrying', undefined, { onCancel: cancelCompression });
       const strictPrompt = '现在只允许输出一个 `piercode-context` fenced JSON，'
         + '不要任何解释、寒暄、Markdown 标题或工具调用。\n\n' + basePrompt;
       packet = await requestContextPacketFromModel(strictPrompt, 45000);
+      if (compressionAborted) return;
     }
 
     if (packet) {
@@ -256,14 +344,16 @@ async function triggerContextCompression(config?: ContextCompressionConfig): Pro
     }
 
     console.warn('[PierCode] 两次未输出上下文包，使用本地摘要兜底');
-    compressionStatusCard.set('local_fallback');
+    compressionStatusCard.set('local_fallback', undefined, { onCancel: cancelCompression });
     const { summary, newContext } = await compressAndPrepareNewSession(
       qwenConversationCtx,
       (s) => console.log('[PierCode] 生成摘要:', s.slice(0, 200) + '...'),
       legacyConfig
     );
+    if (compressionAborted) return;
     qwenConversationCtx = newContext;
     const initPrompt = await fetchInitPromptForCurrentProfile();
+    if (compressionAborted) return;
     const payload = formatQwenCompressedContextPrompt(summary, initPrompt);
     await openNewSessionWithPayload(payload, '上下文已本地压缩，并已发送到新会话');
   } catch (err) {
@@ -274,6 +364,7 @@ async function triggerContextCompression(config?: ContextCompressionConfig): Pro
   } finally {
     clearPendingContextPacketWaiter();
     compressionInProgress = false;
+    compressionAborted = false;
   }
 }
 
@@ -321,6 +412,22 @@ async function openContextPacketInNewSession(packet: PierCodeContextPacket, reas
 
 // 在新标签开会话并把最终 payload 注入。payload 由调用方按路径(packet/本地摘要)构造好。
 async function openNewSessionWithPayload(payload: string, successMessage: string): Promise<void> {
+  if (compressionAborted) return;
+  // 手动 handoff 模式：只把压缩结果复制到剪贴板并提示用户，不自动开标签、不自动发送。
+  // 用户自己打开新会话粘贴。
+  const cfg = await loadCompressionConfig();
+  if (cfg.handoffMode === 'manual') {
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(payload);
+      copied = true;
+    } catch {}
+    compressionConsecutiveFailures = 0;
+    compressionStatusCard.set('manual', copied ? '已复制到剪贴板，请自行打开新会话粘贴' : '复制失败，请手动复制状态卡内容');
+    showToast(copied ? '压缩上下文已复制到剪贴板，请打开新会话粘贴' : '压缩完成，但复制到剪贴板失败', 6000);
+    return;
+  }
+
   compressionStatusCard.set('opening');
   try {
     await navigator.clipboard.writeText(payload);
@@ -439,6 +546,26 @@ function injectPageBridge(): void {
   if (pageBridgeInjected) return;
   pageBridgeInjected = true;
   injectPageScript('page-bridge.js');
+}
+
+// Minimal, dependency-free page-bridge injection for the earliest document_start
+// moment (before checkContext / DOM helpers are needed). Idempotent with
+// injectPageBridge via the shared pageBridgeInjected guard.
+function injectPageBridgeEarly(): void {
+  if (pageBridgeInjected) return;
+  if (typeof document === 'undefined') return;
+  const root = document.head || document.documentElement;
+  if (!root) return;
+  try {
+    if (!chrome?.runtime?.id) return;
+  } catch {
+    return;
+  }
+  pageBridgeInjected = true;
+  const script = document.createElement('script');
+  script.src = chrome.runtime.getURL('page-bridge.js');
+  script.onload = () => script.remove();
+  root.appendChild(script);
 }
 
 function normalizeCodeText(text: string): string {
@@ -1209,6 +1336,11 @@ if (!(window as any).__PIERCODE_LOADED__) {
     try {
       statusPanel.init();
       statusPanel.setProvider(platformAdapter.name, platformProfile);
+      chrome.runtime?.sendMessage?.({ type: 'GET_CONTROLLED_TAB' }, (msg) => {
+        if (msg?.type === 'PIERCODE_CONTROLLED_TAB') {
+          statusPanel.setControlledTab((msg.info ?? null) as ControlledTabInfo | null);
+        }
+      });
       startTokenRefresh();
     } catch (err) {
       console.warn('[PierCode] 状态面板初始化失败:', err);
@@ -1359,19 +1491,35 @@ let tokenRefreshTimer: ReturnType<typeof setInterval> | null = null;
 // 不必等下一个 3s tick。
 function refreshTokenMeterNow(): void {
   try {
+    syncConversationStateForCurrentURL();
     const ctx = scanConversation();
     const meter = computeMeter(ctx, platformAdapter.name);
     statusPanel.setMeter(meter, tokenThreshold());
   } catch {}
 }
+let tokenVisibilityListenerBound = false;
 function startTokenRefresh(): void {
   if (tokenRefreshTimer) return;
   void loadCompressionConfig(); // 预热缓存，让 tokenThreshold 用上真实平台阈值
   refreshTokenMeterNow();
   tokenRefreshTimer = setInterval(refreshTokenMeterNow, 3000);
+  // 后台标签页的 setInterval 会被 Chrome 节流，导致面板数据停留在切走前的旧值。
+  // 标签页重新可见时立即重算一次，保证每个标签切回来看到的是自己会话的最新数据。
+  if (!tokenVisibilityListenerBound && typeof document !== 'undefined') {
+    tokenVisibilityListenerBound = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') refreshTokenMeterNow();
+    });
+  }
 }
 
 function getConversationId(): string {
+  // Stable conversation identity that survives the /new -> /chat/<uuid> SPA
+  // migration. Using a migration-stable key keeps exec dedup (isExecuted) keys
+  // consistent across the URL flip, so a refresh after migration does not re-run
+  // already-executed tools (the old pathname-derived id changed across the flip).
+  const key = getConversationKey();
+  if (key) return key;
   const m = location.pathname.match(/\/(?:chat|c)\/([^/?#]+)/) || location.search.match(/[?&]id=([^&]+)/);
   return m ? m[1] : `${location.hostname}${location.pathname}${location.search}`;
 }
@@ -1411,6 +1559,7 @@ async function executeToolCallRaw(toolCall: any): Promise<string | null> {
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
   const request = withPlatformProfile(toolCall);
   const response = await bgFetch(apiEndpoint(apiUrl, '/exec'), { method: 'POST', headers, body: JSON.stringify(request) });
+  if (!isConversationURLForCurrentPage(request.conversation_url)) return null;
   if (response.status === 401) return '认证失败，请在插件中重新输入 Token';
   if (!response.ok) return `[PierCode 错误] HTTP ${response.status}`;
   const result = JSON.parse(response.body);
@@ -1444,6 +1593,8 @@ async function executeToolCallReturn(toolCall: any): Promise<ToolExecutionResult
       body: JSON.stringify(request)
     });
 
+    if (!isConversationURLForCurrentPage(request.conversation_url)) return { output: '', stopStream: false, sendable: false };
+
     if (response.status === 401) return { output: '认证失败，请在插件中重新输入 Token', stopStream: false, sendable: true };
     if (!response.ok) return { output: `[PierCode 错误] HTTP ${response.status}`, stopStream: false, sendable: true };
 
@@ -1458,15 +1609,75 @@ async function executeToolCallReturn(toolCall: any): Promise<ToolExecutionResult
   }
 }
 
+// 注入工具卡动画样式（一次）。状态点脉冲动画给「执行中/后台执行」用。
+let toolCardAnimStylesInjected = false;
+function ensureToolCardAnimStyles(): void {
+  if (toolCardAnimStylesInjected) return;
+  if (typeof document === 'undefined' || !document.head) return;
+  const style = document.createElement('style');
+  style.setAttribute('data-piercode-tool-card-anim', '');
+  style.textContent = `
+@keyframes piercodeCardPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.5); opacity: 0.5; }
+}
+`;
+  document.head.appendChild(style);
+  toolCardAnimStylesInjected = true;
+}
+
+// Locate the actual rendered code block (`<pre>` / platform container) inside
+// `sourceEl` whose text is this tool call's JSON. We decorate that block in place
+// instead of inserting a separate card above the message — so the animated
+// status/collapse sits right on the AI's ```piercode-tool block. Match by
+// call_id first (most specific), then by the tool name + a JSON shape, then any
+// pre that looks like a tool fence. Returns null if no block can be pinpointed
+// (callers fall back to inserting above the message).
+function findToolBlockElement(sourceEl: Element, data: any): HTMLElement | null {
+  const callId = getToolCallId(data);
+  const name = String(data?.name || '');
+  const candidates = Array.from(
+    sourceEl.querySelectorAll<HTMLElement>(
+      'pre, .qwen-markdown-code, .language-piercode-tool, .language-tool'
+    )
+  ).filter(el => !el.closest('[data-piercode-key]')); // skip already-decorated
+
+  const looksLikeTool = (t: string) => t.includes('"name"') || t.includes('piercode-tool') || t.includes("'name'");
+  // 1) exact call_id match
+  if (callId) {
+    for (const el of candidates) {
+      const t = el.textContent || '';
+      if (looksLikeTool(t) && t.includes(callId)) return el;
+    }
+  }
+  // 2) name match
+  if (name) {
+    for (const el of candidates) {
+      const t = el.textContent || '';
+      if (looksLikeTool(t) && t.includes(`"${name}"`)) return el;
+    }
+  }
+  // 3) any tool-shaped block
+  for (const el of candidates) {
+    if (looksLikeTool(el.textContent || '')) return el;
+  }
+  return null;
+}
+
 function renderToolCard(data: any, _full: string, sourceEl: Element, key: string, processed: Set<string>) {
   data = ensureToolCallId(data, key);
+
+  // Prefer in-place decoration of the AI's ```piercode-tool code block. Fall back
+  // to inserting above the message only when the block can't be located.
+  const blockEl = findToolBlockElement(sourceEl, data);
   // Find stable anchor: message-content's parent, which Angular doesn't rebuild
   const messageContent = sourceEl.closest('message-content') ?? sourceEl.closest('.prose') ?? sourceEl;
-  const anchor = messageContent.parentElement ?? sourceEl.parentElement;
+  const anchor = blockEl?.parentElement ?? messageContent.parentElement ?? sourceEl.parentElement;
   if (!anchor) return;
 
   // Prevent duplicate cards
   if (anchor.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`)) return;
+  if (blockEl?.getAttribute('data-piercode-decorated') === '1') return;
 
   ensureStreamDispatchers();
 
@@ -1474,6 +1685,8 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   const card = document.createElement('div');
   card.setAttribute('data-piercode-key', key);
   card.style.cssText = 'border:1px solid #313244;border-radius:10px;padding:12px 14px;margin:10px 0;background:#1e1e2e;color:#cdd6f4;font-size:13px;box-shadow:0 2px 10px rgba(0,0,0,0.25);font-family:system-ui,-apple-system,sans-serif';
+
+  ensureToolCardAnimStyles();
 
   const header = document.createElement('div');
   header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px';
@@ -1485,10 +1698,44 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   callId.style.cssText = 'color:#6c7086;font-size:11px;font-family:monospace';
   callId.textContent = `#${getToolCallId(data)}`;
   header.appendChild(callId);
+
+  // 状态药丸：展示 未执行/执行中/已执行/后台执行/失败 + 动画。
+  const statePill = document.createElement('span');
+  statePill.style.cssText = 'margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;border-radius:999px;padding:2px 10px';
+  const stateDot = document.createElement('span');
+  stateDot.style.cssText = 'width:7px;height:7px;border-radius:50%;flex-shrink:0';
+  const stateText = document.createElement('span');
+  statePill.append(stateDot, stateText);
+  header.appendChild(statePill);
+
+  type CardState = 'pending' | 'running' | 'background' | 'done' | 'error';
+  const STATE_META: Record<CardState, { label: string; color: string; pulse: boolean }> = {
+    pending:    { label: '未执行',   color: '#9399b2', pulse: false },
+    running:    { label: '执行中',   color: '#f9e2af', pulse: true },
+    background: { label: '后台执行', color: '#a6e3a1', pulse: true },
+    done:       { label: '已执行',   color: '#a6e3a1', pulse: false },
+    error:      { label: '失败',     color: '#f38ba8', pulse: false },
+  };
+  function setCardState(s: CardState): void {
+    const meta = STATE_META[s];
+    statePill.style.background = meta.color + '22';
+    statePill.style.color = meta.color;
+    stateDot.style.background = meta.color;
+    stateDot.style.animation = meta.pulse ? 'piercodeCardPulse 1s ease-in-out infinite' : 'none';
+    stateText.textContent = meta.label;
+  }
+  setCardState('pending');
   card.appendChild(header);
 
+  // 折叠区：工具名/id 已在 header 识别出来；参数详情默认隐藏，点标题展开。
+  const details = document.createElement('details');
+  details.style.cssText = 'margin:8px 0;background:#181825;border-radius:6px;padding:0';
+  const summary = document.createElement('summary');
+  summary.style.cssText = 'cursor:pointer;list-style:none;padding:6px 8px;font-size:11px;color:#6c7086;user-select:none';
+  summary.textContent = '参数详情（点击展开）';
+  details.appendChild(summary);
   const argsBox = document.createElement('div');
-  argsBox.style.cssText = 'margin:8px 0;background:#181825;border-radius:6px;padding:8px';
+  argsBox.style.cssText = 'padding:8px';
   if (String(data.name).toLowerCase() === 'todo_write' && Array.isArray(args.todos)) {
     renderTodoChecklist(argsBox, args.todos);
   } else {
@@ -1506,7 +1753,31 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
       argsBox.appendChild(row);
     }
   }
-  card.appendChild(argsBox);
+  details.appendChild(argsBox);
+  card.appendChild(details);
+
+  // In-place mode: hide the AI's raw ```piercode-tool code block (the long JSON)
+  // by default and tuck it under a second collapsible inside the card. The user
+  // still sees the original text on demand, but the default view is the compact
+  // animated status card — replacing the noisy raw block, not stacking above it.
+  if (blockEl) {
+    blockEl.setAttribute('data-piercode-decorated', '1');
+    const rawDetails = document.createElement('details');
+    rawDetails.style.cssText = 'margin:8px 0 0;background:#181825;border-radius:6px;padding:0';
+    const rawSummary = document.createElement('summary');
+    rawSummary.style.cssText = 'cursor:pointer;list-style:none;padding:6px 8px;font-size:11px;color:#6c7086;user-select:none';
+    rawSummary.textContent = '原始工具调用（点击展开）';
+    rawDetails.appendChild(rawSummary);
+    card.appendChild(rawDetails);
+    // Keep the original block in its original DOM position (don't move it — some
+    // SPAs re-read/rebuild it), just hide it by default and reveal it when the
+    // user expands "原始工具调用". prevDisplay preserves the platform's own value.
+    const prevDisplay = blockEl.style.display;
+    blockEl.style.display = 'none';
+    rawDetails.addEventListener('toggle', () => {
+      blockEl.style.display = rawDetails.open ? prevDisplay : 'none';
+    });
+  }
 
   // Destructive-command warning banner (exec_cmd only). Informational, does not
   // block execution — surfaces what the command may do before the user clicks 执行.
@@ -1578,6 +1849,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
     streamDoneSubs.set(callIdForStream, (exitCode, status, errMsg, durationMs) => {
       unsubscribeStream();
       const ok = status === 'done' && exitCode === 0;
+      setCardState(ok ? 'done' : 'error');
       execBtn.textContent = ok
         ? `✅ 完成 (exit=${exitCode}, ${(durationMs / 1000).toFixed(1)}s)`
         : `❌ ${status} (exit=${exitCode}${errMsg ? `, ${errMsg}` : ''})`;
@@ -1589,6 +1861,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   execBtn.onclick = async () => {
     execBtn.disabled = true;
     execBtn.textContent = '执行中...';
+    setCardState('running');
     subscribe();
 
     // 显示可视化指示器
@@ -1600,11 +1873,13 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
       const text = await executeToolCallRaw(data);
       if (text === null) {
         execBtn.textContent = '请刷新页面';
+        setCardState('error');
         unsubscribeStream();
         visualIndicator.hideAllIndicators();
         return;
       }
       markExecuted(key);
+      setCardState('done');
 
       // 显示完成状态
       visualIndicator.showStatusBadge('completed');
@@ -1643,6 +1918,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
     } catch {
       execBtn.textContent = '❌ 执行失败';
       execBtn.disabled = false;
+      setCardState('error');
       unsubscribeStream();
       visualIndicator.showStatusBadge('error');
       statusPanel.setOpState('error');
@@ -1655,6 +1931,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
       bgBtn!.disabled = true;
       execBtn.disabled = true;
       execBtn.textContent = '后台执行中...';
+      setCardState('background');
       subscribe();
       // Make a shallow copy with background:true so we don't mutate the
       // original parsed tool call (the AI's text on the page is still the
@@ -1667,6 +1944,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
         const text = await executeToolCallRaw(bgData);
         if (text === null) {
           execBtn.textContent = '请刷新页面';
+          setCardState('error');
           unsubscribeStream();
           return;
         }
@@ -1681,6 +1959,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
         execBtn.textContent = '❌ 后台启动失败';
         execBtn.disabled = false;
         bgBtn!.disabled = false;
+        setCardState('error');
         unsubscribeStream();
       }
     };
@@ -1693,7 +1972,13 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
     markExecuted(key);
   };
 
-  anchor.insertBefore(card, messageContent);
+  // In-place: drop the card right where the AI's tool block is (the original
+  // block is hidden just below it). Otherwise fall back to above the message.
+  if (blockEl && blockEl.parentElement === anchor) {
+    anchor.insertBefore(card, blockEl);
+  } else {
+    anchor.insertBefore(card, messageContent);
+  }
 }
 
 // 把 piercode-context 包渲染成完整字段卡（带复制按钮），替代聊天里的裸 JSON。
@@ -1854,15 +2139,41 @@ function startDOMObserver(_responseSelector: string) {
   });
   let autoExecute: boolean | null = null;
   const pendingAutoExecute = new Map<string, { data: any; key: string }>();
+  // Worker pages run unattended in a background tab — no human is there to click
+  // 执行. Force auto-execute on for them regardless of the user's global setting,
+  // otherwise the worker's tools never run until the tab is brought to the front.
+  let isWorkerPage = !!workerAgentId();
+  // Worker pages are driven entirely by server `inject` (never a user-typed
+  // prompt), so the response-session gate (`isResponseSessionActive`) might never
+  // flip on — which would stop `scanText` from ever running, so the worker's
+  // tool calls AND its `piercode-agent-result` callback packet are never
+  // detected (= "worker never reports back"). Activate the session immediately
+  // for worker pages so scanning is live from the first assistant token.
+  const applyWorkerBehavior = () => {
+    activateResponseSession();
+    autoExecute = true;
+    flushPendingAutoExecute();
+  };
+  if (isWorkerPage) {
+    applyWorkerBehavior();
+  }
+  // The agent id may resolve late (URL query stripped before init; ws-linker
+  // recovers it from the background). Re-apply worker behavior when it does.
+  window.addEventListener('PIERCODE_WORKER_AGENT_RESOLVED', () => {
+    if (isWorkerPage) return;
+    isWorkerPage = true;
+    applyWorkerBehavior();
+  });
   chrome.storage.local.get(['autoExecute']).then(r => {
-    autoExecute = resolveAutoExecute(r.autoExecute);
+    autoExecute = isWorkerPage ? true : resolveAutoExecute(r.autoExecute);
     flushPendingAutoExecute();
   }).catch(() => {
-    autoExecute = false;
-    pendingAutoExecute.clear();
+    autoExecute = isWorkerPage ? true : false;
+    if (!isWorkerPage) pendingAutoExecute.clear();
+    else flushPendingAutoExecute();
   });
   chrome.storage.onChanged.addListener((changes) => {
-    if ('autoExecute' in changes) {
+    if ('autoExecute' in changes && !isWorkerPage) {
       autoExecute = resolveAutoExecute(changes.autoExecute.newValue);
       flushPendingAutoExecute();
     }
@@ -2071,6 +2382,14 @@ function startDOMObserver(_responseSelector: string) {
     if (!isResponseSessionActive()) return;
     const lower = text.toLowerCase();
 
+    // Worker result-packet detection runs FIRST, before any platform-specific DOM
+    // path that early-returns (Qwen `parsedQwenTool` return, Chat Z unconditional
+    // return). Otherwise a worker on those platforms would emit its
+    // piercode-agent-result packet but the scan would bail before reaching the
+    // forwarder, so the coordinator never gets the callback. Idempotent via the
+    // packet-hash dedup inside maybeForwardAgentResult.
+    maybeForwardAgentResult(text, processed);
+
     // ── Phase 0: 直接从 DOM 提取 tool 代码块（Qwen Monaco Editor 专用） ──
     if (sourceEl && platformAdapter.name === 'qwen') {
       let parsedQwenTool = false;
@@ -2246,8 +2565,8 @@ function startDOMObserver(_responseSelector: string) {
       }
     }
 
-    // ── Worker result packet: a dispatched worker reports back ──
-    maybeForwardAgentResult(text, processed);
+    // (Worker result-packet detection already ran at the top of scanText, before
+    // the platform-specific early-returns.)
 
     scheduleAIResponseLog(sourceEl, text);
   }
@@ -2562,7 +2881,7 @@ function apiEndpointForProfile(apiUrl: string, path: string): string {
 }
 
 function withPlatformProfile(toolCall: any): any {
-  return { ...toolCall, profile: platformProfile, client_id: getPierCodeClientId() };
+  return { ...toolCall, profile: platformProfile, client_id: getPierCodeClientId(), conversation_url: observeConversationURL() };
 }
 
 async function fetchInitPromptForCurrentProfile(): Promise<string> {
@@ -2626,7 +2945,7 @@ function showQuestionPopup(question: string, options: string[]): Promise<string>
 
 // 压缩进度持久卡：替代一闪而过的 toast，常驻右下角分阶段显示压缩状态，
 // 让用户能看到"请求模型中→重试中→本地兜底中→完成/失败"整条链路。
-type CompressionPhase = 'requesting' | 'retrying' | 'local_fallback' | 'opening' | 'done' | 'failed';
+type CompressionPhase = 'requesting' | 'retrying' | 'local_fallback' | 'opening' | 'done' | 'failed' | 'cancelled' | 'manual';
 const COMPRESSION_PHASE_META: Record<CompressionPhase, { icon: string; color: string; label: string }> = {
   requesting:     { icon: '⏳', color: '#f9e2af', label: '正在请求模型压缩上下文…' },
   retrying:       { icon: '🔁', color: '#fab387', label: '模型未按时输出，正在加强约束重试…' },
@@ -2634,47 +2953,97 @@ const COMPRESSION_PHASE_META: Record<CompressionPhase, { icon: string; color: st
   opening:        { icon: '🚀', color: '#89b4fa', label: '正在打开新会话并注入压缩上下文…' },
   done:           { icon: '✅', color: '#a6e3a1', label: '上下文已压缩并迁移到新会话' },
   failed:         { icon: '❌', color: '#f38ba8', label: '上下文压缩失败' },
+  cancelled:      { icon: '🛑', color: '#9399b2', label: '已取消上下文压缩' },
+  manual:         { icon: '📋', color: '#89b4fa', label: '上下文已压缩（手动模式）' },
 };
 
 const compressionStatusCard = (() => {
   let el: HTMLDivElement | null = null;
   let iconEl: HTMLSpanElement | null = null;
   let textEl: HTMLSpanElement | null = null;
+  let cancelBtn: HTMLButtonElement | null = null;
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
   function ensure(): HTMLDivElement | null {
     if (!document.body) return null;
     if (el) return el;
     el = document.createElement('div');
-    el.style.cssText = 'position:fixed;bottom:210px;right:20px;z-index:2147483647;display:flex;align-items:center;gap:8px;max-width:320px;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-left:3px solid #cba6f7;border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.4;box-shadow:0 4px 16px rgba(0,0,0,0.4);font-family:system-ui,-apple-system,sans-serif';
+    el.style.cssText = 'position:fixed;bottom:210px;right:20px;z-index:2147483647;display:flex;align-items:center;gap:8px;max-width:340px;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-left:3px solid #cba6f7;border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.4;box-shadow:0 4px 16px rgba(0,0,0,0.4);font-family:system-ui,-apple-system,sans-serif';
     iconEl = document.createElement('span');
     iconEl.style.cssText = 'font-size:15px;flex-shrink:0';
     textEl = document.createElement('span');
-    el.append(iconEl, textEl);
+    textEl.style.cssText = 'flex:1';
+    cancelBtn = document.createElement('button');
+    cancelBtn.textContent = '取消';
+    cancelBtn.style.cssText = 'flex-shrink:0;padding:3px 10px;background:transparent;color:#f38ba8;border:1px solid #f38ba8;border-radius:6px;cursor:pointer;font-size:12px;display:none';
+    el.append(iconEl, textEl, cancelBtn);
     document.body.appendChild(el);
     return el;
   }
 
-  function set(phase: CompressionPhase, detail?: string): void {
+  // set 渲染压缩状态。中间态可传 onCancel 显示「取消」按钮（手动取消模型压缩）。
+  function set(phase: CompressionPhase, detail?: string, opts?: { onCancel?: () => void }): void {
     const node = ensure();
-    if (!node || !iconEl || !textEl) return;
+    if (!node || !iconEl || !textEl || !cancelBtn) return;
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     const meta = COMPRESSION_PHASE_META[phase];
     iconEl.textContent = meta.icon;
     node.style.borderLeftColor = meta.color;
     textEl.textContent = detail ? `${meta.label}（${detail}）` : meta.label;
+    if (opts?.onCancel) {
+      cancelBtn.style.display = 'inline-block';
+      cancelBtn.onclick = () => { cancelBtn!.style.display = 'none'; opts.onCancel!(); };
+    } else {
+      cancelBtn.style.display = 'none';
+      cancelBtn.onclick = null;
+    }
     // 终态自动消失；中间态常驻。
-    if (phase === 'done' || phase === 'failed') {
-      hideTimer = setTimeout(() => clear(), 6000);
+    if (phase === 'done' || phase === 'failed' || phase === 'cancelled' || phase === 'manual') {
+      hideTimer = setTimeout(() => clear(), phase === 'manual' ? 12000 : 6000);
     }
   }
 
   function clear(): void {
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-    if (el) { el.remove(); el = null; iconEl = null; textEl = null; }
+    if (el) { el.remove(); el = null; iconEl = null; textEl = null; cancelBtn = null; }
   }
 
   return { set, clear };
+})();
+
+// 压缩确认卡（confirm 触发模式）：到阈值时弹出，让用户选「压缩」或「跳过」。
+// 与 compressionStatusCard 错开位置，避免重叠。
+const compressionConfirmCard = (() => {
+  let el: HTMLDivElement | null = null;
+
+  function dismiss(): void {
+    if (el) { el.remove(); el = null; }
+  }
+
+  function show(used: number, threshold: number, opts: { onCompress: () => void; onSkip: () => void }): void {
+    if (!document.body) return;
+    dismiss();
+    el = document.createElement('div');
+    el.style.cssText = 'position:fixed;bottom:260px;right:20px;z-index:2147483647;max-width:340px;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-left:3px solid #cba6f7;border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5;box-shadow:0 4px 16px rgba(0,0,0,0.4);font-family:system-ui,-apple-system,sans-serif';
+    const msg = document.createElement('div');
+    msg.style.cssText = 'margin-bottom:10px';
+    msg.textContent = `上下文已达阈值（${formatTokenCount(used)} / ${formatTokenCount(threshold)} tokens）。是否压缩并迁移到新会话？`;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
+    const skipBtn = document.createElement('button');
+    skipBtn.textContent = '跳过，继续执行';
+    skipBtn.style.cssText = 'padding:5px 12px;background:transparent;color:#9399b2;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px';
+    skipBtn.onclick = () => { dismiss(); opts.onSkip(); };
+    const compressBtn = document.createElement('button');
+    compressBtn.textContent = '压缩';
+    compressBtn.style.cssText = 'padding:5px 16px;background:#cba6f7;color:#1e1e2e;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600';
+    compressBtn.onclick = () => { dismiss(); opts.onCompress(); };
+    row.append(skipBtn, compressBtn);
+    el.append(msg, row);
+    document.body.appendChild(el);
+  }
+
+  return { show, dismiss };
 })();
 
 function showToast(msg: string, durationMs = 3000): void {
@@ -2740,13 +3109,17 @@ function isQwenPage(): boolean {
 }
 
 async function focusCurrentTabForSend(): Promise<void> {
-  if (!isQwenPage()) return;
+  // Worker pages live in a background tab. Filling a contenteditable via
+  // execCommand('insertText') requires the document to be focused, so a worker
+  // must activate its own tab before submitting a tool result / report. Qwen
+  // also needs activation for its send flow. Other foreground pages don't.
+  if (!isQwenPage() && !workerAgentId()) return;
   try {
     // Request tab activation without stealing window focus by default
     await chrome.runtime.sendMessage({ type: 'FOCUS_SELF', forceFocus: false });
     await new Promise(resolve => setTimeout(resolve, 150));
   } catch (error) {
-    console.warn('[PierCode] 激活 Qwen 标签页失败，继续尝试发送:', error);
+    console.warn('[PierCode] 激活标签页失败，继续尝试发送:', error);
   }
 }
 

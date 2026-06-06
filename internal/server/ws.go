@@ -185,16 +185,31 @@ func FormatProviderCounts(counts map[string]int) string {
 	if len(counts) == 0 {
 		return "0 pages"
 	}
+	total := 0
 	names := make([]string, 0, len(counts))
 	for name := range counts {
 		names = append(names, name)
+		total += counts[name]
 	}
 	sort.Strings(names)
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, name+" "+formatPageCount(counts[name]))
+	sort.SliceStable(names, func(i, j int) bool {
+		if counts[names[i]] != counts[names[j]] {
+			return counts[names[i]] > counts[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	limit := len(names)
+	if limit > 3 {
+		limit = 3
 	}
-	return strings.Join(parts, ", ")
+	parts := make([]string, 0, limit+1)
+	for _, name := range names[:limit] {
+		parts = append(parts, name+" "+strconv.Itoa(counts[name]))
+	}
+	if rest := len(names) - limit; rest > 0 {
+		parts = append(parts, "+"+formatProviderCount(rest))
+	}
+	return formatPageCount(total) + " / " + formatProviderCount(len(names)) + " (" + strings.Join(parts, ", ") + ")"
 }
 
 func formatPageCount(count int) string {
@@ -202,6 +217,13 @@ func formatPageCount(count int) string {
 		return "1 page"
 	}
 	return strconv.Itoa(count) + " pages"
+}
+
+func formatProviderCount(count int) string {
+	if count == 1 {
+		return "1 provider"
+	}
+	return strconv.Itoa(count) + " providers"
 }
 
 // Unregister 移除客户端连接

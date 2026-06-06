@@ -240,6 +240,30 @@ func TestWSManagerSendToRoleTargetsOnlyMatchingClients(t *testing.T) {
 	}
 }
 
+func TestFormatProviderCountsSummarizesManyProviders(t *testing.T) {
+	got := FormatProviderCounts(map[string]int{
+		"ChatGPT":   3,
+		"Qwen":      2,
+		"Claude":    1,
+		"Gemini":    1,
+		"AI Studio": 1,
+	})
+
+	assert.Equal(t, "8 pages / 5 providers (ChatGPT 3, Qwen 2, AI Studio 1, +2 providers)", got)
+}
+
+func TestFormatProviderCountsKeepsSmallProviderSetsReadable(t *testing.T) {
+	got := FormatProviderCounts(map[string]int{"Qwen": 1, "ChatGPT": 2})
+
+	assert.Equal(t, "3 pages / 2 providers (ChatGPT 2, Qwen 1)", got)
+}
+
+func TestFormatProviderCountsUsesSingularLabels(t *testing.T) {
+	got := FormatProviderCounts(map[string]int{"Qwen": 1})
+
+	assert.Equal(t, "1 page / 1 provider (Qwen 1)", got)
+}
+
 func TestInjectMessageFormat(t *testing.T) {
 	// 验证 /inject 接口生成的 WebSocket 消息格式正确
 	text := "测试消息 🎉"

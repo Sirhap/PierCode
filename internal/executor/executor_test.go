@@ -282,7 +282,7 @@ func TestExecutorPromptGuidance(t *testing.T) {
 		}
 	})
 
-	t.Run("qwen tool responses include context packet reminder", func(t *testing.T) {
+		t.Run("qwen tool responses do not include context packet reminder", func(t *testing.T) {
 		e := New(testConfig(t))
 		resp := e.Execute(context.Background(), &types.ToolRequest{
 			Name:           "list_dir",
@@ -291,10 +291,10 @@ func TestExecutorPromptGuidance(t *testing.T) {
 			SourceClientID: "ai-page-1",
 			Profile:        "qwen",
 		})
-		for _, want := range []string{"[Qwen 上下文迁移提示]", "```piercode-context", "不要输出 XML wrapper", "不要输出 `piercode-tool`"} {
-			if !strings.Contains(resp.Output, want) {
-				t.Fatalf("expected qwen context packet reminder to contain %q, got %q", want, resp.Output)
-			}
+			for _, forbidden := range []string{"[Qwen 上下文迁移提示]", "不要输出 XML wrapper"} {
+				if strings.Contains(resp.Output, forbidden) {
+					t.Fatalf("qwen tool response should not contain context packet reminder %q, got %q", forbidden, resp.Output)
+				}
 		}
 	})
 

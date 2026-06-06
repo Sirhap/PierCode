@@ -11,11 +11,14 @@ import {
 } from '../content/token-meter';
 
 // js-tiktoken mock：每个 token = 4 字符（确定性，便于断言）。
-vi.mock('js-tiktoken', () => ({
-  getEncoding: () => ({
+vi.mock('js-tiktoken', () => {
+  const mockEncoder = {
     encode: (text: string) => new Array(Math.ceil(text.length / 4)).fill(0),
-  }),
-}));
+  };
+  return {
+    getEncoding: vi.fn(() => mockEncoder),
+  };
+});
 
 afterEach(() => {
   __resetTokenizerForTest();
