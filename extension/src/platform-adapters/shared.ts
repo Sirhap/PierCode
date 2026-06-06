@@ -11,8 +11,18 @@ export function looksLikePierCodeLanguage(text: string): boolean {
     /\btool\b/.test(normalized);
 }
 
+export function looksLikePierCodeAgentResultLanguage(text: string): boolean {
+	const normalized = text.toLowerCase().replace(/\s+/g, ' ').trim();
+	return normalized.includes('piercode-agent-result') ||
+		normalized.includes('language-piercode-agent-result');
+}
+
 export function hasPierCodeToolClass(classAttr: string): boolean {
   return classAttr.includes('piercode-tool') || /\btool\b/.test(classAttr);
+}
+
+export function hasPierCodeAgentResultClass(classAttr: string): boolean {
+	return classAttr.includes('piercode-agent-result');
 }
 
 export function pushPierCodeTool(buf: string[], text: string, trim = false): boolean {

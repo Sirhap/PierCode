@@ -20,7 +20,7 @@ export { defaultAdapter } from './platform-adapters/default';
 export { geminiAdapter } from './platform-adapters/gemini';
 export { kimiAdapter } from './platform-adapters/kimi';
 export { mimoAdapter } from './platform-adapters/mimo';
-export { findQwenToolBody, qwenAdapter } from './platform-adapters/qwen';
+export { findQwenToolBody, findQwenPierCodeBody, qwenAdapter } from './platform-adapters/qwen';
 
 // 按优先级排序的适配器列表；default 必须最后匹配。
 export const platformAdapters: PlatformAdapter[] = [

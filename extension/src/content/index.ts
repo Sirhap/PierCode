@@ -1,5 +1,5 @@
-import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
-import { extractMonacoText, findQwenToolBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
+import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket } from '../parser';
+import { extractMonacoText, findQwenPierCodeBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, sendAgentResult } from './ws-linker';
 import { isConversationURLForCurrentPage, observeConversationURL, getConversationKey } from './conversation-scope';
@@ -1525,14 +1525,15 @@ function getConversationId(): string {
 }
 
 function scopedExecutionKey(key: string): string {
-  return `${getPierCodeClientId()}:${key}`;
+	return key;
 }
 
 function isExecuted(key: string): boolean {
   try {
-    key = scopedExecutionKey(key);
+		const scopedKey = scopedExecutionKey(key);
     const store: Record<string, number> = JSON.parse(localStorage.getItem('piercode_executed') || '{}');
-    return !!store[key];
+		if (store[scopedKey]) return true;
+		return Object.keys(store).some(k => k.endsWith(`:${key}`));
   } catch { return false; }
 }
 
@@ -2395,25 +2396,39 @@ function startDOMObserver(_responseSelector: string) {
       let parsedQwenTool = false;
       const toolPres = sourceEl.querySelectorAll('pre.qwen-markdown-code');
       for (const pre of toolPres) {
-        const toolBody = findQwenToolBody(pre);
-        if (!toolBody) continue;
+        const block = findQwenPierCodeBody(pre);
+        if (!block) continue;
+        const blockBody = block.body;
 
-        let extraction = extractMonacoText(toolBody);
+        let extraction = extractMonacoText(blockBody);
         let codeText = extraction.text;
 
         if (extraction.hasOverflow) {
-          const modelText = await requestMonacoModelText(toolBody, codeText);
+          const modelText = await requestMonacoModelText(blockBody, codeText);
           if (modelText) {
             codeText = modelText;
             extraction = { text: modelText, hasOverflow: false };
           } else {
-            const clicked = clickQwenOverflowPlaceholders(toolBody);
+            const clicked = clickQwenOverflowPlaceholders(blockBody);
             if (clicked) {
               setTimeout(() => scheduleScan(sourceEl), 300);
             }
             notifyQwenOverflowOnce(codeText);
             continue;
           }
+        }
+
+        // 子 agent 回传包：worker 完成时输出一行 piercode-agent-result JSON。它和
+        // 工具块一样被 Monaco 渲染/虚拟化，所以必须走上面这套溢出恢复后再解析，
+        // 否则截断的 JSON 永远匹配不上，coordinator 收不到回调。完整才转发，残缺
+        // （流式中途/溢出未恢复）安排兜底重扫。
+        if (block.kind === 'agent-result') {
+          if (forwardAgentResultJSON(codeText, codeText, processed)) {
+            parsedQwenTool = true;
+          } else if (sourceEl) {
+            scheduleSettleRetry(sourceEl);
+          }
+          continue;
         }
 
         // 流式渲染中：内容可能不完整，跳过本次解析。安排一次兜底重扫，
@@ -2605,33 +2620,38 @@ function startDOMObserver(_responseSelector: string) {
   // its own AI output and forwards it to the server, which routes it back to the
   // dispatcher as a <task-notification>. No-op on non-worker pages.
   function maybeForwardAgentResult(text: string, processed: Set<string>): void {
-    const agentId = workerAgentId();
-    if (!agentId) return;
+    if (!workerAgentId()) return;
     if (!text.toLowerCase().includes('```piercode-agent-result')) return;
     AGENT_RESULT_FENCE_RE.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = AGENT_RESULT_FENCE_RE.exec(text)) !== null) {
-      const jsonStr = match[1].replace(/[\u200B-\u200D\uFEFF\u00A0]/g, ' ').trim();
-      if (!jsonStr.endsWith('}')) continue; // packet still streaming
-      const key = `agent-result:${hashStr(match[0])}`;
-      if (processed.has(key)) continue;
-      let packet: { agent_id?: string; status?: string; summary?: string; result?: string } | null = null;
-      try {
-        packet = JSON.parse(jsonStr);
-      } catch {
-        continue; // malformed; wait for a settled re-scan
-      }
-      if (!packet) continue;
-      processed.add(key);
-      const status = String(packet.status || 'completed');
-      const summary = String(packet.summary || '');
-      const result = String(packet.result || '');
-      // Trust the worker's echoed agent_id when present; otherwise fall back to
-      // this tab's own id so the server can still route the result.
-      const reportedId = String(packet.agent_id || '').trim() || agentId;
-      console.log('[PierCode] worker 回传 result packet:', reportedId, status);
-      sendAgentResult(reportedId, status, summary, result);
+      // Generic fence fallback for non-Monaco platforms (Claude/ChatGPT/plain
+      // markdown) where the captured body keeps real newlines. Qwen Monaco blocks
+      // are handled in Phase 0 with overflow recovery; see scanText.
+      forwardAgentResultJSON(match[1], match[0], processed);
     }
+  }
+
+  // forwardAgentResultJSON parses one piercode-agent-result body and forwards it
+  // to the server exactly once. Returns true when a complete packet was sent (or
+  // already de-duped); false when the body is incomplete/malformed so the caller
+  // can schedule a settle-retry. `dedupSource` keys the dedup set (the full fence
+  // match for the generic path, or the recovered Monaco model text for Qwen) so
+  // repeated scans never re-send the same packet.
+  function forwardAgentResultJSON(jsonStr: string, dedupSource: string, processed: Set<string>): boolean {
+    const agentId = workerAgentId();
+    if (!agentId) return false;
+    const packet = parseAgentResultPacket(jsonStr);
+    if (!packet) return false; // incomplete (streaming / Monaco overflow) or malformed
+    const key = `agent-result:${hashStr(dedupSource)}`;
+    if (processed.has(key)) return true;
+    processed.add(key);
+    // Trust the worker's echoed agent_id when present; otherwise fall back to
+    // this tab's own id so the server can still route the result.
+    const reportedId = packet.agentId || agentId;
+    console.log('[PierCode] worker 回传 result packet:', reportedId, packet.status);
+    sendAgentResult(reportedId, packet.status, packet.summary, packet.result);
+    return true;
   }
 
   function aiResponseLogKey(sourceEl: Element): string {
@@ -3115,8 +3135,7 @@ async function focusCurrentTabForSend(): Promise<void> {
   // also needs activation for its send flow. Other foreground pages don't.
   if (!isQwenPage() && !workerAgentId()) return;
   try {
-    // Request tab activation without stealing window focus by default
-    await chrome.runtime.sendMessage({ type: 'FOCUS_SELF', forceFocus: false });
+    await chrome.runtime.sendMessage({ type: 'FOCUS_SELF', forceFocus: true });
     await new Promise(resolve => setTimeout(resolve, 150));
   } catch (error) {
     console.warn('[PierCode] 激活标签页失败，继续尝试发送:', error);

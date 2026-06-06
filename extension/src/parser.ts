@@ -15,6 +15,38 @@ export function parseJsonFenceToolCall(jsonStr: string): any | null {
   };
 }
 
+export interface AgentResultPacket {
+  agentId: string;
+  status: string;
+  summary: string;
+  result: string;
+}
+
+// parseAgentResultPacket parses a worker's `piercode-agent-result` JSON body.
+// Returns null when the JSON is incomplete (still streaming, or truncated by a
+// Qwen Monaco `.mtkoverflow` placeholder), so callers can retry on a later scan
+// instead of forwarding a half packet. Mirrors tryParseToolJSON's normalization
+// (U+00A0 from Monaco &nbsp;, zero-width chars) before JSON.parse.
+export function parseAgentResultPacket(jsonStr: string): AgentResultPacket | null {
+  const normalized = jsonStr.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, " ").trim();
+  // Cheap streaming/truncation guard: a complete object body ends with `}`.
+  if (!normalized.endsWith('}')) return null;
+  let obj: any;
+  try {
+    obj = JSON.parse(normalized);
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  const status = typeof obj.status === 'string' && obj.status.trim() ? obj.status.trim() : 'completed';
+  return {
+    agentId: typeof obj.agent_id === 'string' ? obj.agent_id.trim() : '',
+    status,
+    summary: typeof obj.summary === 'string' ? obj.summary : '',
+    result: typeof obj.result === 'string' ? obj.result : '',
+  };
+}
+
 export function parseXmlToolCall(raw: string, decodeHTMLEntities: (s: string) => string = s => s): any | null {
   const nameMatch = raw.match(/^<tool\s+name=(["'])([^"']+)\1(?:\s+call_id=(["'])([^"']+)\3)?/i);
   if (!nameMatch) return null;

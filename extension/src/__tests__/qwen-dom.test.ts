@@ -7,8 +7,8 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { FENCE_RE, parseJsonFenceToolCall, tryParseToolJSON } from '../parser';
-import { extractMonacoText as extractPlatformMonacoText, findQwenToolBody, qwenAdapter } from '../platform-adapters';
+import { FENCE_RE, parseJsonFenceToolCall, tryParseToolJSON, parseAgentResultPacket } from '../parser';
+import { extractMonacoText as extractPlatformMonacoText, findQwenToolBody, findQwenPierCodeBody, qwenAdapter } from '../platform-adapters';
 
 // ── 模拟 Qwen Monaco Editor DOM 提取 ────────────────────────────────────────
 
@@ -606,6 +606,29 @@ describe('Qwen DOM 集成测试', () => {
     expect(results[0]).toEqual({ name: 'list_dir', callId: 'qwenh1', args: { path: '.' } });
   });
 
+  it('Qwen adapter 从 header-only piercode-agent-result 代码块保留 result fence', () => {
+    const html = `
+      <pre class="qwen-markdown-code">
+        <div class="qwen-markdown-code-header"><div>piercode-agent-result</div></div>
+        <div class="qwen-markdown-code-body">
+          <div class="view-lines">
+            <div class="view-line"><span><span class="mtk1">{"version":"1","agent_id":"agent-test","status":"completed","summary":"ok","result":"2+3=5","evidence":["direct"],"files_changed":[]}</span></span></div>
+          </div>
+        </div>
+      </pre>`;
+
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const pre = container.querySelector('pre.qwen-markdown-code')!;
+    const buf: string[] = [];
+
+    expect(qwenAdapter.extractText(pre, buf)).toBe(true);
+    const text = buf.join('');
+    expect(text).toContain('```piercode-agent-result');
+    expect(text).toContain('"agent_id":"agent-test"');
+    expect(text).not.toContain('```piercode-tool');
+  });
+
   it('识别新版 Qwen response-message-content 容器里的 piercode-tool', () => {
     const html = `
       <div class="response-message-content t2t phase-answer">
@@ -635,5 +658,134 @@ describe('Qwen DOM 集成测试', () => {
 
     expect(response).not.toBeNull();
     expect(results).toEqual([{ name: 'skill', callId: 'pua9x2k', args: { skill: 'pua' } }]);
+  });
+});
+
+// ── 子 agent 回传 result packet 解析 ─────────────────────────────────────────
+// 真实缺陷：Qwen worker 把 piercode-agent-result JSON 渲染进 Monaco（单行长 JSON），
+// 溢出截断后 maybeForwardAgentResult 的正则永远匹配不到 → coordinator 收不到回调。
+// parseAgentResultPacket 把"解析 + 完整性判定"抽成纯函数，给 Phase-0 Monaco 恢复
+// 路径和通用 fence 兜底共用。
+describe('parseAgentResultPacket', () => {
+  it('解析完整 packet', () => {
+    const json = '{"version":1,"agent_id":"agent-1","status":"completed","summary":"done","result":"2+3=5"}';
+    expect(parseAgentResultPacket(json)).toEqual({
+      agentId: 'agent-1',
+      status: 'completed',
+      summary: 'done',
+      result: '2+3=5',
+    });
+  });
+
+  it('status 缺省回退 completed，summary/result 缺省为空串', () => {
+    const json = '{"agent_id":"agent-2"}';
+    expect(parseAgentResultPacket(json)).toEqual({
+      agentId: 'agent-2',
+      status: 'completed',
+      summary: '',
+      result: '',
+    });
+  });
+
+  it('failed / blocked 状态透传', () => {
+    expect(parseAgentResultPacket('{"agent_id":"a","status":"failed"}')?.status).toBe('failed');
+    expect(parseAgentResultPacket('{"agent_id":"a","status":"blocked"}')?.status).toBe('blocked');
+  });
+
+  it('截断（未闭合 / 不以 } 结尾）返回 null —— Monaco 溢出与流式中途场景', () => {
+    // mtkoverflow 删占位后留下的半截 JSON
+    expect(parseAgentResultPacket('{"agent_id":"a","status":"completed","result":"package tui')).toBeNull();
+    // 仍在流式
+    expect(parseAgentResultPacket('{"agent_id":"a","status":"comp')).toBeNull();
+  });
+
+  it('彻底无法解析返回 null', () => {
+    expect(parseAgentResultPacket('not json}')).toBeNull();
+    expect(parseAgentResultPacket('')).toBeNull();
+  });
+
+  it('U+00A0 (Monaco &nbsp;) 与零宽字符被归一后仍可解析', () => {
+    const json = '{"agent_id":"a", "status":"completed",​"summary":"ok"}';
+    expect(parseAgentResultPacket(json)?.summary).toBe('ok');
+  });
+});
+
+// ── Phase 0 子 agent 回传：Monaco 提取 → parseAgentResultPacket 全链路 ─────────
+// 复现真实缺陷：worker 把 result packet 渲染进 Monaco，scanText 的 Phase 0 必须
+// 先用 findQwenPierCodeBody 识别 agent-result body、extractMonacoText 提取、再
+// parseAgentResultPacket 解析。溢出截断时 extractMonacoText 标 hasOverflow，必须
+// 走 requestMonacoModelText 恢复（本测试断言截断态解析失败，证明恢复不可省）。
+describe('Qwen worker agent-result Phase 0 链路', () => {
+  let dom: JSDOM;
+  let document: Document;
+
+  beforeAll(() => {
+    dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');
+    document = dom.window.document;
+  });
+
+  it('findQwenPierCodeBody 识别 header-only agent-result 块并标 kind', () => {
+    const html = `
+      <pre class="qwen-markdown-code">
+        <div class="qwen-markdown-code-header"><div>piercode-agent-result</div></div>
+        <div class="qwen-markdown-code-body">
+          <div class="view-lines">
+            <div class="view-line"><span><span class="mtk1">{"agent_id":"agent-x","status":"completed"}</span></span></div>
+          </div>
+        </div>
+      </pre>`;
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const pre = container.querySelector('pre.qwen-markdown-code')!;
+
+    const block = findQwenPierCodeBody(pre);
+    expect(block?.kind).toBe('agent-result');
+    const extracted = extractPlatformMonacoText(block!.body);
+    expect(extracted.hasOverflow).toBe(false);
+    const packet = parseAgentResultPacket(extracted.text);
+    expect(packet).toEqual({ agentId: 'agent-x', status: 'completed', summary: '', result: '' });
+  });
+
+  it('多 span 渲染的 agent-result 拼接后可解析（&nbsp; 归一）', () => {
+    const html = `
+      <pre class="qwen-markdown-code">
+        <div class="qwen-markdown-code-body piercode-agent-result">
+          <div class="view-lines">
+            <div class="view-line"><span><span class="mtk1">{"agent_id":&nbsp;"agent-y",&nbsp;"status":&nbsp;"completed",&nbsp;"summary":&nbsp;"done",&nbsp;</span><span class="mtk1">"result":&nbsp;"ok"}</span></span></div>
+          </div>
+        </div>
+      </pre>`;
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const pre = container.querySelector('pre.qwen-markdown-code')!;
+    const block = findQwenPierCodeBody(pre)!;
+    const packet = parseAgentResultPacket(extractPlatformMonacoText(block.body).text);
+    expect(packet).toEqual({ agentId: 'agent-y', status: 'completed', summary: 'done', result: 'ok' });
+  });
+
+  it('Monaco 溢出截断 → hasOverflow 且未恢复时解析失败（证明必须 requestMonacoModelText 恢复）', () => {
+    const html = `
+      <pre class="qwen-markdown-code">
+        <div class="qwen-markdown-code-body piercode-agent-result">
+          <div class="monaco-editor vs-dark">
+            <div class="view-lines">
+              <div class="view-line">
+                <span>
+                  <span class="mtk1">{"agent_id":&nbsp;"agent-z",&nbsp;"status":&nbsp;"completed",&nbsp;"result":&nbsp;"package tui\\n</span>
+                  <span class="mtkoverflow">Show more (820 chars)</span>
+                  <span class="mtk1">"}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </pre>`;
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const pre = container.querySelector('pre.qwen-markdown-code')!;
+    const block = findQwenPierCodeBody(pre)!;
+    const extracted = extractPlatformMonacoText(block.body);
+    expect(extracted.hasOverflow).toBe(true);
+    expect(parseAgentResultPacket(extracted.text)).toBeNull();
   });
 });
