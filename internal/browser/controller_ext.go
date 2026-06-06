@@ -448,7 +448,11 @@ func (c *Controller) Upload(ctx context.Context, req tool.BrowserUploadRequest) 
 		primaryErr := err
 		method = "DataTransfer fallback"
 		if err := c.setFileInputFilesWithDataTransfer(ctx, tab.TabID, req); err != nil {
-			return "", fmt.Errorf("DOM.setFileInputFiles failed: %v; fallback failed: %w", primaryErr, err)
+			dataTransferErr := err
+			method = "page event fallback"
+			if err := c.dispatchUploadPageEvents(ctx, tab.TabID, req); err != nil {
+				return "", fmt.Errorf("DOM.setFileInputFiles failed: %v; DataTransfer fallback failed: %v; page event fallback failed: %w", primaryErr, dataTransferErr, err)
+			}
 		}
 	}
 
@@ -722,6 +726,32 @@ func (c *Controller) setFileInputFilesWithDataTransfer(ctx context.Context, tabI
 	})
 }
 
+func (c *Controller) dispatchUploadPageEvents(ctx context.Context, tabID int, req tool.BrowserUploadRequest) error {
+	if req.Ref != "" {
+		return c.dispatchUploadPageEventsToRef(ctx, tabID, req)
+	}
+	files, err := buildUploadFallbackFiles(req.Paths)
+	if err != nil {
+		return err
+	}
+	_, err = c.runtimeEvaluate(ctx, tabID, uploadPageEventFallbackExpression(req.Selector, files), true, defaultActionTimeout, true)
+	return err
+}
+
+func (c *Controller) dispatchUploadPageEventsToRef(ctx context.Context, tabID int, req tool.BrowserUploadRequest) error {
+	files, err := buildUploadFallbackFiles(req.Paths)
+	if err != nil {
+		return err
+	}
+	objectID, release, err := c.resolveRefObject(ctx, tabID, req.SnapshotID, req.Ref)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = c.callFunctionOnObject(ctx, tabID, objectID, uploadPageEventFallbackFunction(), []interface{}{files})
+	return err
+}
+
 func (c *Controller) dispatchFileInputEvents(ctx context.Context, tabID int, objectID string) error {
 	_, err := c.callFunctionOnObject(ctx, tabID, objectID, `function() {
   if (!(this instanceof HTMLInputElement) || this.type !== 'file') throw new Error('Target is not a file input');
@@ -824,6 +854,61 @@ func fileInputDataTransferFunction() string {
   this.dispatchEvent(new Event('input', {bubbles: true}));
   this.dispatchEvent(new Event('change', {bubbles: true}));
   return {count: this.files.length, names: Array.prototype.map.call(this.files, function(file) { return file.name; })};
+}`
+}
+
+func uploadPageEventFallbackExpression(selector string, files []uploadFallbackFile) string {
+	rawFiles, _ := json.Marshal(files)
+	return `(function() {
+  var selector = ` + jsString(selector) + `;
+  ` + uploadPageEventTargetFinderFunction() + `
+  var target = selector ? document.querySelector(selector) : null;
+  if (!target) target = findUploadEventTarget();
+  if (!target) throw new Error('Element not found: ' + selector + ' and no upload drop target found');
+  return (` + uploadPageEventFallbackFunction() + `).call(target, ` + string(rawFiles) + `);
+})()`
+}
+
+func uploadPageEventFallbackFunction() string {
+	return `function(files) {
+  var target = this;
+  if (!target) throw new Error('Element not found');
+  var transfer = new DataTransfer();
+  files.forEach(function(file) {
+    var binary = atob(file.data);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    transfer.items.add(new File([bytes], file.name, {type: file.type || 'application/octet-stream'}));
+  });
+  transfer.setData('text/plain', files.map(function(file) { return file.name; }).join('\n'));
+  if (target.focus) target.focus();
+  var pasted = false;
+  try {
+    pasted = target.dispatchEvent(new ClipboardEvent('paste', {clipboardData: transfer, bubbles: true, cancelable: true}));
+  } catch (e) {}
+  ['dragenter', 'dragover', 'drop'].forEach(function(type) {
+    target.dispatchEvent(new DragEvent(type, {dataTransfer: transfer, bubbles: true, cancelable: true}));
+  });
+  target.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertFromDrop', data: files.map(function(file) { return file.name; }).join('\n')}));
+  return {count: transfer.files.length, names: Array.prototype.map.call(transfer.files, function(file) { return file.name; }), pasteDefaultAllowed: pasted};
+}`
+}
+
+func uploadPageEventTargetFinderFunction() string {
+	return `function findUploadEventTarget() {
+  var selectors = [
+    '.xap-uploader-dropzone',
+    'file-drop-indicator',
+    '[contenteditable="true"]',
+    'textarea',
+    '[role="textbox"]',
+    'main'
+  ];
+  for (var i = 0; i < selectors.length; i++) {
+    var el = document.querySelector(selectors[i]);
+    if (el) return el;
+  }
+  return document.body;
 }`
 }
 

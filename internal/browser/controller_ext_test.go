@@ -223,6 +223,67 @@ func TestUploadFallsBackToDataTransferWhenCDPSetFilesFails(t *testing.T) {
 	}
 }
 
+func TestUploadFallsBackToPageEventsWhenFileInputMissing(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "gemini.jpg")
+	if err := os.WriteFile(filePath, []byte("jpg-data"), 0o644); err != nil {
+		t.Fatalf("write upload fixture: %v", err)
+	}
+	tab := tool.BrowserTab{TabID: 82, URL: "https://gemini.google.com/app/test", Title: "Gemini"}
+	var controller *Controller
+	var relay *RelayManager
+	var fallbackExpr string
+	resolveAttempts := 0
+
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "Runtime.evaluate":
+			var params struct {
+				Expression string `json:"expression"`
+			}
+			if err := json.Unmarshal(cmd.Params, &params); err != nil {
+				t.Fatalf("invalid evaluate params: %v", err)
+			}
+			expr := params.Expression
+			if strings.Contains(expr, "findUploadEventTarget") {
+				fallbackExpr = expr
+				go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"object","value":{"count":1}}}`)})
+				return true
+			}
+			resolveAttempts++
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: false, Error: "Element not found: input[type='file']"})
+		case "Runtime.releaseObject":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller = newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	out, err := controller.Upload(context.Background(), tool.BrowserUploadRequest{
+		Selector: "input[type='file']",
+		Paths:    []string{filePath},
+		CallID:   "upload-page-event-fallback-test",
+	})
+	if err != nil {
+		t.Fatalf("Upload returned error: %v", err)
+	}
+	if !strings.Contains(out, "page event fallback") {
+		t.Fatalf("expected page event fallback in output, got %q", out)
+	}
+	if resolveAttempts != 2 {
+		t.Fatalf("expected CDP and DataTransfer selector attempts before page fallback, got %d", resolveAttempts)
+	}
+	if !strings.Contains(fallbackExpr, ".xap-uploader-dropzone") || !strings.Contains(fallbackExpr, "ClipboardEvent") || !strings.Contains(fallbackExpr, "DragEvent") {
+		t.Fatalf("expected fallback expression to dispatch upload events to Gemini dropzone, got: %s", fallbackExpr)
+	}
+}
+
 func dialogEvent(tabID int, typ, message string) Event {
 	params, _ := json.Marshal(map[string]string{
 		"type":    typ,
