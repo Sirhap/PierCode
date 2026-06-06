@@ -253,12 +253,28 @@ func buildSkillsList(skills []skill.Info) string {
 		if i > 0 {
 			sb.WriteString("\n")
 		}
-		sb.WriteString("- **")
+		sb.WriteString("- `")
 		sb.WriteString(sk.Name)
-		sb.WriteString("**: ")
-		sb.WriteString(sk.Description)
+		sb.WriteString("`: ")
+		sb.WriteString(conciseSkillDescription(sk.Description))
 	}
 	return sb.String()
+}
+
+func conciseSkillDescription(description string) string {
+	description = firstLine(description)
+	for _, sep := range []string{". ", "。", "; ", "；"} {
+		if i := strings.Index(description, sep); i >= 0 {
+			description = strings.TrimSpace(description[:i+len(strings.TrimSpace(sep))])
+			break
+		}
+	}
+	const max = 180
+	if len([]rune(description)) <= max {
+		return description
+	}
+	runes := []rune(description)
+	return string(runes[:max-1]) + "…"
 }
 
 func allowedNameSet(names []string) map[string]struct{} {

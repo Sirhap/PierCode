@@ -261,6 +261,36 @@ func TestSkillsAppendAtEndWhenNoPlaceholder(t *testing.T) {
 	}
 }
 
+func TestSkillsListUsesConciseDescriptions(t *testing.T) {
+	skills := []skill.Info{{
+		Name:        "debug",
+		Description: "First sentence. Second sentence with noisy trigger details that should not be rendered.",
+	}}
+
+	doc := buildSkillsList(skills)
+	if !strings.Contains(doc, "`debug`: First sentence.") {
+		t.Fatalf("expected concise skill description, got %q", doc)
+	}
+	if strings.Contains(doc, "Second sentence") {
+		t.Fatalf("expected later sentence to be omitted, got %q", doc)
+	}
+}
+
+func TestGuidanceDoesNotReinjectFullPromptWhenDisabled(t *testing.T) {
+	profile := Profile{Prompt: []byte("full prompt")}
+
+	guidance := profile.GuidanceFor(20, func() []byte {
+		return []byte("rendered full prompt")
+	})
+
+	if strings.Contains(guidance, "系统重新注入提示词") || strings.Contains(guidance, "rendered full prompt") {
+		t.Fatalf("full prompt reinjection should be disabled, got %q", guidance)
+	}
+	if !strings.Contains(guidance, "piercode-tool") || !strings.Contains(guidance, "tool_help") {
+		t.Fatalf("compact operating reminder should still be present, got %q", guidance)
+	}
+}
+
 func TestEmbeddedDefaultPromptSubstitutesSkillsPlaceholder(t *testing.T) {
 	registry := DefaultProfileRegistry(prompts.DefaultPrompt)
 	rendered := string(registry.Select("").Render("C:/repo", nil, []skill.Info{

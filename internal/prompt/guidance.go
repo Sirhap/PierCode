@@ -4,16 +4,16 @@ import "strings"
 
 // Cadence for per-call guidance appended to AI-originated tool results.
 const (
-	fullPromptReinjectEvery = 20
+	fullPromptReinjectEvery = 0
 	taskCheckpointEvery     = 5
 )
 
 // Reminder content. These strings are part of the prompt contract, so they live
 // in the prompt layer rather than as magic constants inside the executor.
 const (
-	operatingReminder = "\n\n[系统提示] 继续以 PierCode 身份执行：工具调用必须使用可见的 `piercode-tool` fenced JSON；所有文件操作保持在当前工作目录/sandbox 内；工具参数或格式失败时先调用 `tool_help` 读取该工具详细用法再重试；需要更细规则时加载匹配的 `piercode-*` skill；完成前用测试或明确证据验证。"
+	operatingReminder = "\n\n[系统提示] 继续以 PierCode 身份执行：用可见 `piercode-tool` fenced JSON 调本地工具；参数失败先 `tool_help`；需要细则加载匹配 skill；完成前验证。"
 
-	taskCheckpointReminder = "\n\n[任务状态快照提示] 如果当前任务已跨多步或上下文变长，请在下一次回复中简短保留：目标、已完成事项、已改文件、验证结果、下一步/阻塞；必要时用 `todo_write`/`todo_read` 同步待办。"
+	taskCheckpointReminder = "\n\n[任务状态快照提示] 多步任务请简短保留：目标、已完成、已改文件、验证、下一步/阻塞；必要时同步 todo。"
 
 	// workerResultPacketReminder is wired onto the worker profile's ContextHandoff
 	// in DefaultProfileRegistry. It nudges a dispatched worker to close out with
@@ -30,7 +30,11 @@ const (
 // context handoff such as Qwen's migration packet prompt).
 func (p Profile) GuidanceFor(n int64, renderFull func() []byte) string {
 	var b strings.Builder
-	if n%fullPromptReinjectEvery == 0 && len(p.Prompt) > 0 {
+	// Guard the modulo against a zero cadence (reinject disabled) — a literal
+	// n%0 is a compile-time division-by-zero in Go even when short-circuited, so
+	// compute the divisor in a local the compiler can't const-fold to 0.
+	reinjectEvery := int64(fullPromptReinjectEvery)
+	if reinjectEvery > 0 && n%reinjectEvery == 0 && len(p.Prompt) > 0 {
 		b.WriteString("\n\n[系统重新注入提示词]\n")
 		b.Write(renderFull())
 	} else {
