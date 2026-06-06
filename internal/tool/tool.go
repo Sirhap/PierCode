@@ -71,6 +71,12 @@ type Context struct {
 	// SourceClientID is the WebSocket client id of the AI page that initiated
 	// this tool call, when the call came through the browser extension.
 	SourceClientID string
+
+	// Agents, if set, is the registry of dispatched worker agents. The
+	// spawn_agent / send_to_agent / stop_agent tools use it to track and
+	// address workers. Nil means multi-agent dispatch is not available in this
+	// invocation.
+	Agents *AgentRegistry
 }
 
 type sourceClientIDContextKey struct{}

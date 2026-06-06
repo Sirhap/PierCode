@@ -27,6 +27,7 @@ type Executor struct {
 	// race-free without forcing every caller through a mutex.
 	logger            atomic.Value // stores logsink.Sink
 	tasks             *TaskManager
+	agents            *tool.AgentRegistry
 	broadcast         atomic.Pointer[func([]byte)]
 	broadcastToClient atomic.Pointer[func(string, []byte) bool]
 	browserMu         sync.RWMutex
@@ -78,12 +79,19 @@ func (e *Executor) Tasks() *TaskManager {
 	return e.tasks
 }
 
+// Agents returns the worker-agent registry owned by this executor. The server's
+// WS layer consults it to bind workers and route result packets.
+func (e *Executor) Agents() *tool.AgentRegistry {
+	return e.agents
+}
+
 func New(config *types.Config) *Executor {
 	e := &Executor{
 		config:   config,
 		registry: tool.NewRegistry(),
 		profiles: prompt.DefaultProfileRegistry(config.DefaultPrompt),
 		tasks:    NewTaskManager(),
+		agents:   tool.NewAgentRegistry(),
 	}
 	e.registry.Register(tool.NewExecCmdTool(config))
 	e.registry.Register(tool.NewListDirTool(config))
@@ -147,6 +155,9 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserWaitForNavigationTool())
 	e.registry.Register(tool.NewBrowserEmulateTool())
 	e.registry.Register(tool.NewBrowserGetAttributesTool())
+	e.registry.Register(tool.NewSpawnAgentTool())
+	e.registry.Register(tool.NewSendToAgentTool())
+	e.registry.Register(tool.NewStopAgentTool())
 	e.registry.Register(tool.NewToolHelpTool(e.registry))
 	return e
 }
@@ -221,6 +232,7 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 		AdditionalAllowedDirs: additionalRootsSnapshot,
 		PermissionMode:        permissionModeSnapshot,
 		TaskRunner:            e.tasks,
+		Agents:                e.agents,
 	}
 	e.browserMu.RLock()
 	toolCtx.Browser = e.browser

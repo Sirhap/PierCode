@@ -72,7 +72,8 @@ Local Filesystem / Browser CDP
 - `registry.go`: Thread-safe tool registry (Register/Get/List)
 - Core tools: `exec_cmd`, `read_file`, `write_file`, `edit`, `apply_patch` (multi-file contextual patches), `list_dir`, `glob`, `grep`, `web_fetch`, `skill`, `question`, `todo_write`, `todo_read`, `task_list`, `task_output`, `task_stop`, `send_stdin`, `tool_help` (on-demand tool docs)
 - Browser tools (`browser_tools.go`, `browser_tools_ext.go`, `browser_tools_find.go`): ~25 browser automation tools using CDP via the extension's debugger API
-- `tool.go`: `Tool` interface, `Context` struct (carries RootDir snapshot, Streamer, TaskRunner, Broadcast callbacks), `BrowserController` interface
+- Multi-agent tools (`agent_tools.go`, `agent_registry.go`): `spawn_agent` / `send_to_agent` / `stop_agent` let a coordinator AI dispatch worker agents into new AI tabs. `AgentRegistry` maps `agent_id → {dispatcher, worker, status}`. Worker page carries `?piercode_agent=<id>` in its tab URL → WS `agent` query → server binds it (`handleWS`) and seeds the `worker`-profile prompt + task via an `inject` message. Worker reports back with a `piercode-agent-result` fenced packet → content detects it → WS `agent_result` → server routes a `<task-notification>` `inject` to the dispatcher (push callback; coordinator never polls). Worker prompt contract lives in `prompts/worker_append.txt` (the `worker` profile).
+- `tool.go`: `Tool` interface, `Context` struct (carries RootDir snapshot, Streamer, TaskRunner, Agents registry, Broadcast callbacks), `BrowserController` interface
 
 **`internal/browser/`**: Browser automation core
 - `controller.go`, `controller_ext.go`, `controller_find.go`: CDP command orchestration via relay to extension
@@ -108,7 +109,7 @@ Built with Vite + React + TypeScript + Tailwind CSS. Five entry points (see `vit
 
 **Platform adapter pattern** (`src/platform-adapters/`): Each supported AI site has its own adapter module. Adapters are matched by URL in priority order in `platform-adapters.ts`.
 
-**Qwen context compression** (`src/content/qwen-context-compress.ts`): Estimates conversation token usage and generates a summary when a configurable threshold is exceeded, to keep long Qwen sessions within context. Thresholds live in `src/settings.ts` (`DEFAULT_QWEN_MAX_CONTEXT_TOKENS`, `DEFAULT_QWEN_MAX_SUMMARY_TOKENS`).
+**Context compression** (`src/content/qwen-context-compress.ts`): Counts conversation tokens (tiktoken via `token-meter.ts`, char-estimate fallback) and, when a per-platform threshold is exceeded, asks the model to emit a `piercode-context` packet (local summary fallback) and hands it to a fresh session. Enabled per platform via `COMPRESSION_PLATFORMS` in `content/index.ts` (currently `qwen` + `chatgpt`). Config + per-platform thresholds live in the content-safe leaf `src/content/qwen-settings.ts` (`ContextCompressionConfig`, `DEFAULT_PLATFORM_THRESHOLDS`, `thresholdForPlatform`), re-exported by `src/settings.ts`. Storage key `contextCompressionConfig`, with migration from legacy `qwenCompressionConfig`. (The `qwen-*` filenames/symbols are legacy names for what is now multi-platform.)
 
 Currently supported platforms (from manifest + adapters):
 - Google Gemini (`gemini.google.com`)

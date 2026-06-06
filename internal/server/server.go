@@ -476,6 +476,14 @@ func (s *Server) handleWS(c *gin.Context) {
 	role := strings.TrimSpace(c.Query("role"))
 	client := strings.TrimSpace(c.Query("client"))
 	s.ws.RegisterWithMeta(conn, WSClientMeta{ID: id, Provider: provider, Role: role, Client: client})
+
+	// A worker page carries ?agent=<id> (spawn_agent encoded it into the tab
+	// URL). Bind it to its agent record and seed the task now that the page is
+	// connected and addressable.
+	if agentID := strings.TrimSpace(c.Query("agent")); agentID != "" && id != "" {
+		s.bindAndSeedWorker(agentID, id)
+	}
+
 	count := s.ws.ClientCount()
 	s.logTUI("system", "BROWSER", "success", fmt.Sprintf("浏览器扩展已连接 (%d)", count))
 	if s.logger != nil {
@@ -507,6 +515,57 @@ func (s *Server) handleWS(c *gin.Context) {
 		_ = conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 		s.handleWSClientMessage(payload)
 	}
+}
+
+// bindAndSeedWorker binds a freshly connected worker page to its agent record
+// and injects the full worker prompt + task. The seed is delayed briefly so the
+// AI page has time to mount its chat input before the inject tries to fill it.
+func (s *Server) bindAndSeedWorker(agentID, workerClientID string) {
+	if s.executor == nil {
+		return
+	}
+	registry := s.executor.Agents()
+	if registry == nil {
+		return
+	}
+	if !registry.BindWorker(agentID, workerClientID) {
+		log.Printf("[PierCode] worker connected for unknown agent_id %q\n", agentID)
+		return
+	}
+	// Seed the task exactly once. The worker page reconnects every time the MV3
+	// service worker sleeps, re-running this bind; without the guard the task
+	// would be re-injected (and re-executed) on every reconnect.
+	if !registry.MarkSeeded(agentID) {
+		return
+	}
+	rec, ok := registry.Get(agentID)
+	if !ok {
+		return
+	}
+	seed := s.buildWorkerSeed(rec.AgentID, rec.Task)
+	// await_ready makes the worker content poll for its chat input to mount
+	// (the new tab's SPA may still be hydrating) instead of relying on a fixed
+	// server-side delay that could fire before the editor exists.
+	payload, err := json.Marshal(gin.H{"type": "inject", "text": seed, "await_ready": true})
+	if err != nil {
+		return
+	}
+	if !s.ws.SendToID(workerClientID, payload) {
+		log.Printf("[PierCode] failed to seed worker %q (client %q gone)\n", agentID, workerClientID)
+	}
+}
+
+// buildWorkerSeed renders the worker prompt (base PierCode prompt + worker role
+// + result-packet contract) and appends the concrete task, with the agent_id the
+// worker must echo back in its result packet.
+func (s *Server) buildWorkerSeed(agentID, task string) string {
+	profile := s.executor.ResolveProfile("worker")
+	rootDir := s.config.GetRootDir()
+	prompt := string(profile.RenderWithSandbox(rootDir, s.config.GetPermissionMode(), s.config.GetAdditionalAllowedDirs(), s.executor.ListTools(), skill.LoadInfos(rootDir)))
+	return fmt.Sprintf(
+		"%s\n\n---\n\n## Your Task (agent_id: %s)\n\nEcho this exact agent_id in your result packet's `agent_id` field when you finish.\n\n%s",
+		prompt, agentID, task,
+	)
 }
 
 func browserProviderFromRequest(r *http.Request) string {
@@ -555,6 +614,10 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 		URL        string          `json:"url"`
 		Title      string          `json:"title"`
 		Params     json.RawMessage `json:"params"`
+		AgentID    string          `json:"agent_id"`
+		Status     string          `json:"status"`
+		Summary    string          `json:"summary"`
+		Result     string          `json:"result"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return
@@ -632,9 +695,61 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 				Params: msg.Params,
 			})
 		}
+	case "agent_result":
+		s.handleAgentResult(msg.AgentID, msg.Status, msg.Summary, msg.Result)
 	case "browser_ping", "browser_hello":
 		return
 	}
+}
+
+// handleAgentResult records a worker's result packet and delivers it to the
+// dispatcher (coordinator) page as a <task-notification>. The inject auto-submits
+// on the dispatcher page, waking the coordinator to read the result — the push
+// callback that lets the coordinator avoid polling its workers.
+func (s *Server) handleAgentResult(agentID, status, summary, result string) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || s.executor == nil {
+		return
+	}
+	registry := s.executor.Agents()
+	if registry == nil {
+		return
+	}
+	rec, ok := registry.RecordResult(agentID, status, result)
+	if !ok {
+		log.Printf("[PierCode] agent_result for unknown agent_id %q\n", agentID)
+		return
+	}
+	if rec.DispatcherClientID == "" {
+		log.Printf("[PierCode] agent %q has no dispatcher to notify\n", agentID)
+		return
+	}
+	if strings.TrimSpace(summary) == "" {
+		summary = rec.Description
+	}
+	notification := buildTaskNotification(rec.AgentID, string(rec.Status), summary, result)
+	payload, err := json.Marshal(gin.H{"type": "inject", "text": notification})
+	if err != nil {
+		return
+	}
+	if !s.ws.SendToID(rec.DispatcherClientID, payload) {
+		log.Printf("[PierCode] failed to deliver agent %q result to dispatcher %q\n", agentID, rec.DispatcherClientID)
+	}
+}
+
+// buildTaskNotification renders a worker result packet into the <task-notification>
+// XML the coordinator prompt is taught to recognize.
+func buildTaskNotification(agentID, status, summary, result string) string {
+	var b strings.Builder
+	b.WriteString("<task-notification>\n")
+	fmt.Fprintf(&b, "<task-id>%s</task-id>\n", agentID)
+	fmt.Fprintf(&b, "<status>%s</status>\n", status)
+	fmt.Fprintf(&b, "<summary>%s</summary>\n", strings.TrimSpace(summary))
+	if strings.TrimSpace(result) != "" {
+		fmt.Fprintf(&b, "<result>%s</result>\n", strings.TrimSpace(result))
+	}
+	b.WriteString("</task-notification>")
+	return b.String()
 }
 
 func summarizeBrowserAIText(text string) string {

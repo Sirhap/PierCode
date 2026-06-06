@@ -6,6 +6,9 @@ let configuredApiUrl = '';
 let configuredToken = '';
 let connectionSeq = 0;
 const PAGE_CLIENT_ID = getOrCreateClientId();
+// Worker pages persist their agent id here so it survives the AI site's SPA
+// rewriting location.search (e.g. claude.ai/new -> /chat/<uuid>).
+const WORKER_AGENT_STORAGE_KEY = "__PIERCODE_WORKER_AGENT__";
 
 type BridgeState = 'not_configured' | 'connecting' | 'open' | 'closed' | 'error' | 'invalid_url';
 
@@ -261,6 +264,11 @@ function toWebSocketUrl(apiUrl: string, token: string): string | null {
     url.searchParams.set("role", "ai-page");
     url.searchParams.set("provider", currentProvider());
     url.searchParams.set("host", location.hostname);
+    // Worker pages carry ?piercode_agent=<id> in their own URL (spawn_agent
+    // encoded it). Forward it so the server can bind this page to its agent
+    // record and seed the task.
+    const agentId = workerAgentId();
+    if (agentId) url.searchParams.set("agent", agentId);
     return url.toString();
   } catch {
     return null;
@@ -308,6 +316,38 @@ function isQwenPage(): boolean {
   const h = location.hostname.toLowerCase();
   return h.includes("qwen.ai") || h.includes("qwenlm.ai");
 }
+
+// workerAgentId reads the agent id spawn_agent encoded into this worker tab's
+// URL. AI sites are SPAs that rewrite/strip the query on load (e.g.
+// claude.ai/new -> /chat/<uuid>), so the id is captured into sessionStorage on
+// the first read and recovered from there afterward. Empty for ordinary pages.
+let cachedWorkerAgentId: string | null = null;
+export function workerAgentId(): string {
+  if (cachedWorkerAgentId !== null) return cachedWorkerAgentId;
+  let id = "";
+  try {
+    id = new URLSearchParams(location.search).get("piercode_agent") || "";
+  } catch {
+    id = "";
+  }
+  try {
+    if (id) {
+      window.sessionStorage.setItem(WORKER_AGENT_STORAGE_KEY, id);
+    } else {
+      id = window.sessionStorage.getItem(WORKER_AGENT_STORAGE_KEY) || "";
+    }
+  } catch {
+    // sessionStorage unavailable (rare); fall back to whatever the URL gave us.
+  }
+  cachedWorkerAgentId = id;
+  return cachedWorkerAgentId;
+}
+
+// Capture the agent id now, at module load — the earliest point — before any SPA
+// route change can strip the query. Persisted to sessionStorage so later reads
+// recover it even after the URL changes. Declared after workerAgentId and its
+// backing vars to avoid a TDZ ReferenceError at module init.
+workerAgentId();
 
 async function focusCurrentTabForSend(): Promise<void> {
   if (!isQwenPage()) return;
@@ -504,7 +544,7 @@ function connectWebSocket(apiUrl: string, token: string) {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === "inject" && msg.text) {
-          handleInjectMessage(msg.text);
+          handleInjectMessage(msg.text, msg.await_ready === true);
         } else if (msg.type === "tool_stream" && typeof msg.text === "string") {
 		  if (!isForThisPage(msg)) return;
           for (const handler of streamHandlers.slice()) {
@@ -654,8 +694,28 @@ function clickSendButton(config: InjectConfig, targetInput: HTMLElement, attempt
   window.setTimeout(() => clickSendButton(config, targetInput, attempts + 1), 100);
 }
 
-// 处理注入消息：查找聊天输入框并填入内容
-async function handleInjectMessage(text: string) {
+// waitForEditor polls for the chat input to mount, up to 30s. Used for worker
+// seed injection into a freshly opened AI tab whose SPA is still hydrating.
+async function waitForEditor(selectors: string): Promise<HTMLElement | null> {
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    const el = querySelectorFirst(selectors);
+    if (el) {
+      // Editor present but the SPA may still be wiring input handlers; give it
+      // a moment before filling so the value sticks.
+      await new Promise(resolve => setTimeout(resolve, 800));
+      return querySelectorFirst(selectors);
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  console.warn("[PierCode] 30s 内未等到聊天输入框，放弃注入");
+  return null;
+}
+
+// 处理注入消息：查找聊天输入框并填入内容。awaitReady 为 true 时（worker 种子
+// 任务）轮询等待输入框 mount —— 新开的 AI tab SPA 还在 hydrate，输入框可能几秒
+// 后才出现，固定延时会偶发丢种子。
+async function handleInjectMessage(text: string, awaitReady = false) {
   console.log("[PierCode] 收到注入消息:", text);
   const cleanText = sanitizeInjectedText(text);
   if (!cleanText) {
@@ -664,7 +724,11 @@ async function handleInjectMessage(text: string) {
   }
   await focusCurrentTabForSend();
   const config = getInjectConfig();
-  const targetInput = querySelectorFirst(config.editor);
+  let targetInput = querySelectorFirst(config.editor);
+
+  if (!targetInput && awaitReady) {
+    targetInput = await waitForEditor(config.editor);
+  }
 
   if (!targetInput) {
     console.warn("[PierCode] 未找到当前页面的聊天输入框");
@@ -742,6 +806,23 @@ export function sendBrowserApprovalAnswer(approvalID: string, approved: boolean,
     return true;
   } catch (error) {
     console.warn("[PierCode] browser_approval_answer 发送失败:", error);
+    return false;
+  }
+}
+
+// sendAgentResult routes a worker's result packet back to the Go server, which
+// records it and delivers a <task-notification> to the dispatcher (coordinator)
+// page. status/summary/result are parsed from the piercode-agent-result packet.
+export function sendAgentResult(agentId: string, status: string, summary: string, result: string): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn("[PierCode] WebSocket 未连接，无法回传 agent_result");
+    return false;
+  }
+  try {
+    ws.send(JSON.stringify({ type: "agent_result", agent_id: agentId, status, summary, result }));
+    return true;
+  } catch (error) {
+    console.warn("[PierCode] agent_result 发送失败:", error);
     return false;
   }
 }

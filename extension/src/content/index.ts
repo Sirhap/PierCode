@@ -1,7 +1,7 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
 import { extractMonacoText, findQwenToolBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
-import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId } from './ws-linker';
+import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, sendAgentResult } from './ws-linker';
 import { visualIndicator } from './visual-indicator';
 import { statusPanel, type ControlledTabInfo } from './status-panel';
 import { computeMeter } from './token-meter';
@@ -32,6 +32,11 @@ import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
 const DEFAULT_BATCH_QUIET_MS = 400;
 const MIN_BATCH_QUIET_MS = 0;
 const MAX_BATCH_QUIET_MS = 5000;
+
+// Worker result packet fence: a dispatched worker reports back via a single
+// ```piercode-agent-result fenced JSON block. Mirrors the piercode-context
+// detection in qwen-context-compress.ts.
+const AGENT_RESULT_FENCE_RE = /```piercode-agent-result\s*\n([\s\S]*?)\n```/gi;
 function resolveBatchQuietMs(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_BATCH_QUIET_MS;
   return Math.min(MAX_BATCH_QUIET_MS, Math.max(MIN_BATCH_QUIET_MS, Math.round(value)));
@@ -2241,6 +2246,9 @@ function startDOMObserver(_responseSelector: string) {
       }
     }
 
+    // ── Worker result packet: a dispatched worker reports back ──
+    maybeForwardAgentResult(text, processed);
+
     scheduleAIResponseLog(sourceEl, text);
   }
 
@@ -2271,6 +2279,39 @@ function startDOMObserver(_responseSelector: string) {
       send();
     } else {
       aiLogTimers.set(sourceEl, setTimeout(send, delay));
+    }
+  }
+
+  // maybeForwardAgentResult detects a worker's piercode-agent-result packet in
+  // its own AI output and forwards it to the server, which routes it back to the
+  // dispatcher as a <task-notification>. No-op on non-worker pages.
+  function maybeForwardAgentResult(text: string, processed: Set<string>): void {
+    const agentId = workerAgentId();
+    if (!agentId) return;
+    if (!text.toLowerCase().includes('```piercode-agent-result')) return;
+    AGENT_RESULT_FENCE_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = AGENT_RESULT_FENCE_RE.exec(text)) !== null) {
+      const jsonStr = match[1].replace(/[\u200B-\u200D\uFEFF\u00A0]/g, ' ').trim();
+      if (!jsonStr.endsWith('}')) continue; // packet still streaming
+      const key = `agent-result:${hashStr(match[0])}`;
+      if (processed.has(key)) continue;
+      let packet: { agent_id?: string; status?: string; summary?: string; result?: string } | null = null;
+      try {
+        packet = JSON.parse(jsonStr);
+      } catch {
+        continue; // malformed; wait for a settled re-scan
+      }
+      if (!packet) continue;
+      processed.add(key);
+      const status = String(packet.status || 'completed');
+      const summary = String(packet.summary || '');
+      const result = String(packet.result || '');
+      // Trust the worker's echoed agent_id when present; otherwise fall back to
+      // this tab's own id so the server can still route the result.
+      const reportedId = String(packet.agent_id || '').trim() || agentId;
+      console.log('[PierCode] worker 回传 result packet:', reportedId, status);
+      sendAgentResult(reportedId, status, summary, result);
     }
   }
 
