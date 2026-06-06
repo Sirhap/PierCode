@@ -1,6 +1,8 @@
 package prompt
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -269,6 +271,32 @@ func TestEmbeddedDefaultPromptSubstitutesSkillsPlaceholder(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "piercode-debug") {
 		t.Fatalf("embedded prompt should render the injected skills, got tail %q", tail(rendered))
+	}
+}
+
+func TestProfileRenderAppendsMemoryOutsideCache(t *testing.T) {
+	root := t.TempDir()
+	memDir := filepath.Join(root, ".piercode")
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	memPath := filepath.Join(memDir, "memory.md")
+	if err := os.WriteFile(memPath, []byte("first memory\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := Profile{ID: "memtest", Prompt: []byte("body {{SYSTEM_INFO}}")}
+	first := string(profile.Render(root, nil, nil))
+	if !strings.Contains(first, "first memory") || !strings.Contains(first, "Project memory") {
+		t.Fatalf("expected memory in rendered prompt, got %q", tail(first))
+	}
+
+	if err := os.WriteFile(memPath, []byte("second memory\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	second := string(profile.Render(root, nil, nil))
+	if !strings.Contains(second, "second memory") || strings.Contains(second, "first memory") {
+		t.Fatalf("memory should be loaded outside render cache, got %q", tail(second))
 	}
 }
 

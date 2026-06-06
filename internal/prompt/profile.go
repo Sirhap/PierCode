@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/sirhap/piercode/internal/memory"
 	"github.com/sirhap/piercode/internal/skill"
 	"github.com/sirhap/piercode/internal/tool"
 	"github.com/sirhap/piercode/prompts"
@@ -153,6 +154,7 @@ func (p Profile) RenderWithSandbox(rootDir, permissionMode string, additionalAll
 	// Stamp the volatile timestamp + sandbox info last so the cached body can be
 	// reused across calls within the same minute / tool set.
 	out := strings.ReplaceAll(string(body), systemInfoPlaceholder, BuildSystemInfo(rootDir, permissionMode, additionalAllowedDirs))
+	out = memory.AppendMemoryDoc(out, rootDir)
 	return []byte(out)
 }
 

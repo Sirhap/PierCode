@@ -101,6 +101,9 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewSkillTool(config))
 	e.registry.Register(tool.NewTodoWriteTool(config))
 	e.registry.Register(tool.NewTodoReadTool(config))
+	e.registry.Register(tool.NewMemoryReadTool(config))
+	e.registry.Register(tool.NewMemoryWriteTool(config))
+	e.registry.Register(tool.NewMemoryForgetTool(config))
 	e.registry.Register(tool.NewTaskListTool())
 	e.registry.Register(tool.NewTaskOutputTool())
 	e.registry.Register(tool.NewTaskStopTool())
@@ -184,6 +187,11 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 		if logger := e.getLogger(); logger != nil {
 			logger.LogToolCall(req.Name, "error", msg)
 		}
+		// Append a tool_help pointer for AI callers so a malformed call can be
+		// corrected without guessing. Direct API/TUI callers get the raw message.
+		if req.SourceClientID != "" {
+			msg = tool.EnrichErrorMessage(req.Name, msg)
+		}
 		return &types.ToolResponse{Name: req.Name, CallID: req.CallID, Status: "error", Output: msg, Error: msg}
 	}
 
@@ -231,6 +239,13 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	unlock := e.lockForTool(req.Name)
 	result := t.Execute(toolCtx)
 	unlock()
+
+	// Augment runtime errors with an actionable hint for AI callers so they can
+	// self-correct (e.g. missing path -> "verify with list_dir"). Direct API/TUI
+	// callers keep the raw message untouched.
+	if result.Status == "error" && req.SourceClientID != "" {
+		result.Error = tool.EnrichErrorMessage(req.Name, result.Error)
+	}
 
 	resp := &types.ToolResponse{
 		Name:       req.Name,

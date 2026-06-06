@@ -57,6 +57,54 @@ func TestExecutor(t *testing.T) {
 		}
 	})
 
+	t.Run("validation error adds tool_help hint for AI callers", func(t *testing.T) {
+		e := New(testConfig(t))
+		resp := e.Execute(context.Background(), &types.ToolRequest{
+			Name:           "edit",
+			CallID:         "ai-badargs",
+			Args:           map[string]interface{}{}, // missing path/old_string/new_string
+			SourceClientID: "ai-page-1",
+		})
+		if resp.Status != "error" {
+			t.Fatalf("expected error, got %s", resp.Status)
+		}
+		if !strings.Contains(resp.Error, "tool_help") {
+			t.Fatalf("expected tool_help hint for AI caller, got %q", resp.Error)
+		}
+	})
+
+	t.Run("validation error stays raw for direct callers", func(t *testing.T) {
+		e := New(testConfig(t))
+		resp := e.Execute(context.Background(), &types.ToolRequest{
+			Name:   "edit",
+			CallID: "direct-badargs",
+			Args:   map[string]interface{}{},
+			// no SourceClientID -> TUI/API caller
+		})
+		if resp.Status != "error" {
+			t.Fatalf("expected error, got %s", resp.Status)
+		}
+		if strings.Contains(resp.Error, "Hint:") {
+			t.Fatalf("direct caller should get raw error, got %q", resp.Error)
+		}
+	})
+
+	t.Run("runtime error adds path hint for AI callers", func(t *testing.T) {
+		e := New(testConfig(t))
+		resp := e.Execute(context.Background(), &types.ToolRequest{
+			Name:           "read_file",
+			CallID:         "ai-missing-file",
+			Args:           map[string]interface{}{"path": "definitely_not_here.go"},
+			SourceClientID: "ai-page-1",
+		})
+		if resp.Status != "error" {
+			t.Fatalf("expected error, got %s", resp.Status)
+		}
+		if !strings.Contains(resp.Error, "Hint:") || !strings.Contains(resp.Error, "list_dir") {
+			t.Fatalf("expected list_dir hint, got %q", resp.Error)
+		}
+	})
+
 	t.Run("exec_cmd runs successfully", func(t *testing.T) {
 		e := New(testConfig(t))
 		resp := e.Execute(context.Background(), &types.ToolRequest{

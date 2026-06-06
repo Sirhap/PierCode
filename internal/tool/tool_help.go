@@ -65,7 +65,7 @@ func (t *ToolHelpTool) Execute(ctx *Context) *Result {
 		info, ok := t.findTool(toolName)
 		if !ok {
 			result.Status = "error"
-			result.Error = fmt.Sprintf("tool %q not found", toolName)
+			result.Error = t.notFoundMessage(toolName)
 			return result
 		}
 		result.Status = "success"
@@ -82,7 +82,11 @@ func (t *ToolHelpTool) Execute(ctx *Context) *Result {
 		if query != "" && !strings.Contains(haystack, query) {
 			continue
 		}
-		rows = append(rows, fmt.Sprintf("- %s: %s", info.Name, firstLine(info.Description)))
+		tag := ""
+		if info.ReadOnly {
+			tag = " [read-only]"
+		}
+		rows = append(rows, fmt.Sprintf("- %s%s: %s", info.Name, tag, firstLine(info.Description)))
 	}
 	if len(rows) == 0 {
 		result.Status = "success"
@@ -107,6 +111,58 @@ func (t *ToolHelpTool) findTool(name string) (ToolInfo, bool) {
 		}
 	}
 	return ToolInfo{}, false
+}
+
+// notFoundMessage builds an error that suggests near-name matches so the model
+// can self-correct typos instead of giving up. Matching is bidirectional
+// substring (covers "click" -> browser_click and "browser_clicker" -> browser_click)
+// plus shared-prefix grouping, capped to a short list.
+func (t *ToolHelpTool) notFoundMessage(name string) string {
+	target := strings.ToLower(strings.TrimSpace(name))
+	tools := t.registry.List()
+	sortToolInfos(tools)
+
+	var suggestions []string
+	seen := map[string]bool{}
+	add := func(n string) {
+		if !seen[n] {
+			seen[n] = true
+			suggestions = append(suggestions, n)
+		}
+	}
+	// Pass 1: substring either direction.
+	for _, info := range tools {
+		lower := strings.ToLower(info.Name)
+		if strings.Contains(lower, target) || strings.Contains(target, lower) {
+			add(info.Name)
+		}
+	}
+	// Pass 2: shared leading segment (e.g. "browser_") when target has one.
+	if prefix := namePrefix(target); prefix != "" {
+		for _, info := range tools {
+			if strings.HasPrefix(strings.ToLower(info.Name), prefix) {
+				add(info.Name)
+			}
+		}
+	}
+	const maxSuggest = 8
+	if len(suggestions) > maxSuggest {
+		suggestions = suggestions[:maxSuggest]
+	}
+
+	if len(suggestions) == 0 {
+		return fmt.Sprintf("tool %q not found. Call tool_help with no args to list all tools, or with {\"query\":\"...\"} to search.", name)
+	}
+	return fmt.Sprintf("tool %q not found. Did you mean: %s? Or call tool_help with {\"query\":\"...\"} to search.", name, strings.Join(suggestions, ", "))
+}
+
+// namePrefix returns the leading underscore-delimited segment plus separator,
+// e.g. "browser_clik" -> "browser_". Empty if the name has no underscore.
+func namePrefix(name string) string {
+	if i := strings.IndexByte(name, '_'); i > 0 {
+		return name[:i+1]
+	}
+	return ""
 }
 
 func renderDetailedToolHelp(info ToolInfo) string {

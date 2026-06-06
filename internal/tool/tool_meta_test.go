@@ -28,6 +28,9 @@ func TestToolMeta(t *testing.T) {
 		NewWriteFileTool(cfg),
 		NewSkillTool(cfg),
 		NewTodoWriteTool(cfg),
+		NewMemoryReadTool(cfg),
+		NewMemoryWriteTool(cfg),
+		NewMemoryForgetTool(cfg),
 		NewWebFetchTool(),
 		NewToolHelpTool(NewRegistry()),
 	}
@@ -78,6 +81,21 @@ func TestValidateMethods(t *testing.T) {
 		}
 	})
 
+	t.Run("MemoryWriteTool validate missing content", func(t *testing.T) {
+		if err := NewMemoryWriteTool(cfg).Validate(map[string]interface{}{}); err == nil {
+			t.Error("expected error")
+		}
+	})
+
+	t.Run("Memory tools validate scope", func(t *testing.T) {
+		if err := NewMemoryReadTool(cfg).Validate(map[string]interface{}{"scope": "all"}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if err := NewMemoryWriteTool(cfg).Validate(map[string]interface{}{"scope": "all", "content": "x"}); err == nil {
+			t.Error("expected error")
+		}
+	})
+
 	t.Run("SkillTool validate arguments", func(t *testing.T) {
 		tool := NewSkillTool(cfg)
 		if err := tool.Validate(map[string]interface{}{}); err != nil {
@@ -116,6 +134,9 @@ func TestToolHelpTool(t *testing.T) {
 	if err := reg.Register(NewToolHelpTool(reg)); err != nil {
 		t.Fatal(err)
 	}
+	if err := reg.Register(NewMemoryReadTool(&types.Config{})); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("returns detailed parameters for exact tool", func(t *testing.T) {
 		tool := NewToolHelpTool(reg)
@@ -136,6 +157,36 @@ func TestToolHelpTool(t *testing.T) {
 		}
 		if !strings.Contains(res.Output, "read_file") || !strings.Contains(res.Output, "Call tool_help") {
 			t.Fatalf("expected filtered tool list, got %q", res.Output)
+		}
+	})
+
+	t.Run("tags read-only tools in the list", func(t *testing.T) {
+		tool := NewToolHelpTool(reg)
+		res := tool.Execute(&Context{Args: map[string]interface{}{}})
+		if res.Status != "success" {
+			t.Fatal(res.Error)
+		}
+		if !strings.Contains(res.Output, "memory_read [read-only]") {
+			t.Fatalf("expected read-only tag on memory_read, got %q", res.Output)
+		}
+	})
+
+	t.Run("suggests near matches when tool not found", func(t *testing.T) {
+		tool := NewToolHelpTool(reg)
+		res := tool.Execute(&Context{Args: map[string]interface{}{"tool": "read"}})
+		if res.Status != "error" {
+			t.Fatal("expected error for non-exact name")
+		}
+		if !strings.Contains(res.Error, "Did you mean") || !strings.Contains(res.Error, "read_file") {
+			t.Fatalf("expected read_file suggestion, got %q", res.Error)
+		}
+	})
+
+	t.Run("no suggestion for totally unknown tool", func(t *testing.T) {
+		tool := NewToolHelpTool(reg)
+		res := tool.Execute(&Context{Args: map[string]interface{}{"tool": "zzz_nope"}})
+		if res.Status != "error" || strings.Contains(res.Error, "Did you mean") {
+			t.Fatalf("expected plain not-found error, got %q", res.Error)
 		}
 	})
 }
