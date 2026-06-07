@@ -49,7 +49,8 @@ type Server struct {
 
 	// stop signals background goroutines (e.g. the agent-registry sweeper) to exit;
 	// closed once in Close().
-	stop chan struct{}
+	stop      chan struct{}
+	closeOnce sync.Once
 }
 
 const (
@@ -1053,21 +1054,19 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) Close() {
-	if s.stop != nil {
-		select {
-		case <-s.stop: // already closed
-		default:
+	s.closeOnce.Do(func() {
+		if s.stop != nil {
 			close(s.stop)
 		}
-	}
-	if s.ws != nil {
-		s.ws.Close()
-	}
-	if s.executor != nil {
-		if tm := s.executor.Tasks(); tm != nil {
-			tm.Close()
+		if s.ws != nil {
+			s.ws.Close()
 		}
-	}
+		if s.executor != nil {
+			if tm := s.executor.Tasks(); tm != nil {
+				tm.Close()
+			}
+		}
+	})
 }
 
 // getLogger returns the current log sink (lock-free via atomic.Value).

@@ -186,17 +186,16 @@ func (p Profile) renderBodyCached(rootDir string, tools []tool.ToolInfo, skills 
 		renderCacheMu.Unlock()
 		return cached
 	}
-	renderCacheMu.Unlock()
-
-	// Build with {{SYSTEM_INFO}} retained (renderBody only substitutes {{TOOLS}}).
+	// Build while holding the lock to prevent duplicate computation when
+	// multiple goroutines miss the cache simultaneously. The build is
+	// deterministic and fast (template substitution), so holding the lock
+	// is acceptable.
 	content := []byte(renderBody(p.Prompt, filteredTools))
 	content = AppendSkillsDoc(content, filteredSkills)
 	if len(p.PromptAppend) > 0 {
 		content = append(content, []byte("\n\n")...)
 		content = append(content, []byte(renderBody(p.PromptAppend, filteredTools))...)
 	}
-
-	renderCacheMu.Lock()
 	renderCache[key] = content
 	renderCacheMu.Unlock()
 	return content

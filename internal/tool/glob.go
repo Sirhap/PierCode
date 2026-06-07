@@ -66,6 +66,17 @@ func (t *GlobTool) Execute(ctx *Context) *Result {
 
 	basePat := filepath.Base(pattern)
 	isRecursive := strings.Contains(pattern, "**")
+	// For recursive patterns like "src/**/*.go", extract the directory prefix
+	// ("src/") so we can verify the file is under the right subtree.
+	var prefixDir string
+	if isRecursive {
+		idx := strings.Index(pattern, "**")
+		if idx > 0 {
+			prefixDir = pattern[:idx]
+			prefixDir = strings.TrimSuffix(prefixDir, "/")
+			prefixDir = strings.TrimSuffix(prefixDir, string(filepath.Separator))
+		}
+	}
 
 	filepath.WalkDir(safePath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -84,6 +95,16 @@ func (t *GlobTool) Execute(ctx *Context) *Result {
 		var matched bool
 		if isRecursive {
 			matched, _ = filepath.Match(basePat, name)
+			// If the pattern has a directory prefix (e.g. "src" in "src/**/*.go"),
+			// verify the file is under that prefix relative to the search root.
+			if matched && prefixDir != "" {
+				rel, _ := filepath.Rel(safePath, p)
+				relDir := filepath.Dir(rel)
+				if relDir != "." && !strings.HasPrefix(relDir, prefixDir) &&
+					relDir != prefixDir {
+					matched = false
+				}
+			}
 		} else {
 			rel, _ := filepath.Rel(safePath, p)
 			matched, _ = filepath.Match(pattern, rel)

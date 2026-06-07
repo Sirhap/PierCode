@@ -1,4 +1,4 @@
-import { pushPierCodeTool } from './shared';
+import { pushPierCodeAgentResult, pushPierCodeTool } from './shared';
 import type { PlatformAdapter } from './types';
 
 export const claudeAdapter: PlatformAdapter = {
@@ -12,15 +12,24 @@ export const claudeAdapter: PlatformAdapter = {
     const tag = el.tagName.toLowerCase();
 
     if (tag === 'pre') {
+      // Check for agent-result first (more specific)
+      const agentResultCode = el.querySelector('code[class*="language-piercode-agent-result"]');
+      if (agentResultCode) {
+        return pushPierCodeAgentResult(buf, agentResultCode.textContent || '');
+      }
       const code = el.querySelector('code[class*="language-piercode-tool"], code[class*="language-piercode"], code[class*="language-tool"]');
       if (!code) return false;
       pushPierCodeTool(buf, code.textContent || '');
       return true;
     }
 
-    if (tag === 'code' &&
-        (classAttr.includes('language-piercode-tool') || classAttr.includes('language-piercode') || classAttr.includes('language-tool'))) {
-      return pushPierCodeTool(buf, el.textContent || '');
+    if (tag === 'code') {
+      if (classAttr.includes('language-piercode-agent-result')) {
+        return pushPierCodeAgentResult(buf, el.textContent || '');
+      }
+      if (classAttr.includes('language-piercode-tool') || classAttr.includes('language-piercode') || classAttr.includes('language-tool')) {
+        return pushPierCodeTool(buf, el.textContent || '');
+      }
     }
 
     return false;

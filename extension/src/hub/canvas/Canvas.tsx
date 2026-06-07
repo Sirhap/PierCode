@@ -255,20 +255,22 @@ export default function Canvas({ project, statusByAgentId, freeLayout, onMoveNod
     }
   };
 
+  // Ref mirrors focusedNodeId so focusNode's centering decision reads the latest
+  // value instead of a stale closure capture when called rapidly in succession.
+  const focusedNodeIdRef = useRef(focusedNodeId);
+  focusedNodeIdRef.current = focusedNodeId;
+
   const focusNode = useCallback((nodeId: string) => {
-    // Toggle off if already focused; otherwise focus + center. The viewport side
-    // effect lives OUTSIDE the setState updater (updaters must stay pure — React
-    // StrictMode double-invokes them, which would double-apply the centering).
-    const node = nodesRef.current.find(n => n.id === nodeId); // displayed position
+    const node = nodesRef.current.find(n => n.id === nodeId);
     setFocusedNodeId(prev => {
       const next = prev === nodeId ? null : nodeId;
       return next;
     });
-    if (focusedNodeId !== nodeId && node && rootRef.current) {
+    if (focusedNodeIdRef.current !== nodeId && node && rootRef.current) {
       const r = rootRef.current.getBoundingClientRect();
       onSetViewport(centerOnNode(node, r.width, r.height, 1));
     }
-  }, [onSetViewport, focusedNodeId]);
+  }, [onSetViewport]);
 
   // jumpToNode always centers + highlights a node (no toggle-off), for the card
   // locator list. At least 100% zoom so the landed card is actually readable.

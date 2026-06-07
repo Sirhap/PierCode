@@ -72,6 +72,11 @@ export default function App() {
   // callback closure (set up once) without re-subscribing on every switch.
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
+  // projectsRef keeps the latest projects list available inside the
+  // removeProject's setActiveId updater, so it reads the post-deletion list
+  // instead of a stale closure value.
+  const projectsRef = useRef<Project[]>(projects);
+  projectsRef.current = projects;
 
   useEffect(() => {
     loadProjects().then(p => {
@@ -170,7 +175,9 @@ export default function App() {
     });
     setActiveId(prev => {
       if (prev !== id) return prev;
-      const remaining = projects.filter(p => p.id !== id);
+      // Read from projectsRef (freshly synced) instead of closure-captured
+      // `projects` which may be stale if React batches the setProjects call.
+      const remaining = projectsRef.current.filter(p => p.id !== id);
       return remaining[0]?.id ?? null;
     });
   };

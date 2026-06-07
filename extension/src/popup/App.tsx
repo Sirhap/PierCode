@@ -526,10 +526,16 @@ export default function App() {
             <button
               onClick={() => {
                 if (!reconfig) {
-                  clearStoredAuth()
-                  setHasStoredAuth(false)
+                  // Don't clear stored auth immediately — only overwrite when
+                  // the user actually submits a new token via handleConnect.
+                  // This prevents credential loss if the user clicks "重新配置"
+                  // then "取消".
                   setStatus('disconnected')
-                  setInfo('请输入认证 Token URL')
+                  setInfo('请输入新的认证 Token URL（或取消保留当前配置）')
+                } else {
+                  // User clicked "取消" — restore connection state from storage
+                  setInfo('正在恢复连接...')
+                  recheckNow()
                 }
                 setReconfig(!reconfig)
                 setToken('')

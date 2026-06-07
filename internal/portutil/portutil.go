@@ -135,7 +135,7 @@ func localAddressHasPort(addr string, port int) bool {
 }
 
 func findPidsUnix(port int) []int {
-	out, err := exec.Command("lsof", "-i", fmt.Sprintf(":%d", port), "-t").Output()
+	out, err := exec.Command("lsof", "-iTCP:"+fmt.Sprintf("%d", port), "-sTCP:LISTEN", "-t").Output()
 	if err != nil {
 		return nil
 	}

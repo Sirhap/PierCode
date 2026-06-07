@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sirhap/piercode/internal/tool"
 )
@@ -197,7 +198,12 @@ func (c *Controller) GetContent(ctx context.Context, req tool.BrowserGetContentR
 	}
 	text := runtimeValueString(out)
 	if len([]byte(text)) > 100*1024 {
-		text = string([]byte(text)[:100*1024]) + "\n...[truncated]"
+		b := []byte(text)
+		cut := 100 * 1024
+		for cut > 0 && !utf8.RuneStart(b[cut]) {
+			cut--
+		}
+		text = string(b[:cut]) + "\n...[truncated]"
 	}
 	return text, nil
 }

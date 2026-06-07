@@ -109,7 +109,7 @@ func (r *AgentRecord) summary() AgentSummary {
 // the executor and consulted by the server's WS layer to route result packets
 // back to the dispatcher.
 type AgentRegistry struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	agents map[string]*AgentRecord
 	seq    uint64
 }
@@ -171,8 +171,8 @@ func (r *AgentRegistry) AgentIDByWorkerClient(workerClientID string) string {
 // 0, its child 1, and so on. Used by spawn_agent to cap recursive fan-out. A
 // broken/cyclic parent chain is bounded by maxDepthScan so this never spins.
 func (r *AgentRegistry) Depth(agentID string) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	const maxDepthScan = 64
 	depth := 0
 	cur := strings.TrimSpace(agentID)

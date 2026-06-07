@@ -186,30 +186,32 @@ func spliceOnRaw(raw, oldStr, newStr string, replaceAll bool) (string, int, bool
 }
 
 func levenshtein(a, b string) int {
-	if a == "" {
-		return len(b)
+	ra := []rune(a)
+	rb := []rune(b)
+	if len(ra) == 0 {
+		return len(rb)
 	}
-	if b == "" {
-		return len(a)
+	if len(rb) == 0 {
+		return len(ra)
 	}
-	matrix := make([][]int, len(a)+1)
+	matrix := make([][]int, len(ra)+1)
 	for i := range matrix {
-		matrix[i] = make([]int, len(b)+1)
+		matrix[i] = make([]int, len(rb)+1)
 		matrix[i][0] = i
 	}
-	for j := 0; j <= len(b); j++ {
+	for j := 0; j <= len(rb); j++ {
 		matrix[0][j] = j
 	}
-	for i := 1; i <= len(a); i++ {
-		for j := 1; j <= len(b); j++ {
+	for i := 1; i <= len(ra); i++ {
+		for j := 1; j <= len(rb); j++ {
 			cost := 1
-			if a[i-1] == b[j-1] {
+			if ra[i-1] == rb[j-1] {
 				cost = 0
 			}
 			matrix[i][j] = min3(matrix[i-1][j]+1, matrix[i][j-1]+1, matrix[i-1][j-1]+cost)
 		}
 	}
-	return matrix[len(a)][len(b)]
+	return matrix[len(ra)][len(rb)]
 }
 
 func min3(a, b, c int) int {
