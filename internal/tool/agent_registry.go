@@ -24,6 +24,8 @@ const (
 // runs the task. Both are WebSocket clients identified by their client id.
 type AgentRecord struct {
 	AgentID                   string
+	ParentAgentID             string // agent that spawned this one; empty for a root (a main agent)
+	ProjectID                 string // Hub project this agent's node belongs to; empty if not in a project
 	DispatcherClientID        string // coordinator page that spawned this worker
 	DispatcherConversationURL string
 	WorkerClientID            string // worker page; empty until bound
@@ -46,6 +48,8 @@ type AgentRecord struct {
 // AgentSummary is a JSON-friendly snapshot for tool output and /agents routes.
 type AgentSummary struct {
 	AgentID                   string `json:"agent_id"`
+	ParentAgentID             string `json:"parent_agent_id,omitempty"`
+	ProjectID                 string `json:"project_id,omitempty"`
 	DispatcherClientID        string `json:"dispatcher_client_id,omitempty"`
 	DispatcherConversationURL string `json:"dispatcher_conversation_url,omitempty"`
 	WorkerClientID            string `json:"worker_client_id,omitempty"`
@@ -65,6 +69,8 @@ type AgentSummary struct {
 func (r *AgentRecord) summary() AgentSummary {
 	s := AgentSummary{
 		AgentID:                   r.AgentID,
+		ParentAgentID:             r.ParentAgentID,
+		ProjectID:                 r.ProjectID,
 		DispatcherClientID:        r.DispatcherClientID,
 		DispatcherConversationURL: r.DispatcherConversationURL,
 		WorkerClientID:            r.WorkerClientID,
@@ -108,14 +114,23 @@ func NewAgentRegistry() *AgentRegistry {
 	return &AgentRegistry{agents: make(map[string]*AgentRecord)}
 }
 
-// Create registers a new pending agent and returns its record. The agent id is
-// generated here so spawn_agent can seed it into the worker's task prompt.
+// Create registers a new pending root agent (no parent, no project) and returns
+// its record. Thin wrapper over CreateInProject for the common/legacy call shape.
 func (r *AgentRegistry) Create(dispatcherClientID, dispatcherConversationURL, platform, host, description, task string) *AgentRecord {
+	return r.CreateInProject(dispatcherClientID, dispatcherConversationURL, platform, host, description, task, "", "")
+}
+
+// CreateInProject registers a new pending agent with an optional parent (the
+// agent that spawned it, empty for a main/root agent) and project. The agent id
+// is generated here so spawn_agent can seed it into the worker's task prompt.
+func (r *AgentRegistry) CreateInProject(dispatcherClientID, dispatcherConversationURL, platform, host, description, task, parentAgentID, projectID string) *AgentRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seq++
 	rec := &AgentRecord{
 		AgentID:                   fmt.Sprintf("agent-%d-%d", time.Now().UnixNano(), r.seq),
+		ParentAgentID:             parentAgentID,
+		ProjectID:                 projectID,
 		DispatcherClientID:        dispatcherClientID,
 		DispatcherConversationURL: dispatcherConversationURL,
 		Platform:                  platform,
@@ -127,6 +142,45 @@ func (r *AgentRegistry) Create(dispatcherClientID, dispatcherConversationURL, pl
 	}
 	r.agents[rec.AgentID] = rec
 	return rec
+}
+
+// AgentIDByWorkerClient returns the agent id bound to a worker WS client id, or
+// "" if none. spawn_agent uses it to find the PARENT when the caller is itself a
+// worker (a sub-agent spawning a sub-sub-agent): the caller's source client id is
+// that worker's WS client, which maps back to its agent record.
+func (r *AgentRegistry) AgentIDByWorkerClient(workerClientID string) string {
+	workerClientID = strings.TrimSpace(workerClientID)
+	if workerClientID == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rec := range r.agents {
+		if rec.WorkerClientID == workerClientID {
+			return rec.AgentID
+		}
+	}
+	return ""
+}
+
+// Depth returns how deep an agent sits in the spawn tree: a root (no parent) is
+// 0, its child 1, and so on. Used by spawn_agent to cap recursive fan-out. A
+// broken/cyclic parent chain is bounded by maxDepthScan so this never spins.
+func (r *AgentRegistry) Depth(agentID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	const maxDepthScan = 64
+	depth := 0
+	cur := strings.TrimSpace(agentID)
+	for i := 0; i < maxDepthScan; i++ {
+		rec, ok := r.agents[cur]
+		if !ok || strings.TrimSpace(rec.ParentAgentID) == "" {
+			return depth
+		}
+		depth++
+		cur = rec.ParentAgentID
+	}
+	return depth
 }
 
 // BindWorker associates a worker page's WebSocket client id with an agent and
@@ -270,6 +324,23 @@ func (r *AgentRegistry) List(dispatcherClientID string) []AgentSummary {
 	out := make([]AgentSummary, 0, len(r.agents))
 	for _, rec := range r.agents {
 		if dispatcherClientID != "" && rec.DispatcherClientID != dispatcherClientID {
+			continue
+		}
+		out = append(out, rec.summary())
+	}
+	return out
+}
+
+// ListByProject returns summaries of every agent in a project. An empty projectID
+// returns every agent (same as List("")). The Hub's project drawer uses it to
+// show only the current project's agent tree.
+func (r *AgentRegistry) ListByProject(projectID string) []AgentSummary {
+	projectID = strings.TrimSpace(projectID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]AgentSummary, 0, len(r.agents))
+	for _, rec := range r.agents {
+		if projectID != "" && rec.ProjectID != projectID {
 			continue
 		}
 		out = append(out, rec.summary())

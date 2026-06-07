@@ -29,6 +29,11 @@ var platformURLs = map[string]string{
 	"mimo":      "https://aistudio.xiaomimimo.com/",
 }
 
+// maxSpawnDepth caps how deep the recursive sub-agent tree may grow. A main
+// agent (depth 0) spawns children at depth 1, which spawn at depth 2, etc. The
+// cap stops an off-script worker AI from fanning out tabs/panes without bound.
+const maxSpawnDepth = 3
+
 // hubEmbeddablePlatforms is the set of spawn_agent platforms the Hub workspace
 // can embed as a pane. It MUST stay a subset of the Hub's PROVIDERS catalog in
 // extension/src/hub/pane-manager.ts — a platform here that the Hub can't render
@@ -94,7 +99,21 @@ func NewSpawnAgentTool() Tool {
 				platform = defaultPlatformFor(ctx.SourceClientID)
 			}
 
-			rec := ctx.Agents.Create(ctx.SourceClientID, ctx.ConversationURL, platform, "", desc, task)
+			// If the caller is itself a worker (a sub-agent spawning a sub-agent),
+			// its source client id maps back to its own agent record — that agent
+			// is the parent. The child inherits the parent's project so the whole
+			// sub-tree lands in the same Hub canvas. A main-agent (ai-page) caller
+			// has no such mapping: parent and project stay empty and the Hub places
+			// the node in the currently open project.
+			parentAgentID := ctx.Agents.AgentIDByWorkerClient(ctx.SourceClientID)
+			projectID := ""
+			if parentAgentID != "" {
+				if parent, ok := ctx.Agents.Get(parentAgentID); ok {
+					projectID = parent.ProjectID
+				}
+			}
+
+			rec := ctx.Agents.CreateInProject(ctx.SourceClientID, ctx.ConversationURL, platform, "", desc, task, parentAgentID, projectID)
 
 			// Prefer the Hub workspace: when its page is connected and the platform
 			// is one the Hub can embed, inject the worker as a pane so it runs
@@ -103,7 +122,7 @@ func NewSpawnAgentTool() Tool {
 			// WS exactly like a standalone worker tab — no extra server plumbing.
 			if ctx.HubOnline != nil && ctx.HubOnline() && hubEmbeddablePlatforms[strings.ToLower(platform)] {
 				if ctx.HubAddPane != nil {
-					ctx.HubAddPane(rec.AgentID, platform, desc)
+					ctx.HubAddPane(rec.AgentID, parentAgentID, platform, desc)
 					return fmt.Sprintf(
 						"Dispatched worker %s on %s into the Hub workspace: %s\nThe worker runs in a Hub pane and reports back as a <task-notification>. Do not poll or read its pane — end your turn and wait for the callback.",
 						rec.AgentID, platform, desc,
@@ -252,14 +271,18 @@ func (t *agentTool) Execute(ctx *Context) *Result {
 		result.Error = "multi-agent dispatch is not configured"
 		return result
 	}
-	// Hard backstop: workers must not spawn workers. The worker prompt also
-	// forbids this, but enforcing it on the dispatch path stops an off-script
-	// worker AI from fanning out tabs recursively. Checked before the browser
-	// guard so the refusal is deterministic regardless of relay state.
-	if t.name == "spawn_agent" && ctx.Agents.IsWorkerClient(ctx.SourceClientID) {
-		result.Status = "error"
-		result.Error = "workers cannot spawn other workers; do the task yourself or report back to your coordinator"
-		return result
+	// Sub-agents MAY spawn their own sub-agents (a recursive tree), but the depth
+	// is capped so an off-script worker AI cannot fan out tabs without bound. A
+	// worker's source client id maps back to its own agent record; that agent is
+	// the parent of whatever it spawns, so its depth + 1 is the child's depth.
+	if t.name == "spawn_agent" {
+		if parentID := ctx.Agents.AgentIDByWorkerClient(ctx.SourceClientID); parentID != "" {
+			if ctx.Agents.Depth(parentID)+1 > maxSpawnDepth {
+				result.Status = "error"
+				result.Error = fmt.Sprintf("spawn depth limit reached (max %d levels); do this part yourself or report back to your coordinator", maxSpawnDepth)
+				return result
+			}
+		}
 	}
 	if ctx.Browser == nil && t.name == "spawn_agent" {
 		result.Status = "error"

@@ -91,6 +91,70 @@ func TestAgentRegistryListByDispatcher(t *testing.T) {
 	}
 }
 
+func TestAgentRegistryParentChainDepth(t *testing.T) {
+	r := NewAgentRegistry()
+	root := r.CreateInProject("d", "", "qwen", "", "root", "t", "", "proj-1")
+	child := r.CreateInProject("d", "", "qwen", "", "child", "t", root.AgentID, "proj-1")
+	grand := r.CreateInProject("d", "", "qwen", "", "grand", "t", child.AgentID, "proj-1")
+
+	if d := r.Depth(root.AgentID); d != 0 {
+		t.Errorf("root depth = %d, want 0", d)
+	}
+	if d := r.Depth(child.AgentID); d != 1 {
+		t.Errorf("child depth = %d, want 1", d)
+	}
+	if d := r.Depth(grand.AgentID); d != 2 {
+		t.Errorf("grandchild depth = %d, want 2", d)
+	}
+	if d := r.Depth("missing"); d != 0 {
+		t.Errorf("unknown agent depth = %d, want 0", d)
+	}
+}
+
+func TestAgentRegistryAgentIDByWorkerClient(t *testing.T) {
+	r := NewAgentRegistry()
+	rec := r.Create("d", "", "qwen", "", "x", "t")
+	r.BindWorker(rec.AgentID, "worker-7")
+	if got := r.AgentIDByWorkerClient("worker-7"); got != rec.AgentID {
+		t.Errorf("AgentIDByWorkerClient = %q, want %q", got, rec.AgentID)
+	}
+	if got := r.AgentIDByWorkerClient("nope"); got != "" {
+		t.Errorf("unknown worker client should map to empty, got %q", got)
+	}
+}
+
+func TestAgentRegistryListByProject(t *testing.T) {
+	r := NewAgentRegistry()
+	r.CreateInProject("d", "", "qwen", "", "a", "t", "", "proj-1")
+	r.CreateInProject("d", "", "qwen", "", "b", "t", "", "proj-1")
+	r.CreateInProject("d", "", "qwen", "", "c", "t", "", "proj-2")
+
+	if got := len(r.ListByProject("proj-1")); got != 2 {
+		t.Errorf("proj-1 should have 2 agents, got %d", got)
+	}
+	if got := len(r.ListByProject("proj-2")); got != 1 {
+		t.Errorf("proj-2 should have 1 agent, got %d", got)
+	}
+	if got := len(r.ListByProject("")); got != 3 {
+		t.Errorf("empty project filter should return all 3, got %d", got)
+	}
+}
+
+func TestAgentSummaryExposesParentAndProject(t *testing.T) {
+	r := NewAgentRegistry()
+	root := r.CreateInProject("d", "", "qwen", "", "root", "t", "", "proj-1")
+	child := r.CreateInProject("d", "", "qwen", "", "child", "t", root.AgentID, "proj-1")
+	for _, s := range r.List("") {
+		if s.AgentID == child.AgentID {
+			if s.ParentAgentID != root.AgentID || s.ProjectID != "proj-1" {
+				t.Fatalf("child summary missing parent/project: %+v", s)
+			}
+			return
+		}
+	}
+	t.Fatal("child summary not found")
+}
+
 func TestListAgentsTool(t *testing.T) {
 	r := NewAgentRegistry()
 	rec := r.Create("dispatcher-1", "https://chat.qwen.ai/", "qwen", "", "debug", "task")
@@ -167,7 +231,12 @@ func TestAgentRegistryIsWorkerClient(t *testing.T) {
 	}
 }
 
-func TestSpawnAgentRefusesWorkerCaller(t *testing.T) {
+// A shallow worker (depth 0) is now ALLOWED to spawn a sub-agent — recursion is
+// permitted up to maxSpawnDepth. The worker caller must get past the depth guard
+// (the only remaining refusal here is the unrelated browser-not-configured one,
+// since this ctx has no Browser). The depth refusal is covered separately in
+// TestSpawnAgentDepthLimit.
+func TestSpawnAgentAllowsShallowWorkerCaller(t *testing.T) {
 	r := NewAgentRegistry()
 	rec := r.Create("d", "", "qwen", "", "x", "y")
 	r.BindWorker(rec.AgentID, "worker-c")
@@ -179,8 +248,13 @@ func TestSpawnAgentRefusesWorkerCaller(t *testing.T) {
 		SourceClientID: "worker-c",
 	}
 	res := spawn.Execute(ctx)
-	if res.Status != "error" || !strContains(res.Error, "cannot spawn") {
-		t.Fatalf("worker caller should be refused, got status=%s err=%q", res.Status, res.Error)
+	if strContains(res.Error, "depth limit") {
+		t.Fatalf("a depth-0 worker must not hit the depth limit, got %q", res.Error)
+	}
+	// Without a Browser and Hub bridge, the spawn falls through to the tab path
+	// and fails on the browser guard — proving it passed the worker/depth checks.
+	if res.Status != "error" || !strContains(res.Error, "browser relay") {
+		t.Fatalf("expected the browser-not-configured error after passing the depth gate, got status=%s err=%q", res.Status, res.Error)
 	}
 }
 

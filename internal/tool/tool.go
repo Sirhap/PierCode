@@ -88,7 +88,10 @@ type Context struct {
 	// HubAddPane, if set, asks the connected Hub page to add a worker pane for an
 	// agent (the worker iframe carries ?piercode_agent=<id> and self-binds). Only
 	// called when HubOnline() is true and the platform is Hub-embeddable.
-	HubAddPane func(agentID, platform, description string)
+	// parentAgentID is the spawning agent for a sub-agent spawn (empty for a
+	// first-level spawn from a main agent), so the Hub can attach the new node
+	// under its parent in the canvas tree.
+	HubAddPane func(agentID, parentAgentID, platform, description string)
 }
 
 type sourceClientIDContextKey struct{}

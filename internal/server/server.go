@@ -82,12 +82,13 @@ func New(config *types.Config) *Server {
 	// standalone tab otherwise.
 	s.executor.SetHubBridge(
 		func() bool { return s.ws.RoleCount("hub") > 0 },
-		func(agentID, platform, description string) {
+		func(agentID, parentAgentID, platform, description string) {
 			payload, err := json.Marshal(gin.H{
-				"type":        "hub_add_pane",
-				"agent_id":    agentID,
-				"platform":    platform,
-				"description": description,
+				"type":            "hub_add_pane",
+				"agent_id":        agentID,
+				"parent_agent_id": parentAgentID,
+				"platform":        platform,
+				"description":     description,
 			})
 			if err != nil {
 				return
@@ -306,7 +307,10 @@ func (s *Server) handleStats(c *gin.Context) {
 func (s *Server) handleListAgents(c *gin.Context) {
 	var agents []tool.AgentSummary
 	if s.executor != nil {
-		agents = s.executor.Agents().List("")
+		// ?project_id=<id> scopes to one project's agent tree (the Hub drawer);
+		// omitted returns every agent (the global overview).
+		projectID := strings.TrimSpace(c.Query("project_id"))
+		agents = s.executor.Agents().ListByProject(projectID)
 	}
 	if agents == nil {
 		agents = []tool.AgentSummary{}
