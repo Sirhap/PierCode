@@ -7,6 +7,7 @@ type Dict = Record<string, { zh: string; en: string }>
 
 export const strings: Dict = {
   'nav.how': { zh: '工作原理', en: 'How it works' },
+  'nav.core': { zh: '核心能力', en: 'Capabilities' },
   'nav.features': { zh: '能力', en: 'Features' },
   'nav.platforms': { zh: '支持平台', en: 'Platforms' },
   'nav.security': { zh: '安全', en: 'Security' },
@@ -53,6 +54,38 @@ export const strings: Dict = {
   'how.s4d': { zh: '输出流回对话——AI 拿到真实的本地结果继续工作。', en: 'Output flows back into the chat — the AI keeps working with real, local results.' },
 
   'feat.h2': { zh: '真正的工具，不只是建议', en: 'Real tools, not suggestions' },
+
+  // ── Core capabilities ──
+  'core.h2': { zh: '不只是工具调用——是完整的 AI 开发平台', en: 'Not just tool calls — a full AI dev platform' },
+  'core.sub': { zh: 'PierCode v2 的核心能力，让网页 AI 真正成为你的本地开发搭档。', en: 'PierCode v2 capabilities that turn web AI into your local dev partner.' },
+
+  'core.1t': { zh: '多 Agent 协调', en: 'Multi-Agent Orchestration' },
+  'core.1d': {
+    zh: '一个 AI 当协调者，把子任务分发给多个 worker 页面并行执行。跨 tab 调度、结果自动回收、递归派生（最多 3 层）。每个 worker 独立对话、独立沙箱。',
+    en: 'One AI acts as coordinator, dispatching sub-tasks to multiple worker pages in parallel. Cross-tab scheduling, automatic result collection, recursive spawning (up to 3 levels). Each worker has its own conversation and sandbox.',
+  },
+  'core.1h': { zh: 'spawn_agent · send_to_agent · stop_agent', en: 'spawn_agent · send_to_agent · stop_agent' },
+
+  'core.2t': { zh: '多 AI 工作台', en: 'Multi-AI Workspace' },
+  'core.2d': {
+    zh: '浏览器内同时前台运行多个 AI——Qwen 写代码、Claude 做审查、ChatGPT 跑测试，全在一个画布里。告别 Chrome 后台节流，所有 AI 全速生成。',
+    en: 'Run multiple AIs in the foreground simultaneously — Qwen writes code, Claude reviews, ChatGPT tests — all in one canvas. No more Chrome background throttling; every AI generates at full speed.',
+  },
+  'core.2h': { zh: 'Hub 画布 · 项目管理 · Agent 树', en: 'Hub canvas · project mgmt · agent tree' },
+
+  'core.3t': { zh: '上下文压缩', en: 'Context Compression' },
+  'core.3d': {
+    zh: '对话 token 接近平台上限时，自动让模型压缩上下文并迁移到新会话。你的工作不会因为 token 耗尽而中断——压缩包携带完整上下文，新会话无缝接续。',
+    en: 'When conversation tokens approach the platform limit, the model auto-compresses context and migrates to a new session. Your work never stalls from token exhaustion — the compressed packet carries full context for seamless continuation.',
+  },
+  'core.3h': { zh: '自动触发 · 熔断保护 · 手动/自动迁移', en: 'Auto-trigger · circuit breaker · manual/auto handoff' },
+
+  'core.4t': { zh: '持久记忆', en: 'Persistent Memory' },
+  'core.4d': {
+    zh: 'AI 可以跨会话记住你的偏好、项目约定、常用命令。分全局记忆和项目记忆，每次对话开始时自动注入。不再每次从零开始。',
+    en: 'The AI remembers your preferences, project conventions, and common commands across sessions. Global and project-scoped memory, auto-injected at conversation start. No more starting from scratch.',
+  },
+  'core.4h': { zh: 'memory_read · memory_write · memory_forget', en: 'memory_read · memory_write · memory_forget' },
   'feat.sub': { zh: '精简工具集，沙箱化、可审查。', en: 'A focused toolset, sandboxed and reviewable.' },
   'feat.1t': { zh: '读写代码', en: 'Read & write code' },
   'feat.1d': { zh: '在沙箱工作目录内检查和创建文件。', en: 'Inspect and create files inside the sandboxed working directory.' },

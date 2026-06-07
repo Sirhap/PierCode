@@ -326,6 +326,35 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
 .flow-step p { font-size: 14px; color: var(--subtext); }
 .flow-step code { color: var(--green); }
 
+/* ── Core capability cards ───────────────────────────── */
+.core-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+.core-card {
+  background: linear-gradient(135deg, rgba(137, 180, 250, 0.06), rgba(203, 166, 247, 0.04));
+  border: 1px solid var(--surface);
+  border-radius: 16px;
+  padding: 28px;
+  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+.core-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(137, 180, 250, 0.5);
+  box-shadow: 0 0 40px rgba(137, 180, 250, 0.12);
+}
+.core-icon { font-size: 32px; margin-bottom: 14px; }
+.core-card h3 { font-size: 18px; margin-bottom: 10px; color: var(--text); }
+.core-card p { font-size: 14px; color: var(--subtext); line-height: 1.7; }
+.core-highlight {
+  margin-top: 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--green);
+  background: rgba(166, 227, 161, 0.06);
+  border: 1px solid rgba(166, 227, 161, 0.15);
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: inline-block;
+}
+
 /* ── Feature cards ───────────────────────────────────── */
 .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .card {
@@ -423,12 +452,12 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
 @media (max-width: 900px) {
   .hero { grid-template-columns: 1fr; gap: 36px; min-height: auto; }
   .term { transform: none; }
-  .flow, .cards, .platforms, .sec-grid { grid-template-columns: 1fr 1fr; }
+  .flow, .cards, .platforms, .sec-grid, .core-grid { grid-template-columns: 1fr 1fr; }
   .flow-step::after { display: none; }
   .nav-links a:not(.nav-cta) { display: none; }
 }
 @media (max-width: 560px) {
-  .cards, .platforms, .sec-grid, .flow { grid-template-columns: 1fr; }
+  .cards, .platforms, .sec-grid, .flow, .core-grid { grid-template-columns: 1fr; }
   .section { padding: 64px 0; }
 }
 

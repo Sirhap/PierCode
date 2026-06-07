@@ -1,7 +1,7 @@
 import './styles/main.css'
 import { gsap } from 'gsap'
 import { ScrollTrigger } from 'gsap/ScrollTrigger'
-import { featureTools, platforms } from './data'
+import { coreCapabilities, featureTools, platforms } from './data'
 import { runChatDemo } from './chatdemo'
 import { applyLang, getLang, setLang } from './i18n'
 
@@ -13,6 +13,22 @@ const isMobile = matchMedia('(max-width: 900px)').matches
 // ── Render data-driven sections ──────────────────────────
 // Cards carry data-i18n keys on title/desc so applyLang() localizes them; the
 // mono tool name stays literal (API names are not translated).
+function renderCoreCapabilities() {
+  const root = document.getElementById('core-cards')
+  if (!root) return
+  root.innerHTML = coreCapabilities
+    .map(
+      (cap) => `
+      <div class="core-card reveal">
+        <div class="core-icon">${cap.icon}</div>
+        <h3 data-i18n="${cap.i18nKey}t"></h3>
+        <p data-i18n="${cap.i18nKey}d"></p>
+        <div class="core-highlight" data-i18n="${cap.i18nKey}h"></div>
+      </div>`,
+    )
+    .join('')
+}
+
 function renderFeatures() {
   const root = document.getElementById('feature-cards')
   if (!root) return
@@ -70,6 +86,7 @@ function initBackground() {
 }
 
 // ── Boot ─────────────────────────────────────────────────
+renderCoreCapabilities()
 renderFeatures()
 renderPlatforms()
 applyLang(getLang()) // localize static + freshly-rendered nodes; default zh
