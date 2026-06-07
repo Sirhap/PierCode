@@ -180,6 +180,12 @@ export default function App() {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [compression, setCompression] = useState<ContextCompressionConfig>(() => resolveContextCompressionConfig(undefined))
   const [draftThresholds, setDraftThresholds] = useState<Record<string, string>>({})
+  // 运行时状态（从后端拉取，非用户设置）
+  const [version, setVersion] = useState('')
+  const [rootDir, setRootDir] = useState('')
+  const [browserProviders, setBrowserProviders] = useState<Record<string, number>>({})
+  const [tasksRunning, setTasksRunning] = useState(0)
+  const [tasksTotal, setTasksTotal] = useState(0)
 
   useEffect(() => {
     if (toast) {
@@ -295,10 +301,8 @@ export default function App() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json()
       })
-      .then(async () => {
-        // 注意：/health 现在只返回 {status, version}，不再回 dir。这是有意为之
-        // ——/health 不鉴权，回工作目录会让任何本机进程或恶意网页拿来侦察。
-        // 如果需要展示工作目录，应该走鉴权后的 /config（这里暂不展示）。
+      .then(async (health) => {
+        setVersion(health?.version || '')
         const headers: Record<string, string> = {}
         if (authToken) headers.Authorization = `Bearer ${authToken}`
         const configRes = await fetch(`${url}/config`, { headers })
@@ -306,6 +310,7 @@ export default function App() {
         if (configRes.ok) {
           const config = await configRes.json()
           setPermissionMode(resolvePermissionMode(config?.permissionMode))
+          setRootDir(config?.rootDir || '')
         }
 
         const statsRes = await fetch(`${url}/stats`, { headers })
@@ -313,6 +318,9 @@ export default function App() {
         if (!statsRes.ok) throw new Error(`stats HTTP ${statsRes.status}`)
         const stats = await statsRes.json()
         const backendClients = Math.max(0, Number(stats.browser_clients || 0) - Number(stats.browser_relays || 0))
+        setBrowserProviders(stats?.browser_providers || {})
+        setTasksRunning(Number(stats?.tasks_running || 0))
+        setTasksTotal(Number(stats?.tasks_total || 0))
 
         setStatus('connected')
         setInfo('本地服务已连接，正在检查 AI 页面')
@@ -342,6 +350,10 @@ export default function App() {
       })
       .catch((error) => {
         setStatus('disconnected')
+        setRootDir('')
+        setBrowserProviders({})
+        setTasksRunning(0)
+        setTasksTotal(0)
         if (error instanceof Error && error.message === 'unauthorized') {
           clearStoredAuth()
           setHasStoredAuth(false)
@@ -505,6 +517,7 @@ export default function App() {
         <div className="flex items-center gap-2">
           <span className="text-lg">🔗</span>
           <span className="font-semibold text-white tracking-wide">PierCode</span>
+          {version && <span className="text-[10px] text-gray-600">v{version}</span>}
         </div>
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${statusColor} ${status === 'checking' ? 'animate-pulse' : ''}`} />
@@ -538,6 +551,42 @@ export default function App() {
       >
         🗂️ 打开多 AI 工作台
       </button>
+
+      {/* 运行时状态摘要（仅连接后展示） */}
+      {status === 'connected' && (
+        <div className="mb-4 space-y-2 rounded-lg border border-gray-800 bg-gray-900/50 p-3 text-xs">
+          {/* 工作区 */}
+          {rootDir && (
+            <div className="flex items-center gap-1.5 text-gray-400">
+              <span className="text-gray-600">📁</span>
+              <span className="truncate" title={rootDir}>{rootDir}</span>
+            </div>
+          )}
+          {/* 已连接 AI 平台 */}
+          {Object.keys(browserProviders).length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-gray-600">🌐</span>
+              {Object.entries(browserProviders).map(([name, count]) => (
+                <span key={name} className="inline-flex items-center gap-1 rounded-full bg-emerald-900/40 border border-emerald-700/40 px-2 py-0.5 text-emerald-300">
+                  {name}{count > 1 ? `×${count}` : ''}
+                </span>
+              ))}
+            </div>
+          )}
+          {/* 后台任务 */}
+          {tasksTotal > 0 && (
+            <div className="flex items-center gap-1.5 text-gray-400">
+              <span className="text-gray-600">⚡</span>
+              <span>
+                {tasksRunning > 0
+                  ? <span className="text-amber-300">{tasksRunning} 个任务运行中</span>
+                  : <span>共 {tasksTotal} 个任务已完成</span>
+                }
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Connect form */}
       {(status !== 'connected' || reconfig) && (
