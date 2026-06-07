@@ -35,6 +35,8 @@ type Executor struct {
 	agents            *tool.AgentRegistry
 	broadcast         atomic.Pointer[func([]byte)]
 	broadcastToClient atomic.Pointer[func(string, []byte) bool]
+	hubOnline         atomic.Pointer[func() bool]
+	hubAddPane        atomic.Pointer[func(agentID, platform, description string)]
 	browserMu         sync.RWMutex
 	browser           tool.BrowserController
 }
@@ -71,6 +73,23 @@ func (e *Executor) SetClientBroadcaster(fn func(string, []byte) bool) {
 		return
 	}
 	e.broadcastToClient.Store(&fn)
+}
+
+// SetHubBridge wires the Hub workspace integration: `online` reports whether a
+// Hub page is connected (role=hub), and `addPane` asks it to mount a worker
+// pane. spawn_agent uses both to inject workers into the Hub instead of opening
+// standalone tabs. Passing nil for either disables that half.
+func (e *Executor) SetHubBridge(online func() bool, addPane func(agentID, platform, description string)) {
+	if online == nil {
+		e.hubOnline.Store(nil)
+	} else {
+		e.hubOnline.Store(&online)
+	}
+	if addPane == nil {
+		e.hubAddPane.Store(nil)
+	} else {
+		e.hubAddPane.Store(&addPane)
+	}
 }
 
 func (e *Executor) SetBrowserController(controller tool.BrowserController) {
@@ -251,6 +270,12 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	}
 	if bp := e.broadcastToClient.Load(); bp != nil {
 		toolCtx.BroadcastToClient = *bp
+	}
+	if hp := e.hubOnline.Load(); hp != nil {
+		toolCtx.HubOnline = *hp
+	}
+	if hp := e.hubAddPane.Load(); hp != nil {
+		toolCtx.HubAddPane = *hp
 	}
 	toolCtx.SourceClientID = req.SourceClientID
 	toolCtx.ConversationURL = req.ConversationURL

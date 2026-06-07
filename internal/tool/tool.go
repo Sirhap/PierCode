@@ -78,6 +78,17 @@ type Context struct {
 	// address workers. Nil means multi-agent dispatch is not available in this
 	// invocation.
 	Agents *AgentRegistry
+
+	// HubOnline reports whether the in-browser multi-AI workspace (Hub) page is
+	// connected as a WS client (role=hub). spawn_agent uses it to decide whether
+	// to inject the worker as a Hub pane (visible, foreground, unthrottled) or
+	// fall back to opening a standalone Chrome tab. Nil ⇒ treat as offline.
+	HubOnline func() bool
+
+	// HubAddPane, if set, asks the connected Hub page to add a worker pane for an
+	// agent (the worker iframe carries ?piercode_agent=<id> and self-binds). Only
+	// called when HubOnline() is true and the platform is Hub-embeddable.
+	HubAddPane func(agentID, platform, description string)
 }
 
 type sourceClientIDContextKey struct{}

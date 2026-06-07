@@ -36,7 +36,11 @@ type AgentRecord struct {
 	BoundAt                   time.Time
 	EndedAt                   time.Time
 	LastResult                string // last result packet text from the worker
-	seeded                    bool   // task already injected once; guards reconnect re-seed
+	LastDebug                 string // last worker inject debug packet
+	LastDebugAt               time.Time
+	LastAIResponse            string // latest AI response text observed in the worker tab
+	LastAIResponseAt          time.Time
+	seeded                    bool // task already injected once; guards reconnect re-seed
 }
 
 // AgentSummary is a JSON-friendly snapshot for tool output and /agents routes.
@@ -49,7 +53,13 @@ type AgentSummary struct {
 	Description               string `json:"description,omitempty"`
 	Status                    string `json:"status"`
 	CreatedAt                 string `json:"created_at"`
+	BoundAt                   string `json:"bound_at,omitempty"`
 	EndedAt                   string `json:"ended_at,omitempty"`
+	Seeded                    bool   `json:"seeded"`
+	LastDebug                 string `json:"last_debug,omitempty"`
+	LastDebugAt               string `json:"last_debug_at,omitempty"`
+	LastAIResponse            string `json:"last_ai_response,omitempty"`
+	LastAIResponseAt          string `json:"last_ai_response_at,omitempty"`
 }
 
 func (r *AgentRecord) summary() AgentSummary {
@@ -62,9 +72,25 @@ func (r *AgentRecord) summary() AgentSummary {
 		Description:               r.Description,
 		Status:                    string(r.Status),
 		CreatedAt:                 r.CreatedAt.Format(time.RFC3339),
+		Seeded:                    r.seeded,
+	}
+	if !r.BoundAt.IsZero() {
+		s.BoundAt = r.BoundAt.Format(time.RFC3339)
 	}
 	if !r.EndedAt.IsZero() {
 		s.EndedAt = r.EndedAt.Format(time.RFC3339)
+	}
+	if r.LastDebug != "" {
+		s.LastDebug = r.LastDebug
+	}
+	if !r.LastDebugAt.IsZero() {
+		s.LastDebugAt = r.LastDebugAt.Format(time.RFC3339)
+	}
+	if r.LastAIResponse != "" {
+		s.LastAIResponse = r.LastAIResponse
+	}
+	if !r.LastAIResponseAt.IsZero() {
+		s.LastAIResponseAt = r.LastAIResponseAt.Format(time.RFC3339)
 	}
 	return s
 }
@@ -133,6 +159,40 @@ func (r *AgentRegistry) MarkSeeded(agentID string) bool {
 	}
 	rec.seeded = true
 	return true
+}
+
+// RecordDebug stores the latest worker-side inject debug event for diagnosis.
+func (r *AgentRegistry) RecordDebug(agentID, debug string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.agents[agentID]
+	if !ok {
+		return false
+	}
+	rec.LastDebug = debug
+	rec.LastDebugAt = time.Now()
+	return true
+}
+
+// RecordAIResponseByWorkerClient stores the latest visible AI response observed
+// in a bound worker tab. It lets list_agents diagnose whether the worker model
+// answered without relying on reading/polling the worker browser tab.
+func (r *AgentRegistry) RecordAIResponseByWorkerClient(workerClientID, text string) (string, bool) {
+	workerClientID = strings.TrimSpace(workerClientID)
+	text = strings.TrimSpace(text)
+	if workerClientID == "" || text == "" {
+		return "", false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rec := range r.agents {
+		if rec.WorkerClientID == workerClientID {
+			rec.LastAIResponse = text
+			rec.LastAIResponseAt = time.Now()
+			return rec.AgentID, true
+		}
+	}
+	return "", false
 }
 
 // IsWorkerClient reports whether a WebSocket client id belongs to a bound

@@ -91,6 +91,24 @@ func TestAgentRegistryListByDispatcher(t *testing.T) {
 	}
 }
 
+func TestListAgentsTool(t *testing.T) {
+	r := NewAgentRegistry()
+	rec := r.Create("dispatcher-1", "https://chat.qwen.ai/", "qwen", "", "debug", "task")
+	r.BindWorker(rec.AgentID, "worker-1")
+	r.MarkSeeded(rec.AgentID)
+	r.RecordDebug(rec.AgentID, `{"stage":"filled","agent_id":"`+rec.AgentID+`"}`)
+	r.RecordAIResponseByWorkerClient("worker-1", "worker visible answer")
+
+	list := NewListAgentsTool()
+	res := list.Execute(&Context{Args: map[string]interface{}{}, Agents: r})
+	if res.Status != "success" {
+		t.Fatalf("list_agents failed: %s", res.Error)
+	}
+	if !strContains(res.Output, rec.AgentID) || !strContains(res.Output, "worker-1") || !strContains(res.Output, "running") || !strContains(res.Output, "filled") || !strContains(res.Output, "worker visible answer") {
+		t.Fatalf("list_agents output missing agent details: %s", res.Output)
+	}
+}
+
 func TestAgentRegistryConcurrentCreate(t *testing.T) {
 	r := NewAgentRegistry()
 	var wg sync.WaitGroup

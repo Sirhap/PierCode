@@ -25,6 +25,26 @@ export const PROVIDERS_BY_ID: Record<string, AIProvider> = Object.fromEntries(
   PROVIDERS.map(p => [p.id, p]),
 );
 
+// platformToProviderId maps a spawn_agent `platform` name (the coordinator-facing
+// names in internal/tool/agent_tools.go: qwen/chatgpt/claude/gemini/kimi/z.ai/…)
+// to a Hub provider id. The server only sends hub_add_pane for platforms it knows
+// the Hub can embed (hubEmbeddablePlatforms, a subset kept in sync with PROVIDERS),
+// but we map defensively and return undefined for anything not in the catalog so a
+// stray pane is ignored rather than crashing the grid.
+const platformToProviderId: Record<string, string> = {
+  qwen: 'qwen',
+  chatgpt: 'chatgpt',
+  claude: 'claude',
+  gemini: 'gemini',
+  kimi: 'kimi',
+  'z.ai': 'chatz',
+  zai: 'chatz',
+};
+
+export function providerIdForPlatform(platform: string): string | undefined {
+  return platformToProviderId[platform.trim().toLowerCase()];
+}
+
 // A pane instance in the grid. `key` is unique per pane (a provider can appear
 // once in v1, but worker panes reuse the provider with a distinct agent id).
 export interface Pane {

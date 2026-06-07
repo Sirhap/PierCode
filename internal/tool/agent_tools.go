@@ -29,6 +29,22 @@ var platformURLs = map[string]string{
 	"mimo":      "https://aistudio.xiaomimimo.com/",
 }
 
+// hubEmbeddablePlatforms is the set of spawn_agent platforms the Hub workspace
+// can embed as a pane. It MUST stay a subset of the Hub's PROVIDERS catalog in
+// extension/src/hub/pane-manager.ts — a platform here that the Hub can't render
+// would make the worker vanish (server skips the standalone tab, Hub ignores the
+// unknown pane). aistudio/mimo are deliberately absent: not in the Hub catalog,
+// so they always fall back to a standalone tab even when the Hub is open.
+var hubEmbeddablePlatforms = map[string]bool{
+	"qwen":    true,
+	"chatgpt": true,
+	"claude":  true,
+	"gemini":  true,
+	"kimi":    true,
+	"z.ai":    true,
+	"zai":     true,
+}
+
 // resolvePlatformURL returns the worker tab base URL for a platform name, with
 // the agent id encoded as a query param so the worker can self-identify.
 func resolvePlatformURL(platform, agentID string) (string, error) {
@@ -79,6 +95,24 @@ func NewSpawnAgentTool() Tool {
 			}
 
 			rec := ctx.Agents.Create(ctx.SourceClientID, ctx.ConversationURL, platform, "", desc, task)
+
+			// Prefer the Hub workspace: when its page is connected and the platform
+			// is one the Hub can embed, inject the worker as a pane so it runs
+			// visible and foreground (no background-tab throttling). The Hub mounts
+			// an iframe with ?piercode_agent=<id>; the worker content self-binds over
+			// WS exactly like a standalone worker tab — no extra server plumbing.
+			if ctx.HubOnline != nil && ctx.HubOnline() && hubEmbeddablePlatforms[strings.ToLower(platform)] {
+				if ctx.HubAddPane != nil {
+					ctx.HubAddPane(rec.AgentID, platform, desc)
+					return fmt.Sprintf(
+						"Dispatched worker %s on %s into the Hub workspace: %s\nThe worker runs in a Hub pane and reports back as a <task-notification>. Do not poll or read its pane — end your turn and wait for the callback.",
+						rec.AgentID, platform, desc,
+					), nil
+				}
+			}
+
+			// Fallback: Hub not open (or platform not Hub-embeddable). Open a
+			// standalone worker tab, the original behavior.
 			workerURL, err := resolvePlatformURL(platform, rec.AgentID)
 			if err != nil {
 				ctx.Agents.SetStatus(rec.AgentID, AgentFailed)
@@ -95,6 +129,29 @@ func NewSpawnAgentTool() Tool {
 				"Dispatched worker %s on %s (tab %d): %s\nThe worker will run autonomously and report back as a <task-notification>. Do not poll or read its tab — end your turn and wait for the callback.",
 				rec.AgentID, platform, tab.TabID, desc,
 			), nil
+		},
+	}
+}
+
+func NewListAgentsTool() Tool {
+	return &agentTool{
+		name:        "list_agents",
+		description: "List dispatched worker agents and their lifecycle status for diagnosing multi-agent dispatch.",
+		parameters: map[string]string{
+			"dispatcher_client_id": "string (optional) - filter to agents spawned by this dispatcher client id. Omit to list all agents.",
+		},
+		validate: func(map[string]interface{}) error { return nil },
+		execute: func(ctx *Context) (string, error) {
+			dispatcherClientID := strings.TrimSpace(stringArg(ctx.Args, "dispatcher_client_id"))
+			summaries := ctx.Agents.List(dispatcherClientID)
+			if len(summaries) == 0 {
+				return "No worker agents found.", nil
+			}
+			data, err := json.MarshalIndent(summaries, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			return string(data), nil
 		},
 	}
 }

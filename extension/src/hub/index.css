@@ -37,11 +37,137 @@ html, body, #root {
 }
 .hub-add-btn:hover { background: #45475a; }
 
-.hub-grid {
+.hub-body {
   flex: 1 1 auto;
   display: flex;
   min-height: 0;
 }
+
+.hub-grid {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Brief highlight when the dashboard focuses a worker pane. */
+.hub-pane-flash { animation: hubPaneFlash 1.2s ease-out; }
+@keyframes hubPaneFlash {
+  0% { box-shadow: inset 0 0 0 2px #89b4fa; }
+  100% { box-shadow: inset 0 0 0 0 transparent; }
+}
+
+/* ── Dashboard sidebar ─────────────────────────────────────────────────── */
+.dash-root {
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #181825;
+  border-right: 1px solid #313244;
+  font-size: 12px;
+}
+.dash-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid #313244;
+}
+.dash-title { font-weight: 600; }
+.dash-conn { font-size: 10px; color: #f38ba8; }
+.dash-conn[data-on="true"] { color: #a6e3a1; }
+
+.dash-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 6px;
+}
+.dash-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 2px;
+  background: #1e1e2e;
+  border-radius: 6px;
+}
+.dash-stat-value { font-weight: 700; font-size: 14px; }
+.dash-stat-label { opacity: 0.6; font-size: 10px; }
+.dash-stat[data-tone="running"] .dash-stat-value { color: #89b4fa; }
+.dash-stat[data-tone="completed"] .dash-stat-value { color: #a6e3a1; }
+.dash-stat[data-tone="failed"] .dash-stat-value { color: #f38ba8; }
+
+.dash-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+.dash-empty { opacity: 0.5; padding: 12px; text-align: center; }
+
+.dash-agent {
+  border-bottom: 1px solid #232334;
+  padding: 4px 6px;
+}
+.dash-agent-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.dash-agent-platform {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  background: #313244;
+  border-radius: 4px;
+  font-size: 10px;
+}
+.dash-agent-desc {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-agent-status {
+  flex: 0 0 auto;
+  font-size: 10px;
+  opacity: 0.8;
+}
+.dash-agent-status[data-status="running"] { color: #89b4fa; }
+.dash-agent-status[data-status="completed"] { color: #a6e3a1; }
+.dash-agent-status[data-status="failed"],
+.dash-agent-status[data-status="blocked"] { color: #f38ba8; }
+.dash-agent-status[data-status="stopped"] { color: #9399b2; }
+.dash-agent-time { flex: 0 0 auto; opacity: 0.4; font-size: 10px; }
+.dash-agent-actions {
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
+}
+.dash-agent-actions button {
+  background: transparent;
+  border: 0;
+  color: #cdd6f4;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 3px;
+}
+.dash-agent-detail {
+  font-size: 11px;
+  padding: 4px 2px;
+  opacity: 0.85;
+}
+.dash-agent-detail pre {
+  margin: 2px 0 6px;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #11111b;
+  padding: 4px;
+  border-radius: 4px;
+}
+.dash-agent-id { opacity: 0.4; font-size: 10px; }
 .hub-pane {
   flex: 1 1 0;
   display: flex;

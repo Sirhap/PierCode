@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { addPane, removePane, movePane, paneSrc, PROVIDERS, type Pane } from '../hub/pane-manager';
+import { addPane, removePane, movePane, paneSrc, providerIdForPlatform, PROVIDERS, PROVIDERS_BY_ID, type Pane } from '../hub/pane-manager';
 import { AI_FRAME_HOSTS } from '../background/frame-unlock';
 
 describe('pane-manager', () => {
@@ -46,6 +46,27 @@ describe('pane-manager', () => {
   it('every provider host is unlocked by the DNR frame rules', () => {
     for (const p of PROVIDERS) {
       expect(AI_FRAME_HOSTS).toContain(p.host);
+    }
+  });
+
+  it('providerIdForPlatform maps spawn platforms to Hub providers', () => {
+    expect(providerIdForPlatform('qwen')).toBe('qwen');
+    expect(providerIdForPlatform('CHATGPT')).toBe('chatgpt'); // case-insensitive
+    expect(providerIdForPlatform('z.ai')).toBe('chatz');
+    expect(providerIdForPlatform('zai')).toBe('chatz');
+  });
+
+  it('providerIdForPlatform returns undefined for non-embeddable platforms', () => {
+    expect(providerIdForPlatform('aistudio')).toBeUndefined();
+    expect(providerIdForPlatform('mimo')).toBeUndefined();
+    expect(providerIdForPlatform('totally-unknown')).toBeUndefined();
+  });
+
+  it('every mapped provider id exists in the Hub catalog', () => {
+    for (const platform of ['qwen', 'chatgpt', 'claude', 'gemini', 'kimi', 'z.ai']) {
+      const id = providerIdForPlatform(platform);
+      expect(id).toBeDefined();
+      expect(PROVIDERS_BY_ID[id!]).toBeDefined();
     }
   });
 });

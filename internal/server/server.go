@@ -77,6 +77,25 @@ func New(config *types.Config) *Server {
 		return s.ws.SendToID(clientID, payload)
 	})
 
+	// Wire the Hub workspace bridge so spawn_agent can inject workers as Hub panes
+	// (foreground, unthrottled) when the Hub page is connected, falling back to a
+	// standalone tab otherwise.
+	s.executor.SetHubBridge(
+		func() bool { return s.ws.RoleCount("hub") > 0 },
+		func(agentID, platform, description string) {
+			payload, err := json.Marshal(gin.H{
+				"type":        "hub_add_pane",
+				"agent_id":    agentID,
+				"platform":    platform,
+				"description": description,
+			})
+			if err != nil {
+				return
+			}
+			s.ws.SendToRole("hub", payload)
+		},
+	)
+
 	// Wire background task events into the WebSocket broadcast channel so any
 	// connected extension / TUI sees live stdout and completion notices.
 	if tm := s.executor.Tasks(); tm != nil {
@@ -181,6 +200,7 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/ws", s.handleWS) // WebSocket 连接端点
 	s.router.GET("/prompt", s.handlePrompt)
 	s.router.GET("/stats", s.handleStats)
+	s.router.GET("/agents", s.handleListAgents)
 	s.router.GET("/skills", s.handleListSkills)
 	s.router.GET("/files", s.handleListFiles)
 	s.router.GET("/attachments/screenshot", s.handleScreenshotAttachment)
@@ -277,6 +297,21 @@ func (s *Server) handleStats(c *gin.Context) {
 		"tasks_total":       totalTasks,
 		"tasks_running":     runningTasks,
 	})
+}
+
+// handleListAgents returns every dispatched worker agent and its lifecycle
+// state. Read-only; the Hub dashboard polls it for the first paint and as a
+// fallback while its WS push channel reconnects. Bearer-auth gated like every
+// non-/ws route.
+func (s *Server) handleListAgents(c *gin.Context) {
+	var agents []tool.AgentSummary
+	if s.executor != nil {
+		agents = s.executor.Agents().List("")
+	}
+	if agents == nil {
+		agents = []tool.AgentSummary{}
+	}
+	c.JSON(http.StatusOK, gin.H{"agents": agents})
 }
 
 func (s *Server) handlePrompt(c *gin.Context) {
@@ -518,7 +553,7 @@ func (s *Server) handleWS(c *gin.Context) {
 		}
 		// 每次收到消息后刷新读超时
 		_ = conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
-		s.handleWSClientMessage(payload)
+		s.handleWSClientMessage(id, payload)
 	}
 }
 
@@ -537,6 +572,8 @@ func (s *Server) bindAndSeedWorker(agentID, workerClientID string) {
 		log.Printf("[PierCode] worker connected for unknown agent_id %q\n", agentID)
 		return
 	}
+	// Binding flips pending→running; tell the dashboard.
+	s.broadcastAgentsUpdate()
 	// Seed the task exactly once. The worker page reconnects every time the MV3
 	// service worker sleeps, re-running this bind; without the guard the task
 	// would be re-injected (and re-executed) on every reconnect.
@@ -599,7 +636,7 @@ func browserProviderFromRequest(r *http.Request) string {
 	}
 }
 
-func (s *Server) handleWSClientMessage(payload []byte) {
+func (s *Server) handleWSClientMessage(sourceClientID string, payload []byte) {
 	var msg struct {
 		Type       string          `json:"type"`
 		Key        string          `json:"key"`
@@ -623,6 +660,7 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 		Status     string          `json:"status"`
 		Summary    string          `json:"summary"`
 		Result     string          `json:"result"`
+		Action     string          `json:"action"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return
@@ -633,8 +671,17 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 		if text == "" {
 			return
 		}
+		key := strings.TrimSpace(msg.Key)
+		if key == "worker-inject-debug" && s.executor != nil {
+			var debug struct {
+				AgentID string `json:"agent_id"`
+			}
+			if json.Unmarshal([]byte(text), &debug) == nil && strings.TrimSpace(debug.AgentID) != "" {
+				s.executor.Agents().RecordDebug(strings.TrimSpace(debug.AgentID), text)
+				s.broadcastAgentsUpdate()
+			}
+		}
 		if s.logger != nil {
-			key := strings.TrimSpace(msg.Key)
 			if key == "" {
 				key = "browser-user-prompt"
 			}
@@ -644,6 +691,11 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
 			return
+		}
+		if s.executor != nil {
+			if _, ok := s.executor.Agents().RecordAIResponseByWorkerClient(sourceClientID, text); ok {
+				s.broadcastAgentsUpdate()
+			}
 		}
 		if s.logger != nil {
 			key := strings.TrimSpace(msg.Key)
@@ -702,6 +754,8 @@ func (s *Server) handleWSClientMessage(payload []byte) {
 		}
 	case "agent_result":
 		s.handleAgentResult(msg.AgentID, msg.Status, msg.Summary, msg.Result)
+	case "agent_control":
+		s.handleAgentControl(msg.Action, msg.AgentID)
 	case "browser_ping", "browser_hello":
 		return
 	}
@@ -725,6 +779,8 @@ func (s *Server) handleAgentResult(agentID, status, summary, result string) {
 		log.Printf("[PierCode] agent_result for unknown agent_id %q\n", agentID)
 		return
 	}
+	// Result flips running→completed/failed/blocked; refresh the dashboard.
+	s.broadcastAgentsUpdate()
 	if rec.DispatcherClientID == "" {
 		log.Printf("[PierCode] agent %q has no dispatcher to notify\n", agentID)
 		return
@@ -740,6 +796,75 @@ func (s *Server) handleAgentResult(agentID, status, summary, result string) {
 	if !s.ws.SendToID(rec.DispatcherClientID, payload) {
 		log.Printf("[PierCode] failed to deliver agent %q result to dispatcher %q\n", agentID, rec.DispatcherClientID)
 	}
+}
+
+// broadcastAgentsUpdate pushes the current agent roster to the Hub dashboard
+// (role=hub WS clients). Called at the registry's state-change convergence points
+// (worker bind, agent_result, agent_control, debug/ai_log records) so the Hub
+// gets live updates without polling; the dashboard's GET /agents poll is the
+// fallback. No-op when no Hub is connected (SendToRole returns false silently).
+func (s *Server) broadcastAgentsUpdate() {
+	if s.executor == nil {
+		return
+	}
+	registry := s.executor.Agents()
+	if registry == nil {
+		return
+	}
+	if s.ws.RoleCount("hub") == 0 {
+		return // no dashboard listening; skip the marshal
+	}
+	payload, err := json.Marshal(gin.H{"type": "agents_update", "agents": registry.List("")})
+	if err != nil {
+		return
+	}
+	s.ws.SendToRole("hub", payload)
+}
+
+// handleAgentControl applies a Hub dashboard control action (stop / retry) to a
+// worker agent. The WS channel is already Bearer-authenticated at the /ws
+// handshake, so the action is trusted. Unknown agents / actions are ignored.
+func (s *Server) handleAgentControl(action, agentID string) {
+	action = strings.TrimSpace(action)
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || s.executor == nil {
+		return
+	}
+	registry := s.executor.Agents()
+	if registry == nil {
+		return
+	}
+	switch action {
+	case "stop":
+		// Mark the agent stopped. The worker pane stays open (the user closes it
+		// with the Hub ✕); stop only flips the lifecycle state.
+		registry.SetStatus(agentID, tool.AgentStopped)
+	case "retry":
+		rec, ok := registry.Get(agentID)
+		if !ok {
+			return
+		}
+		if strings.TrimSpace(rec.WorkerClientID) == "" {
+			log.Printf("[PierCode] retry agent %q: worker not bound\n", agentID)
+			return
+		}
+		seed := s.buildWorkerSeed(rec.AgentID, rec.Task)
+		payload, err := json.Marshal(gin.H{"type": "inject", "text": seed, "await_ready": true})
+		if err != nil {
+			return
+		}
+		// Only flip to running once the task actually reached the worker. Setting
+		// running before the send would leave the dashboard showing a live agent
+		// whose worker is gone if the send fails.
+		if !s.ws.SendToID(rec.WorkerClientID, payload) {
+			log.Printf("[PierCode] retry agent %q: worker client %q gone\n", agentID, rec.WorkerClientID)
+			return
+		}
+		registry.SetStatus(agentID, tool.AgentRunning)
+	default:
+		return
+	}
+	s.broadcastAgentsUpdate()
 }
 
 // buildTaskNotification renders a worker result packet into the <task-notification>
