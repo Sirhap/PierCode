@@ -397,7 +397,7 @@ workerAgentId();
 // for all inject types incl. the coordinator callback, regardless of platform.
 async function activateSelfTabForInject(): Promise<void> {
   try {
-    await chrome.runtime.sendMessage({ type: "FOCUS_SELF", forceFocus: false });
+    await chrome.runtime.sendMessage({ type: "FOCUS_SELF", forceFocus: true });
     await new Promise(resolve => window.setTimeout(resolve, 150));
   } catch (error) {
     console.warn("[PierCode] inject 前激活标签页失败，继续尝试:", error);
@@ -410,7 +410,7 @@ async function focusCurrentTabForSend(): Promise<void> {
   // follow-up inject. Qwen also needs activation for its send flow.
   if (!isQwenPage() && !workerAgentId()) return;
   try {
-    await chrome.runtime.sendMessage({ type: "FOCUS_SELF", forceFocus: false });
+    await chrome.runtime.sendMessage({ type: "FOCUS_SELF", forceFocus: true });
     await new Promise(resolve => window.setTimeout(resolve, 150));
   } catch (error) {
     console.warn("[PierCode] 激活标签页失败，继续尝试发送:", error);
@@ -553,6 +553,28 @@ function isVisibleInput(el: HTMLElement): boolean {
     style.visibility !== "hidden" &&
     style.opacity !== "0" &&
     el.getAttribute("aria-hidden") !== "true";
+}
+
+function isActionableSendButton(el: HTMLElement): boolean {
+  if (!isVisibleInput(el)) return false;
+  const target = (el.closest("button") as HTMLElement | null) || el;
+  if (target.getAttribute("aria-disabled") === "true") return false;
+  if (target.hasAttribute("disabled")) return false;
+  if ((target as HTMLButtonElement).disabled === true) return false;
+  const className = target.getAttribute("class") || "";
+  if (/\bdisabled\b/i.test(className)) return false;
+  const disabledParent = target.closest('[aria-disabled="true"], [disabled], .disabled');
+  return !disabledParent || disabledParent === target;
+}
+
+function querySendButtonFirst(selectors: string): HTMLElement | null {
+  for (const selector of selectors.split(",").map(s => s.trim()).filter(Boolean)) {
+    const elements = Array.from(document.querySelectorAll(selector)) as HTMLElement[];
+    for (const el of elements) {
+      if (isActionableSendButton(el)) return el;
+    }
+  }
+  return null;
 }
 
 function connectWebSocket(apiUrl: string, token: string) {
@@ -737,6 +759,25 @@ function fillTargetInput(targetInput: HTMLTextAreaElement | HTMLInputElement | H
   setContentEditableValue(targetInput, text);
 }
 
+function sendInjectDebug(stage: string, detail: Record<string, unknown> = {}): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try {
+    ws.send(JSON.stringify({
+      type: "user_log",
+      key: "worker-inject-debug",
+      text: JSON.stringify({
+        stage,
+        agent_id: workerAgentId(),
+        provider: currentProvider(),
+        host: location.hostname,
+        url: observeConversationURL(),
+        ...detail,
+      }),
+      conversation_url: observeConversationURL(),
+    }));
+  } catch {}
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => window.setTimeout(resolve, ms));
 }
@@ -764,13 +805,20 @@ function dispatchEnterAsSendFallback(targetInput: HTMLElement): boolean {
 async function clickSendButton(config: InjectConfig, targetInput: HTMLElement): Promise<boolean> {
   const deadline = Date.now() + (isQwenPage() ? 90000 : 10000);
   while (Date.now() < deadline) {
-    const sendBtn = querySelectorFirst(config.sendBtn);
+    const sendBtn = querySendButtonFirst(config.sendBtn);
     if (sendBtn) {
+      sendInjectDebug("click_send_button", {
+        tag: sendBtn.tagName,
+        class: sendBtn.getAttribute("class") || "",
+        aria_disabled: sendBtn.getAttribute("aria-disabled") || "",
+        disabled: sendBtn.hasAttribute("disabled"),
+      });
       sendBtn.click();
       return true;
     }
     await sleep(250);
   }
+  sendInjectDebug("enter_fallback");
   return dispatchEnterAsSendFallback(targetInput);
 }
 
@@ -797,9 +845,11 @@ async function waitForEditor(selectors: string): Promise<HTMLElement | null> {
 // 后才出现，固定延时会偶发丢种子。
 async function handleInjectMessage(text: string, awaitReady = false) {
   console.log("[PierCode] 收到注入消息:", text);
+  sendInjectDebug("received", { await_ready: awaitReady, length: text.length });
   const cleanText = sanitizeInjectedText(text);
   if (!cleanText) {
     console.warn("[PierCode] 注入内容为空，已跳过");
+    sendInjectDebug("empty_after_sanitize");
     return;
   }
   // Server-driven injects (worker seed, compression handoff, and crucially the
@@ -814,24 +864,30 @@ async function handleInjectMessage(text: string, awaitReady = false) {
   let targetInput = querySelectorFirst(config.editor);
 
   if (!targetInput && awaitReady) {
+    sendInjectDebug("wait_editor_start");
     targetInput = await waitForEditor(config.editor);
   }
 
   if (!targetInput) {
     console.warn("[PierCode] 未找到当前页面的聊天输入框");
+    sendInjectDebug("editor_not_found");
     return;
   }
 
+  sendInjectDebug("editor_found", { tag: targetInput.tagName, class: targetInput.getAttribute("class") || "" });
   fillTargetInput(targetInput, cleanText, config.fillMethod);
+  sendInjectDebug("filled", { length: cleanText.length });
   window.dispatchEvent(new CustomEvent("PIERCODE_PROMPT_SUBMITTED", { detail: cleanText }));
   await sleep(100);
   const sent = await clickSendButton(config, targetInput);
   if (!sent) {
     console.warn("[PierCode] 内容已注入，但未能确认发送按钮点击成功");
+    sendInjectDebug("send_failed");
     return;
   }
 
   console.log("[PierCode] ✅ 内容已注入并提交到输入框");
+  sendInjectDebug("send_reported_success");
 }
 
 export function sendAIResponseLog(key: string, text: string): void {
