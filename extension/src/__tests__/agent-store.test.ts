@@ -5,6 +5,8 @@ import {
   replaceAll,
   sortAgents,
   computeStats,
+  buildAgentTree,
+  flattenTree,
 } from '../hub/dashboard/agent-store';
 
 function vm(id: string, status: string, created: string, extra: Partial<AgentVM> = {}): AgentVM {
@@ -47,6 +49,45 @@ describe('agent-store', () => {
       'done-new',
       'done-old',
     ]);
+  });
+
+  it('buildAgentTree nests children under parents by parent_agent_id', () => {
+    const list = [
+      vm('root', 'running', '2026-06-07T00:00:00Z'),
+      vm('child-a', 'running', '2026-06-07T00:01:00Z', { parent_agent_id: 'root' }),
+      vm('child-b', 'completed', '2026-06-07T00:02:00Z', { parent_agent_id: 'root' }),
+      vm('grand', 'pending', '2026-06-07T00:03:00Z', { parent_agent_id: 'child-a' }),
+    ];
+    const tree = buildAgentTree(list);
+    expect(tree).toHaveLength(1);
+    expect(tree[0].agent_id).toBe('root');
+    expect(tree[0].depth).toBe(0);
+    expect(tree[0].children.map(c => c.agent_id)).toEqual(['child-a', 'child-b']);
+    expect(tree[0].children[0].children[0].agent_id).toBe('grand');
+    expect(tree[0].children[0].children[0].depth).toBe(2);
+  });
+
+  it('buildAgentTree surfaces an orphan (parent filtered out) as a root', () => {
+    const tree = buildAgentTree([vm('lonely', 'running', 'x', { parent_agent_id: 'gone' })]);
+    expect(tree.map(t => t.agent_id)).toEqual(['lonely']);
+    expect(tree[0].depth).toBe(0);
+  });
+
+  it('buildAgentTree is cycle-safe', () => {
+    const tree = buildAgentTree([
+      vm('a', 'running', 'x', { parent_agent_id: 'b' }),
+      vm('b', 'running', 'x', { parent_agent_id: 'a' }),
+    ]);
+    // Both reference each other; must not infinite-loop and must terminate.
+    expect(flattenTree(tree).length).toBeGreaterThan(0);
+  });
+
+  it('flattenTree yields pre-order (parent before children)', () => {
+    const list = [
+      vm('root', 'running', '2026-06-07T00:00:00Z'),
+      vm('child', 'running', '2026-06-07T00:01:00Z', { parent_agent_id: 'root' }),
+    ];
+    expect(flattenTree(buildAgentTree(list)).map(n => n.agent_id)).toEqual(['root', 'child']);
   });
 
   it('computeStats counts each status bucket', () => {

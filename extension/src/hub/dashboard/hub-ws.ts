@@ -8,6 +8,7 @@
 export interface HubAddPaneMessage {
   type: 'hub_add_pane';
   agent_id: string;
+  parent_agent_id?: string;
   platform: string;
   description?: string;
 }
