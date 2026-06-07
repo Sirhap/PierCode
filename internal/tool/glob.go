@@ -89,7 +89,10 @@ func (t *GlobTool) Execute(ctx *Context) *Result {
 			matched, _ = filepath.Match(pattern, rel)
 		}
 		if matched {
-			info, _ := d.Info()
+			info, err := d.Info()
+			if err != nil {
+				return nil // skip files we can't stat (race, permission, etc.)
+			}
 			files = append(files, fileEntry{
 				path:  filepath.ToSlash(p),
 				mtime: info.ModTime(),

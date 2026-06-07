@@ -10,7 +10,8 @@ export const aiStudioAdapter: PlatformAdapter = {
     const classAttr = el.getAttribute('class') || '';
     const tag = el.tagName.toLowerCase();
 
-    if (classAttr.includes('monaco-editor') && el.textContent?.includes('"name":')) {
+    if (classAttr.includes('monaco-editor') &&
+        (classAttr.includes('piercode-tool') || classAttr.includes('language-piercode-tool'))) {
       const text = el.textContent || '';
       if (text.includes('"name"') && text.includes('"args"')) {
         pushPierCodeTool(buf, text);

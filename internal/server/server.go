@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"log"
@@ -15,6 +16,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -36,11 +39,11 @@ type Server struct {
 	executor *executor.Executor
 	ws       *WSManager // WebSocket 管理器
 	browser  *browser.Controller
-	logger   logsink.Sink
+	logger   atomic.Value // stores logsink.Sink (nil when unset)
 
-	// Unsubscribe handles for the TUI-level chunk/done subscribers registered
-	// in SetLogSink. We call them before re-subscribing so repeated
-	// SetLogSink calls don't fan every chunk out N times.
+	// logMu protects tuiUnsubChunk and tuiUnsubDone which are updated
+	// together with the logger in SetLogSink.
+	logMu         sync.Mutex
 	tuiUnsubChunk func()
 	tuiUnsubDone  func()
 
@@ -472,7 +475,9 @@ func (s *Server) handleExec(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[PierCode] 工具调用: name=%s, call_id=%s, args=%+v\n", req.Name, req.CallID, req.Args)
+	// Log tool call keys only (not values) to avoid leaking sensitive content
+	// like file contents, passwords, or API keys that may appear in args.
+	log.Printf("[PierCode] 工具调用: name=%s, call_id=%s, arg_keys=%v\n", req.Name, req.CallID, argKeys(req.Args))
 
 	// The standard /exec timeout is fine for filesystem/shell tools, but
 	// `question` legitimately blocks waiting for a human and would always
@@ -569,15 +574,15 @@ func (s *Server) handleWS(c *gin.Context) {
 
 	count := s.ws.ClientCount()
 	s.logTUI("system", "BROWSER", "success", fmt.Sprintf("浏览器扩展已连接 (%d)", count))
-	if s.logger != nil {
-		s.logger.LogBrowserStatus(count, s.ws.ProviderCounts())
+	if l := s.getLogger(); l != nil {
+		l.LogBrowserStatus(count, s.ws.ProviderCounts())
 	}
 	defer func() {
 		s.ws.Unregister(conn)
 		count := s.ws.ClientCount()
 		s.logTUI("system", "BROWSER", "info", fmt.Sprintf("浏览器扩展已断开 (%d)", count))
-		if s.logger != nil {
-			s.logger.LogBrowserStatus(count, s.ws.ProviderCounts())
+		if l := s.getLogger(); l != nil {
+			l.LogBrowserStatus(count, s.ws.ProviderCounts())
 		}
 	}()
 
@@ -724,11 +729,11 @@ func (s *Server) handleWSClientMessage(sourceClientID string, payload []byte) {
 				s.broadcastAgentsUpdate()
 			}
 		}
-		if s.logger != nil {
+		if l := s.getLogger(); l != nil {
 			if key == "" {
 				key = "browser-user-prompt"
 			}
-			s.logger.LogUserPrompt(key, text)
+			l.LogUserPrompt(key, text)
 		}
 	case "ai_log":
 		text := strings.TrimSpace(msg.Text)
@@ -740,12 +745,12 @@ func (s *Server) handleWSClientMessage(sourceClientID string, payload []byte) {
 				s.broadcastAgentsUpdate()
 			}
 		}
-		if s.logger != nil {
+		if l := s.getLogger(); l != nil {
 			key := strings.TrimSpace(msg.Key)
 			if key == "" {
 				key = "browser-ai-response"
 			}
-			s.logger.LogAIResponse(key, summarizeBrowserAIText(text), text)
+			l.LogAIResponse(key, summarizeBrowserAIText(text), text)
 		}
 	case "question_answer":
 		callID := strings.TrimSpace(msg.CallID)
@@ -942,11 +947,11 @@ func (s *Server) handleAgentControl(action, agentID string) {
 func buildTaskNotification(agentID, status, summary, result string) string {
 	var b strings.Builder
 	b.WriteString("<task-notification>\n")
-	fmt.Fprintf(&b, "<task-id>%s</task-id>\n", agentID)
-	fmt.Fprintf(&b, "<status>%s</status>\n", status)
-	fmt.Fprintf(&b, "<summary>%s</summary>\n", strings.TrimSpace(summary))
+	fmt.Fprintf(&b, "<task-id>%s</task-id>\n", html.EscapeString(agentID))
+	fmt.Fprintf(&b, "<status>%s</status>\n", html.EscapeString(status))
+	fmt.Fprintf(&b, "<summary>%s</summary>\n", html.EscapeString(strings.TrimSpace(summary)))
 	if strings.TrimSpace(result) != "" {
-		fmt.Fprintf(&b, "<result>%s</result>\n", strings.TrimSpace(result))
+		fmt.Fprintf(&b, "<result>%s</result>\n", html.EscapeString(strings.TrimSpace(result)))
 	}
 	b.WriteString("</task-notification>")
 	return b.String()
@@ -1065,13 +1070,24 @@ func (s *Server) Close() {
 	}
 }
 
+// getLogger returns the current log sink (lock-free via atomic.Value).
+func (s *Server) getLogger() logsink.Sink {
+	v := s.logger.Load()
+	if v == nil {
+		return nil
+	}
+	l, _ := v.(logsink.Sink)
+	return l
+}
+
 // SetLogSink allows injecting an event sink for real-time monitoring.
 // Safe to call multiple times: each call replaces any previously registered
 // subscribers so we don't double-fan every chunk.
 func (s *Server) SetLogSink(sink logsink.Sink) {
-	s.logger = sink
+	s.logger.Store(sink)
 	s.executor.SetLogger(sink)
 
+	s.logMu.Lock()
 	if s.tuiUnsubChunk != nil {
 		s.tuiUnsubChunk()
 		s.tuiUnsubChunk = nil
@@ -1089,11 +1105,21 @@ func (s *Server) SetLogSink(sink logsink.Sink) {
 			sink.LogTaskDone(taskID, callID, exitCode, status, errMsg, durationMs)
 		})
 	}
+	s.logMu.Unlock()
+}
+
+// argKeys returns just the keys of a tool args map for safe logging.
+func argKeys(args map[string]interface{}) []string {
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func (s *Server) logTUI(source, toolName, status, message string) {
-	if s.logger != nil {
-		s.logger.LogToolCallWithSource(source, toolName, status, message)
+	if l := s.getLogger(); l != nil {
+		l.LogToolCallWithSource(source, toolName, status, message)
 	}
 }
 

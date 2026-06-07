@@ -75,7 +75,14 @@ let qwenConversationCtx: ConversationContext | null = null;
 let compressionInProgress = false;
 let compressionConfigCache: ContextCompressionConfig | null = null;
 let lastObservedConversationURL = '';
+const MAX_CONVERSATION_CONTEXTS = 20;
 const conversationCtxByURL = new Map<string, ConversationContext>();
+function evictOldestConversationContext() {
+  if (conversationCtxByURL.size <= MAX_CONVERSATION_CONTEXTS) return;
+  // Map preserves insertion order; first key is the oldest.
+  const oldest = conversationCtxByURL.keys().next().value;
+  if (oldest !== undefined) conversationCtxByURL.delete(oldest);
+}
 // 熔断器（借鉴 Claude Code MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES）：连续 N 次压缩
 // 失败就停止触发，根治"无限压缩/无限开新会话"——避免上下文不可恢复时每条消息
 // 都徒劳重试。成功一次即重置。
@@ -129,6 +136,7 @@ function syncConversationStateForCurrentURL(): void {
 
   if (lastObservedConversationURL && qwenConversationCtx) {
     conversationCtxByURL.set(lastObservedConversationURL, qwenConversationCtx);
+    evictOldestConversationContext();
   }
 
   lastObservedConversationURL = current;
@@ -169,6 +177,7 @@ function updateQwenContext(role: 'user' | 'assistant' | 'system', content: strin
   }
   if (lastObservedConversationURL) {
     conversationCtxByURL.set(lastObservedConversationURL, qwenConversationCtx);
+    evictOldestConversationContext();
   }
 
   if (role === 'assistant' && maybeHandleQwenContextPacket(clean, sourceEl)) {
@@ -2935,7 +2944,9 @@ function injectInitButton() {
 
 async function bgFetch(url: string, options?: any): Promise<{ ok: boolean; status: number; body: string }> {
   if (!checkContext()) return { ok: false, status: 0, body: 'Extension context invalidated, please refresh the page' };
-  return chrome.runtime.sendMessage({ type: 'FETCH', url, options });
+  const result = await chrome.runtime.sendMessage({ type: 'FETCH', url, options });
+  // MV3 service worker may be asleep; sendMessage returns undefined in that case.
+  return result ?? { ok: false, status: 0, body: 'Service worker unavailable' };
 }
 
 function apiEndpoint(apiUrl: string, path: string): string {

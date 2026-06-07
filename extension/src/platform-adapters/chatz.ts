@@ -19,6 +19,11 @@ export const chatZAdapter: PlatformAdapter = {
     }
 
     if (classAttr.includes('cm-editor') || classAttr.includes('cm-content')) {
+      const codeText = extractCodeMirror6Text(el);
+      if (codeText && codeText.includes('"name"')) {
+        pushPierCodeTool(buf, codeText);
+        return true;
+      }
       return true;
     }
 

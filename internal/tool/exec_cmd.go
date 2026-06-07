@@ -125,7 +125,7 @@ func (t *ExecCmdTool) Execute(ctx *Context) *Result {
 
 	shell, flag := getShell()
 	proc := exec.CommandContext(execCtx, shell, flag, cmd)
-	proc.Dir = t.config.GetRootDir()
+	proc.Dir = ctx.EffectiveRootDir()
 	procutil.ConfigureCommand(proc)
 
 	// Foreground mode: keep the original CombinedOutput semantics for callers
@@ -232,7 +232,7 @@ func (t *ExecCmdTool) executeBackground(ctx *Context, cmd string, result *Result
 		SourceClientID:  ctx.SourceClientID,
 		ConversationURL: ctx.ConversationURL,
 		Command:         cmd,
-		Dir:             t.config.GetRootDir(),
+		Dir:             ctx.EffectiveRootDir(),
 		Timeout:         taskTimeout,
 	}
 	id, err := ctx.TaskRunner.Start(spec)
@@ -256,6 +256,7 @@ func runWithStreamer(proc *exec.Cmd, streamer func(stream, text string)) ([]byte
 	}
 	stderrPipe, err := proc.StderrPipe()
 	if err != nil {
+		stdoutPipe.Close()
 		return nil, err
 	}
 	if err := proc.Start(); err != nil {

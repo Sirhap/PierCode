@@ -252,7 +252,7 @@ export function normalizeProjects(projects: Project[]): Project[] {
     viewport: {
       x: fix(p.viewport?.x, 0),
       y: fix(p.viewport?.y, 0),
-      zoom: fix(p.viewport?.zoom, 1),
+      zoom: Math.max(0.01, fix(p.viewport?.zoom, 1)),
     },
     nodes: (p.nodes ?? []).map(n => ({
       ...n,

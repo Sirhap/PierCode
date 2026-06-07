@@ -11,7 +11,7 @@ export const chatGPTAdapter: PlatformAdapter = {
     const classAttr = el.getAttribute('class') || '';
     const tag = el.tagName.toLowerCase();
 
-    if (tag === 'pre' || tag === 'code' || tag === 'span' || tag === 'div' || tag === 'section') {
+    if (tag === 'pre' || tag === 'code') {
       const text = el.textContent || '';
       if (text.includes('"name"') && text.includes('"args"')) {
         const count = extractAllToolCalls(text, buf);

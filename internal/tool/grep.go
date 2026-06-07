@@ -155,7 +155,10 @@ func grepNative(pattern, searchPath, include string) (string, error) {
 				return nil
 			}
 		}
-		info, _ := d.Info()
+		info, err := d.Info()
+		if err != nil {
+			return nil // skip files we can't stat
+		}
 		mtime := info.ModTime()
 
 		f, err := os.Open(p)
@@ -176,6 +179,9 @@ func grepNative(pattern, searchPath, include string) (string, error) {
 				})
 			}
 		}
+		// Silently ignore scanner errors (e.g. file truncated mid-read);
+		// partial results for this file are still useful.
+		_ = scanner.Err()
 		return nil
 	})
 

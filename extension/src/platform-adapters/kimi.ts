@@ -11,6 +11,8 @@ export const kimiAdapter: PlatformAdapter = {
     const tag = el.tagName.toLowerCase();
 
     if (classAttr.includes('toolcall-container')) {
+      const text = el.textContent || '';
+      if (text.trim()) pushPierCodeTool(buf, text);
       return true;
     }
 

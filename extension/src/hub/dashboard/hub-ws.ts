@@ -86,6 +86,7 @@ export class HubWsClient {
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
   private closed = false;
+  private connectGeneration = 0; // incremented on each connect() to detect orphaned sockets
   private readonly id = hubClientId();
   // Kept so stop() can remove the storage listener; otherwise repeated
   // start()/stop() cycles would leak a listener (and a connect) each time.
@@ -152,12 +153,16 @@ export class HubWsClient {
 
   private async connect(): Promise<void> {
     if (this.closed) return;
+    const gen = ++this.connectGeneration;
     const info = await getAuthInfo();
     if (!info) {
       this.handlers.onStatus?.(false);
       this.scheduleReconnect();
       return;
     }
+    // If another connect() was started while we were awaiting, bail —
+    // the newer call owns the socket now.
+    if (gen !== this.connectGeneration) return;
     const wsUrl = toWsUrl(info.apiUrl, info.token, this.id);
     if (!wsUrl) {
       this.handlers.onStatus?.(false);
@@ -183,7 +188,9 @@ export class HubWsClient {
     socket.onopen = () => this.handlers.onStatus?.(true);
     socket.onmessage = event => this.onMessage(event);
     socket.onclose = () => {
-      if (this.ws === socket) this.ws = null;
+      // Only clear this.ws if we are still the latest connection.
+      // A newer connect() may have already replaced it.
+      if (gen === this.connectGeneration && this.ws === socket) this.ws = null;
       this.handlers.onStatus?.(false);
       this.scheduleReconnect();
     };

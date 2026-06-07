@@ -18,7 +18,7 @@ export function looksLikePierCodeAgentResultLanguage(text: string): boolean {
 }
 
 export function hasPierCodeToolClass(classAttr: string): boolean {
-  return classAttr.includes('piercode-tool') || /\btool\b/.test(classAttr);
+  return classAttr.includes('piercode-tool') || /(?:^|\s)tool(?:\s|$)/.test(classAttr);
 }
 
 export function hasPierCodeAgentResultClass(classAttr: string): boolean {

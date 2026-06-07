@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/skill"
 	"github.com/sirhap/piercode/internal/types"
 )
@@ -83,6 +84,15 @@ func (t *SkillTool) Execute(ctx *Context) *Result {
 	if !ok {
 		result.Status = "error"
 		result.Error = fmt.Sprintf("skill %q not found", skillName)
+		return result
+	}
+
+	// Validate the skill file path stays within the workspace sandbox.
+	// Defense-in-depth: skill.Get already restricts names, but a symlink in a
+	// skill directory could point outside the workspace.
+	if _, err := security.SafeAbsPath(info.Location, ctx.EffectiveAllowedRoots()...); err != nil {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("skill %q path outside sandbox", skillName)
 		return result
 	}
 
