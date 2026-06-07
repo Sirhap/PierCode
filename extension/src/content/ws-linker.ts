@@ -115,16 +115,22 @@ const pendingInjects: PendingInject[] = [];
 let conversationURLWatcher: number | null = null;
 
 function getOrCreateClientId(): string {
-  try {
-    const key = '__PIERCODE_CLIENT_ID__';
-    const existing = window.sessionStorage.getItem(key);
-    if (existing) return existing;
-    const id = `content-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    window.sessionStorage.setItem(key, id);
-    return id;
-  } catch {
-    return `content-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  }
+  // MUST be unique PER DOCUMENT/FRAME. sessionStorage is SHARED across
+  // same-origin frames in the same tab, so keying the id on a constant string
+  // there made two same-origin Hub panes (e.g. a qwen dispatcher + a qwen worker
+  // iframe) read the SAME client id → the server's SendToID(workerClient) ALSO
+  // matched the dispatcher, so the worker's seed task was injected into the main
+  // agent too ("给子agent的任务主agent也发了一份"). Generate the id fresh per
+  // module instance instead: every iframe runs its own content.js module, so each
+  // gets a distinct id. It persists for the life of the document (survives MV3 SW
+  // sleep, which does not reload the frame); a full reload gets a new id, which is
+  // fine — the server just sees a reconnecting client. Persist it on `window` so
+  // repeated imports within the same document return the same value.
+  const w = window as any;
+  if (typeof w.__PIERCODE_CLIENT_ID_VALUE__ === 'string') return w.__PIERCODE_CLIENT_ID_VALUE__;
+  const id = `content-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  try { w.__PIERCODE_CLIENT_ID_VALUE__ = id; } catch { /* ignore */ }
+  return id;
 }
 
 export function getPierCodeClientId(): string {
@@ -802,11 +808,33 @@ function dispatchEnterAsSendFallback(targetInput: HTMLElement): boolean {
   return handled;
 }
 
+// sendButtonDisabled reports whether a found send button is present-but-disabled.
+// AI sites keep the send button mounted but disabled until the typed value is
+// registered into their framework state (debounced after fill). Clicking it while
+// disabled is a no-op — that is the "有时发有时不发" race: sometimes the fill has
+// propagated by click time, sometimes not. So we treat a disabled button as
+// not-yet-ready and keep polling.
+function sendButtonDisabled(btn: HTMLElement): boolean {
+  if (btn.hasAttribute("disabled")) return true;
+  const aria = (btn.getAttribute("aria-disabled") || "").toLowerCase();
+  if (aria === "true") return true;
+  // Some sites disable a wrapping element; check the closest button too.
+  const realBtn = btn.closest("button");
+  if (realBtn && realBtn !== btn && (realBtn.hasAttribute("disabled") || (realBtn.getAttribute("aria-disabled") || "").toLowerCase() === "true")) return true;
+  return false;
+}
+
 async function clickSendButton(config: InjectConfig, targetInput: HTMLElement): Promise<boolean> {
   const deadline = Date.now() + (isQwenPage() ? 90000 : 10000);
   while (Date.now() < deadline) {
     const sendBtn = querySendButtonFirst(config.sendBtn);
     if (sendBtn) {
+      if (sendButtonDisabled(sendBtn)) {
+        // Present but disabled — the value hasn't registered yet. Wait; do NOT
+        // return true on a no-op click.
+        await sleep(200);
+        continue;
+      }
       sendInjectDebug("click_send_button", {
         tag: sendBtn.tagName,
         class: sendBtn.getAttribute("class") || "",

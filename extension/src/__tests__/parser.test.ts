@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON } from '../parser';
+import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket } from '../parser';
 
 // ── parseJsonFenceToolCall ─────────────────────────────────────────────────
 
@@ -512,5 +512,32 @@ describe('non-breaking space handling', () => {
     expect(data).not.toBeNull();
     expect(data!.name).toBe('list_dir');
     expect(data!.args.path).toBe('src');
+  });
+});
+
+// ── parseAgentResultPacket ─────────────────────────────────────────────────
+
+describe('parseAgentResultPacket', () => {
+  it('parses a well-formed packet', () => {
+    const p = parseAgentResultPacket('{"version":1,"agent_id":"agent-1","status":"completed","summary":"done","result":"all good"}');
+    expect(p).not.toBeNull();
+    expect(p!.agentId).toBe('agent-1');
+    expect(p!.status).toBe('completed');
+    expect(p!.result).toBe('all good');
+  });
+
+  it('returns null for an incomplete (still-streaming) body', () => {
+    expect(parseAgentResultPacket('{"agent_id":"a","status":"completed"')).toBeNull();
+  });
+
+  it('repairs a trailing comma (common LLM slip) instead of dropping the packet', () => {
+    const p = parseAgentResultPacket('{"agent_id":"a","status":"completed","summary":"x",}');
+    expect(p).not.toBeNull();
+    expect(p!.agentId).toBe('a');
+  });
+
+  it('defaults status to completed when omitted', () => {
+    const p = parseAgentResultPacket('{"agent_id":"a","result":"r"}');
+    expect(p!.status).toBe('completed');
   });
 });

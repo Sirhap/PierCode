@@ -1307,10 +1307,23 @@ function getSiteConfig(): SiteConfig {
   };
 }
 
-if (!(window as any).__PIERCODE_LOADED__) {
+// bootstrapContentScript holds the whole content-script init. It is DECLARED here
+// but CALLED at the very bottom of the module (see end of file), so it runs only
+// after every module-level `const`/`let`/IIFE below has been initialized. Init
+// wires observers/timers/listeners that call functions which close over those
+// later bindings (e.g. `toolCardAnimStylesInjected` at line ~1614, the
+// `compressionStatusCard` IIFE at ~3033). If init ran inline at its source
+// position, an observer firing during/just after eval would reach a binding still
+// in its temporal dead zone → "Cannot access X before initialization" — exactly
+// the crash seen in Hub iframe panes (content.js injected into a page that already
+// has a Monaco/tool-block DOM, so a mutation fires a scan → renderToolCard →
+// ensureToolCardAnimStyles before `let ho` ran). Deferring the WHOLE init to EOF
+// removes the TDZ window entirely.
+function bootstrapContentScript() {
+  if ((window as any).__PIERCODE_LOADED__) return;
   (window as any).__PIERCODE_LOADED__ = true;
   // 构建标记：用于确认浏览器跑的是最新 content.js（控制台查 __PIERCODE_BUILD__）。
-  (window as any).__PIERCODE_BUILD__ = 'status-panel-2026-06-05';
+  (window as any).__PIERCODE_BUILD__ = 'worker-id-send-2026-06-07';
   console.log('[PierCode] content loaded, build:', (window as any).__PIERCODE_BUILD__);
 
   const cfg = getSiteConfig();
@@ -1358,6 +1371,8 @@ if (!(window as any).__PIERCODE_LOADED__) {
     injectPageScript('injected.js');
   } else if (cfg.responseSelector) {
     const sel = cfg.responseSelector;
+    // Safe to start directly: bootstrapContentScript runs at EOF, after every
+    // module-level binding the render path touches is initialized (no TDZ window).
     if (document.body) startDOMObserver(sel);
     else document.addEventListener('DOMContentLoaded', () => startDOMObserver(sel));
   }
@@ -3640,3 +3655,9 @@ function attachInputListener(editorEl: HTMLElement) {
   }, true);
   editorEl.addEventListener('compositionend', scheduleCompletionUpdate);
 }
+
+// Run the content-script init LAST, after every module-level binding above is
+// initialized — eliminates the TDZ window that crashed tool-card rendering inside
+// Hub iframe panes. (injectPageBridgeEarly already ran at module top for the
+// document_start visibility shim; this only defers the heavier init.)
+bootstrapContentScript();

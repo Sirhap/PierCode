@@ -31,12 +31,12 @@ export function parseAgentResultPacket(jsonStr: string): AgentResultPacket | nul
   const normalized = jsonStr.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, " ").trim();
   // Cheap streaming/truncation guard: a complete object body ends with `}`.
   if (!normalized.endsWith('}')) return null;
-  let obj: any;
-  try {
-    obj = JSON.parse(normalized);
-  } catch {
-    return null;
-  }
+  // Use the SAME repair primitives as tool calls (trailing commas, unescaped
+  // quotes) so a worker's common JSON slip still parses \u2014 a raw JSON.parse would
+  // drop it and the coordinator would never get the callback ("\u5B50agent \u4E0D\u6309\u683C\u5F0F\u54CD\u5E94"
+  // \u2014 it DID respond, parse failed). NOTE: cannot reuse tryParseToolJSON here, it
+  // gates on a tool-call `name` field which a result packet does not have.
+  const obj = tryParseLenientJSON(normalized);
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
   const status = typeof obj.status === 'string' && obj.status.trim() ? obj.status.trim() : 'completed';
   return {
@@ -76,6 +76,23 @@ export function tryParseToolJSON(raw: string): any | null {
       const parsed = JSON.parse(repair(normalized));
       if (looksLikeToolCall(parsed)) return parsed;
     } catch {}
+  }
+  return null;
+}
+
+// tryParseLenientJSON parses an arbitrary JSON object with the same progressive
+// repair chain as tryParseToolJSON, but WITHOUT the tool-call `name` gate — for
+// payloads that are valid JSON but not tool calls (e.g. piercode-agent-result).
+export function tryParseLenientJSON(raw: string): any | null {
+  const normalized = raw.replace(/ /g, ' ');
+  try { return JSON.parse(normalized); } catch {}
+  const repairs: ((s: string) => string)[] = [
+    stripTrailingCommas,
+    repairUnescapedQuotes,
+    (s) => repairUnescapedQuotes(stripTrailingCommas(s)),
+  ];
+  for (const repair of repairs) {
+    try { return JSON.parse(repair(normalized)); } catch {}
   }
   return null;
 }

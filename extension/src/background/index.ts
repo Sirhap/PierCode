@@ -1220,7 +1220,10 @@ async function focusSenderTab(sender: chrome.runtime.MessageSender, options?: { 
   if (shouldFocus) {
     const windowId = sender.tab?.windowId;
     if (typeof windowId === 'number' && windowId >= 0) {
-      await chrome.windows.update(windowId, { focused: true, state: 'normal' });
+      // Focus the window WITHOUT forcing state:'normal' — that would yank a
+      // fullscreen/maximized browser back to a floating window on every tool
+      // inject (the "工具调用就给我干成非全屏" bug). Just bring it to front.
+      await chrome.windows.update(windowId, { focused: true });
     }
     await chrome.tabs.update(tabId, { active: true });
   } else {

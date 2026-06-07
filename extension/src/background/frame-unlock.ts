@@ -146,12 +146,25 @@ export async function applyFrameUnlock(aiHosts: string[] = AI_FRAME_HOSTS): Prom
   // runs in MAIN world at document_start (the early visibility/editor shim);
   // content.js runs in the isolated world at document_idle (the operator).
   const matches = buildFrameContentScriptMatches(aiHosts);
+  const scripts = [
+    { id: 'piercode-hub-bridge', matches, js: ['page-bridge.js'], allFrames: true, runAt: 'document_start' as const, world: 'MAIN' as const },
+    { id: 'piercode-hub-content', matches, js: ['content.js'], allFrames: true, runAt: 'document_idle' as const },
+  ];
+  // Registered content scripts PERSIST across MV3 service-worker restarts, so on a
+  // re-run our ids may already exist. registerContentScripts rejects the WHOLE
+  // batch with "Duplicate script ID" if any id is already registered — which would
+  // leave the (possibly stale) old scripts in place and surface as a frame-unlock
+  // error. Unregister by id first; if registration still throws (duplicate id race
+  // or one uncovered match), fall back to updateContentScripts so the iframes are
+  // never left without the operator scripts.
   try {
-    const old = await chrome.scripting.getRegisteredContentScripts({ ids: ['piercode-hub-bridge', 'piercode-hub-content'] });
+    const old = await chrome.scripting.getRegisteredContentScripts({ ids: scripts.map(s => s.id) });
     if (old.length) await chrome.scripting.unregisterContentScripts({ ids: old.map(s => s.id) });
   } catch { /* none registered yet */ }
-  await chrome.scripting.registerContentScripts([
-    { id: 'piercode-hub-bridge', matches, js: ['page-bridge.js'], allFrames: true, runAt: 'document_start', world: 'MAIN' },
-    { id: 'piercode-hub-content', matches, js: ['content.js'], allFrames: true, runAt: 'document_idle' },
-  ]);
+  try {
+    await chrome.scripting.registerContentScripts(scripts);
+  } catch (err) {
+    console.warn('[PierCode] registerContentScripts failed, trying update', err);
+    await chrome.scripting.updateContentScripts(scripts);
+  }
 }

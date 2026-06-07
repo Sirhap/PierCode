@@ -18,8 +18,14 @@ export interface AgentsUpdateMessage {
   agents: unknown[];
 }
 
+export interface HubRemovePaneMessage {
+  type: 'hub_remove_pane';
+  agent_id: string;
+}
+
 export interface HubWsHandlers {
   onAddPane?: (msg: HubAddPaneMessage) => void;
+  onRemovePane?: (msg: HubRemovePaneMessage) => void;
   onAgentsUpdate?: (msg: AgentsUpdateMessage) => void;
   onStatus?: (connected: boolean) => void;
 }
@@ -195,6 +201,8 @@ export class HubWsClient {
     }
     if (msg.type === 'hub_add_pane') {
       this.handlers.onAddPane?.(msg as HubAddPaneMessage);
+    } else if (msg.type === 'hub_remove_pane') {
+      this.handlers.onRemovePane?.(msg as HubRemovePaneMessage);
     } else if (msg.type === 'agents_update') {
       this.handlers.onAgentsUpdate?.(msg as AgentsUpdateMessage);
     }
