@@ -1085,9 +1085,9 @@ func (s *Server) getLogger() logsink.Sink {
 // subscribers so we don't double-fan every chunk.
 func (s *Server) SetLogSink(sink logsink.Sink) {
 	s.logger.Store(sink)
-	s.executor.SetLogger(sink)
 
 	s.logMu.Lock()
+	s.executor.SetLogger(sink)
 	if s.tuiUnsubChunk != nil {
 		s.tuiUnsubChunk()
 		s.tuiUnsubChunk = nil

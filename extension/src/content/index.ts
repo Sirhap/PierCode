@@ -83,6 +83,14 @@ function evictOldestConversationContext() {
   const oldest = conversationCtxByURL.keys().next().value;
   if (oldest !== undefined) conversationCtxByURL.delete(oldest);
 }
+/** Promote a key to newest position (LRU touch). */
+function touchConversationContext(key: string) {
+  const ctx = conversationCtxByURL.get(key);
+  if (ctx !== undefined) {
+    conversationCtxByURL.delete(key);
+    conversationCtxByURL.set(key, ctx);
+  }
+}
 // 熔断器（借鉴 Claude Code MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES）：连续 N 次压缩
 // 失败就停止触发，根治"无限压缩/无限开新会话"——避免上下文不可恢复时每条消息
 // 都徒劳重试。成功一次即重置。
@@ -141,6 +149,7 @@ function syncConversationStateForCurrentURL(): void {
 
   lastObservedConversationURL = current;
   qwenConversationCtx = conversationCtxByURL.get(current) ?? null;
+  if (qwenConversationCtx) touchConversationContext(current);
   handledContextPacketHashes.clear();
   // New conversation surface: forget any pending compression confirm prompt.
   compressionConfirmPending = false;

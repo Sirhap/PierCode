@@ -92,7 +92,7 @@ func (t *SkillTool) Execute(ctx *Context) *Result {
 	// skill directory could point outside the workspace.
 	if _, err := security.SafeAbsPath(info.Location, ctx.EffectiveAllowedRoots()...); err != nil {
 		result.Status = "error"
-		result.Error = fmt.Sprintf("skill %q path outside sandbox", skillName)
+		result.Error = fmt.Sprintf("skill %q: %v", skillName, err)
 		return result
 	}
 
