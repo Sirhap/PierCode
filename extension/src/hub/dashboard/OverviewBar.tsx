@@ -50,7 +50,14 @@ export default function OverviewBar(props: OverviewBarProps) {
             <button
               className="ov-proj-del"
               title="删除项目"
-              onClick={e => { e.stopPropagation(); props.onDeleteProject(p.id); }}
+              onClick={e => {
+                e.stopPropagation();
+                // Confirm: deleting a project drops its canvas, all its panes and
+                // their agents — easy to do by a stray click, hard to undo.
+                if (window.confirm(`删除项目「${p.name}」？\n该项目的所有 AI 面板会一并关闭。`)) {
+                  props.onDeleteProject(p.id);
+                }
+              }}
             >×</button>
           </span>
         ))}

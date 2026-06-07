@@ -10,9 +10,12 @@ import {
   removeNode,
   moveNode,
   resizeNode,
+  setContentZoom,
   setViewport,
+  applyTreeLayout,
   findNodeByAgentId,
   migrateLegacyPanes,
+  normalizeProjects,
 } from './project-store';
 import Canvas from './canvas/Canvas';
 import OverviewBar from './dashboard/OverviewBar';
@@ -32,7 +35,7 @@ function loadProjects(): Promise<Project[]> {
       chrome.storage.local.get([PROJECTS_KEY, LEGACY_PANES_KEY], r => {
         const saved = r?.[PROJECTS_KEY];
         if (Array.isArray(saved) && saved.length) {
-          resolve(saved as Project[]);
+          resolve(normalizeProjects(saved as Project[]));
           return;
         }
         const legacy = r?.[LEGACY_PANES_KEY];
@@ -63,6 +66,7 @@ export default function App() {
   const [agents, setAgents] = useState<AgentVM[]>([]);
   const [connected, setConnected] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [layoutEdit, setLayoutEdit] = useState(false); // 「编辑布局」: lock iframes, drag nodes
   const wsRef = useRef<HubWsClient | null>(null);
   // activeIdRef keeps the latest active project id available inside the WS
   // callback closure (set up once) without re-subscribing on every switch.
@@ -116,6 +120,15 @@ export default function App() {
     const wsSeenAt = new Map<string, number>();
     const client = new HubWsClient({
       onAddPane,
+      // Server auto-closes a finished worker's pane (so the coordinator never has
+      // to call stop_agent for cleanup). Remove the node carrying that agent id,
+      // wherever it lives. No stop is sent — the worker already reported terminal.
+      onRemovePane: msg => {
+        setProjects(prev => {
+          const loc = findNodeByAgentId(prev, msg.agent_id);
+          return loc ? removeNode(prev, loc.projectId, loc.nodeId) : prev;
+        });
+      },
       onAgentsUpdate: msg => {
         const incoming = (msg.agents as AgentVM[]) || [];
         const now = Date.now();
@@ -179,6 +192,14 @@ export default function App() {
     if (!activeIdRef.current) return;
     setProjects(prev => resizeNode(prev, activeIdRef.current!, nodeId, w, h));
   }, []);
+  const onContentZoom = useCallback((nodeId: string, zoom: number) => {
+    if (!activeIdRef.current) return;
+    setProjects(prev => setContentZoom(prev, activeIdRef.current!, nodeId, zoom));
+  }, []);
+  const onTidy = useCallback(() => {
+    if (!activeIdRef.current) return;
+    setProjects(prev => applyTreeLayout(prev, activeIdRef.current!));
+  }, []);
   const onCloseNode = useCallback((nodeId: string) => {
     const projectId = activeIdRef.current;
     if (!projectId) return;
@@ -225,6 +246,15 @@ export default function App() {
         {availableToAdd.map(p => (
           <button key={p.id} className="hub-add-btn" onClick={() => addAi(p.id)}>{p.label}</button>
         ))}
+        <span className="hub-toolbar-sep" />
+        <button className="hub-add-btn" title="把所有卡片重排成整齐的树状布局" onClick={onTidy}>整理</button>
+        <button
+          className="hub-add-btn"
+          data-active={layoutEdit}
+          title={layoutEdit ? '退出编辑布局（卡片恢复可交互）' : '编辑布局：锁定卡片、拖动表头摆位'}
+          onClick={() => setLayoutEdit(v => !v)}
+        >{layoutEdit ? '✓ 编辑布局' : '编辑布局'}</button>
+        <span className="hub-toolbar-hint">空格+拖动=平移画布</span>
       </div>
 
       <div className="hub-body">
@@ -233,8 +263,10 @@ export default function App() {
             key={active.id}
             project={active}
             statusByAgentId={Object.fromEntries(agents.map(a => [a.agent_id, a.status]))}
+            layoutEdit={layoutEdit}
             onMoveNode={onMoveNode}
             onResizeNode={onResizeNode}
+            onContentZoom={onContentZoom}
             onSetViewport={onSetViewport}
             onCloseNode={onCloseNode}
           />

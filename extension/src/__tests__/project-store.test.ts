@@ -8,8 +8,13 @@ import {
   removeNode,
   moveNode,
   resizeNode,
+  setContentZoom,
+  layoutTree,
+  applyTreeLayout,
   findNodeByAgentId,
   migrateLegacyPanes,
+  MIN_NODE_W,
+  MIN_NODE_H,
   type Project,
 } from '../hub/project-store';
 
@@ -88,13 +93,46 @@ describe('project-store', () => {
     expect(next[0].nodes[0]).toMatchObject({ x: 123, y: 456 });
   });
 
-  it('resizeNode sets width/height and clamps to a minimum', () => {
+  it('resizeNode sets size and clamps to the minimum', () => {
     const { projects, pid, rootId } = withRoot();
-    const big = resizeNode(projects, pid, rootId, 600, 500);
-    expect(big[0].nodes[0]).toMatchObject({ w: 600, h: 500 });
+    const big = resizeNode(projects, pid, rootId, 800, 700);
+    expect(big[0].nodes[0]).toMatchObject({ w: 800, h: 700 });
     const tiny = resizeNode(projects, pid, rootId, 10, 10);
-    expect(tiny[0].nodes[0].w).toBeGreaterThanOrEqual(240);
-    expect(tiny[0].nodes[0].h).toBeGreaterThanOrEqual(180);
+    expect(tiny[0].nodes[0].w).toBe(MIN_NODE_W);
+    expect(tiny[0].nodes[0].h).toBe(MIN_NODE_H);
+  });
+
+  it('setContentZoom clamps to [0.6, 2]', () => {
+    const { projects, pid, rootId } = withRoot();
+    expect(setContentZoom(projects, pid, rootId, 1.5)[0].nodes[0].contentZoom).toBe(1.5);
+    expect(setContentZoom(projects, pid, rootId, 5)[0].nodes[0].contentZoom).toBe(2);
+    expect(setContentZoom(projects, pid, rootId, 0.1)[0].nodes[0].contentZoom).toBe(0.6);
+  });
+
+  it('layoutTree places a child below its parent and centers the parent', () => {
+    const nodes = [
+      { id: 'p', providerId: 'qwen', x: 999, y: 999, w: 560, h: 520 },
+      { id: 'c1', providerId: 'qwen', parentNodeId: 'p', x: 0, y: 0, w: 560, h: 520 },
+      { id: 'c2', providerId: 'qwen', parentNodeId: 'p', x: 0, y: 0, w: 560, h: 520 },
+    ];
+    const out = layoutTree(nodes as any);
+    const p = out.find(n => n.id === 'p')!;
+    const c1 = out.find(n => n.id === 'c1')!;
+    const c2 = out.find(n => n.id === 'c2')!;
+    expect(c1.y).toBeGreaterThan(p.y);            // children below parent
+    expect(c2.x).toBeGreaterThan(c1.x);            // siblings spread horizontally
+    // Parent centered over its children's span.
+    const pCenter = p.x + p.w / 2;
+    const span = (c1.x + c1.w / 2 + c2.x + c2.w / 2) / 2;
+    expect(Math.abs(pCenter - span)).toBeLessThan(2);
+  });
+
+  it('applyTreeLayout turns autoLayout on; moveNode turns it off', () => {
+    let { projects, pid, rootId } = withRoot();
+    projects = applyTreeLayout(projects, pid);
+    expect(projects[0].autoLayout).toBe(true);
+    projects = moveNode(projects, pid, rootId, 10, 10);
+    expect(projects[0].autoLayout).toBe(false);
   });
 
   it('findNodeByAgentId locates a node across projects', () => {

@@ -39,7 +39,7 @@ describe('CanvasNodeCard', () => {
 
   it('does NOT render the pointer shield when idle (iframe is interactive)', () => {
     render(
-      <CanvasNodeCard node={node} focused={false} gesturing={false} onStartDrag={noop} onStartResize={noop} onFocus={noop} onClose={noop} />,
+      <CanvasNodeCard node={node} focused={false} gesturing={false} onStartDrag={noop} onStartResize={noop} onResizeTo={noop} onMaximize={noop} onContentZoom={noop} onFocus={noop} onClose={noop} />,
     );
     expect(document.querySelector('.canvas-node-shield')).toBeNull();
     // The iframe must be present and not covered.
@@ -48,7 +48,7 @@ describe('CanvasNodeCard', () => {
 
   it('renders the pointer shield only while a gesture is in progress', () => {
     render(
-      <CanvasNodeCard node={node} focused={false} gesturing={true} onStartDrag={noop} onStartResize={noop} onFocus={noop} onClose={noop} />,
+      <CanvasNodeCard node={node} focused={false} gesturing={true} onStartDrag={noop} onStartResize={noop} onResizeTo={noop} onMaximize={noop} onContentZoom={noop} onFocus={noop} onClose={noop} />,
     );
     expect(document.querySelector('.canvas-node-shield')).not.toBeNull();
   });
@@ -57,7 +57,7 @@ describe('CanvasNodeCard', () => {
     const onClose = vi.fn();
     const onStartDrag = vi.fn();
     render(
-      <CanvasNodeCard node={node} focused={false} gesturing={false} onStartDrag={onStartDrag} onStartResize={noop} onFocus={noop} onClose={onClose} />,
+      <CanvasNodeCard node={node} focused={false} gesturing={false} onStartDrag={onStartDrag} onStartResize={noop} onResizeTo={noop} onMaximize={noop} onContentZoom={noop} onFocus={noop} onClose={onClose} />,
     );
     const closeBtn = Array.from(document.querySelectorAll('button')).find(b => b.title === '关闭')!;
     act(() => {

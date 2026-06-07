@@ -48,10 +48,51 @@ export function panBy(vp: Viewport, dx: number, dy: number): Viewport {
 // centerOnNode returns the viewport that centers a node in a viewport of the
 // given pixel size at a target zoom — used by "focus this node".
 export function centerOnNode(node: CanvasNode, viewW: number, viewH: number, zoom: number): Viewport {
-  const z = clampZoom(zoom);
-  const cx = node.x + node.w / 2;
-  const cy = node.y + node.h / 2;
-  return { zoom: z, x: viewW / 2 - cx * z, y: viewH / 2 - cy * z };
+  const z = clampZoom(num(zoom, 1));
+  const vw = num(viewW, 1200), vh = num(viewH, 800);
+  const cx = num(node.x, 0) + num(node.w, 560) / 2;
+  const cy = num(node.y, 0) + num(node.h, 520) / 2;
+  return { zoom: z, x: vw / 2 - cx * z, y: vh / 2 - cy * z };
+}
+
+// fitView returns the viewport that fits ALL nodes' bounding box into a viewport
+// of the given pixel size, centered, with `padding` screen px of margin. Zoom is
+// clamped to [MIN_ZOOM, MAX_ZOOM]. With no nodes it returns the identity viewport.
+// Used by the "适应" (fit-all) button.
+// num coalesces a possibly-undefined/NaN value to a fallback. Legacy persisted
+// nodes (from before w/h were always set) can carry undefined w/h; without this,
+// `n.x + n.w` is NaN → the whole viewport becomes NaN → every card vanishes off
+// an unrenderable canvas (the "点适应卡片消失" bug).
+function num(v: number | undefined, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+}
+
+export function fitView(nodes: CanvasNode[], viewW: number, viewH: number, padding = 60): Viewport {
+  if (nodes.length === 0) return { x: 0, y: 0, zoom: 1 };
+  const vw = num(viewW, 1200), vh = num(viewH, 800);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const n of nodes) {
+    const x = num(n.x, 0), y = num(n.y, 0);
+    const w = num(n.w, 560), h = num(n.h, 520);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w);
+    maxY = Math.max(maxY, y + h);
+  }
+  const boxW = Math.max(1, maxX - minX);
+  const boxH = Math.max(1, maxY - minY);
+  const availW = Math.max(1, vw - padding * 2);
+  const availH = Math.max(1, vh - padding * 2);
+  const z = clampZoom(Math.min(availW / boxW, availH / boxH));
+  // Center the box: viewport center maps to the box center in logical space.
+  const cx = minX + boxW / 2;
+  const cy = minY + boxH / 2;
+  const out = { zoom: z, x: vw / 2 - cx * z, y: vh / 2 - cy * z };
+  // Final NaN guard: never hand back an unrenderable viewport.
+  if (!Number.isFinite(out.x) || !Number.isFinite(out.y) || !Number.isFinite(out.zoom)) {
+    return { x: 0, y: 0, zoom: 1 };
+  }
+  return out;
 }
 
 // edgePath returns an SVG cubic-bezier `d` from the bottom-center of the parent

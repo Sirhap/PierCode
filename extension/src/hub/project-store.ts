@@ -21,6 +21,8 @@ export interface CanvasNode {
   y: number;
   w: number; // logical size
   h: number;
+  contentZoom?: number; // iframe content zoom (1 = 100%); enlarges the AI page's
+                        // own text/buttons inside the pane. Default DEFAULT_CONTENT_ZOOM.
 }
 
 export interface Project {
@@ -29,10 +31,29 @@ export interface Project {
   createdAt: number;
   nodes: CanvasNode[];
   viewport: Viewport;
+  // When true (default), nodes auto-arrange into a tidy top-down tree on
+  // add/spawn; dragging a node turns it off so manual layout sticks. The
+  // toolbar「整理」button re-applies the tree and turns it back on.
+  autoLayout?: boolean;
 }
 
-export const DEFAULT_NODE_W = 420;
-export const DEFAULT_NODE_H = 320;
+// Default node size — sized for an embedded AI chat UI to be usable, not cramped.
+export const DEFAULT_NODE_W = 560;
+export const DEFAULT_NODE_H = 520;
+// Minimum a node can be dragged/preset down to (keeps a pane usable).
+export const MIN_NODE_W = 320;
+export const MIN_NODE_H = 240;
+// One-click size presets shown in the node header.
+export const NODE_SIZE_PRESETS: { id: string; label: string; w: number; h: number }[] = [
+  { id: 'sm', label: '小', w: 460, h: 420 },
+  { id: 'md', label: '中', w: 640, h: 560 },
+  { id: 'lg', label: '大', w: 900, h: 760 },
+];
+// AI sites render their desktop layout small inside a ~560px pane; bump the
+// embedded content zoom so text/buttons are comfortable by default.
+export const DEFAULT_CONTENT_ZOOM = 1.25;
+export const MIN_CONTENT_ZOOM = 0.6;
+export const MAX_CONTENT_ZOOM = 2;
 export const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 
 // Vertical/horizontal spacing used when auto-placing a spawned child below its
@@ -86,7 +107,8 @@ export function addNode(
       w: DEFAULT_NODE_W,
       h: DEFAULT_NODE_H,
     };
-    return { ...p, nodes: [...p.nodes, node] };
+    const nodes = [...p.nodes, node];
+    return { ...p, nodes: (p.autoLayout === false || pos) ? nodes : layoutTree(nodes) };
   });
 }
 
@@ -120,8 +142,80 @@ export function addChildNode(
       w: DEFAULT_NODE_W,
       h: DEFAULT_NODE_H,
     };
-    return { ...p, nodes: [...p.nodes, node] };
+    const nodes = [...p.nodes, node];
+    // Auto-layout on (default) → tidy the whole tree so a spawned worker lands
+    // connected and aligned under its parent instead of scattered.
+    return { ...p, nodes: p.autoLayout === false ? nodes : layoutTree(nodes) };
   });
+}
+
+// ── tree auto-layout ────────────────────────────────────────────────────────
+// Horizontal gap between sibling subtrees and vertical gap between tree levels,
+// in logical px. Generous so panes don't touch.
+const TREE_H_GAP = 60;
+const TREE_V_GAP = 120;
+
+// layoutTree assigns tidy top-down tree coordinates to every node from the
+// parentNodeId forest. Each subtree is packed left→right by its own width, and a
+// parent is centered over its children. Cycles/missing parents degrade to roots
+// so nothing is lost. Pure: returns new nodes, does not mutate.
+export function layoutTree(nodes: CanvasNode[]): CanvasNode[] {
+  if (nodes.length === 0) return nodes;
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const childrenOf = new Map<string, CanvasNode[]>();
+  const roots: CanvasNode[] = [];
+  for (const n of nodes) {
+    const pid = n.parentNodeId;
+    if (pid && byId.has(pid) && pid !== n.id) {
+      (childrenOf.get(pid) ?? childrenOf.set(pid, []).get(pid)!).push(n);
+    } else {
+      roots.push(n);
+    }
+  }
+  const pos = new Map<string, { x: number; y: number }>();
+  const seen = new Set<string>();
+  // place returns the total subtree width; lays out children then centers the node.
+  const place = (node: CanvasNode, left: number, depth: number): number => {
+    if (seen.has(node.id)) { pos.set(node.id, { x: left, y: depth * 0 }); return node.w; }
+    seen.add(node.id);
+    const kids = (childrenOf.get(node.id) ?? []).filter(k => !seen.has(k.id));
+    const y = depth * (DEFAULT_NODE_H + TREE_V_GAP) + 40;
+    if (kids.length === 0) {
+      pos.set(node.id, { x: left, y });
+      return node.w;
+    }
+    let cursor = left;
+    const childCenters: number[] = [];
+    for (const k of kids) {
+      const w = place(k, cursor, depth + 1);
+      childCenters.push(cursor + w / 2);
+      cursor += w + TREE_H_GAP;
+    }
+    const subtreeW = cursor - TREE_H_GAP - left;
+    // Center this node over the span of its children's centers.
+    const cx = (childCenters[0] + childCenters[childCenters.length - 1]) / 2;
+    pos.set(node.id, { x: cx - node.w / 2, y });
+    return Math.max(subtreeW, node.w);
+  };
+  let rootLeft = 40;
+  for (const r of roots) {
+    const w = place(r, rootLeft, 0);
+    rootLeft += w + TREE_H_GAP * 2;
+  }
+  return nodes.map(n => {
+    const p = pos.get(n.id);
+    return p ? { ...n, x: Math.round(p.x), y: Math.round(p.y) } : n;
+  });
+}
+
+// applyTreeLayout re-runs the tree layout for a project and turns autoLayout on.
+export function applyTreeLayout(projects: Project[], projectId: string): Project[] {
+  return mapProject(projects, projectId, p => ({ ...p, autoLayout: true, nodes: layoutTree(p.nodes) }));
+}
+
+// setAutoLayout toggles a project's auto-layout flag (without moving nodes).
+export function setAutoLayout(projects: Project[], projectId: string, on: boolean): Project[] {
+  return mapProject(projects, projectId, p => ({ ...p, autoLayout: on }));
 }
 
 export function removeNode(projects: Project[], projectId: string, nodeId: string): Project[] {
@@ -137,21 +231,54 @@ export function removeNode(projects: Project[], projectId: string, nodeId: strin
 export function moveNode(projects: Project[], projectId: string, nodeId: string, x: number, y: number): Project[] {
   return mapProject(projects, projectId, p => ({
     ...p,
+    // A manual drag turns auto-layout OFF so the user's placement sticks (the
+    // 「整理」button re-enables it). Otherwise the next spawn would snap it back.
+    autoLayout: false,
     nodes: p.nodes.map(n => (n.id === nodeId ? { ...n, x, y } : n)),
   }));
 }
 
-// resizeNode sets a node's logical width/height (clamped to a sane minimum so a
-// pane can't be shrunk to nothing). Used by the node card's resize handle; w/h
-// are persisted on the node so the layout survives reload.
-const MIN_NODE_W = 240;
-const MIN_NODE_H = 180;
+// resizeNode sets a node's logical width/height, clamped to a usable minimum so a
+// pane can't be shrunk to nothing. w/h persist on the node so layout survives
+// reload. Used by both the corner drag handle and the header size presets.
 export function resizeNode(projects: Project[], projectId: string, nodeId: string, w: number, h: number): Project[] {
   const nw = Math.max(MIN_NODE_W, Math.round(w));
   const nh = Math.max(MIN_NODE_H, Math.round(h));
   return mapProject(projects, projectId, p => ({
     ...p,
     nodes: p.nodes.map(n => (n.id === nodeId ? { ...n, w: nw, h: nh } : n)),
+  }));
+}
+
+// normalizeProjects heals persisted data: fills missing/invalid w/h/x/y on nodes
+// (older builds stored nodes without w/h) so geometry math (fitView, centerOnNode)
+// never sees undefined → NaN → blank canvas. Pure; returns a cleaned copy.
+export function normalizeProjects(projects: Project[]): Project[] {
+  const fix = (v: unknown, fb: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fb);
+  return projects.map(p => ({
+    ...p,
+    viewport: {
+      x: fix(p.viewport?.x, 0),
+      y: fix(p.viewport?.y, 0),
+      zoom: fix(p.viewport?.zoom, 1),
+    },
+    nodes: (p.nodes ?? []).map(n => ({
+      ...n,
+      x: fix(n.x, 0),
+      y: fix(n.y, 0),
+      w: fix(n.w, DEFAULT_NODE_W),
+      h: fix(n.h, DEFAULT_NODE_H),
+    })),
+  }));
+}
+
+// setContentZoom adjusts a node's embedded-content zoom (clamped). Used by the
+// node header A−/A+ buttons to enlarge/shrink the AI page inside the pane.
+export function setContentZoom(projects: Project[], projectId: string, nodeId: string, zoom: number): Project[] {
+  const z = Math.min(MAX_CONTENT_ZOOM, Math.max(MIN_CONTENT_ZOOM, Math.round(zoom * 100) / 100));
+  return mapProject(projects, projectId, p => ({
+    ...p,
+    nodes: p.nodes.map(n => (n.id === nodeId ? { ...n, contentZoom: z } : n)),
   }));
 }
 

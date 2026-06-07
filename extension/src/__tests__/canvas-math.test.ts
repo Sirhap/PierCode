@@ -6,6 +6,7 @@ import {
   panBy,
   clampZoom,
   centerOnNode,
+  fitView,
   hitNode,
   edgePath,
   MIN_ZOOM,
@@ -53,6 +54,31 @@ describe('canvas-math', () => {
     const out = centerOnNode(n, 800, 600, 1);
     // node center = (250,140); at zoom 1 it should map to (400,300)
     expect(logicalToScreen({ x: 250, y: 140 }, out)).toEqual({ x: 400, y: 300 });
+  });
+
+  it('fitView centers the bounding box of all nodes', () => {
+    const nodes = [node('a', 0, 0), node('b', 300, 200)]; // box (0,0)..(400,280)
+    const out = fitView(nodes, 800, 600, 60);
+    // Box center = (200,140) must land at the viewport center (400,300).
+    const c = logicalToScreen({ x: 200, y: 140 }, out);
+    expect(c.x).toBeCloseTo(400, 6);
+    expect(c.y).toBeCloseTo(300, 6);
+    expect(out.zoom).toBeGreaterThanOrEqual(MIN_ZOOM);
+    expect(out.zoom).toBeLessThanOrEqual(MAX_ZOOM);
+  });
+
+  it('fitView returns identity for an empty canvas', () => {
+    expect(fitView([], 800, 600)).toEqual({ x: 0, y: 0, zoom: 1 });
+  });
+
+  it('fitView never returns a NaN viewport for legacy nodes missing w/h', () => {
+    // A persisted node from before w/h were always set → undefined w/h. Without a
+    // guard, n.x + n.w is NaN → whole viewport NaN → all cards vanish on "适应".
+    const legacy = { id: 'x', providerId: 'qwen', x: 100, y: 100 } as unknown as CanvasNode;
+    const out = fitView([legacy], 1200, 800);
+    expect(Number.isFinite(out.x)).toBe(true);
+    expect(Number.isFinite(out.y)).toBe(true);
+    expect(Number.isFinite(out.zoom)).toBe(true);
   });
 
   it('hitNode returns the topmost node containing the point', () => {

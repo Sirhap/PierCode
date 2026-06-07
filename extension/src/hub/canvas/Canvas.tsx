@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { Project, CanvasNode, Viewport } from '../project-store';
-import { zoomAtPoint, panBy, screenToLogical, centerOnNode } from './canvas-math';
+import { zoomAtPoint, panBy, screenToLogical, centerOnNode, fitView } from './canvas-math';
+import { PROVIDERS_BY_ID } from '../pane-manager';
 import CanvasNodeCard from './CanvasNodeCard';
 import Edges from './Edges';
 
@@ -14,8 +15,10 @@ const CANVAS_EXTENT = 20000; // logical area for the edges SVG / background
 interface CanvasProps {
   project: Project;
   statusByAgentId: Record<string, string>;
+  layoutEdit: boolean;              // 「编辑布局」on → iframes locked, header drags nodes
   onMoveNode: (nodeId: string, x: number, y: number) => void;
   onResizeNode: (nodeId: string, w: number, h: number) => void;
+  onContentZoom: (nodeId: string, zoom: number) => void;
   onSetViewport: (vp: Viewport) => void;
   onCloseNode: (nodeId: string) => void;
 }
@@ -36,7 +39,9 @@ interface ResizeState {
   startH: number;
 }
 
-export default function Canvas({ project, statusByAgentId, onMoveNode, onResizeNode, onSetViewport, onCloseNode }: CanvasProps) {
+const ZOOM_STEP = 1.2; // per button click / keypress
+
+export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNode, onResizeNode, onContentZoom, onSetViewport, onCloseNode }: CanvasProps) {
   const vp = project.viewport;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [panning, setPanning] = useState(false);
@@ -48,15 +53,36 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onResizeN
   const [resizingNodeId, setResizingNodeId] = useState<string | null>(null);
   const panLastRef = useRef<{ x: number; y: number } | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  // Card locator dropdown: when the canvas is panned/zoomed far from the cards,
+  // this lists every node so one click jumps (centers) onto it.
+  const [cardListOpen, setCardListOpen] = useState(false);
 
-  // The iframe shield is up only during an active canvas gesture (pan / node
-  // drag / resize), so the gesture isn't swallowed by an iframe. When idle,
-  // iframes are directly interactive at any zoom — no "focus" step needed.
-  const gesturing = panning || draggingNodeId !== null || resizingNodeId !== null;
+  // The iframe shield is up during an active canvas gesture (pan / node drag /
+  // resize) so the gesture isn't swallowed by an iframe, AND whenever 「编辑布局」
+  // is on — in layout-edit mode the whole canvas is a placement surface: iframes
+  // are locked so a header drag moves the node and a click doesn't fall into the
+  // AI page. With layout-edit OFF and no gesture, iframes are fully interactive.
+  const gesturing = layoutEdit || panning || draggingNodeId !== null || resizingNodeId !== null;
 
   const localPoint = useCallback((clientX: number, clientY: number) => {
     const rect = rootRef.current?.getBoundingClientRect();
     return { x: clientX - (rect?.left ?? 0), y: clientY - (rect?.top ?? 0) };
+  }, []);
+
+  // Pin the viewport's native scroll to 0,0. The canvas pans via a CSS transform,
+  // never native scroll — so any scrollTop/Left is spurious. It happens when an AI
+  // page INSIDE a pane iframe calls scrollIntoView on its newest message after a
+  // send: the browser scrolls the nearest scrollable ancestor across the iframe
+  // boundary (this viewport), dragging the whole canvas. overflow:hidden does NOT
+  // stop programmatic/focus scroll, so reset it on every scroll event.
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (el.scrollTop !== 0 || el.scrollLeft !== 0) { el.scrollTop = 0; el.scrollLeft = 0; }
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
   }, []);
 
   // Latest viewport + setter for the wheel/pointer handlers, so they read the
@@ -68,20 +94,56 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onResizeN
   const setVpRef = useRef(onSetViewport);
   setVpRef.current = onSetViewport;
 
-  // Wheel zoom anchored at the cursor. Bound ONCE as a non-passive native
-  // listener (preventDefault stops the page from scrolling).
+  // Wheel = PAN the canvas (deltaY vertical, deltaX or Shift+deltaY horizontal).
+  // Zoom is button-driven and predictable; only Ctrl/⌘+wheel (and the trackpad
+  // pinch the browser maps to ctrl+wheel) still zooms, anchored at the cursor.
+  // Bound ONCE as a non-passive native listener so preventDefault works.
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const anchor = localPoint(e.clientX, e.clientY);
-      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-      setVpRef.current(zoomAtPoint(vpRef.current, factor, anchor));
+      if (e.ctrlKey || e.metaKey) {
+        const anchor = localPoint(e.clientX, e.clientY);
+        const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+        setVpRef.current(zoomAtPoint(vpRef.current, factor, anchor));
+        return;
+      }
+      // Pan. Shift makes a vertical wheel scroll horizontally (common convention).
+      const dx = e.shiftKey ? -e.deltaY - e.deltaX : -e.deltaX;
+      const dy = e.shiftKey ? 0 : -e.deltaY;
+      setVpRef.current(panBy(vpRef.current, dx, dy));
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, [localPoint]);
+
+  // Zoom controls (buttons + keys). Anchor at the viewport center so the visible
+  // middle stays put. resetZoom returns to 100% keeping the center; fitAll frames
+  // every node.
+  const viewportCenter = () => {
+    const r = rootRef.current?.getBoundingClientRect();
+    return { x: (r?.width ?? 0) / 2, y: (r?.height ?? 0) / 2 };
+  };
+  const zoomByStep = useCallback((zoomIn: boolean) => {
+    setVpRef.current(zoomAtPoint(vpRef.current, zoomIn ? ZOOM_STEP : 1 / ZOOM_STEP, viewportCenter()));
+  }, []);
+  const resetZoom = useCallback(() => {
+    // Keep the logical point currently at the viewport center fixed, set zoom=1.
+    const c = viewportCenter();
+    const v = vpRef.current;
+    const lx = (c.x - v.x) / v.zoom;
+    const ly = (c.y - v.y) / v.zoom;
+    setVpRef.current({ zoom: 1, x: c.x - lx, y: c.y - ly });
+  }, []);
+  const fitAll = useCallback(() => {
+    const r = rootRef.current?.getBoundingClientRect();
+    if (!r) return;
+    setVpRef.current(fitView(nodesRef.current, r.width, r.height));
+  }, []);
+  // Latest nodes for fitAll without re-binding key handlers.
+  const nodesRef = useRef(project.nodes);
+  nodesRef.current = project.nodes;
 
   // Capture the pointer on the VIEWPORT root (where pointermove/up/leave are
   // bound), not on the event target. Capturing on a node header instead would
@@ -93,17 +155,42 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onResizeN
     capturedPointerRef.current = pointerId;
   };
 
-  // Background drag = pan. Starts only on empty canvas (not on a node header,
-  // which calls startNodeDrag and stops propagation).
-  const onBackgroundPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
+  // Whether the space bar is held — enables pan-from-anywhere (even over a node),
+  // for when nodes are dense and there's no empty canvas to grab.
+  const spaceHeldRef = useRef(false);
+  // Mirror to state purely so the cursor flips to the grab hand while Space is held.
+  const [spaceHeld, setSpaceHeld] = useState(false);
+
+  // Pan is INTENTIONAL only: Space+left (the "小手") or middle button. A bare
+  // left-drag on empty canvas no longer pans — it would otherwise fight the user
+  // trying to interact with an AI pane. The cursor shows a grab hand only while
+  // Space is held (see data-spacepan on the root).
+  const wantsPan = (e: React.PointerEvent) => e.button === 1 || (e.button === 0 && spaceHeldRef.current);
+  const startPan = (e: React.PointerEvent) => {
     setPanning(true);
     panLastRef.current = { x: e.clientX, y: e.clientY };
-    setFocusedNodeId(null); // clicking empty space exits focus mode
+    setFocusedNodeId(null); // panning empties focus
     captureOnViewport(e.pointerId);
+  };
+  const onBackgroundPointerDown = (e: React.PointerEvent) => {
+    if (wantsPan(e)) {
+      e.preventDefault();
+      startPan(e);
+    }
+    // No bare-left pan: empty-canvas left-click just deselects.
+    else if (e.button === 0) setFocusedNodeId(null);
   };
 
   const startNodeDrag = (nodeId: string, e: React.PointerEvent) => {
+    // Space/middle = pan even when starting over a node header.
+    if (wantsPan(e)) {
+      e.preventDefault();
+      startPan(e);
+      return;
+    }
+    // Node dragging only in 「编辑布局」 mode. Otherwise the header click does
+    // nothing canvas-side (the pane/iframe handles its own UI).
+    if (!layoutEdit) return;
     e.stopPropagation();
     if (e.button !== 0) return;
     const node = project.nodes.find(n => n.id === nodeId);
@@ -136,8 +223,8 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onResizeN
       return;
     }
     if (resizeRef.current) {
-      // Resize in logical units: convert the pointer to logical space and add the
-      // delta from gesture start to the node's start size (resizeNode clamps min).
+      // Resize in logical units: pointer delta from gesture start added to the
+      // node's start size (resizeNode clamps the minimum).
       const r = resizeRef.current;
       const lp = screenToLogical(localPoint(e.clientX, e.clientY), vpRef.current);
       onResizeNode(r.nodeId, r.startW + (lp.x - r.startX), r.startH + (lp.y - r.startY));
@@ -179,6 +266,39 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onResizeN
     }
   }, [project.nodes, onSetViewport, focusedNodeId]);
 
+  // jumpToNode always centers + highlights a node (no toggle-off), for the card
+  // locator list. At least 100% zoom so the landed card is actually readable.
+  const jumpToNode = useCallback((nodeId: string) => {
+    const node = project.nodes.find(n => n.id === nodeId);
+    if (!node || !rootRef.current) return;
+    const r = rootRef.current.getBoundingClientRect();
+    onSetViewport(centerOnNode(node, r.width, r.height, Math.max(1, vpRef.current.zoom)));
+    setFocusedNodeId(nodeId);
+    setCardListOpen(false);
+  }, [project.nodes, onSetViewport]);
+
+  // Header size-preset / maximize. A preset sets an explicit w/h; maximize fits
+  // the node to the visible viewport (in logical units) then centers it.
+  const resizeNodeTo = useCallback((nodeId: string, w: number, h: number) => {
+    onResizeNode(nodeId, w, h);
+  }, [onResizeNode]);
+  const maximizeNode = useCallback((nodeId: string) => {
+    const r = rootRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const z = vpRef.current.zoom;
+    const w = (r.width - 80) / z;
+    const h = (r.height - 80) / z;
+    onResizeNode(nodeId, w, h);
+    // Center it after the size change lands; read the fresh size next frame.
+    requestAnimationFrame(() => {
+      const node = nodesRef.current.find(n => n.id === nodeId);
+      if (node && rootRef.current) {
+        const rr = rootRef.current.getBoundingClientRect();
+        onSetViewport(centerOnNode(node, rr.width, rr.height, vpRef.current.zoom));
+      }
+    });
+  }, [onResizeNode, onSetViewport]);
+
   // Focus-by-agent from the drawer: find the node carrying that agent id.
   useEffect(() => {
     const onFocusAgent = (e: Event) => {
@@ -190,11 +310,50 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onResizeN
     return () => window.removeEventListener('piercode-hub-focus-agent', onFocusAgent);
   }, [project.nodes, focusNode]);
 
+  // Keyboard: +/= zoom in, -/_ zoom out, 0 reset, F fit-all, Esc exit focus,
+  // Del/Backspace close focused node, Space (held) = temporary pan mode. Ignored
+  // while typing in an input/textarea/contenteditable (e.g. inside an iframe pane
+  // the events don't bubble here anyway, but guard the Hub's own fields).
+  useEffect(() => {
+    const isTyping = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        if (isTyping(e.target)) return; // let space type in a field
+        e.preventDefault();             // stop page from scrolling
+        spaceHeldRef.current = true;
+        setSpaceHeld(true);
+        return;
+      }
+      if (isTyping(e.target)) return;
+      switch (e.key) {
+        case '+': case '=': e.preventDefault(); zoomByStep(true); break;
+        case '-': case '_': e.preventDefault(); zoomByStep(false); break;
+        case '0': e.preventDefault(); resetZoom(); break;
+        case 'f': case 'F': e.preventDefault(); fitAll(); break;
+        case 'Escape': setFocusedNodeId(null); break;
+        case 'Delete': case 'Backspace':
+          if (focusedNodeId) { e.preventDefault(); onCloseNode(focusedNodeId); setFocusedNodeId(null); }
+          break;
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => { if (e.code === 'Space') { spaceHeldRef.current = false; setSpaceHeld(false); } };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
+  }, [zoomByStep, resetZoom, fitAll, focusedNodeId, onCloseNode]);
+
   return (
     <div
       ref={rootRef}
       className="canvas-viewport"
       data-panning={panning}
+      data-spacepan={spaceHeld}
+      data-layoutedit={layoutEdit}
       onPointerDown={onBackgroundPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endGesture}
@@ -209,12 +368,15 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onResizeN
         {project.nodes.map((node: CanvasNode) => (
           <CanvasNodeCard
             key={node.id}
+            onStartResize={startNodeResize}
+            onResizeTo={resizeNodeTo}
+            onMaximize={maximizeNode}
+            onContentZoom={onContentZoom}
             node={node}
             status={node.agentId ? statusByAgentId[node.agentId] : undefined}
             focused={focusedNodeId === node.id}
             gesturing={gesturing}
             onStartDrag={startNodeDrag}
-            onStartResize={startNodeResize}
             onFocus={focusNode}
             onClose={onCloseNode}
           />
@@ -222,6 +384,48 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onResizeN
       </div>
       {project.nodes.length === 0 && (
         <div className="canvas-empty">用上方「+ AI」添加一个主 agent</div>
+      )}
+
+      {/* Zoom + card-locator controls — fixed overlay, outside the canvas-world
+          transform and above iframe compositing layers. */}
+      <div className="canvas-zoom" onPointerDown={e => e.stopPropagation()}>
+        <button className="cz-btn" title="缩小 (−)" onClick={() => zoomByStep(false)}>−</button>
+        <button className="cz-pct" title="重置为 100% (0)" onClick={resetZoom}>{Math.round(vp.zoom * 100)}%</button>
+        <button className="cz-btn" title="放大 (+)" onClick={() => zoomByStep(true)}>＋</button>
+        <button className="cz-fit" title="适应全部 (F)" onClick={fitAll}>适应</button>
+        <button
+          className="cz-fit"
+          title="定位卡片"
+          data-active={cardListOpen}
+          onClick={() => setCardListOpen(v => !v)}
+        >⌖ 卡片</button>
+      </div>
+
+      {cardListOpen && (
+        <div className="canvas-locator" onPointerDown={e => e.stopPropagation()}>
+          <div className="canvas-locator-head">
+            <span>卡片定位</span>
+            <button title="全部框回 (F)" onClick={() => { fitAll(); setCardListOpen(false); }}>适应全部</button>
+          </div>
+          {project.nodes.length === 0 ? (
+            <div className="canvas-locator-empty">还没有卡片</div>
+          ) : (
+            <ul className="canvas-locator-list">
+              {project.nodes.map(n => {
+                const label = PROVIDERS_BY_ID[n.providerId]?.label ?? n.providerId;
+                const sub = n.agentId ? n.agentId.slice(0, 8) : (n.parentNodeId ? '子节点' : '主');
+                return (
+                  <li key={n.id}>
+                    <button onClick={() => jumpToNode(n.id)} data-focused={focusedNodeId === n.id}>
+                      <span className="cl-name">{label}</span>
+                      <span className="cl-sub">{sub}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   );
