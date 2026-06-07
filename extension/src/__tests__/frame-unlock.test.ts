@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { AI_FRAME_HOSTS, buildFrameUnlockRules } from '../background/frame-unlock';
+import { AI_FRAME_HOSTS, buildFrameContentScriptMatches, buildFrameUnlockRules } from '../background/frame-unlock';
+import manifest from '../../public/manifest.json';
 
 describe('buildFrameUnlockRules', () => {
   const EXT = 'abcdefghijklmnopabcdefghijklmnop'; // extension hostname (id)
@@ -51,6 +52,26 @@ describe('buildFrameUnlockRules', () => {
     expect(ff.condition.domains).toEqual([EXT]);
     const [modern] = buildFrameUnlockRules(['claude.ai'], EXT, 130);
     expect(modern.condition.domains).toBeUndefined();
+  });
+
+  it('emits apex + subdomain content-script matches for every host', () => {
+    const matches = buildFrameContentScriptMatches(['claude.ai', 'kimi.com']);
+    expect(matches).toContain('*://claude.ai/*');
+    expect(matches).toContain('*://*.claude.ai/*');
+    expect(matches).toContain('*://kimi.com/*');
+    expect(matches).toContain('*://*.kimi.com/*');
+  });
+
+  // Regression: chrome.scripting.registerContentScripts rejects the WHOLE call
+  // (registering nothing) if any match pattern is not covered by manifest
+  // host_permissions. An uncovered pattern means Hub iframes get no content
+  // script and so NO tool-card detection at all. Every generated match must be
+  // a manifest host_permissions entry.
+  it('SECURITY/CORRECTNESS: every frame content-script match is granted in manifest host_permissions', () => {
+    const perms = new Set(manifest.host_permissions as string[]);
+    const matches = buildFrameContentScriptMatches(AI_FRAME_HOSTS);
+    const uncovered = matches.filter(m => !perms.has(m));
+    expect(uncovered).toEqual([]);
   });
 
   it('AI_FRAME_HOSTS lists the bare hostnames of supported sites', () => {

@@ -86,6 +86,28 @@ export function buildFrameUnlockRules(
   });
 }
 
+// buildFrameContentScriptMatches builds the match patterns for registering the
+// operator content scripts into the embedded AI frames. For each bare host it
+// emits BOTH the apex form (`*://host/*`) and the subdomain form (`*://*.host/*`)
+// because an iframe may load either the apex (e.g. gemini.google.com) or a
+// subdomain (e.g. www.kimi.com).
+//
+// CRITICAL: chrome.scripting.registerContentScripts validates EVERY match
+// pattern against the manifest host_permissions and rejects the WHOLE call —
+// registering nothing — if even one pattern is uncovered. So every pattern this
+// returns MUST be covered by a manifest host_permissions entry, or all Hub
+// iframes silently get no content script (no tool-card detection at all). Keep
+// manifest host_permissions in sync: each AI_FRAME_HOSTS host needs both
+// `*://host/*` and `*://*.host/*` granted.
+export function buildFrameContentScriptMatches(aiHosts: string[]): string[] {
+  const out: string[] = [];
+  for (const h of aiHosts) {
+    out.push(`*://${h}/*`);
+    out.push(`*://*.${h}/*`);
+  }
+  return out;
+}
+
 // browserMajorVersion parses the major version from a UA string. 0 = unknown
 // (callers treat that as "modern", so the legacy Firefox path is opt-in only).
 export function browserMajorVersion(ua: string): number {
@@ -123,7 +145,7 @@ export async function applyFrameUnlock(aiHosts: string[] = AI_FRAME_HOSTS): Prom
   // Inject the existing operating scripts into the embedded AI frames. page-bridge
   // runs in MAIN world at document_start (the early visibility/editor shim);
   // content.js runs in the isolated world at document_idle (the operator).
-  const matches = aiHosts.map(h => `*://*.${h}/*`).concat(aiHosts.map(h => `*://${h}/*`));
+  const matches = buildFrameContentScriptMatches(aiHosts);
   try {
     const old = await chrome.scripting.getRegisteredContentScripts({ ids: ['piercode-hub-bridge', 'piercode-hub-content'] });
     if (old.length) await chrome.scripting.unregisterContentScripts({ ids: old.map(s => s.id) });
