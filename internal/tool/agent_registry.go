@@ -320,6 +320,57 @@ func (r *AgentRegistry) SetStatus(agentID string, status AgentStatus) bool {
 	return true
 }
 
+// ActiveByDispatcher returns the still-running/pending agents a dispatcher has
+// out, as "<id> (<desc>) [status]" lines, plus a count. spawn_agent appends this
+// to its result so the coordinator SEES what it already has out and stops opening
+// duplicate workers (it otherwise has no memory of prior spawns across turns).
+func (r *AgentRegistry) ActiveByDispatcher(dispatcherClientID string) (lines []string, count int) {
+	dispatcherClientID = strings.TrimSpace(dispatcherClientID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rec := range r.agents {
+		if dispatcherClientID != "" && rec.DispatcherClientID != dispatcherClientID {
+			continue
+		}
+		if rec.Status != AgentPending && rec.Status != AgentRunning {
+			continue
+		}
+		desc := rec.Description
+		if desc == "" {
+			desc = "(no description)"
+		}
+		lines = append(lines, fmt.Sprintf("%s (%s) [%s]", rec.AgentID, desc, rec.Status))
+		count++
+	}
+	return lines, count
+}
+
+// HasActiveWithDescription reports whether the dispatcher already has a live
+// (pending/running) worker whose description matches (case-insensitive trim).
+// spawn_agent warns on a match so the coordinator doesn't fan out duplicates of
+// the same task.
+func (r *AgentRegistry) HasActiveWithDescription(dispatcherClientID, description string) bool {
+	dispatcherClientID = strings.TrimSpace(dispatcherClientID)
+	want := strings.ToLower(strings.TrimSpace(description))
+	if want == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rec := range r.agents {
+		if dispatcherClientID != "" && rec.DispatcherClientID != dispatcherClientID {
+			continue
+		}
+		if rec.Status != AgentPending && rec.Status != AgentRunning {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(rec.Description)) == want {
+			return true
+		}
+	}
+	return false
+}
+
 // Delete removes an agent record outright. Returns false if it was unknown.
 // Called when the user closes a worker pane (the record has no value once its
 // tab is gone) so the registry does not grow without bound.

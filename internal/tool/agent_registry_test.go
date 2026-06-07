@@ -172,6 +172,44 @@ func TestAgentSummaryExposesLastResult(t *testing.T) {
 	}
 }
 
+func TestAgentRegistryActiveByDispatcher(t *testing.T) {
+	r := NewAgentRegistry()
+	a := r.Create("d1", "", "qwen", "", "research", "t")
+	r.BindWorker(a.AgentID, "w1") // running
+	r.Create("d1", "", "qwen", "", "pending one", "t") // pending
+	done := r.Create("d1", "", "qwen", "", "old", "t")
+	r.RecordResult(done.AgentID, "completed", "x") // terminal → excluded
+	r.Create("d2", "", "qwen", "", "other dispatcher", "t")
+
+	lines, count := r.ActiveByDispatcher("d1")
+	if count != 2 {
+		t.Fatalf("d1 should have 2 active (running+pending), got %d (%v)", count, lines)
+	}
+	if _, c := r.ActiveByDispatcher("d2"); c != 1 {
+		t.Fatalf("d2 should have 1 active, got %d", c)
+	}
+}
+
+func TestAgentRegistryHasActiveWithDescription(t *testing.T) {
+	r := NewAgentRegistry()
+	a := r.Create("d1", "", "qwen", "", "Fix Login Bug", "t")
+	r.BindWorker(a.AgentID, "w1")
+	if !r.HasActiveWithDescription("d1", "fix login bug") { // case-insensitive
+		t.Error("should match a live worker's description case-insensitively")
+	}
+	if r.HasActiveWithDescription("d1", "something else") {
+		t.Error("should not match a different description")
+	}
+	if r.HasActiveWithDescription("d2", "fix login bug") {
+		t.Error("should be scoped to the dispatcher")
+	}
+	// Terminal worker no longer counts as active.
+	r.RecordResult(a.AgentID, "completed", "x")
+	if r.HasActiveWithDescription("d1", "fix login bug") {
+		t.Error("a completed worker must not count as active")
+	}
+}
+
 func TestAgentRegistryDelete(t *testing.T) {
 	r := NewAgentRegistry()
 	rec := r.Create("d", "", "qwen", "", "x", "t")

@@ -113,6 +113,14 @@ func NewSpawnAgentTool() Tool {
 				}
 			}
 
+			// Warn (don't block) if the coordinator already has a live worker on the
+			// same task — it has no cross-turn memory of prior spawns and otherwise
+			// fans out duplicates.
+			dupWarn := ""
+			if ctx.Agents.HasActiveWithDescription(ctx.SourceClientID, desc) {
+				dupWarn = fmt.Sprintf("\n⚠️ 你已有一个在跑的 worker 描述同为 %q —— 确认不是重复派发，别开多个。", desc)
+			}
+
 			rec := ctx.Agents.CreateInProject(ctx.SourceClientID, ctx.ConversationURL, platform, "", desc, task, parentAgentID, projectID)
 
 			// Prefer the Hub workspace: when its page is connected and the platform
@@ -124,14 +132,24 @@ func NewSpawnAgentTool() Tool {
 				if ctx.HubAddPane != nil {
 					ctx.HubAddPane(rec.AgentID, parentAgentID, platform, desc)
 					return fmt.Sprintf(
-						"Dispatched worker %s on %s into the Hub workspace: %s\nThe worker runs in a Hub pane and reports back as a <task-notification>. Do not poll or read its pane — end your turn and wait for the callback.",
-						rec.AgentID, platform, desc,
+						"Dispatched worker %s on %s into the Hub workspace: %s\nThe worker runs in a Hub pane and reports back as a <task-notification>. Do not poll or read its pane — end your turn and wait for the callback.%s%s",
+						rec.AgentID, platform, desc, dupWarn, activeRosterSuffix(ctx.Agents, ctx.SourceClientID),
 					), nil
 				}
 			}
 
 			// Fallback: Hub not open (or platform not Hub-embeddable). Open a
-			// standalone worker tab, the original behavior.
+			// standalone worker tab, the original behavior. Surface WHY so a user who
+			// expected a Hub pane can diagnose (Hub tab closed / not connected, or the
+			// platform isn't one the Hub can embed).
+			hubOnline := ctx.HubOnline != nil && ctx.HubOnline()
+			var fallbackReason string
+			if !hubOnline {
+				fallbackReason = "（Hub 工作台未连接，已开独立标签；打开/刷新 Hub 页后再 spawn 会进画布面板）"
+			} else if !hubEmbeddablePlatforms[strings.ToLower(platform)] {
+				fallbackReason = fmt.Sprintf("（平台 %s 不在 Hub 可嵌入列表，已开独立标签）", platform)
+			}
+
 			workerURL, err := resolvePlatformURL(platform, rec.AgentID)
 			if err != nil {
 				ctx.Agents.SetStatus(rec.AgentID, AgentFailed)
@@ -145,11 +163,25 @@ func NewSpawnAgentTool() Tool {
 			}
 
 			return fmt.Sprintf(
-				"Dispatched worker %s on %s (tab %d): %s\nThe worker will run autonomously and report back as a <task-notification>. Do not poll or read its tab — end your turn and wait for the callback.",
-				rec.AgentID, platform, tab.TabID, desc,
+				"Dispatched worker %s on %s (tab %d): %s%s\nThe worker will run autonomously and report back as a <task-notification>. Do not poll or read its tab — end your turn and wait for the callback.%s%s",
+				rec.AgentID, platform, tab.TabID, desc, fallbackReason, dupWarn, activeRosterSuffix(ctx.Agents, ctx.SourceClientID),
 			), nil
 		},
 	}
+}
+
+// activeRosterSuffix renders the coordinator's currently-live workers so each
+// spawn_agent reply reminds it what it already has out (it has no cross-turn
+// memory). Empty when only this just-spawned worker is live.
+func activeRosterSuffix(agents *AgentRegistry, dispatcherClientID string) string {
+	if agents == nil {
+		return ""
+	}
+	lines, count := agents.ActiveByDispatcher(dispatcherClientID)
+	if count <= 1 {
+		return ""
+	}
+	return fmt.Sprintf("\n\n你当前活跃的 worker（%d 个，别重复开）:\n- %s", count, strings.Join(lines, "\n- "))
 }
 
 func NewListAgentsTool() Tool {

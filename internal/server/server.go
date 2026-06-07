@@ -332,6 +332,7 @@ func (s *Server) handleStats(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"browser_clients":   s.ws.ClientCount(),
 		"browser_relays":    s.ws.RoleCount("browser-relay"),
+		"hub_clients":       s.ws.RoleCount("hub"),
 		"browser_providers": s.ws.ProviderCounts(),
 		"tasks_total":       totalTasks,
 		"tasks_running":     runningTasks,
@@ -842,6 +843,27 @@ func (s *Server) handleAgentResult(agentID, status, summary, result string) {
 		// grace window keeps the record around long enough to be fetched.
 		log.Printf("[PierCode] agent %q result not pushed (dispatcher %q offline); retained for reconnect\n", agentID, rec.DispatcherClientID)
 	}
+	// Auto-tidy: a worker that reported a terminal result is done — the coordinator
+	// should NOT have to call stop_agent to clean it up. Tell the Hub to close the
+	// worker's pane; the record is left (Sweep prunes it after the grace window) so
+	// the coordinator can still read last_result. Only completed results auto-close;
+	// failed/blocked panes stay so the user can inspect what went wrong.
+	if rec.Status == tool.AgentCompleted {
+		s.broadcastHubRemovePane(rec.AgentID)
+	}
+}
+
+// broadcastHubRemovePane tells the Hub to close a worker's pane (e.g. after the
+// worker finished). No-op when no Hub is connected.
+func (s *Server) broadcastHubRemovePane(agentID string) {
+	if s.ws.RoleCount("hub") == 0 {
+		return
+	}
+	payload, err := json.Marshal(gin.H{"type": "hub_remove_pane", "agent_id": agentID})
+	if err != nil {
+		return
+	}
+	s.ws.SendToRole("hub", payload)
 }
 
 // broadcastAgentsUpdate pushes the current agent roster to the Hub dashboard

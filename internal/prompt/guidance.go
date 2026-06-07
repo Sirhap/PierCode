@@ -15,7 +15,7 @@ const (
 // Reminder content. These strings are part of the prompt contract, so they live
 // in the prompt layer rather than as magic constants inside the executor.
 const (
-	operatingReminder = "\n\n[系统提示] 继续以 PierCode 身份执行：用可见 `piercode-tool` fenced JSON 调本地工具；参数失败先 `tool_help`；需要细则加载匹配 skill；完成前验证。"
+	operatingReminder = "\n\n[系统提示] 继续以 PierCode 身份执行：任何本地文件/命令/代码/搜索任务必须输出可见 `piercode-tool` fenced JSON 调本地工具——不要凭记忆答、不要说“无法访问文件”、不要只给计划；参数失败先 `tool_help`；需要细则加载匹配 skill；完成前验证。（联网/天气这类非本地任务用网页 AI 自带能力答，不走 piercode-tool。）"
 
 	taskCheckpointReminder = "\n\n[任务状态快照提示] 多步任务请简短保留：目标、已完成、已改文件、验证、下一步/阻塞；必要时同步 todo。"
 

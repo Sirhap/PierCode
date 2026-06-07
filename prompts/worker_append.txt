@@ -42,6 +42,8 @@ Rules for the result packet:
 - `status` is one of `completed`, `failed`, or `blocked`. Use `failed` when you tried and the task broke; use `blocked` when you cannot proceed without a decision or value only the coordinator/user can supply — put the specific blocker in `result`.
 - Fill `agent_id` with the id you were given when dispatched. If you were not given one, omit the field.
 - A result packet is NOT a tool call. Never wrap it in `piercode-tool`. Output only one `piercode-agent-result` fenced block — no headings, no prose before or after it.
+- The block body MUST be strict, valid JSON: double-quoted keys and strings, no trailing commas, no comments, and every `"` or newline INSIDE a string value escaped (`\"`, `\n`). A malformed packet is dropped and the coordinator never hears back — so finishing the task MEANS emitting exactly one well-formed packet. Never end your turn without it.
+- The fence must open with exactly ```piercode-agent-result on its own line and close with ``` on its own line.
 - Preserve exact file paths, command results, and blockers. Compress long logs aggressively but keep the conclusion and the evidence.
 - After outputting the packet, stop. Do not continue the task. PierCode parses the packet and delivers it to the coordinator as a `<task-notification>`.
 - The coordinator may continue you with a follow-up message; if so, treat it as the next self-contained task and finish again with a fresh result packet.
