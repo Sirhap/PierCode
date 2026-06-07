@@ -10,7 +10,8 @@ import { PROVIDERS_BY_ID, paneSrc } from '../pane-manager';
 interface CanvasNodeCardProps {
   node: CanvasNode;
   status?: string;       // agent lifecycle status for sub-agent nodes
-  focused: boolean;      // this node is the focused (interactive) one
+  focused: boolean;      // this node is centered/highlighted
+  gesturing: boolean;    // a canvas pan/drag is in progress → raise the shield
   onStartDrag: (nodeId: string, e: React.PointerEvent) => void;
   onFocus: (nodeId: string) => void;
   onClose: (nodeId: string) => void;
@@ -20,10 +21,15 @@ function pane(node: CanvasNode) {
   return { key: node.id, providerId: node.providerId, agentId: node.agentId };
 }
 
-export default function CanvasNodeCard({ node, status, focused, onStartDrag, onFocus, onClose }: CanvasNodeCardProps) {
+export default function CanvasNodeCard({ node, status, focused, gesturing, onStartDrag, onFocus, onClose }: CanvasNodeCardProps) {
   const provider = PROVIDERS_BY_ID[node.providerId];
   const w = node.w || DEFAULT_NODE_W;
   const h = node.h || DEFAULT_NODE_H;
+
+  // Control buttons must not start a drag: the header's onPointerDown would
+  // capture the pointer to the viewport and swallow the button's click. Stop the
+  // pointerdown at the button so the click lands.
+  const stopDrag = (e: React.PointerEvent) => e.stopPropagation();
 
   return (
     <div
@@ -37,23 +43,23 @@ export default function CanvasNodeCard({ node, status, focused, onStartDrag, onF
       <div
         className="canvas-node-head"
         onPointerDown={e => onStartDrag(node.id, e)}
-        onDoubleClick={() => onFocus(node.id)}
       >
         <span className="canvas-node-name">
           {provider?.label ?? node.providerId}
           {node.agentId ? <span className="canvas-node-worker"> · {node.agentId.slice(0, 10)}</span> : null}
         </span>
         <span className="canvas-node-ctrl">
-          <button title={focused ? '退出聚焦' : '聚焦'} onClick={() => onFocus(node.id)}>◎</button>
-          <button title="关闭" onClick={() => onClose(node.id)}>✕</button>
+          <button title={focused ? '已聚焦 · 居中' : '聚焦居中'} onPointerDown={stopDrag} onClick={() => onFocus(node.id)}>◎</button>
+          <button title="关闭" onPointerDown={stopDrag} onClick={() => onClose(node.id)}>✕</button>
         </span>
       </div>
 
       <div className="canvas-node-body">
         <iframe className="canvas-node-frame" src={paneSrc(pane(node))} title={node.id} />
-        {/* Edit-mode shield: blocks iframe interaction so canvas gestures win.
-            Removed when this node is focused. */}
-        {!focused && <div className="canvas-node-shield" onDoubleClick={() => onFocus(node.id)} />}
+        {/* Pointer shield: only up DURING a canvas gesture (pan / node drag) so
+            the gesture isn't swallowed by the iframe. When idle the iframe is
+            directly interactive at any zoom — no focus step needed. */}
+        {gesturing && <div className="canvas-node-shield" />}
       </div>
     </div>
   );

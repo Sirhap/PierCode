@@ -31,16 +31,33 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [panning, setPanning] = useState(false);
   const dragRef = useRef<DragState | null>(null);
+  // draggingNodeId mirrors dragRef as state so node cards re-render and raise
+  // their pointer shield only WHILE a drag is in progress.
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const panLastRef = useRef<{ x: number; y: number } | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+
+  // The iframe shield is up only during an active canvas gesture (pan or node
+  // drag), so the gesture isn't swallowed by an iframe. When idle, iframes are
+  // directly interactive at any zoom — no "focus" step needed to use the input.
+  const gesturing = panning || draggingNodeId !== null;
 
   const localPoint = useCallback((clientX: number, clientY: number) => {
     const rect = rootRef.current?.getBoundingClientRect();
     return { x: clientX - (rect?.left ?? 0), y: clientY - (rect?.top ?? 0) };
   }, []);
 
-  // Wheel zoom anchored at the cursor. Bound as a non-passive native listener so
-  // preventDefault stops the page from scrolling.
+  // Latest viewport + setter for the wheel/pointer handlers, so they read the
+  // current value without re-binding the listener on every change. Re-binding the
+  // wheel listener each frame (the old [vp] dep) dropped fast scroll events
+  // between unbind and rebind, which made zoom feel jumpy/unresponsive.
+  const vpRef = useRef(vp);
+  vpRef.current = vp;
+  const setVpRef = useRef(onSetViewport);
+  setVpRef.current = onSetViewport;
+
+  // Wheel zoom anchored at the cursor. Bound ONCE as a non-passive native
+  // listener (preventDefault stops the page from scrolling).
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
@@ -48,11 +65,11 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
       e.preventDefault();
       const anchor = localPoint(e.clientX, e.clientY);
       const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-      onSetViewport(zoomAtPoint(vp, factor, anchor));
+      setVpRef.current(zoomAtPoint(vpRef.current, factor, anchor));
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [vp, localPoint, onSetViewport]);
+  }, [localPoint]);
 
   // Capture the pointer on the VIEWPORT root (where pointermove/up/leave are
   // bound), not on the event target. Capturing on a node header instead would
@@ -79,15 +96,19 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
     if (e.button !== 0) return;
     const node = project.nodes.find(n => n.id === nodeId);
     if (!node) return;
-    const lp = screenToLogical(localPoint(e.clientX, e.clientY), vp);
+    const lp = screenToLogical(localPoint(e.clientX, e.clientY), vpRef.current);
     dragRef.current = { nodeId, offsetX: lp.x - node.x, offsetY: lp.y - node.y };
+    setDraggingNodeId(nodeId);
     captureOnViewport(e.pointerId);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
+    // Use vpRef (latest) not the render-closure vp: a continuous gesture fires
+    // many moves before React re-renders, so the closure value would be stale and
+    // the node/pan would drift.
     if (dragRef.current) {
       const d = dragRef.current;
-      const lp = screenToLogical(localPoint(e.clientX, e.clientY), vp);
+      const lp = screenToLogical(localPoint(e.clientX, e.clientY), vpRef.current);
       onMoveNode(d.nodeId, Math.round(lp.x - d.offsetX), Math.round(lp.y - d.offsetY));
       return;
     }
@@ -95,7 +116,7 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
       const dx = e.clientX - panLastRef.current.x;
       const dy = e.clientY - panLastRef.current.y;
       panLastRef.current = { x: e.clientX, y: e.clientY };
-      onSetViewport(panBy(vp, dx, dy));
+      setVpRef.current(panBy(vpRef.current, dx, dy));
     }
   };
 
@@ -103,6 +124,7 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
     dragRef.current = null;
     panLastRef.current = null;
     setPanning(false);
+    setDraggingNodeId(null);
     if (capturedPointerRef.current !== null) {
       try { rootRef.current?.releasePointerCapture?.(capturedPointerRef.current); } catch { /* already released */ }
       capturedPointerRef.current = null;
@@ -156,6 +178,7 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
             node={node}
             status={node.agentId ? statusByAgentId[node.agentId] : undefined}
             focused={focusedNodeId === node.id}
+            gesturing={gesturing}
             onStartDrag={startNodeDrag}
             onFocus={focusNode}
             onClose={onCloseNode}
