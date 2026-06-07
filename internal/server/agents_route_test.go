@@ -65,9 +65,10 @@ func TestHandleAgentControlStop(t *testing.T) {
 
 	s.handleAgentControl("stop", rec.AgentID)
 
-	got, ok := reg.Get(rec.AgentID)
-	if !ok || got.Status != tool.AgentStopped {
-		t.Fatalf("stop should set status stopped, got %+v", got)
+	// Stop comes from closing the worker pane in the Hub: after stopping, the
+	// record is deleted so the registry doesn't keep a dead agent around.
+	if _, ok := reg.Get(rec.AgentID); ok {
+		t.Fatal("stop should delete the agent record (pane closed)")
 	}
 }
 

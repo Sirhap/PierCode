@@ -15,6 +15,7 @@ interface CanvasProps {
   project: Project;
   statusByAgentId: Record<string, string>;
   onMoveNode: (nodeId: string, x: number, y: number) => void;
+  onResizeNode: (nodeId: string, w: number, h: number) => void;
   onSetViewport: (vp: Viewport) => void;
   onCloseNode: (nodeId: string) => void;
 }
@@ -26,21 +27,32 @@ interface DragState {
   offsetY: number;
 }
 
-export default function Canvas({ project, statusByAgentId, onMoveNode, onSetViewport, onCloseNode }: CanvasProps) {
+interface ResizeState {
+  nodeId: string;
+  // logical pointer start + node start size, so resize is relative (no jump)
+  startX: number;
+  startY: number;
+  startW: number;
+  startH: number;
+}
+
+export default function Canvas({ project, statusByAgentId, onMoveNode, onResizeNode, onSetViewport, onCloseNode }: CanvasProps) {
   const vp = project.viewport;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [panning, setPanning] = useState(false);
   const dragRef = useRef<DragState | null>(null);
-  // draggingNodeId mirrors dragRef as state so node cards re-render and raise
-  // their pointer shield only WHILE a drag is in progress.
+  const resizeRef = useRef<ResizeState | null>(null);
+  // draggingNodeId / resizingNodeId mirror the refs as state so node cards
+  // re-render and raise their pointer shield only WHILE a gesture is in progress.
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
+  const [resizingNodeId, setResizingNodeId] = useState<string | null>(null);
   const panLastRef = useRef<{ x: number; y: number } | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
 
-  // The iframe shield is up only during an active canvas gesture (pan or node
-  // drag), so the gesture isn't swallowed by an iframe. When idle, iframes are
-  // directly interactive at any zoom — no "focus" step needed to use the input.
-  const gesturing = panning || draggingNodeId !== null;
+  // The iframe shield is up only during an active canvas gesture (pan / node
+  // drag / resize), so the gesture isn't swallowed by an iframe. When idle,
+  // iframes are directly interactive at any zoom — no "focus" step needed.
+  const gesturing = panning || draggingNodeId !== null || resizingNodeId !== null;
 
   const localPoint = useCallback((clientX: number, clientY: number) => {
     const rect = rootRef.current?.getBoundingClientRect();
@@ -102,6 +114,17 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
     captureOnViewport(e.pointerId);
   };
 
+  const startNodeResize = (nodeId: string, e: React.PointerEvent) => {
+    e.stopPropagation();
+    if (e.button !== 0) return;
+    const node = project.nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    const lp = screenToLogical(localPoint(e.clientX, e.clientY), vpRef.current);
+    resizeRef.current = { nodeId, startX: lp.x, startY: lp.y, startW: node.w, startH: node.h };
+    setResizingNodeId(nodeId);
+    captureOnViewport(e.pointerId);
+  };
+
   const onPointerMove = (e: React.PointerEvent) => {
     // Use vpRef (latest) not the render-closure vp: a continuous gesture fires
     // many moves before React re-renders, so the closure value would be stale and
@@ -110,6 +133,14 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
       const d = dragRef.current;
       const lp = screenToLogical(localPoint(e.clientX, e.clientY), vpRef.current);
       onMoveNode(d.nodeId, Math.round(lp.x - d.offsetX), Math.round(lp.y - d.offsetY));
+      return;
+    }
+    if (resizeRef.current) {
+      // Resize in logical units: convert the pointer to logical space and add the
+      // delta from gesture start to the node's start size (resizeNode clamps min).
+      const r = resizeRef.current;
+      const lp = screenToLogical(localPoint(e.clientX, e.clientY), vpRef.current);
+      onResizeNode(r.nodeId, r.startW + (lp.x - r.startX), r.startH + (lp.y - r.startY));
       return;
     }
     if (panning && panLastRef.current) {
@@ -122,9 +153,11 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
 
   const endGesture = () => {
     dragRef.current = null;
+    resizeRef.current = null;
     panLastRef.current = null;
     setPanning(false);
     setDraggingNodeId(null);
+    setResizingNodeId(null);
     if (capturedPointerRef.current !== null) {
       try { rootRef.current?.releasePointerCapture?.(capturedPointerRef.current); } catch { /* already released */ }
       capturedPointerRef.current = null;
@@ -166,6 +199,7 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
       onPointerMove={onPointerMove}
       onPointerUp={endGesture}
       onPointerLeave={endGesture}
+      onPointerCancel={endGesture}
     >
       <div
         className="canvas-world"
@@ -180,6 +214,7 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
             focused={focusedNodeId === node.id}
             gesturing={gesturing}
             onStartDrag={startNodeDrag}
+            onStartResize={startNodeResize}
             onFocus={focusNode}
             onClose={onCloseNode}
           />

@@ -81,6 +81,9 @@ export class HubWsClient {
   private reconnectTimer: number | null = null;
   private closed = false;
   private readonly id = hubClientId();
+  // Kept so stop() can remove the storage listener; otherwise repeated
+  // start()/stop() cycles would leak a listener (and a connect) each time.
+  private storageListener: ((changes: { [k: string]: chrome.storage.StorageChange }, namespace: string) => void) | null = null;
 
   constructor(private handlers: HubWsHandlers) {}
 
@@ -89,11 +92,12 @@ export class HubWsClient {
     void this.connect();
     // Reconnect when auth is configured/changed after the Hub opened.
     try {
-      chrome.storage.onChanged.addListener((changes, namespace) => {
+      this.storageListener = (changes, namespace) => {
         if (namespace === 'local' && (changes.apiUrl || changes.authToken || changes.authPort)) {
           void this.connect();
         }
-      });
+      };
+      chrome.storage.onChanged.addListener(this.storageListener);
     } catch {
       // storage events unavailable; the poll fallback still works.
     }
@@ -101,6 +105,10 @@ export class HubWsClient {
 
   stop(): void {
     this.closed = true;
+    if (this.storageListener) {
+      try { chrome.storage.onChanged.removeListener(this.storageListener); } catch { /* unavailable */ }
+      this.storageListener = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

@@ -43,7 +43,19 @@ type Server struct {
 	// SetLogSink calls don't fan every chunk out N times.
 	tuiUnsubChunk func()
 	tuiUnsubDone  func()
+
+	// stop signals background goroutines (e.g. the agent-registry sweeper) to exit;
+	// closed once in Close().
+	stop chan struct{}
 }
+
+const (
+	// agentSweepInterval is how often the registry is swept for dead agents.
+	agentSweepInterval = 10 * time.Minute
+	// agentSweepMaxAge is the grace window a finished agent's record is kept after
+	// it ends, so a reconnecting dispatcher can still fetch its last_result.
+	agentSweepMaxAge = 30 * time.Minute
+)
 
 func New(config *types.Config) *Server {
 	gin.SetMode(gin.ReleaseMode)
@@ -58,6 +70,7 @@ func New(config *types.Config) *Server {
 		router:   router,
 		executor: executor.New(config),
 		ws:       ws,
+		stop:     make(chan struct{}),
 	}
 	relay := browser.NewRelayManager(func(payload []byte) bool {
 		return ws.SendToRole("browser-relay", payload)
@@ -145,7 +158,32 @@ func New(config *types.Config) *Server {
 	}
 
 	s.setupRoutes()
+	s.startAgentSweeper()
 	return s
+}
+
+// startAgentSweeper periodically prunes finished agent records so the registry
+// does not grow without bound over a long-running session. Exits on Close().
+func (s *Server) startAgentSweeper() {
+	go func() {
+		ticker := time.NewTicker(agentSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.stop:
+				return
+			case <-ticker.C:
+				if s.executor == nil {
+					continue
+				}
+				if reg := s.executor.Agents(); reg != nil {
+					if n := reg.Sweep(agentSweepMaxAge); n > 0 {
+						log.Printf("[PierCode] swept %d finished agent record(s)\n", n)
+					}
+				}
+			}
+		}
+	}()
 }
 
 func (s *Server) setupRoutes() {
@@ -798,7 +836,11 @@ func (s *Server) handleAgentResult(agentID, status, summary, result string) {
 		return
 	}
 	if !s.ws.SendToID(rec.DispatcherClientID, payload) {
-		log.Printf("[PierCode] failed to deliver agent %q result to dispatcher %q\n", agentID, rec.DispatcherClientID)
+		// Dispatcher tab is offline (backgrounded / MV3 SW asleep / closed). The
+		// result is NOT lost: RecordResult stored it as LastResult, surfaced in the
+		// /agents summary, so the dispatcher can read it on reconnect. Sweep's
+		// grace window keeps the record around long enough to be fetched.
+		log.Printf("[PierCode] agent %q result not pushed (dispatcher %q offline); retained for reconnect\n", agentID, rec.DispatcherClientID)
 	}
 }
 
@@ -840,9 +882,11 @@ func (s *Server) handleAgentControl(action, agentID string) {
 	}
 	switch action {
 	case "stop":
-		// Mark the agent stopped. The worker pane stays open (the user closes it
-		// with the Hub ✕); stop only flips the lifecycle state.
+		// Mark the agent stopped, then drop the record. The Hub closes a worker
+		// pane by sending stop (App.onCloseNode), so once stopped the record has
+		// no further use; deleting it keeps the registry from growing unbounded.
 		registry.SetStatus(agentID, tool.AgentStopped)
+		registry.Delete(agentID)
 	case "retry":
 		rec, ok := registry.Get(agentID)
 		if !ok {
@@ -982,6 +1026,13 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) Close() {
+	if s.stop != nil {
+		select {
+		case <-s.stop: // already closed
+		default:
+			close(s.stop)
+		}
+	}
 	if s.ws != nil {
 		s.ws.Close()
 	}

@@ -141,6 +141,36 @@ export function moveNode(projects: Project[], projectId: string, nodeId: string,
   }));
 }
 
+// resizeNode sets a node's logical width/height (clamped to a sane minimum so a
+// pane can't be shrunk to nothing). Used by the node card's resize handle; w/h
+// are persisted on the node so the layout survives reload.
+const MIN_NODE_W = 240;
+const MIN_NODE_H = 180;
+export function resizeNode(projects: Project[], projectId: string, nodeId: string, w: number, h: number): Project[] {
+  const nw = Math.max(MIN_NODE_W, Math.round(w));
+  const nh = Math.max(MIN_NODE_H, Math.round(h));
+  return mapProject(projects, projectId, p => ({
+    ...p,
+    nodes: p.nodes.map(n => (n.id === nodeId ? { ...n, w: nw, h: nh } : n)),
+  }));
+}
+
+// findNodeByAgentId locates the node carrying an agent id across ALL projects,
+// returning which project + node it lives in (or undefined). The Hub uses it so a
+// spawned worker's pane lands in the project of its PARENT agent — not whichever
+// project the user happens to be viewing when the spawn arrives.
+export function findNodeByAgentId(
+  projects: Project[],
+  agentId: string,
+): { projectId: string; nodeId: string } | undefined {
+  if (!agentId) return undefined;
+  for (const p of projects) {
+    const node = p.nodes.find(n => n.agentId === agentId);
+    if (node) return { projectId: p.id, nodeId: node.id };
+  }
+  return undefined;
+}
+
 export function setViewport(projects: Project[], projectId: string, viewport: Viewport): Project[] {
   return mapProject(projects, projectId, p => ({ ...p, viewport }));
 }

@@ -142,6 +142,14 @@ html, body, #root {
 .canvas-node-shield { position: absolute; inset: 0; background: transparent; cursor: grabbing; }
 /* Control buttons sit above the drag handle and must stay clickable. */
 .canvas-node-ctrl button { position: relative; z-index: 1; }
+/* Resize handle: bottom-right grip, above the iframe so it stays grabbable. */
+.canvas-node-resize {
+  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+  z-index: 2; cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, rgba(137,180,250,.55) 50%);
+  border-bottom-right-radius: 12px;
+}
+.canvas-node-resize:hover { background: linear-gradient(135deg, transparent 50%, rgba(203,166,247,.85) 50%); }
 
 /* Edges */
 .canvas-edges { z-index: 0; }

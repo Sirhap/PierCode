@@ -2648,15 +2648,42 @@ function startDOMObserver(_responseSelector: string) {
     if (!agentId) return false;
     const packet = parseAgentResultPacket(jsonStr);
     if (!packet) return false; // incomplete (streaming / Monaco overflow) or malformed
-    const key = `agent-result:${hashStr(dedupSource)}`;
-    if (processed.has(key)) return true;
+    const reportedId = packet.agentId || agentId;
+    // Dedup by agent id + packet hash, persisted to sessionStorage. The in-memory
+    // `processed` set only lives for one scan pass, so a DOM re-scan or a page
+    // reload would otherwise re-forward (re-run) a packet already sent. The
+    // sessionStorage key survives both within the tab session.
+    const key = `agent-result:${reportedId}:${hashStr(dedupSource)}`;
+    if (processed.has(key) || agentResultAlreadySent(key)) return true;
     processed.add(key);
+    markAgentResultSent(key);
     // Trust the worker's echoed agent_id when present; otherwise fall back to
     // this tab's own id so the server can still route the result.
-    const reportedId = packet.agentId || agentId;
     console.log('[PierCode] worker 回传 result packet:', reportedId, packet.status);
     sendAgentResult(reportedId, packet.status, packet.summary, packet.result);
     return true;
+  }
+
+  // sessionStorage-backed dedup for forwarded result packets. Survives DOM
+  // re-scans / reload within the tab session; falls back to in-memory-only on any
+  // storage failure (sandboxed frame) — the `processed` set still covers the pass.
+  const AGENT_RESULT_SENT_KEY = 'piercode_agent_result_sent';
+  function loadAgentResultSent(): Set<string> {
+    try {
+      const raw = window.sessionStorage.getItem(AGENT_RESULT_SENT_KEY);
+      if (raw) return new Set(JSON.parse(raw) as string[]);
+    } catch { /* unavailable */ }
+    return new Set();
+  }
+  function agentResultAlreadySent(key: string): boolean {
+    return loadAgentResultSent().has(key);
+  }
+  function markAgentResultSent(key: string): void {
+    try {
+      const set = loadAgentResultSent();
+      set.add(key);
+      window.sessionStorage.setItem(AGENT_RESULT_SENT_KEY, JSON.stringify(Array.from(set)));
+    } catch { /* unavailable; in-memory `processed` still dedups this pass */ }
   }
 
   function aiResponseLogKey(sourceEl: Element): string {

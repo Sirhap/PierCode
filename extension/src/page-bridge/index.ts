@@ -25,12 +25,22 @@ const KEEP_ALIVE_HOSTS = [
 function installKeepAliveVisibilityShim(): void {
   const host = location.hostname.toLowerCase();
   if (!KEEP_ALIVE_HOSTS.some(h => host.includes(h))) return;
+  // Only spoof visibility where a tab actually needs to keep generating while not
+  // focused: a Hub iframe pane (a sub-frame) or a worker tab (carries the
+  // ?piercode_agent marker). A normal FOREGROUND tab the user opened directly is
+  // left alone, so the site keeps its own real pause-when-hidden behavior.
+  const isEmbeddedFrame = window.top !== window;
+  const isWorkerTab = /[?&]piercode_agent=/.test(location.search);
+  if (!isEmbeddedFrame && !isWorkerTab) return;
   if ((window as any).__PIERCODE_KEEP_ALIVE_SHIM__) return;
   (window as any).__PIERCODE_KEEP_ALIVE_SHIM__ = true;
 
   const defineGetter = (target: object, prop: string, value: unknown) => {
+    // configurable:false so a site can't redefine the property back to hidden:true
+    // and defeat the shim. Re-defining the same prop then throws, but the shim is
+    // installed once (guarded above) and defineGetter swallows the throw anyway.
     try {
-      Object.defineProperty(target, prop, { configurable: true, get: () => value });
+      Object.defineProperty(target, prop, { configurable: false, get: () => value });
     } catch {}
   };
 

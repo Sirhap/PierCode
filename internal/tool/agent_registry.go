@@ -60,6 +60,7 @@ type AgentSummary struct {
 	BoundAt                   string `json:"bound_at,omitempty"`
 	EndedAt                   string `json:"ended_at,omitempty"`
 	Seeded                    bool   `json:"seeded"`
+	LastResult                string `json:"last_result,omitempty"`
 	LastDebug                 string `json:"last_debug,omitempty"`
 	LastDebugAt               string `json:"last_debug_at,omitempty"`
 	LastAIResponse            string `json:"last_ai_response,omitempty"`
@@ -85,6 +86,9 @@ func (r *AgentRecord) summary() AgentSummary {
 	}
 	if !r.EndedAt.IsZero() {
 		s.EndedAt = r.EndedAt.Format(time.RFC3339)
+	}
+	if r.LastResult != "" {
+		s.LastResult = r.LastResult
 	}
 	if r.LastDebug != "" {
 		s.LastDebug = r.LastDebug
@@ -314,6 +318,47 @@ func (r *AgentRegistry) SetStatus(agentID string, status AgentStatus) bool {
 		rec.EndedAt = time.Now()
 	}
 	return true
+}
+
+// Delete removes an agent record outright. Returns false if it was unknown.
+// Called when the user closes a worker pane (the record has no value once its
+// tab is gone) so the registry does not grow without bound.
+func (r *AgentRegistry) Delete(agentID string) bool {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.agents[agentID]; !ok {
+		return false
+	}
+	delete(r.agents, agentID)
+	return true
+}
+
+// Sweep removes finished agents (completed/failed/blocked/stopped) whose EndedAt
+// is older than maxAge, returning the number removed. A periodic caller keeps the
+// registry from accumulating dead records over a long-running session, while the
+// maxAge grace window lets a reconnecting dispatcher still fetch a recent result.
+func (r *AgentRegistry) Sweep(maxAge time.Duration) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	for id, rec := range r.agents {
+		switch rec.Status {
+		case AgentCompleted, AgentFailed, AgentBlocked, AgentStopped:
+		default:
+			continue // not in a terminal state; keep
+		}
+		if rec.EndedAt.IsZero() || rec.EndedAt.After(cutoff) {
+			continue // no end time, or still within the grace window
+		}
+		delete(r.agents, id)
+		removed++
+	}
+	return removed
 }
 
 // List returns summaries of all agents dispatched by one dispatcher. An empty

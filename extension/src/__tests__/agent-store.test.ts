@@ -3,6 +3,7 @@ import {
   AgentVM,
   mergeSummaries,
   replaceAll,
+  reconcilePoll,
   sortAgents,
   computeStats,
   buildAgentTree,
@@ -33,6 +34,21 @@ describe('agent-store', () => {
     const prevKnown = [vm('a', 'running', 'x'), vm('b', 'running', 'y')];
     // replaceAll only sees the batch; b is gone from the server roster.
     const next = replaceAll([prevKnown[0]]);
+    expect(next.map(a => a.agent_id)).toEqual(['a']);
+  });
+
+  it('reconcilePoll keeps a just-pushed local agent the poll has not indexed yet', () => {
+    const prev = [vm('a', 'running', 'x'), vm('fresh', 'pending', 'z')];
+    // Poll only knows 'a'. 'fresh' was pushed via WS very recently → kept.
+    const keep = reconcilePoll(prev, [vm('a', 'completed', 'x')], a => a.agent_id === 'fresh');
+    expect(keep.map(a => a.agent_id).sort()).toEqual(['a', 'fresh']);
+    // Poll record wins for 'a' (fresher status).
+    expect(keep.find(a => a.agent_id === 'a')!.status).toBe('completed');
+  });
+
+  it('reconcilePoll drops a stale local agent the poll omits', () => {
+    const prev = [vm('a', 'running', 'x'), vm('gone', 'completed', 'z')];
+    const next = reconcilePoll(prev, [vm('a', 'running', 'x')], () => false);
     expect(next.map(a => a.agent_id)).toEqual(['a']);
   });
 

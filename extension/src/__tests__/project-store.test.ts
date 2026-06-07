@@ -7,6 +7,8 @@ import {
   addChildNode,
   removeNode,
   moveNode,
+  resizeNode,
+  findNodeByAgentId,
   migrateLegacyPanes,
   type Project,
 } from '../hub/project-store';
@@ -84,6 +86,32 @@ describe('project-store', () => {
     const { projects, pid, rootId } = withRoot();
     const next = moveNode(projects, pid, rootId, 123, 456);
     expect(next[0].nodes[0]).toMatchObject({ x: 123, y: 456 });
+  });
+
+  it('resizeNode sets width/height and clamps to a minimum', () => {
+    const { projects, pid, rootId } = withRoot();
+    const big = resizeNode(projects, pid, rootId, 600, 500);
+    expect(big[0].nodes[0]).toMatchObject({ w: 600, h: 500 });
+    const tiny = resizeNode(projects, pid, rootId, 10, 10);
+    expect(tiny[0].nodes[0].w).toBeGreaterThanOrEqual(240);
+    expect(tiny[0].nodes[0].h).toBeGreaterThanOrEqual(180);
+  });
+
+  it('findNodeByAgentId locates a node across projects', () => {
+    let projects = [createProject('a'), createProject('b')];
+    const pa = projects[0].id;
+    const pb = projects[1].id;
+    projects = addNode(projects, pa, 'qwen');
+    const paRoot = projects[0].nodes[0].id;
+    projects = projects.map(p => p.id === pa
+      ? { ...p, nodes: p.nodes.map(n => n.id === paRoot ? { ...n, agentId: 'pa' } : n) }
+      : p);
+    projects = addChildNode(projects, pb, { agentId: 'w1', providerId: 'claude' });
+
+    expect(findNodeByAgentId(projects, 'pa')).toEqual({ projectId: pa, nodeId: paRoot });
+    expect(findNodeByAgentId(projects, 'w1')?.projectId).toBe(pb);
+    expect(findNodeByAgentId(projects, 'nope')).toBeUndefined();
+    expect(findNodeByAgentId(projects, '')).toBeUndefined();
   });
 
   it('migrateLegacyPanes folds flat panes into one default project', () => {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestAgentRegistryCreateBindAndResult(t *testing.T) {
@@ -153,6 +154,69 @@ func TestAgentSummaryExposesParentAndProject(t *testing.T) {
 		}
 	}
 	t.Fatal("child summary not found")
+}
+
+func TestAgentSummaryExposesLastResult(t *testing.T) {
+	r := NewAgentRegistry()
+	rec := r.Create("d", "", "qwen", "", "x", "t")
+	r.RecordResult(rec.AgentID, "completed", "the worker's answer")
+	sums := r.List("")
+	if len(sums) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(sums))
+	}
+	if sums[0].LastResult != "the worker's answer" {
+		t.Fatalf("summary should expose last_result for offline-dispatcher recovery, got %q", sums[0].LastResult)
+	}
+	if sums[0].EndedAt == "" {
+		t.Fatal("completed summary should expose ended_at")
+	}
+}
+
+func TestAgentRegistryDelete(t *testing.T) {
+	r := NewAgentRegistry()
+	rec := r.Create("d", "", "qwen", "", "x", "t")
+	if !r.Delete(rec.AgentID) {
+		t.Fatal("Delete should succeed for a known agent")
+	}
+	if _, ok := r.Get(rec.AgentID); ok {
+		t.Fatal("agent should be gone after Delete")
+	}
+	if r.Delete(rec.AgentID) {
+		t.Fatal("Delete on an already-removed agent should be false")
+	}
+	if r.Delete("") {
+		t.Fatal("Delete on empty id should be false")
+	}
+}
+
+func TestAgentRegistrySweep(t *testing.T) {
+	r := NewAgentRegistry()
+	// Terminal + old → swept.
+	old := r.Create("d", "", "qwen", "", "old", "t")
+	r.RecordResult(old.AgentID, "completed", "r")
+	if rec, ok := r.agents[old.AgentID]; ok {
+		rec.EndedAt = time.Now().Add(-time.Hour)
+	}
+	// Terminal but recent → kept (within grace window).
+	recent := r.Create("d", "", "qwen", "", "recent", "t")
+	r.RecordResult(recent.AgentID, "failed", "r") // EndedAt = now
+	// Still running → never swept regardless of age.
+	running := r.Create("d", "", "qwen", "", "running", "t")
+	r.BindWorker(running.AgentID, "w")
+
+	removed := r.Sweep(30 * time.Minute)
+	if removed != 1 {
+		t.Fatalf("Sweep should remove exactly the old terminal agent, removed %d", removed)
+	}
+	if _, ok := r.Get(old.AgentID); ok {
+		t.Error("old terminal agent should be swept")
+	}
+	if _, ok := r.Get(recent.AgentID); !ok {
+		t.Error("recent terminal agent should be kept within grace window")
+	}
+	if _, ok := r.Get(running.AgentID); !ok {
+		t.Error("running agent must never be swept")
+	}
 }
 
 func TestListAgentsTool(t *testing.T) {

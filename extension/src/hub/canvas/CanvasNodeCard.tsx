@@ -13,6 +13,7 @@ interface CanvasNodeCardProps {
   focused: boolean;      // this node is centered/highlighted
   gesturing: boolean;    // a canvas pan/drag is in progress → raise the shield
   onStartDrag: (nodeId: string, e: React.PointerEvent) => void;
+  onStartResize: (nodeId: string, e: React.PointerEvent) => void;
   onFocus: (nodeId: string) => void;
   onClose: (nodeId: string) => void;
 }
@@ -21,7 +22,7 @@ function pane(node: CanvasNode) {
   return { key: node.id, providerId: node.providerId, agentId: node.agentId };
 }
 
-export default function CanvasNodeCard({ node, status, focused, gesturing, onStartDrag, onFocus, onClose }: CanvasNodeCardProps) {
+export default function CanvasNodeCard({ node, status, focused, gesturing, onStartDrag, onStartResize, onFocus, onClose }: CanvasNodeCardProps) {
   const provider = PROVIDERS_BY_ID[node.providerId];
   const w = node.w || DEFAULT_NODE_W;
   const h = node.h || DEFAULT_NODE_H;
@@ -61,6 +62,14 @@ export default function CanvasNodeCard({ node, status, focused, gesturing, onSta
             directly interactive at any zoom — no focus step needed. */}
         {gesturing && <div className="canvas-node-shield" />}
       </div>
+
+      {/* Resize handle (bottom-right). Stops propagation so it doesn't pan; the
+          canvas owns the pointer-capture + logical-unit math while dragging. */}
+      <div
+        className="canvas-node-resize"
+        title="拖动调整大小"
+        onPointerDown={e => onStartResize(node.id, e)}
+      />
     </div>
   );
 }

@@ -9,14 +9,16 @@ import {
   addChildNode,
   removeNode,
   moveNode,
+  resizeNode,
   setViewport,
+  findNodeByAgentId,
   migrateLegacyPanes,
 } from './project-store';
 import Canvas from './canvas/Canvas';
 import OverviewBar from './dashboard/OverviewBar';
 import ProjectDrawer from './dashboard/ProjectDrawer';
 import { HubWsClient, fetchAgents, type HubAddPaneMessage } from './dashboard/hub-ws';
-import { AgentVM, mergeSummaries, replaceAll } from './dashboard/agent-store';
+import { AgentVM, mergeSummaries, reconcilePoll } from './dashboard/agent-store';
 
 const PROJECTS_KEY = 'hubProjects';
 const LEGACY_PANES_KEY = 'hubPanes';
@@ -89,22 +91,37 @@ export default function App() {
         console.warn('[Hub] hub_add_pane unsupported platform, ignored:', msg.platform);
         return;
       }
-      const projectId = activeIdRef.current;
-      if (!projectId) return;
-      setProjects(prev =>
-        addChildNode(prev, projectId, {
+      setProjects(prev => {
+        // Route the pane into the project that owns its PARENT agent, so spawning
+        // in project A then switching to view B doesn't drop the new pane into B.
+        // Top-level spawns (no parent node placed) fall back to the active project.
+        const parentLoc = msg.parent_agent_id
+          ? findNodeByAgentId(prev, msg.parent_agent_id)
+          : undefined;
+        const projectId = parentLoc?.projectId ?? activeIdRef.current;
+        if (!projectId) return prev;
+        return addChildNode(prev, projectId, {
           agentId: msg.agent_id,
           parentAgentId: msg.parent_agent_id,
           providerId,
           // First-level spawn (no parent agent): attach under the project's first
           // root node if there is one, else it becomes a free root.
           fallbackParentNodeId: rootNodeIdFor(prev, projectId),
-        }),
-      );
+        });
+      });
     };
+    // When the WS pushes a fresh roster, remember each agent id's push time. A poll
+    // that races a brand-new push (server /agents index not yet updated) uses these
+    // to retain just-pushed agents instead of dropping them for a cycle.
+    const wsSeenAt = new Map<string, number>();
     const client = new HubWsClient({
       onAddPane,
-      onAgentsUpdate: msg => setAgents(prev => mergeSummaries(prev, (msg.agents as AgentVM[]) || [])),
+      onAgentsUpdate: msg => {
+        const incoming = (msg.agents as AgentVM[]) || [];
+        const now = Date.now();
+        for (const a of incoming) if (a?.agent_id) wsSeenAt.set(a.agent_id, now);
+        setAgents(prev => mergeSummaries(prev, incoming));
+      },
       onStatus: setConnected,
     });
     client.start();
@@ -113,7 +130,9 @@ export default function App() {
     let cancelled = false;
     const poll = async () => {
       const list = (await fetchAgents()) as AgentVM[];
-      if (!cancelled) setAgents(replaceAll(list));
+      if (cancelled) return;
+      const cutoff = Date.now() - POLL_MS * 2; // grace: keep agents pushed very recently
+      setAgents(prev => reconcilePoll(prev, list, a => (wsSeenAt.get(a.agent_id) ?? 0) >= cutoff));
     };
     void poll();
     const timer = window.setInterval(poll, POLL_MS);
@@ -156,9 +175,20 @@ export default function App() {
     if (!activeIdRef.current) return;
     setProjects(prev => setViewport(prev, activeIdRef.current!, vp));
   }, []);
-  const onCloseNode = useCallback((nodeId: string) => {
+  const onResizeNode = useCallback((nodeId: string, w: number, h: number) => {
     if (!activeIdRef.current) return;
-    setProjects(prev => removeNode(prev, activeIdRef.current!, nodeId));
+    setProjects(prev => resizeNode(prev, activeIdRef.current!, nodeId, w, h));
+  }, []);
+  const onCloseNode = useCallback((nodeId: string) => {
+    const projectId = activeIdRef.current;
+    if (!projectId) return;
+    setProjects(prev => {
+      // Closing a worker pane should also stop its agent server-side; otherwise
+      // the registry keeps a stuck "running" record (and its tab) around forever.
+      const node = prev.find(p => p.id === projectId)?.nodes.find(n => n.id === nodeId);
+      if (node?.agentId) wsRef.current?.sendAgentControl('stop', node.agentId);
+      return removeNode(prev, projectId, nodeId);
+    });
   }, []);
 
   // Focus a canvas node by its agent id (from the drawer). Delegates to the
@@ -204,6 +234,7 @@ export default function App() {
             project={active}
             statusByAgentId={Object.fromEntries(agents.map(a => [a.agent_id, a.status]))}
             onMoveNode={onMoveNode}
+            onResizeNode={onResizeNode}
             onSetViewport={onSetViewport}
             onCloseNode={onCloseNode}
           />

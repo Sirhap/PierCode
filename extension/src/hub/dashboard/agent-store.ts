@@ -21,6 +21,7 @@ export interface AgentVM {
   bound_at?: string;
   ended_at?: string;
   seeded?: boolean;
+  last_result?: string;
   last_debug?: string;
   last_debug_at?: string;
   last_ai_response?: string;
@@ -68,6 +69,30 @@ export function replaceAll(incoming: AgentVM[]): AgentVM[] {
   for (const a of incoming) {
     if (!a || !a.agent_id) continue;
     byId.set(a.agent_id, a);
+  }
+  return Array.from(byId.values());
+}
+
+// reconcilePoll treats the poll batch as authoritative (like replaceAll) but
+// keeps a local-only agent when `keepIfMissing` says so — used to retain an agent
+// the WS just pushed that the server's /agents index hasn't caught up to yet, so a
+// freshly spawned agent doesn't blink out for one poll cycle. Poll records always
+// win over the retained local copy when both exist (fresher status).
+export function reconcilePoll(
+  prev: AgentVM[],
+  poll: AgentVM[],
+  keepIfMissing: (a: AgentVM) => boolean,
+): AgentVM[] {
+  const byId = new Map<string, AgentVM>();
+  const pollIds = new Set<string>();
+  for (const a of poll) {
+    if (!a || !a.agent_id) continue;
+    byId.set(a.agent_id, a);
+    pollIds.add(a.agent_id);
+  }
+  for (const a of prev) {
+    if (!a || !a.agent_id || pollIds.has(a.agent_id)) continue;
+    if (keepIfMissing(a)) byId.set(a.agent_id, a);
   }
   return Array.from(byId.values());
 }
