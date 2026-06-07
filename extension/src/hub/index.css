@@ -109,8 +109,6 @@ html, body, #root {
 /* Grab hand only appears while Space is held (intentional pan). */
 .canvas-viewport[data-spacepan="true"] { cursor: grab; }
 .canvas-viewport[data-panning="true"] { cursor: grabbing; }
-/* In layout-edit mode the node headers become move handles. */
-.canvas-viewport[data-layoutedit="true"] .canvas-node-head { cursor: move; }
 .canvas-world {
   position: absolute; left: 0; top: 0;
   transform-origin: 0 0;
@@ -205,13 +203,15 @@ html, body, #root {
 }
 .canvas-node-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 7px 10px; font-size: 12px; cursor: grab;
+  padding: 7px 10px; font-size: 12px; cursor: default;
   background: rgba(17,17,27,.9);
   border-bottom: 1px solid rgba(137,180,250,.16);
   transition: background .12s ease;
 }
 .canvas-node-head:hover { background: rgba(30,30,46,.95); }
-.canvas-node-head:active { cursor: grabbing; }
+/* Move handle only in free-layout mode. */
+.canvas-node-head[data-draggable="true"] { cursor: move; }
+.canvas-node-head[data-draggable="true"]:active { cursor: grabbing; }
 .canvas-node-name { font-weight: 600; display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .canvas-node-grip { opacity: .35; font-size: 11px; letter-spacing: -1px; }
 .canvas-node-head:hover .canvas-node-grip { opacity: .7; }

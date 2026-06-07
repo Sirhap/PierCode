@@ -31,10 +31,6 @@ export interface Project {
   createdAt: number;
   nodes: CanvasNode[];
   viewport: Viewport;
-  // When true (default), nodes auto-arrange into a tidy top-down tree on
-  // add/spawn; dragging a node turns it off so manual layout sticks. The
-  // toolbar「整理」button re-applies the tree and turns it back on.
-  autoLayout?: boolean;
 }
 
 // Default node size — sized for an embedded AI chat UI to be usable, not cramped.
@@ -107,8 +103,9 @@ export function addNode(
       w: DEFAULT_NODE_W,
       h: DEFAULT_NODE_H,
     };
-    const nodes = [...p.nodes, node];
-    return { ...p, nodes: (p.autoLayout === false || pos) ? nodes : layoutTree(nodes) };
+    // Store the node as-is; tree mode lays it out live on render, free mode keeps
+    // this position.
+    return { ...p, nodes: [...p.nodes, node] };
   });
 }
 
@@ -142,10 +139,9 @@ export function addChildNode(
       w: DEFAULT_NODE_W,
       h: DEFAULT_NODE_H,
     };
-    const nodes = [...p.nodes, node];
-    // Auto-layout on (default) → tidy the whole tree so a spawned worker lands
-    // connected and aligned under its parent instead of scattered.
-    return { ...p, nodes: p.autoLayout === false ? nodes : layoutTree(nodes) };
+    // Store as-is; tree mode (default) lays the spawned worker out live under its
+    // parent on render, free mode keeps this fallback position.
+    return { ...p, nodes: [...p.nodes, node] };
   });
 }
 
@@ -208,14 +204,11 @@ export function layoutTree(nodes: CanvasNode[]): CanvasNode[] {
   });
 }
 
-// applyTreeLayout re-runs the tree layout for a project and turns autoLayout on.
+// applyTreeLayout writes tidy tree coordinates into the stored nodes. Tree mode
+// computes positions live on render, so this is only needed to RESET free-mode
+// positions back to a tidy tree (the 「整理」button in free mode).
 export function applyTreeLayout(projects: Project[], projectId: string): Project[] {
-  return mapProject(projects, projectId, p => ({ ...p, autoLayout: true, nodes: layoutTree(p.nodes) }));
-}
-
-// setAutoLayout toggles a project's auto-layout flag (without moving nodes).
-export function setAutoLayout(projects: Project[], projectId: string, on: boolean): Project[] {
-  return mapProject(projects, projectId, p => ({ ...p, autoLayout: on }));
+  return mapProject(projects, projectId, p => ({ ...p, nodes: layoutTree(p.nodes) }));
 }
 
 export function removeNode(projects: Project[], projectId: string, nodeId: string): Project[] {
@@ -229,11 +222,10 @@ export function removeNode(projects: Project[], projectId: string, nodeId: strin
 }
 
 export function moveNode(projects: Project[], projectId: string, nodeId: string, x: number, y: number): Project[] {
+  // Only meaningful in free-layout mode (tree mode ignores stored x/y and lays
+  // out live); the drag itself is gated to free mode in Canvas.
   return mapProject(projects, projectId, p => ({
     ...p,
-    // A manual drag turns auto-layout OFF so the user's placement sticks (the
-    // 「整理」button re-enables it). Otherwise the next spawn would snap it back.
-    autoLayout: false,
     nodes: p.nodes.map(n => (n.id === nodeId ? { ...n, x, y } : n)),
   }));
 }

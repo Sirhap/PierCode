@@ -9,6 +9,7 @@ import { PROVIDERS_BY_ID, paneSrc } from '../pane-manager';
 
 interface CanvasNodeCardProps {
   node: CanvasNode;
+  draggable: boolean;    // free-layout mode → header is a move handle
   status?: string;       // agent lifecycle status for sub-agent nodes
   focused: boolean;      // this node is centered/highlighted
   gesturing: boolean;    // a canvas pan/drag is in progress → raise the shield
@@ -25,7 +26,7 @@ function pane(node: CanvasNode) {
   return { key: node.id, providerId: node.providerId, agentId: node.agentId };
 }
 
-export default function CanvasNodeCard({ node, status, focused, gesturing, onStartDrag, onStartResize, onResizeTo, onMaximize, onContentZoom, onFocus, onClose }: CanvasNodeCardProps) {
+export default function CanvasNodeCard({ node, draggable, status, focused, gesturing, onStartDrag, onStartResize, onResizeTo, onMaximize, onContentZoom, onFocus, onClose }: CanvasNodeCardProps) {
   const provider = PROVIDERS_BY_ID[node.providerId];
   const w = node.w || DEFAULT_NODE_W;
   const h = node.h || DEFAULT_NODE_H;
@@ -45,13 +46,14 @@ export default function CanvasNodeCard({ node, status, focused, gesturing, onSta
       data-agent-id={node.agentId ?? ''}
       style={{ left: node.x, top: node.y, width: w, height: h }}
     >
-      {/* Header doubles as the drag handle. */}
+      {/* Header is the drag handle only in free-layout mode. */}
       <div
         className="canvas-node-head"
+        data-draggable={draggable}
         onPointerDown={e => onStartDrag(node.id, e)}
       >
         <span className="canvas-node-name" title={node.agentId ? `${provider?.label ?? node.providerId} · agent ${node.agentId}` : provider?.label}>
-          <span className="canvas-node-grip" aria-hidden>⠿</span>
+          {draggable ? <span className="canvas-node-grip" aria-hidden>⠿</span> : null}
           {provider?.label ?? node.providerId}
           {shortId ? <span className="canvas-node-worker"> · {shortId}</span> : null}
         </span>

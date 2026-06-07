@@ -139,12 +139,15 @@ describe('project-store', () => {
     expect(Math.abs(pCenter - span)).toBeLessThan(2);
   });
 
-  it('applyTreeLayout turns autoLayout on; moveNode turns it off', () => {
-    let { projects, pid, rootId } = withRoot();
+  it('applyTreeLayout writes tidy tree coordinates into stored nodes', () => {
+    let { projects, pid } = withRoot();
+    // give the root a child, scatter both, then tidy
+    projects = addChildNode(projects, pid, { agentId: 'w', providerId: 'qwen', fallbackParentNodeId: projects[0].nodes[0].id });
+    projects = moveNode(projects, pid, projects[0].nodes[0].id, 9999, 9999);
     projects = applyTreeLayout(projects, pid);
-    expect(projects[0].autoLayout).toBe(true);
-    projects = moveNode(projects, pid, rootId, 10, 10);
-    expect(projects[0].autoLayout).toBe(false);
+    const parent = projects[0].nodes.find(n => !n.parentNodeId)!;
+    const child = projects[0].nodes.find(n => n.agentId === 'w')!;
+    expect(child.y).toBeGreaterThan(parent.y); // tidied: child below parent
   });
 
   it('findNodeByAgentId locates a node across projects', () => {

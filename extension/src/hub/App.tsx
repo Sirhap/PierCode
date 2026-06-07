@@ -66,7 +66,7 @@ export default function App() {
   const [agents, setAgents] = useState<AgentVM[]>([]);
   const [connected, setConnected] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [layoutEdit, setLayoutEdit] = useState(false); // 「编辑布局」: lock iframes, drag nodes
+  const [freeLayout, setFreeLayout] = useState(false); // false = fixed tree, true = drag canvas
   const wsRef = useRef<HubWsClient | null>(null);
   // activeIdRef keeps the latest active project id available inside the WS
   // callback closure (set up once) without re-subscribing on every switch.
@@ -247,13 +247,18 @@ export default function App() {
           <button key={p.id} className="hub-add-btn" onClick={() => addAi(p.id)}>{p.label}</button>
         ))}
         <span className="hub-toolbar-sep" />
-        <button className="hub-add-btn" title="把所有卡片重排成整齐的树状布局" onClick={onTidy}>整理</button>
+        {/* Single mode toggle: tree (fixed, tidy) ⇄ free (drag to place). */}
         <button
           className="hub-add-btn"
-          data-active={layoutEdit}
-          title={layoutEdit ? '退出编辑布局（卡片恢复可交互）' : '编辑布局：锁定卡片、拖动表头摆位'}
-          onClick={() => setLayoutEdit(v => !v)}
-        >{layoutEdit ? '✓ 编辑布局' : '编辑布局'}</button>
+          data-active={freeLayout}
+          title={freeLayout
+            ? '当前：自由布局，可拖动卡片摆位。点击切回固定树形。'
+            : '当前：固定树形，卡片自动整齐排列、不能拖。点击切换为自由拖拽。'}
+          onClick={() => setFreeLayout(v => !v)}
+        >{freeLayout ? '✋ 自由布局' : '🌳 树形布局'}</button>
+        {freeLayout && (
+          <button className="hub-add-btn" title="重排成整齐的树状布局" onClick={onTidy}>整理</button>
+        )}
         <span className="hub-toolbar-hint">空格+拖动=平移画布</span>
       </div>
 
@@ -263,7 +268,7 @@ export default function App() {
             key={active.id}
             project={active}
             statusByAgentId={Object.fromEntries(agents.map(a => [a.agent_id, a.status]))}
-            layoutEdit={layoutEdit}
+            freeLayout={freeLayout}
             onMoveNode={onMoveNode}
             onResizeNode={onResizeNode}
             onContentZoom={onContentZoom}

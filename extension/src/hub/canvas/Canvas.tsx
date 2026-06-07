@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { Project, CanvasNode, Viewport } from '../project-store';
+import { Project, CanvasNode, Viewport, layoutTree } from '../project-store';
 import { zoomAtPoint, panBy, screenToLogical, centerOnNode, fitView } from './canvas-math';
 import { PROVIDERS_BY_ID } from '../pane-manager';
 import CanvasNodeCard from './CanvasNodeCard';
@@ -15,7 +15,8 @@ const CANVAS_EXTENT = 20000; // logical area for the edges SVG / background
 interface CanvasProps {
   project: Project;
   statusByAgentId: Record<string, string>;
-  layoutEdit: boolean;              // 「编辑布局」on → iframes locked, header drags nodes
+  freeLayout: boolean;              // false (default) = fixed tree, nodes can't be dragged;
+                                    // true = free canvas, drag nodes to place them.
   onMoveNode: (nodeId: string, x: number, y: number) => void;
   onResizeNode: (nodeId: string, w: number, h: number) => void;
   onContentZoom: (nodeId: string, zoom: number) => void;
@@ -41,7 +42,11 @@ interface ResizeState {
 
 const ZOOM_STEP = 1.2; // per button click / keypress
 
-export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNode, onResizeNode, onContentZoom, onSetViewport, onCloseNode }: CanvasProps) {
+export default function Canvas({ project, statusByAgentId, freeLayout, onMoveNode, onResizeNode, onContentZoom, onSetViewport, onCloseNode }: CanvasProps) {
+  // In tree (non-free) mode, node positions are computed fresh from the tree
+  // layout every render, so the structure stays fixed and tidy regardless of
+  // stored x/y. In free mode, use the stored positions the user dragged.
+  const displayNodes = freeLayout ? project.nodes : layoutTree(project.nodes);
   const vp = project.viewport;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [panning, setPanning] = useState(false);
@@ -57,12 +62,10 @@ export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNod
   // this lists every node so one click jumps (centers) onto it.
   const [cardListOpen, setCardListOpen] = useState(false);
 
-  // The iframe shield is up during an active canvas gesture (pan / node drag /
-  // resize) so the gesture isn't swallowed by an iframe, AND whenever 「编辑布局」
-  // is on — in layout-edit mode the whole canvas is a placement surface: iframes
-  // are locked so a header drag moves the node and a click doesn't fall into the
-  // AI page. With layout-edit OFF and no gesture, iframes are fully interactive.
-  const gesturing = layoutEdit || panning || draggingNodeId !== null || resizingNodeId !== null;
+  // The iframe shield is up only DURING an active canvas gesture (pan / node drag
+  // / resize) so the gesture isn't swallowed by an iframe. Idle (either mode) =
+  // iframes fully interactive — tree mode locks POSITION, not interaction.
+  const gesturing = panning || draggingNodeId !== null || resizingNodeId !== null;
 
   const localPoint = useCallback((clientX: number, clientY: number) => {
     const rect = rootRef.current?.getBoundingClientRect();
@@ -141,9 +144,10 @@ export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNod
     if (!r) return;
     setVpRef.current(fitView(nodesRef.current, r.width, r.height));
   }, []);
-  // Latest nodes for fitAll without re-binding key handlers.
-  const nodesRef = useRef(project.nodes);
-  nodesRef.current = project.nodes;
+  // Latest DISPLAYED nodes (tree-laid-out in tree mode) for fitAll / focus / jump,
+  // so they use the on-screen positions, not the stored ones.
+  const nodesRef = useRef(displayNodes);
+  nodesRef.current = displayNodes;
 
   // Capture the pointer on the VIEWPORT root (where pointermove/up/leave are
   // bound), not on the event target. Capturing on a node header instead would
@@ -188,9 +192,9 @@ export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNod
       startPan(e);
       return;
     }
-    // Node dragging only in 「编辑布局」 mode. Otherwise the header click does
-    // nothing canvas-side (the pane/iframe handles its own UI).
-    if (!layoutEdit) return;
+    // Node dragging only in FREE mode. In tree mode position is fixed, so a
+    // header press does nothing canvas-side (the pane handles its own UI).
+    if (!freeLayout) return;
     e.stopPropagation();
     if (e.button !== 0) return;
     const node = project.nodes.find(n => n.id === nodeId);
@@ -255,7 +259,7 @@ export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNod
     // Toggle off if already focused; otherwise focus + center. The viewport side
     // effect lives OUTSIDE the setState updater (updaters must stay pure — React
     // StrictMode double-invokes them, which would double-apply the centering).
-    const node = project.nodes.find(n => n.id === nodeId);
+    const node = nodesRef.current.find(n => n.id === nodeId); // displayed position
     setFocusedNodeId(prev => {
       const next = prev === nodeId ? null : nodeId;
       return next;
@@ -264,18 +268,18 @@ export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNod
       const r = rootRef.current.getBoundingClientRect();
       onSetViewport(centerOnNode(node, r.width, r.height, 1));
     }
-  }, [project.nodes, onSetViewport, focusedNodeId]);
+  }, [onSetViewport, focusedNodeId]);
 
   // jumpToNode always centers + highlights a node (no toggle-off), for the card
   // locator list. At least 100% zoom so the landed card is actually readable.
   const jumpToNode = useCallback((nodeId: string) => {
-    const node = project.nodes.find(n => n.id === nodeId);
+    const node = nodesRef.current.find(n => n.id === nodeId); // displayed position
     if (!node || !rootRef.current) return;
     const r = rootRef.current.getBoundingClientRect();
     onSetViewport(centerOnNode(node, r.width, r.height, Math.max(1, vpRef.current.zoom)));
     setFocusedNodeId(nodeId);
     setCardListOpen(false);
-  }, [project.nodes, onSetViewport]);
+  }, [onSetViewport]);
 
   // Header size-preset / maximize. A preset sets an explicit w/h; maximize fits
   // the node to the visible viewport (in logical units) then centers it.
@@ -353,7 +357,7 @@ export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNod
       className="canvas-viewport"
       data-panning={panning}
       data-spacepan={spaceHeld}
-      data-layoutedit={layoutEdit}
+      data-freelayout={freeLayout}
       onPointerDown={onBackgroundPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endGesture}
@@ -364,7 +368,7 @@ export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNod
         className="canvas-world"
         style={{ transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})` }}
       >
-        {project.nodes.map((node: CanvasNode) => (
+        {displayNodes.map((node: CanvasNode) => (
           <CanvasNodeCard
             key={node.id}
             onStartResize={startNodeResize}
@@ -372,6 +376,7 @@ export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNod
             onMaximize={maximizeNode}
             onContentZoom={onContentZoom}
             node={node}
+            draggable={freeLayout}
             status={node.agentId ? statusByAgentId[node.agentId] : undefined}
             focused={focusedNodeId === node.id}
             gesturing={gesturing}
@@ -383,8 +388,9 @@ export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNod
         {/* Edges rendered AFTER the node cards so the parent→child wires paint ON
             TOP of the opaque cards (a card's solid background was hiding the short
             wire between a tightly-packed parent and child). pointer-events:none
-            keeps them from blocking pane interaction. */}
-        <Edges nodes={project.nodes} width={CANVAS_EXTENT} height={CANVAS_EXTENT} />
+            keeps them from blocking pane interaction. Use displayNodes so wires
+            track the tree-mode positions. */}
+        <Edges nodes={displayNodes} width={CANVAS_EXTENT} height={CANVAS_EXTENT} />
       </div>
       {project.nodes.length === 0 && (
         <div className="canvas-empty">用上方「+ AI」添加一个主 agent</div>
