@@ -54,6 +54,16 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
     return () => el.removeEventListener('wheel', onWheel);
   }, [vp, localPoint, onSetViewport]);
 
+  // Capture the pointer on the VIEWPORT root (where pointermove/up/leave are
+  // bound), not on the event target. Capturing on a node header instead would
+  // retarget move events to the header, so the viewport's onPointerMove could
+  // miss them mid-drag. capturedPointerRef remembers the id for a clean release.
+  const capturedPointerRef = useRef<number | null>(null);
+  const captureOnViewport = (pointerId: number) => {
+    rootRef.current?.setPointerCapture?.(pointerId);
+    capturedPointerRef.current = pointerId;
+  };
+
   // Background drag = pan. Starts only on empty canvas (not on a node header,
   // which calls startNodeDrag and stops propagation).
   const onBackgroundPointerDown = (e: React.PointerEvent) => {
@@ -61,7 +71,7 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
     setPanning(true);
     panLastRef.current = { x: e.clientX, y: e.clientY };
     setFocusedNodeId(null); // clicking empty space exits focus mode
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    captureOnViewport(e.pointerId);
   };
 
   const startNodeDrag = (nodeId: string, e: React.PointerEvent) => {
@@ -71,7 +81,7 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
     if (!node) return;
     const lp = screenToLogical(localPoint(e.clientX, e.clientY), vp);
     dragRef.current = { nodeId, offsetX: lp.x - node.x, offsetY: lp.y - node.y };
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    captureOnViewport(e.pointerId);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -93,19 +103,26 @@ export default function Canvas({ project, statusByAgentId, onMoveNode, onSetView
     dragRef.current = null;
     panLastRef.current = null;
     setPanning(false);
+    if (capturedPointerRef.current !== null) {
+      try { rootRef.current?.releasePointerCapture?.(capturedPointerRef.current); } catch { /* already released */ }
+      capturedPointerRef.current = null;
+    }
   };
 
   const focusNode = useCallback((nodeId: string) => {
+    // Toggle off if already focused; otherwise focus + center. The viewport side
+    // effect lives OUTSIDE the setState updater (updaters must stay pure — React
+    // StrictMode double-invokes them, which would double-apply the centering).
     const node = project.nodes.find(n => n.id === nodeId);
     setFocusedNodeId(prev => {
-      if (prev === nodeId) return null;
-      if (node && rootRef.current) {
-        const r = rootRef.current.getBoundingClientRect();
-        onSetViewport(centerOnNode(node, r.width, r.height, 1));
-      }
-      return nodeId;
+      const next = prev === nodeId ? null : nodeId;
+      return next;
     });
-  }, [project.nodes, onSetViewport]);
+    if (focusedNodeId !== nodeId && node && rootRef.current) {
+      const r = rootRef.current.getBoundingClientRect();
+      onSetViewport(centerOnNode(node, r.width, r.height, 1));
+    }
+  }, [project.nodes, onSetViewport, focusedNodeId]);
 
   // Focus-by-agent from the drawer: find the node carrying that agent id.
   useEffect(() => {
