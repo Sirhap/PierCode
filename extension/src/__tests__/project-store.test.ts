@@ -109,6 +109,18 @@ describe('project-store', () => {
     expect(setContentZoom(projects, pid, rootId, 0.1)[0].nodes[0].contentZoom).toBe(0.6);
   });
 
+  it('first-level worker attaches under the +AI main panel (so a main→worker edge exists)', () => {
+    let projects = [createProject('p')];
+    const pid = projects[0].id;
+    projects = addNode(projects, pid, 'qwen'); // user's +AI main panel (no agentId)
+    const mainId = projects[0].nodes[0].id;
+    expect(projects[0].nodes[0].parentNodeId).toBeUndefined();
+    const rootId = projects[0].nodes.find(n => !n.parentNodeId)?.id;
+    projects = addChildNode(projects, pid, { agentId: 'w1', providerId: 'qwen', fallbackParentNodeId: rootId });
+    const worker = projects[0].nodes.find(n => n.agentId === 'w1')!;
+    expect(worker.parentNodeId).toBe(mainId); // edge anchor present
+  });
+
   it('layoutTree places a child below its parent and centers the parent', () => {
     const nodes = [
       { id: 'p', providerId: 'qwen', x: 999, y: 999, w: 560, h: 520 },

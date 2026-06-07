@@ -364,7 +364,6 @@ export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNod
         className="canvas-world"
         style={{ transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})` }}
       >
-        <Edges nodes={project.nodes} width={CANVAS_EXTENT} height={CANVAS_EXTENT} />
         {project.nodes.map((node: CanvasNode) => (
           <CanvasNodeCard
             key={node.id}
@@ -381,6 +380,11 @@ export default function Canvas({ project, statusByAgentId, layoutEdit, onMoveNod
             onClose={onCloseNode}
           />
         ))}
+        {/* Edges rendered AFTER the node cards so the parent→child wires paint ON
+            TOP of the opaque cards (a card's solid background was hiding the short
+            wire between a tightly-packed parent and child). pointer-events:none
+            keeps them from blocking pane interaction. */}
+        <Edges nodes={project.nodes} width={CANVAS_EXTENT} height={CANVAS_EXTENT} />
       </div>
       {project.nodes.length === 0 && (
         <div className="canvas-empty">用上方「+ AI」添加一个主 agent</div>
