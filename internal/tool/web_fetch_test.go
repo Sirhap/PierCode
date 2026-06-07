@@ -43,9 +43,9 @@ func TestWebFetchExecute(t *testing.T) {
 	// httptest binds to 127.0.0.1, which the SSRF guard rejects in production.
 	// Temporarily lift the loopback ban for this test only — production code
 	// paths (Validate + safeDialContext) still enforce it.
-	prev := allowLoopbackForTests
-	allowLoopbackForTests = true
-	defer func() { allowLoopbackForTests = prev }()
+	prev := allowLoopbackForTests.Load()
+	allowLoopbackForTests.Store(true)
+	defer func() { allowLoopbackForTests.Store(prev) }()
 
 	tool := NewWebFetchTool()
 	res := tool.Execute(&Context{Args: map[string]interface{}{"url": srv.URL}})

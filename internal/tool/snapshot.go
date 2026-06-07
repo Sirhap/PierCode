@@ -86,7 +86,7 @@ func snapshotPaths(rootDir, op string, absPaths ...string) error {
 			}
 			raw, err := os.ReadFile(abs)
 			if err != nil {
-				return err
+				continue // skip files we can't read; snapshot remaining files
 			}
 			backupName := fmt.Sprintf("%d.bak", i)
 			if err := os.WriteFile(filepath.Join(dir, backupName), raw, 0644); err != nil {

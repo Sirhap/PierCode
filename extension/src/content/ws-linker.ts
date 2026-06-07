@@ -110,6 +110,7 @@ const browserApprovalAskHandlers: BrowserApprovalAskHandler[] = [];
 const browserApprovalDoneHandlers: BrowserApprovalDoneHandler[] = [];
 const browserAttachmentUploadHandlers: BrowserAttachmentUploadHandler[] = [];
 const answeredBrowserApprovals = new Set<string>();
+const MAX_ANSWERED_APPROVALS = 500;
 type PendingInject = { text: string; awaitReady: boolean; conversationURL?: string };
 const pendingInjects: PendingInject[] = [];
 let conversationURLWatcher: number | null = null;
@@ -979,6 +980,12 @@ export function sendBrowserApprovalAnswer(approvalID: string, approved: boolean,
   try {
 	    ws.send(JSON.stringify({ type: "browser_approval_answer", approval_id: approvalID, approved, reason, conversation_url: observeConversationURL() }));
     answeredBrowserApprovals.add(approvalID);
+    // Evict oldest entries if the set grows too large. The dedup window is
+    // short-lived (same page session), so clearing is safe.
+    if (answeredBrowserApprovals.size > MAX_ANSWERED_APPROVALS) {
+      answeredBrowserApprovals.clear();
+      answeredBrowserApprovals.add(approvalID);
+    }
     return true;
   } catch (error) {
     console.warn("[PierCode] browser_approval_answer 发送失败:", error);

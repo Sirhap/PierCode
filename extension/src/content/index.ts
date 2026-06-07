@@ -408,7 +408,7 @@ async function requestContextPacketFromModel(prompt: string, timeoutMs: number):
 }
 
 async function openContextPacketInNewSession(packet: PierCodeContextPacket, reason: string): Promise<void> {
-  const wasInProgress = compressionInProgress;
+  if (compressionInProgress) return; // another compression is already running
   compressionInProgress = true;
   try {
     const packetText = packet.raw || packet.content;
@@ -424,7 +424,7 @@ async function openContextPacketInNewSession(packet: PierCodeContextPacket, reas
     const payload = formatPacketHandoffPrompt(packetText, initPrompt);
     await openNewSessionWithPayload(payload, '已发送到新会话');
   } finally {
-    compressionInProgress = wasInProgress;
+    compressionInProgress = false;
   }
 }
 
@@ -2203,8 +2203,10 @@ function startDOMObserver(_responseSelector: string) {
     flushPendingAutoExecute();
   }).catch(() => {
     autoExecute = isWorkerPage ? true : false;
-    if (!isWorkerPage) pendingAutoExecute.clear();
-    else flushPendingAutoExecute();
+    // Flush queued tools even on storage failure — autoExecute is already
+    // resolved (to false for non-worker), so flushPendingAutoExecute will
+    // only fire manual-execute cards, not silently discard them.
+    flushPendingAutoExecute();
   });
   chrome.storage.onChanged.addListener((changes) => {
     if ('autoExecute' in changes && !isWorkerPage) {

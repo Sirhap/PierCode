@@ -56,6 +56,7 @@ function tryParseInjectedToolJSON(raw: string): any | null {
   let buffer = '';
 
   // Global dedup: keyed by conversation ID extracted from URL
+  const MAX_CONV_DEDUP = 10;
   const processedByConv = new Map<string, Set<string>>();
 
   function getConvId(): string {
@@ -67,7 +68,14 @@ function tryParseInjectedToolJSON(raw: string): any | null {
 
   function getProcessed(): Set<string> {
     const id = getConvId();
-    if (!processedByConv.has(id)) processedByConv.set(id, new Set());
+    if (!processedByConv.has(id)) {
+      // Evict oldest conversation if map exceeds limit.
+      if (processedByConv.size >= MAX_CONV_DEDUP) {
+        const oldest = processedByConv.keys().next().value;
+        if (oldest !== undefined) processedByConv.delete(oldest);
+      }
+      processedByConv.set(id, new Set());
+    }
     return processedByConv.get(id)!;
   }
 

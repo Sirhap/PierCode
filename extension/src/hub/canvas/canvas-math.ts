@@ -100,10 +100,13 @@ export function fitView(nodes: CanvasNode[], viewW: number, viewH: number, paddi
 // shares the canvas transform). The control points bow vertically so the wires
 // read as a tree.
 export function edgePath(parent: CanvasNode, child: CanvasNode): string {
-  const x1 = parent.x + parent.w / 2;
-  const y1 = parent.y + parent.h;
-  const x2 = child.x + child.w / 2;
-  const y2 = child.y;
+  const pw = num(parent.w, 0);
+  const ph = num(parent.h, 0);
+  const cw = num(child.w, 0);
+  const x1 = num(parent.x, 0) + pw / 2;
+  const y1 = num(parent.y, 0) + ph;
+  const x2 = num(child.x, 0) + cw / 2;
+  const y2 = num(child.y, 0);
   const dy = Math.max(40, (y2 - y1) / 2);
   return `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
 }

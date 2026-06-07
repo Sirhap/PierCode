@@ -34,9 +34,8 @@ const (
 // context handoff such as Qwen's migration packet prompt).
 func (p Profile) GuidanceFor(n int64, renderFull func() []byte) string {
 	var b strings.Builder
-	// Guard the modulo against a zero cadence (reinject disabled) — a literal
-	// n%0 is a compile-time division-by-zero in Go even when short-circuited, so
-	// compute the divisor in a local the compiler can't const-fold to 0.
+	// Guard the modulo against a zero cadence (reinject disabled) — n%0 is a
+	// runtime panic in Go, so compute the divisor in a local and short-circuit.
 	reinjectEvery := int64(fullPromptReinjectEvery)
 	if reinjectEvery > 0 && n%reinjectEvery == 0 && len(p.Prompt) > 0 {
 		b.WriteString("\n\n[系统重新注入提示词]\n")

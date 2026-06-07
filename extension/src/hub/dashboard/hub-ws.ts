@@ -87,6 +87,7 @@ export class HubWsClient {
   private reconnectTimer: number | null = null;
   private closed = false;
   private connectGeneration = 0; // incremented on each connect() to detect orphaned sockets
+  private reconnectAttempts = 0; // for exponential backoff
   private readonly id = hubClientId();
   // Kept so stop() can remove the storage listener; otherwise repeated
   // start()/stop() cycles would leak a listener (and a connect) each time.
@@ -145,10 +146,13 @@ export class HubWsClient {
 
   private scheduleReconnect(): void {
     if (this.closed || this.reconnectTimer) return;
+    // Exponential backoff: 3s, 6s, 12s, 24s, 48s, capped at 60s.
+    const delay = Math.min(60000, 3000 * Math.pow(2, this.reconnectAttempts));
+    this.reconnectAttempts++;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       void this.connect();
-    }, 3000);
+    }, delay);
   }
 
   private async connect(): Promise<void> {
@@ -185,7 +189,10 @@ export class HubWsClient {
       return;
     }
     this.ws = socket;
-    socket.onopen = () => this.handlers.onStatus?.(true);
+    socket.onopen = () => {
+      this.reconnectAttempts = 0; // reset backoff on successful connection
+      this.handlers.onStatus?.(true);
+    };
     socket.onmessage = event => this.onMessage(event);
     socket.onclose = () => {
       // Only clear this.ws if we are still the latest connection.

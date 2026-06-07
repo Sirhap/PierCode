@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -58,7 +59,7 @@ var blockedCIDRs = func() []*net.IPNet {
 // allowLoopbackForTests is a test-only escape hatch: when true, isBlockedIP
 // permits loopback / unspecified addresses so httptest.NewServer can be hit.
 // Production code never flips this; only TestWebFetchExecute does.
-var allowLoopbackForTests bool
+var allowLoopbackForTests atomic.Bool
 
 func isBlockedIP(ip net.IP) bool {
 	if ip == nil {
@@ -68,7 +69,7 @@ func isBlockedIP(ip net.IP) bool {
 	if v4 := ip.To4(); v4 != nil {
 		ip = v4
 	}
-	if allowLoopbackForTests && (ip.IsLoopback() || ip.IsUnspecified()) {
+	if allowLoopbackForTests.Load() && (ip.IsLoopback() || ip.IsUnspecified()) {
 		return false
 	}
 	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||

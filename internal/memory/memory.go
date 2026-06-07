@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sirhap/piercode/internal/security"
 )
@@ -75,7 +76,12 @@ func readMemoryFile(path string) string {
 		return ""
 	}
 	if len(data) > MemoryMaxBytes {
-		data = data[:MemoryMaxBytes]
+		cut := MemoryMaxBytes
+		// Walk back to a valid UTF-8 rune boundary to avoid producing invalid UTF-8.
+		for cut > 0 && !utf8.RuneStart(data[cut]) {
+			cut--
+		}
+		data = data[:cut]
 		return string(data) + fmt.Sprintf("\n\n[truncated: memory file exceeds %d bytes]", MemoryMaxBytes)
 	}
 	return string(data)
