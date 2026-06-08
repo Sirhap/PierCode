@@ -149,8 +149,14 @@ function processSSEEvent(json: Record<string, unknown>, conversationKey: string)
       const rawArgs = (fc.arguments as string) || '';
 
       const existing = pendingByConversation.get(conversationKey);
+      // A function_id that differs from the accumulating call starts a NEW call:
+      // reset the buffer instead of prepending the previous call's leftover code
+      // (which would corrupt the JSON and drop both calls).
+      const isNewCall = !!(existing && fId && existing.functionId && existing.functionId !== fId);
       if (existing && fId && existing.functionId === fId) {
         existing.code += rawArgs;
+      } else if (isNewCall) {
+        pendingByConversation.set(conversationKey, { code: rawArgs, functionId: fId });
       } else if (rawArgs || fId) {
         pendingByConversation.set(conversationKey, {
           code: (existing?.code || '') + rawArgs,
@@ -259,6 +265,10 @@ function interceptSSEStream(response: Response, url: string): Response {
     } finally {
       // Flush any remaining answer content for tool detection.
       flushAnswerToolCalls(conversationKey);
+      // Drop any half-accumulated code_interpreter buffer for this stream so a
+      // truncated call (stream errored before a phase-change flush) can't leak
+      // into the next conversation that reuses the same conversation key.
+      pendingByConversation.delete(conversationKey);
       reader.releaseLock();
     }
   })();
