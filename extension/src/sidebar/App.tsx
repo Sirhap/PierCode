@@ -267,7 +267,11 @@ export default function App() {
         model,
         chatId: chatIdRef.current,
         lastResponseId: lastResponseIdRef.current,
-        messages: messages.map(m => ({ role: m.role, content: m.content, pinned: m.pinned })),
+        messages: messages.map(m => ({
+          role: m.role, content: m.content, pinned: m.pinned,
+          toolCalls: m.toolCalls, toolResults: m.toolResults, toolStreams: m.toolStreams,
+          thinking: m.thinking, ts: m.ts,
+        })),
         ts: Date.now(),
       }
       saveSession(payload).then(() => { setActiveSessionId(id); listSessions().then(setSessions) })
@@ -897,7 +901,7 @@ export default function App() {
           <MessageView
             key={i}
             msg={msg}
-            onRegenerate={msg.role === 'assistant' && !msg.streaming ? handleRegenerate : undefined}
+            onRegenerate={i === messages.length - 1 && msg.role === 'assistant' && !msg.streaming ? handleRegenerate : undefined}
             onTogglePin={() => togglePin(i)}
           />
         ))}

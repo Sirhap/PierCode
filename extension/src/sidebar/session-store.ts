@@ -11,6 +11,11 @@ export interface StoredMessage {
   role: 'user' | 'assistant' | 'tool_result' | 'system'
   content: string
   pinned?: boolean
+  toolCalls?: { name: string; args: Record<string, unknown>; call_id: string }[]
+  toolResults?: { call_id: string; name: string; output: string; success: boolean }[]
+  toolStreams?: Record<string, string[]>
+  thinking?: { title: string; thought: string }[]
+  ts?: number
 }
 
 export interface StoredSession {

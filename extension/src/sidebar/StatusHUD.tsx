@@ -20,14 +20,17 @@ export default function StatusHUD({ connected, messages, platform, threshold, ac
   activeAgents: number
 }) {
   const [rootDir, setRootDir] = useState('')
+  const [version, setVersion] = useState('')
 
   useEffect(() => {
-    if (!connected) { setRootDir(''); return }
+    if (!connected) { setRootDir(''); setVersion(''); return }
     chrome.storage.local.get(['apiUrl', 'authToken'], (result) => {
       if (!result.apiUrl || !result.authToken) return
       const headers = { Authorization: `Bearer ${result.authToken}` }
       fetch(`${result.apiUrl}/config`, { headers }).then(r => r.json())
         .then(cfg => setRootDir(cfg?.rootDir || '')).catch(() => {})
+      fetch(`${result.apiUrl}/health`, { headers }).then(r => r.json())
+        .then(h => setVersion(h?.version || '')).catch(() => {})
     })
   }, [connected])
 
@@ -47,6 +50,7 @@ export default function StatusHUD({ connected, messages, platform, threshold, ac
       <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'dot-live' : ''}`} style={{ background: connected ? undefined : '#7a2a2a' }} />
       <span>{connected ? 'ck' : 'off'}</span>
       {rootDir && <span className="truncate max-w-[120px]" title={rootDir}>📁{rootDir.replace(/^.*\//, '')}</span>}
+      {version && <span style={{ color: 'var(--dim)' }}>v{version}</span>}
       <span className="glow-text font-mono">{bar}</span>
       <span>{fmt(total)}/{fmt(threshold)}</span>
       {activeAgents > 0 && <span className="ml-auto glow-text">⚙{activeAgents}</span>}
