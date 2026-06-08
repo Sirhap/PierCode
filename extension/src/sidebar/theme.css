@@ -17,19 +17,20 @@
 }
 
 :root {
-  --bg: #0a0e0a;
-  --panel: #0d130d;
-  --panel-2: #0f1810;
-  --line: #1a2a1a;
-  --dim: #5a6a5a;
-  --txt: #c8d8c8;
-  --glow: #39FF14;
-  --glow-soft: rgba(57, 255, 20, 0.18);
+  --bg: #0b0d10;
+  --panel: #141821;
+  --panel-2: #1a1f2b;
+  --line: #232a36;
+  --dim: #6b7686;
+  --txt: #cdd4de;
+  --glow: #4da3ff;
+  --glow-soft: rgba(77, 163, 255, 0.16);
 }
-:root[data-glow="green"]   { --glow: #39FF14; --glow-soft: rgba(57,255,20,.18); }
-:root[data-glow="amber"]   { --glow: #FFB000; --glow-soft: rgba(255,176,0,.18); }
-:root[data-glow="cyan"]    { --glow: #00E5FF; --glow-soft: rgba(0,229,255,.18); }
-:root[data-glow="magenta"] { --glow: #FF2D95; --glow-soft: rgba(255,45,149,.18); }
+/* Accent presets (key names kept for storage compat; values modernized). */
+:root[data-glow="green"]   { --glow: #4da3ff; --glow-soft: rgba(77,163,255,.16); }
+:root[data-glow="amber"]   { --glow: #e8a23d; --glow-soft: rgba(232,162,61,.16); }
+:root[data-glow="cyan"]    { --glow: #2dd4bf; --glow-soft: rgba(45,212,191,.16); }
+:root[data-glow="magenta"] { --glow: #a78bfa; --glow-soft: rgba(167,139,250,.16); }
 
 html, body {
   background: var(--bg);

@@ -1,16 +1,17 @@
-// Terminal-punk palette constants for content-script injected UI. Plain string
+// Modern dark-tech palette constants for content-script injected UI. Plain string
 // exports only (no chrome/DOM/lazy-import) so Vite inlines this into content.js
 // without emitting a static import — keeps content-build.test.ts green.
+// (T_ names kept for minimal call-site churn; values are the modern blue palette.)
 
-export const T_BG = '#0a0e0a'
-export const T_PANEL = '#0d130d'
-export const T_PANEL2 = '#0f1810'
-export const T_LINE = '#1a2a1a'
-export const T_DIM = '#5a6a5a'
-export const T_TXT = '#c8d8c8'
-export const T_GLOW = '#39FF14'
-export const T_GLOW_SOFT = 'rgba(57,255,20,0.18)'
-export const T_AMBER = '#FFB000'
+export const T_BG = '#0b0d10'
+export const T_PANEL = '#141821'
+export const T_PANEL2 = '#1a1f2b'
+export const T_LINE = '#232a36'
+export const T_DIM = '#6b7686'
+export const T_TXT = '#cdd4de'
+export const T_GLOW = '#4da3ff'
+export const T_GLOW_SOFT = 'rgba(77,163,255,0.16)'
+export const T_AMBER = '#e8a23d'
 export const T_RED = '#E5484D'
 export const T_FONT = `'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace`
 

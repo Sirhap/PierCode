@@ -1,4 +1,4 @@
-/* Terminal-punk tokens for the popup (mirrors sidebar/theme.css; green only). */
+/* Modern dark-tech tokens for the popup (mirrors sidebar/theme.css). */
 @font-face {
   font-family: 'IBM Plex Mono'; font-weight: 400; font-style: normal; font-display: swap;
   src: url('../sidebar/fonts/IBMPlexMono-Regular.woff2') format('woff2');
@@ -8,9 +8,9 @@
   src: url('../sidebar/fonts/IBMPlexMono-Medium.woff2') format('woff2');
 }
 :root {
-  --bg: #0a0e0a; --panel: #0d130d; --panel-2: #0f1810; --line: #1a2a1a;
-  --dim: #5a6a5a; --txt: #c8d8c8; --glow: #39FF14; --glow-soft: rgba(57,255,20,.18);
-  --amber: #FFB000; --red: #E5484D;
+  --bg: #0b0d10; --panel: #141821; --panel-2: #1a1f2b; --line: #232a36;
+  --dim: #6b7686; --txt: #cdd4de; --glow: #4da3ff; --glow-soft: rgba(77,163,255,.16);
+  --amber: #e8a23d; --red: #E5484D;
 }
 html, body { background: var(--bg); color: var(--txt); font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; }
 .glow-text { color: var(--glow); text-shadow: 0 0 6px var(--glow-soft); }
