@@ -43,7 +43,7 @@ function toolCard(spec: ToolSpec): HTMLElement {
     .join('')
   const warn = spec.warn ? `<div class="pc-warn">${t('chat.warn')}</div>` : ''
   card.innerHTML = `
-    <div class="pc-head">🔧 ${spec.name} <span class="pc-id">#${spec.id}</span></div>
+    <div class="pc-head">▸ ${spec.name} <span class="pc-id">#${spec.id}</span></div>
     <div class="pc-args">${args}</div>
     ${warn}
     <div class="pc-btns">
@@ -78,10 +78,15 @@ export async function runChatDemo(root: HTMLElement) {
     await wait(450)
 
     for (const step of steps) {
-      // AI intro line
+      // AI intro line (terminal-prompt prefixed)
       const ai = bubble('ai')
+      const ps = document.createElement('span')
+      ps.className = 'ps'
+      ps.textContent = '> '
+      const aiText = document.createElement('span')
+      ai.append(ps, aiText)
       root.appendChild(ai)
-      await typeInto(ai, t(step.ai))
+      await typeInto(aiText, t(step.ai))
       scrollEnd(root)
       await wait(280)
 

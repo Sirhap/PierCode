@@ -12,9 +12,7 @@ export const strings: Dict = {
   'nav.platforms': { zh: '支持平台', en: 'Platforms' },
   'nav.security': { zh: '安全', en: 'Security' },
 
-  'hero.eyebrow': { zh: '开源 · 本地优先', en: 'open-source · local-first' },
-  'hero.h1a': { zh: '网页 AI，接管你的', en: 'Web AI, meet your' },
-  'hero.h1b': { zh: '本地环境', en: 'local machine' },
+  'hero.eyebrow': { zh: 'piercode --开源 --本地优先', en: 'piercode --open-source --local-first' },
   'hero.lede': {
     zh: 'PierCode 把 ChatGPT、Claude、Gemini、Qwen、Kimi 连接到你的文件系统和浏览器。AI 输出工具调用，Chrome 扩展代理到本地沙箱服务器——读文件、改代码、跑命令、操作浏览器，全程经你批准。',
     en: 'PierCode connects ChatGPT, Claude, Gemini, Qwen & Kimi to your filesystem and browser. The AI emits tool calls; a Chrome extension proxies them to a sandboxed local server that reads files, edits code, runs commands, and drives the browser — with your approval.',
@@ -119,7 +117,10 @@ export const strings: Dict = {
   'start.3t': { zh: '在 Chrome 加载', en: 'Load it in Chrome' },
   'start.cta1': { zh: '在 GitHub 点 Star', en: 'Star on GitHub' },
   'start.cta2': { zh: '阅读 FAQ', en: 'Read the FAQ' },
+  'start.copy': { zh: '复制', en: 'copy' },
+  'start.copied': { zh: '已复制', en: 'copied' },
 
+  'foot.exit': { zh: '// exit 0 — 仅供研究', en: '// exit 0 — for research only' },
   'foot.fine': { zh: '仅供学习和研究使用。并非面向不可信提示词的安全沙箱。', en: 'For learning and research only. Not a hardened sandbox for untrusted prompts.' },
 }
 

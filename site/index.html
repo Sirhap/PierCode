@@ -9,8 +9,8 @@
   <meta name="keywords" content="PierCode, local AI assistant, AI coding agent, Chrome extension AI, ChatGPT local filesystem, Claude code execution, Gemini local server, Qwen tools, browser AI proxy, sandboxed code execution, MCP alternative, Go server AI, Manifest V3" />
   <link rel="canonical" href="https://sirhap.github.io/PierCode/" />
   <meta name="robots" content="index, follow" />
-  <meta name="theme-color" content="#1e1e2e" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231e1e2e'/%3E%3Ctext x='5' y='23' font-family='monospace' font-size='20' font-weight='700' fill='%23a6e3a1'%3E%E2%96%8C%3C/text%3E%3Ctext x='13' y='22' font-family='monospace' font-size='15' font-weight='700' fill='%2389b4fa'%3EP%3C/text%3E%3C/svg%3E" />
+  <meta name="theme-color" content="#0a0e0a" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230a0e0a'/%3E%3Ctext x='4' y='24' font-family='monospace' font-size='22' font-weight='700' fill='%2333ff66'%3E%E2%96%8C%3C/text%3E%3Ctext x='13' y='23' font-family='monospace' font-size='14' font-weight='700' fill='%2333ff66'%3EP%3C/text%3E%3C/svg%3E" />
 
   <!-- Open Graph -->
   <meta property="og:type" content="website" />
@@ -40,20 +40,26 @@
   }
   </script>
 
-  <link rel="stylesheet" href="/src/styles/main.css" />
-  <noscript><style>.reveal{opacity:1 !important;transform:none !important}</style></noscript>
+  <noscript><style>.reveal{opacity:1 !important;transform:none !important}#boot{display:none !important}.type-cursor{display:none !important}</style></noscript>
 </head>
 <body>
-  <canvas id="bg-grid" aria-hidden="true"></canvas>
+  <canvas id="crt-canvas" aria-hidden="true"></canvas>
+  <div class="crt-overlay" aria-hidden="true"></div>
+  <div class="crt-roll" aria-hidden="true"></div>
+
+  <!-- ── Boot sequence overlay (filled + animated by boot.ts) ── -->
+  <div id="boot" aria-hidden="true">
+    <div class="boot-screen" id="boot-screen"></div>
+  </div>
 
   <header class="nav">
     <a class="brand" href="#top">
-      <span class="brand-mark">▌</span>Pier<span class="brand-accent">Code</span>
+      <span class="brand-mark">▌</span>PierCode
     </a>
     <nav class="nav-links">
       <a href="#how" data-i18n="nav.how">工作原理</a>
       <a href="#core" data-i18n="nav.core">核心能力</a>
-      <a href="#features" data-i18n="nav.features">能力</a>
+      <a href="#features" data-i18n="nav.features">工具</a>
       <a href="#platforms" data-i18n="nav.platforms">支持平台</a>
       <a href="#security" data-i18n="nav.security">安全</a>
       <button id="lang-toggle" class="lang-toggle" type="button" aria-label="Switch language">EN</button>
@@ -66,8 +72,8 @@
     <!-- ── Hero ─────────────────────────────────────────────── -->
     <section class="hero">
       <div class="hero-copy reveal">
-        <div class="eyebrow" data-i18n="hero.eyebrow">开源 · 本地优先</div>
-        <h1><span data-i18n="hero.h1a">网页 AI，接管你的</span><br><span class="grad" data-i18n="hero.h1b">本地环境</span></h1>
+        <div class="prompt-line"><span class="ps1">user@local</span>:~$ <span data-i18n="hero.eyebrow">piercode --open-source --local-first</span></div>
+        <h1 id="hero-h1" data-type-zh="网页 AI，接管你的本地环境" data-type-en="Web AI takes over your local machine"></h1>
         <p class="lede" data-i18n="hero.lede">
           PierCode 把 ChatGPT、Claude、Gemini、Qwen、Kimi 连接到你的文件系统和浏览器。AI 输出工具调用，Chrome 扩展代理到本地沙箱服务器——读文件、改代码、跑命令、操作浏览器，全程经你批准。
         </p>
@@ -75,12 +81,12 @@
           <a class="btn btn-primary" href="https://github.com/Sirhap/PierCode" target="_blank" rel="noopener" data-i18n="hero.cta1">开始使用</a>
           <a class="btn btn-ghost" href="/PierCode/docs/" data-i18n="hero.cta2">阅读文档</a>
         </div>
-        <div class="trust"><span data-i18n="hero.trust">无需复制粘贴。不上传云端。运行在</span> <code>127.0.0.1</code>.</div>
+        <div class="trust"><span data-i18n="hero.trust">无需复制粘贴。不上传云端。运行在</span> <code>127.0.0.1</code></div>
       </div>
 
       <div class="hero-term reveal">
-        <div class="chat" id="chat-demo">
-          <div class="chat-head"><span class="dot"></span> chat.openai.com · PierCode</div>
+        <div class="term">
+          <div class="term-bar"><span></span><span></span><span></span><i>chat.openai.com · piercode</i></div>
           <div class="chat-body" id="chat-body"></div>
         </div>
       </div>
@@ -88,25 +94,28 @@
 
     <!-- ── How it works ─────────────────────────────────────── -->
     <section id="how" class="section">
+      <div class="section-tag reveal"><b>&gt;</b> man piercode</div>
       <h2 class="reveal" data-i18n="how.h2">工作原理</h2>
       <p class="section-sub reveal" data-i18n="how.sub">每次工具调用，四个步骤。</p>
       <ol class="flow">
-        <li class="flow-step reveal"><span class="flow-n">1</span><h3 data-i18n="how.s1t">AI 输出工具块</h3><p data-i18n="how.s1d">助手在回复里输出一个可见的 piercode-tool JSON 代码块。</p></li>
-        <li class="flow-step reveal"><span class="flow-n">2</span><h3 data-i18n="how.s2t">扩展检测到它</h3><p data-i18n="how.s2d">Chrome 扩展识别代码块并在页面上弹出批准卡。</p></li>
-        <li class="flow-step reveal"><span class="flow-n">3</span><h3 data-i18n="how.s3t">本地服务器执行</h3><p data-i18n="how.s3d">127.0.0.1 上的 Go 服务器校验后在工作目录沙箱内执行。</p></li>
-        <li class="flow-step reveal"><span class="flow-n">4</span><h3 data-i18n="how.s4t">结果回填</h3><p data-i18n="how.s4d">输出流回对话——AI 拿到真实的本地结果继续工作。</p></li>
+        <li class="flow-step reveal"><span class="flow-n">[1]</span><h3 data-i18n="how.s1t">AI 输出工具块</h3><p data-i18n="how.s1d">助手在回复里输出一个可见的 piercode-tool JSON 代码块。</p></li>
+        <li class="flow-step reveal"><span class="flow-n">[2]</span><h3 data-i18n="how.s2t">扩展检测到它</h3><p data-i18n="how.s2d">Chrome 扩展识别代码块并在页面上弹出批准卡。</p></li>
+        <li class="flow-step reveal"><span class="flow-n">[3]</span><h3 data-i18n="how.s3t">本地服务器执行</h3><p data-i18n="how.s3d">127.0.0.1 上的 Go 服务器校验后在工作目录沙箱内执行。</p></li>
+        <li class="flow-step reveal"><span class="flow-n">[4]</span><h3 data-i18n="how.s4t">结果回填</h3><p data-i18n="how.s4d">输出流回对话——AI 拿到真实的本地结果继续工作。</p></li>
       </ol>
     </section>
 
-    <!-- ── Core capabilities ──────────────────────────────────── -->
+    <!-- ── Core capabilities ────────────────────────────────── -->
     <section id="core" class="section">
+      <div class="section-tag reveal"><b>##</b> CAPABILITIES</div>
       <h2 class="reveal" data-i18n="core.h2">不只是工具调用——是完整的 AI 开发平台</h2>
       <p class="section-sub reveal" data-i18n="core.sub">PierCode v2 的核心能力，让网页 AI 真正成为你的本地开发搭档。</p>
       <div class="core-grid" id="core-cards"></div>
     </section>
 
-    <!-- ── Features ─────────────────────────────────────────── -->
+    <!-- ── Tools ────────────────────────────────────────────── -->
     <section id="features" class="section">
+      <div class="section-tag reveal"><b>$</b> piercode --list-tools</div>
       <h2 class="reveal" data-i18n="feat.h2">真正的工具，不只是建议</h2>
       <p class="section-sub reveal" data-i18n="feat.sub">精简工具集，沙箱化、可审查。</p>
       <div class="cards" id="feature-cards"></div>
@@ -114,6 +123,7 @@
 
     <!-- ── Platforms ────────────────────────────────────────── -->
     <section id="platforms" class="section">
+      <div class="section-tag reveal"><b>&gt;</b> connected surfaces</div>
       <h2 class="reveal" data-i18n="plat.h2">在你常用的对话里就能用</h2>
       <p class="section-sub reveal" data-i18n="plat.sub">一个扩展，覆盖多个 AI 平台。</p>
       <div class="platforms" id="platform-wall"></div>
@@ -121,23 +131,25 @@
 
     <!-- ── Security ─────────────────────────────────────────── -->
     <section id="security" class="section">
+      <div class="section-tag reveal"><b>!</b> [SECURITY]</div>
       <h2 class="reveal" data-i18n="sec.h2">本地优先的设计</h2>
       <p class="section-sub reveal" data-i18n="sec.sub">AI 能碰什么，由你决定。</p>
       <div class="sec-grid">
-        <div class="sec-item reveal"><div class="sec-ico">⊟</div><h3 data-i18n="sec.1t">仅回环地址</h3><p data-i18n="sec.1d">服务器绑定 127.0.0.1，绝不暴露公网端口。</p></div>
-        <div class="sec-item reveal"><div class="sec-ico">⚷</div><h3 data-i18n="sec.2t">Token 认证</h3><p data-i18n="sec.2d">每次启动生成 token，存于 ~/.piercode，每个请求都要带。</p></div>
-        <div class="sec-item reveal"><div class="sec-ico">▣</div><h3 data-i18n="sec.3t">路径沙箱</h3><p data-i18n="sec.3d">路径经真实路径解析校验，始终留在工作目录内。</p></div>
+        <div class="sec-item reveal"><div class="sec-ico">[loopback]</div><h3 data-i18n="sec.1t">仅回环地址</h3><p data-i18n="sec.1d">服务器绑定 127.0.0.1，绝不暴露公网端口。</p></div>
+        <div class="sec-item reveal"><div class="sec-ico">[token]</div><h3 data-i18n="sec.2t">Token 认证</h3><p data-i18n="sec.2d">每次启动生成 token，存于 ~/.piercode，每个请求都要带。</p></div>
+        <div class="sec-item reveal"><div class="sec-ico">[sandbox]</div><h3 data-i18n="sec.3t">路径沙箱</h3><p data-i18n="sec.3d">路径经真实路径解析校验，始终留在工作目录内。</p></div>
       </div>
     </section>
 
     <!-- ── Quick start ──────────────────────────────────────── -->
     <section id="start" class="section">
+      <div class="section-tag reveal"><b>$</b> quickstart</div>
       <h2 class="reveal" data-i18n="start.h2">快速开始</h2>
       <p class="section-sub reveal" data-i18n="start.sub">三步拥有本地 AI 智能体。</p>
       <div class="steps">
-        <div class="step reveal"><span class="step-n">1</span><div><h3 data-i18n="start.1t">启动服务器</h3><pre><code>go run ./cmd/server -dir .</code></pre></div></div>
-        <div class="step reveal"><span class="step-n">2</span><div><h3 data-i18n="start.2t">构建扩展</h3><pre><code>cd extension &amp;&amp; npm install &amp;&amp; npm run build</code></pre></div></div>
-        <div class="step reveal"><span class="step-n">3</span><div><h3 data-i18n="start.3t">在 Chrome 加载</h3><pre><code>chrome://extensions → Load unpacked → extension/dist</code></pre></div></div>
+        <div class="step reveal"><span class="step-n">01</span><div><h3 data-i18n="start.1t">启动服务器</h3><button class="copy-cmd" type="button" data-copy="go run ./cmd/server -dir .">go run ./cmd/server -dir .<span class="copy-hint" data-i18n="start.copy">复制</span></button></div></div>
+        <div class="step reveal"><span class="step-n">02</span><div><h3 data-i18n="start.2t">构建扩展</h3><button class="copy-cmd" type="button" data-copy="cd extension && npm install && npm run build">cd extension &amp;&amp; npm install &amp;&amp; npm run build<span class="copy-hint" data-i18n="start.copy">复制</span></button></div></div>
+        <div class="step reveal"><span class="step-n">03</span><div><h3 data-i18n="start.3t">在 Chrome 加载</h3><button class="copy-cmd" type="button" data-copy="chrome://extensions → Load unpacked → extension/dist">chrome://extensions → Load unpacked → extension/dist<span class="copy-hint" data-i18n="start.copy">复制</span></button></div></div>
       </div>
       <div class="cta-row center reveal">
         <a class="btn btn-primary" href="https://github.com/Sirhap/PierCode" target="_blank" rel="noopener" data-i18n="start.cta1">在 GitHub 点 Star</a>
@@ -147,7 +159,8 @@
   </main>
 
   <footer class="footer">
-    <div class="brand"><span class="brand-mark">▌</span>Pier<span class="brand-accent">Code</span></div>
+    <div class="brand"><span class="brand-mark">▌</span>PierCode</div>
+    <p class="exit" data-i18n="foot.exit">// exit 0 — for research only</p>
     <nav>
       <a href="https://github.com/Sirhap/PierCode" target="_blank" rel="noopener">GitHub</a>
       <a href="/PierCode/docs/">Docs</a>
