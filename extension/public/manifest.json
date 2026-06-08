@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "PierCode",
-  "version": "2.0.0",
-  "version_name": "2.0.0-bate",
+  "version": "3.0.0",
+  "version_name": "3.0.0",
   "minimum_chrome_version": "118",
   "description": "PierCode 代理 - 连接 AI 与本地环境",
   "background": {
@@ -10,7 +10,7 @@
     "type": "module"
   },
   "options_page": "configure.html",
-  "permissions": ["activeTab", "storage", "tabs", "scripting", "debugger", "cookies", "downloads", "declarativeNetRequest"],
+  "permissions": ["activeTab", "storage", "tabs", "scripting", "debugger", "cookies", "downloads", "declarativeNetRequest", "sidePanel"],
   "host_permissions": ["http://127.0.0.1:*/*", "*://gemini.google.com/*", "*://*.gemini.google.com/*", "*://aistudio.google.com/*", "*://*.aistudio.google.com/*", "*://qwen.ai/*", "*://chat.qwen.ai/*", "*://*.chat.qwen.ai/*", "*://*.qwen.ai/*", "*://qwenlm.ai/*", "*://*.qwenlm.ai/*", "*://chat.z.ai/*", "*://*.chat.z.ai/*", "*://kimi.com/*", "*://*.kimi.com/*", "*://claude.ai/*", "*://*.claude.ai/*", "*://free.easychat.top/*", "*://*.free.easychat.top/*", "*://aistudio.xiaomimimo.com/*", "*://*.aistudio.xiaomimimo.com/*", "*://chatgpt.com/*", "*://*.chatgpt.com/*", "*://chat.openai.com/*", "*://*.chat.openai.com/*"],
   "action": {
     "default_popup": "popup.html",
@@ -20,6 +20,9 @@
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
+  },
+  "side_panel": {
+    "default_path": "sidebar.html"
   },
   "icons": {
     "16": "icons/icon16.png",
