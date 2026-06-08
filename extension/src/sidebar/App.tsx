@@ -3,6 +3,7 @@ import MessageView, { type ChatMessage, type ToolResult, type ThinkingStep } fro
 import Picker, { type PickerItem } from './Picker'
 import TokenPanel from './token-panel'
 import WorkerRadar, { type SubAgent } from './WorkerRadar'
+import StatusHUD from './StatusHUD'
 import { classifyCompletion } from './completions'
 import { filterAgentTemplates } from './agent-templates'
 import {
@@ -142,35 +143,6 @@ function QuestionCard({ question, options, onAnswer }: {
           提交
         </button>
       </div>
-    </div>
-  )
-}
-
-// ── Connection Status Component ────────────────────────────────────────────
-
-function ConnectionInfo({ connected }: { connected: boolean }) {
-  const [details, setDetails] = useState<{ version: string; rootDir: string }>({ version: '', rootDir: '' })
-
-  useEffect(() => {
-    if (!connected) return
-    chrome.storage.local.get(['apiUrl', 'authToken'], (result) => {
-      if (!result.apiUrl || !result.authToken) return
-      const headers = { Authorization: `Bearer ${result.authToken}` }
-      Promise.all([
-        fetch(`${result.apiUrl}/health`, { headers }).then(r => r.json()).catch(() => null),
-        fetch(`${result.apiUrl}/config`, { headers }).then(r => r.json()).catch(() => null),
-      ]).then(([health, config]) => {
-        setDetails({ version: health?.version || '', rootDir: config?.rootDir || '' })
-      })
-    })
-  }, [connected])
-
-  if (!connected) return null
-
-  return (
-    <div className="px-3 py-1.5 border-b border-gray-800/40 text-[10px] text-gray-600 flex items-center gap-3 overflow-hidden">
-      {details.version && <span>v{details.version}</span>}
-      {details.rootDir && <span className="truncate flex-1" title={details.rootDir}>📁 {details.rootDir}</span>}
     </div>
   )
 }
@@ -764,9 +736,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── Connection details ──────────────────────────────────────────────── */}
-      <ConnectionInfo connected={connected} />
-
       {/* ── Platform selector + model ───────────────────────────────────────── */}
       <div className="flex items-center gap-1 px-3 py-1.5 border-b border-gray-800/60 flex-shrink-0 overflow-x-auto">
         {PLATFORMS.map(p => (
@@ -896,6 +865,15 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {/* ── Status HUD ──────────────────────────────────────────────────────── */}
+      <StatusHUD
+        connected={connected}
+        messages={messages}
+        platform={platform}
+        threshold={tokenThreshold || 200_000}
+        activeAgents={subAgents.filter(a => a.status === 'running').length}
+      />
     </div>
   )
 }
