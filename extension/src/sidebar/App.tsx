@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import ToolCard, { type ToolCall, type ToolResult } from './ToolCard'
 import Picker, { type PickerItem } from './Picker'
 import TokenPanel from './token-panel'
 import { classifyCompletion } from './completions'
@@ -13,17 +14,9 @@ import {
 
 type Platform = 'qwen' | 'chatgpt' | 'claude' | 'openai'
 
-interface ToolCall {
-  name: string
-  args: Record<string, unknown>
-  call_id: string
-}
-
-interface ToolResult {
-  call_id: string
-  name: string
-  output: string
-  success: boolean
+interface ThinkingStep {
+  title: string
+  thought: string
 }
 
 interface ChatMessage {
@@ -32,6 +25,7 @@ interface ChatMessage {
   toolCalls?: ToolCall[]
   toolResults?: ToolResult[]
   toolStreams?: Record<string, string[]>  // call_id → stream chunks
+  thinking?: ThinkingStep[]               // reasoning summary (Qwen thinking_summary)
   streaming?: boolean
   ts?: number
 }
@@ -62,7 +56,7 @@ async function getQwenToken(): Promise<string | null> {
   })
 }
 
-async function bgFetch(url: string, options?: RequestInit): Promise<{ ok: boolean; status: number; text: string }> {
+async function bgFetch(url: string, options?: RequestInit): Promise<{ ok: boolean; status: number; text: string; json(): any }> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(
       { type: 'FETCH', url, options },
@@ -71,7 +65,15 @@ async function bgFetch(url: string, options?: RequestInit): Promise<{ ok: boolea
           reject(new Error(chrome.runtime.lastError.message))
           return
         }
-        resolve({ ok: result.ok, status: result.status, text: result.body })
+        resolve({
+          ok: result.ok,
+          status: result.status,
+          text: result.body,
+          json() {
+            try { return JSON.parse(result.body) }
+            catch { return { error: 'invalid JSON', raw: result.body.slice(0, 200) } }
+          },
+        })
       },
     )
   })
@@ -132,6 +134,14 @@ function appendAgentChunk(messages: ChatMessage[], chunk: string): ChatMessage[]
   return next
 }
 
+// ── Strip piercode-tool blocks from display text ───────────────────────────
+
+const TOOL_FENCE_RE = /```piercode-tool\s*\n[\s\S]*?\n```/gi
+
+function stripToolBlocks(text: string): string {
+  return text.replace(TOOL_FENCE_RE, '').replace(/\n{3,}/g, '\n\n').trim()
+}
+
 // ── Markdown renderer ──────────────────────────────────────────────────────
 
 function escapeHtml(s: string): string {
@@ -184,95 +194,115 @@ function renderMarkdown(text: string): string {
   return src
 }
 
-// ── Destructive command detection ──────────────────────────────────────────
+// ── Thinking Block (Claude-Code style collapsible reasoning) ───────────────
 
-const DESTRUCTIVE_PATTERNS = [
-  { pattern: /rm\s+(-[a-zA-Z]*f|-[a-zA-Z]*r[a-zA-Z]*\s+-[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*\s+-[a-zA-Z]*r)/, label: 'rm -rf（递归强制删除）' },
-  { pattern: /rm\s+-rf\s+\//, label: 'rm -rf /（删除根目录）' },
-  { pattern: /git\s+reset\s+--hard/, label: 'git reset --hard（不可逆重置）' },
-  { pattern: /git\s+clean\s+-fd/, label: 'git clean -fd（强制清理）' },
-  { pattern: /git\s+push\s+.*--force/, label: 'git push --force（强制推送）' },
-  { pattern: /DROP\s+(TABLE|DATABASE|SCHEMA)/i, label: 'DROP TABLE/DATABASE（删除数据库对象）' },
-  { pattern: /DELETE\s+FROM.*WHERE\s+1\s*=\s*1/i, label: 'DELETE FROM（清空表数据）' },
-  { pattern: /mkfs/, label: 'mkfs（格式化磁盘）' },
-  { pattern: /dd\s+if=/, label: 'dd（低级磁盘写入）' },
-  { pattern: />\s*\/dev\/sd[a-z]/, label: '写入磁盘设备' },
-]
-
-function getDestructiveWarning(args: Record<string, unknown>): string | null {
-  const cmd = String(args.command || args.cmd || '')
-  if (!cmd) return null
-  for (const { pattern, label } of DESTRUCTIVE_PATTERNS) {
-    if (pattern.test(cmd)) return label
-  }
-  return null
-}
-
-// ── Tool Card Component ────────────────────────────────────────────────────
-
-function ToolCard({ tool, result, streams }: {
-  tool: ToolCall
-  result?: ToolResult
-  streams?: string[]
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const statusIcon = result ? (result.success ? '✅' : '❌') : '⏳'
-  const warning = getDestructiveWarning(tool.args)
-
+function ThinkingBlock({ steps, streaming }: { steps: ThinkingStep[]; streaming?: boolean }) {
+  const [open, setOpen] = useState(false)
+  if (steps.length === 0) return null
+  const last = steps[steps.length - 1]
   return (
-    <div className="tool-card">
-      {/* Destructive warning */}
-      {warning && (
-        <div className="px-2 py-1 bg-red-900/40 border-b border-red-800/40 text-[10px] text-red-300 flex items-center gap-1">
-          <span>⚠️</span><span>危险操作: {warning}</span>
-        </div>
-      )}
-      <div className="tool-card-header" onClick={() => setExpanded(!expanded)}>
-        <span>{statusIcon}</span>
-        <span className="text-blue-400 font-mono text-[11px]">{tool.name}</span>
-        {tool.call_id && <span className="text-gray-600 font-mono text-[9px]">#{tool.call_id.slice(-8)}</span>}
-        {!result && <span className="text-gray-500 animate-pulse-dot text-[11px]">执行中</span>}
-        <span className="ml-auto text-gray-600 text-[10px]">{expanded ? '▲' : '▼'}</span>
+    <div className="mb-1.5 text-[11px]">
+      <div className="flex items-center gap-1.5 cursor-pointer text-gray-500 hover:text-gray-400" onClick={() => setOpen(o => !o)}>
+        <span>💭</span>
+        <span className="italic truncate flex-1">{last.title || '思考中…'}</span>
+        {streaming && <span className="animate-pulse-dot">·</span>}
+        <span className="text-gray-700">{open ? '▲' : `${steps.length} 步 ▼`}</span>
       </div>
-      {expanded && (
-        <div className="tool-card-body">
-          {Object.keys(tool.args).length > 0 && (
-            <div className="mb-2">
-              <div className="text-gray-500 mb-1">参数:</div>
-              <pre className="text-gray-300">{JSON.stringify(tool.args, null, 2)}</pre>
+      {open && (
+        <div className="mt-1 pl-4 border-l border-gray-800 space-y-1.5">
+          {steps.map((s, i) => (
+            <div key={i}>
+              {s.title && <div className="text-gray-500">{s.title}</div>}
+              {s.thought && <div className="text-gray-600 whitespace-pre-wrap leading-relaxed">{s.thought}</div>}
             </div>
-          )}
-          {/* Live stream output */}
-          {streams && streams.length > 0 && (
-            <div className="mb-2">
-              <div className="text-gray-500 mb-1">输出流:</div>
-              <pre className="text-emerald-300 max-h-24 overflow-y-auto">{streams.join('')}</pre>
-            </div>
-          )}
-          {result && (
-            <div>
-              <div className="text-gray-500 mb-1">结果:</div>
-              <pre className={result.success ? 'text-gray-300' : 'text-red-300'}>{result.output}</pre>
-            </div>
-          )}
+          ))}
         </div>
       )}
     </div>
   )
 }
 
-// ── Message Bubble Component ───────────────────────────────────────────────
+// ── Action Button ──────────────────────────────────────────────────────────
 
-function MessageBubble({ msg }: { msg: ChatMessage }) {
+function ActionBtn({ icon, title, onClick }: { icon: string; title: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="p-1 rounded text-gray-600 hover:text-gray-300 hover:bg-gray-700/50 transition-colors cursor-pointer text-[11px]"
+      title={title}
+    >
+      {icon}
+    </button>
+  )
+}
+
+// ── Question Card (user interaction for question tool) ─────────────────────
+
+function QuestionCard({ question, options, onAnswer }: {
+  question: string
+  options: string[]
+  onAnswer: (answer: string) => void
+}) {
+  const [customInput, setCustomInput] = useState('')
+
+  return (
+    <div className="my-2 mx-1 rounded-xl border border-amber-600/40 bg-amber-900/10 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-amber-400">❓</span>
+        <span className="text-sm text-amber-200 font-medium">需要你的回答</span>
+      </div>
+      <p className="text-sm text-gray-200 mb-3 whitespace-pre-wrap">{question}</p>
+
+      {/* Option buttons */}
+      {options.length > 0 && (
+        <div className="space-y-1.5 mb-3">
+          {options.map((opt, i) => (
+            <button
+              key={i}
+              onClick={() => onAnswer(opt)}
+              className="w-full text-left px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 hover:bg-gray-700 hover:border-blue-500/50 transition-colors cursor-pointer"
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Custom input */}
+      <div className="flex gap-2">
+        <input
+          value={customInput}
+          onChange={e => setCustomInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && customInput.trim()) onAnswer(customInput.trim()) }}
+          placeholder={options.length > 0 ? '或输入自定义回答...' : '输入回答...'}
+          className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-100 placeholder-gray-600 outline-none focus:border-amber-500 transition-colors"
+        />
+        <button
+          onClick={() => customInput.trim() && onAnswer(customInput.trim())}
+          disabled={!customInput.trim()}
+          className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-sm rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          提交
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Message Bubble Component (Qwen-style) ──────────────────────────────────
+
+function MessageBubble({ msg, onRegenerate }: { msg: ChatMessage; onRegenerate?: () => void }) {
   const isUser = msg.role === 'user'
   const isTool = msg.role === 'tool_result'
 
   if (isTool) {
     return (
-      <div className="msg-row px-3 py-1">
-        <div className="rounded-lg bg-gray-800/50 border border-gray-800 p-2 text-xs text-gray-400">
-          <span className="text-gray-500">📎 工具结果</span>
-          <pre className="mt-1 whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
+      <div className="msg-row px-4 py-1">
+        <div className="rounded-lg bg-gray-800/40 border border-gray-800/60 p-2.5 text-xs text-gray-400">
+          <div className="flex items-center gap-1.5 text-gray-500 mb-1">
+            <span>📎</span><span>工具结果</span>
+          </div>
+          <pre className="whitespace-pre-wrap break-all max-h-32 overflow-y-auto text-gray-400">
             {msg.content.slice(0, 500)}{msg.content.length > 500 ? '...' : ''}
           </pre>
         </div>
@@ -281,9 +311,19 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
   }
 
   return (
-    <div className={`msg-row px-3 py-1 ${isUser ? 'flex justify-end' : ''}`}>
+    <div className={`msg-row px-4 py-1.5 ${isUser ? 'flex justify-end' : ''}`}>
       <div className="relative group max-w-[92%]">
-        <div className={`rounded-2xl px-3 py-2 text-sm leading-relaxed ${isUser ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-100'}`}>
+        {/* Message bubble */}
+        <div className={`rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed ${
+          isUser
+            ? 'bg-blue-600 text-white'
+            : 'bg-gray-800/80 text-gray-100 border border-gray-700/30'
+        }`}>
+          {/* Thinking block */}
+          {msg.thinking && msg.thinking.length > 0 && (
+            <ThinkingBlock steps={msg.thinking} streaming={msg.streaming && !msg.content} />
+          )}
+          {/* Tool cards */}
           {msg.toolCalls?.map((tc, i) => (
             <ToolCard
               key={tc.call_id || i}
@@ -292,21 +332,37 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
               streams={msg.toolStreams?.[tc.call_id]}
             />
           ))}
-          {msg.content && (
-            <div
-              className={`msg-content ${msg.toolCalls?.length ? 'mt-2' : ''}`}
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-            />
-          )}
+          {/* Text content (strip tool blocks if ToolCards present) */}
+          {msg.content && (() => {
+            const displayText = msg.toolCalls?.length
+              ? stripToolBlocks(msg.content)
+              : msg.content
+            if (!displayText) return null
+            return (
+              <div
+                className={`msg-content ${msg.toolCalls?.length ? 'mt-2' : ''}`}
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(displayText) }}
+              />
+            )
+          })()}
+          {/* Streaming cursor */}
           {msg.streaming && (
             <span className="inline-block w-1.5 h-4 bg-gray-400 animate-pulse-dot ml-0.5 align-text-bottom" />
           )}
         </div>
-        <div className={`flex items-center gap-2 mt-0.5 ${isUser ? 'justify-end' : ''}`}>
-          {msg.ts && <span className="text-[10px] text-gray-600">{formatTime(msg.ts)}</span>}
-          {msg.content && !msg.streaming && (
-            <button onClick={() => copyToClipboard(msg.content)} className="copy-btn text-[10px] text-gray-600 hover:text-gray-400 cursor-pointer" title="复制消息">📋</button>
-          )}
+
+        {/* Footer: timestamp + action buttons */}
+        <div className={`flex items-center gap-1 mt-1 ${isUser ? 'justify-end' : ''}`}>
+          {msg.ts && <span className="text-[10px] text-gray-600 mr-1">{formatTime(msg.ts)}</span>}
+          {/* Action buttons — visible on hover */}
+          <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
+            {msg.content && !msg.streaming && (
+              <ActionBtn icon="📋" title="复制" onClick={() => copyToClipboard(msg.content)} />
+            )}
+            {!isUser && !msg.streaming && onRegenerate && (
+              <ActionBtn icon="🔄" title="重新生成" onClick={onRegenerate} />
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -367,11 +423,18 @@ function SubAgentCard({ agent }: { agent: SubAgent }) {
 
 // ── Main App ───────────────────────────────────────────────────────────────
 
+interface PendingQuestion {
+  callId: string
+  question: string
+  options: string[]
+}
+
 export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [platform, setPlatform] = useState<Platform>('qwen')
   const [model, setModel] = useState(DEFAULT_MODELS.qwen)
+  const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null)
   const [models, setModels] = useState<ModelInfo[]>([])
   const [streaming, setStreaming] = useState(false)
   const [connected, setConnected] = useState(false)
@@ -487,7 +550,7 @@ export default function App() {
 
   // ── Streaming message listener ────────────────────────────────────────
   useEffect(() => {
-    const CHAT_TYPES = new Set(['CHAT_STREAM', 'CHAT_TOOLS', 'CHAT_TOOL_DONE', 'CHAT_TOOL_STREAM', 'CHAT_DONE', 'CHAT_ERROR', 'CHAT_AGENT_SPAWN', 'CHAT_AGENT_STREAM', 'CHAT_AGENT_DONE'])
+    const CHAT_TYPES = new Set(['CHAT_STREAM', 'CHAT_THINKING', 'CHAT_TOOLS', 'CHAT_TOOL_DONE', 'CHAT_TOOL_STREAM', 'CHAT_DONE', 'CHAT_ERROR', 'CHAT_CONTINUING', 'CHAT_QUESTION', 'CHAT_AGENT_SPAWN', 'CHAT_AGENT_STREAM', 'CHAT_AGENT_DONE'])
     const listener = (msg: any) => {
       if (!msg?.type || !CHAT_TYPES.has(msg.type)) return
       if (msg.type === 'CHAT_STREAM') {
@@ -499,13 +562,37 @@ export default function App() {
           }
           return next
         })
+      } else if (msg.type === 'CHAT_THINKING') {
+        const step = msg.step as ThinkingStep | undefined
+        if (step && (step.title || step.thought)) {
+          setMessages(prev => {
+            const next = [...prev]
+            const idx = currentAssistantIdx.current
+            if (idx >= 0 && idx < next.length) {
+              const existing = next[idx]
+              const steps = [...(existing.thinking || [])]
+              const last = steps[steps.length - 1]
+              // Qwen re-emits an accumulating summary; replace the last step when
+              // its title matches (a growing thought), else append a new step.
+              if (last && last.title === step.title) steps[steps.length - 1] = step
+              else steps.push(step)
+              next[idx] = { ...existing, thinking: steps }
+            }
+            return next
+          })
+        }
       } else if (msg.type === 'CHAT_TOOLS') {
+        // Tools detected — text streaming is done for this message, stop cursor
         setMessages(prev => {
           const next = [...prev]
           const idx = currentAssistantIdx.current
           if (idx >= 0 && idx < next.length) {
             const existing = next[idx]
-            next[idx] = { ...existing, toolCalls: [...(existing.toolCalls || []), ...(msg.tools || [])] }
+            next[idx] = {
+              ...existing,
+              streaming: false,
+              toolCalls: [...(existing.toolCalls || []), ...(msg.tools || [])],
+            }
           }
           return next
         })
@@ -533,6 +620,22 @@ export default function App() {
             next[idx] = { ...existing, toolResults: [...(existing.toolResults || []), result] }
           }
           return next
+        })
+      } else if (msg.type === 'CHAT_CONTINUING') {
+        // Tool execution done, AI is continuing — create a fresh assistant message
+        const now = Date.now()
+        setMessages(prev => {
+          const newMsg: ChatMessage = { role: 'assistant', content: '', streaming: true, ts: now }
+          const next = [...prev, newMsg]
+          currentAssistantIdx.current = next.length - 1
+          return next
+        })
+      } else if (msg.type === 'CHAT_QUESTION') {
+        // Question tool needs user interaction — show UI
+        setPendingQuestion({
+          callId: msg.call_id,
+          question: msg.question || '',
+          options: Array.isArray(msg.options) ? msg.options.map(String) : [],
         })
       } else if (msg.type === 'CHAT_DONE') {
         if (msg.chatId) chatIdRef.current = msg.chatId
@@ -607,7 +710,7 @@ export default function App() {
         const res = await bgFetch(`${auth.apiUrl}/skills`, {
           headers: { Authorization: `Bearer ${auth.token}` },
         })
-        const data = JSON.parse(res.text)
+        const data = res.json()
         const skills: PickerItem[] = (data.skills || [])
           .filter((s: any) => !s.name?.startsWith('piercode-'))
           .map((s: any) => ({ label: s.name, sub: s.description, value: s.name }))
@@ -637,7 +740,7 @@ export default function App() {
       const res = await bgFetch(`${auth.apiUrl}/files?q=${encodeURIComponent(match.query)}`, {
         headers: { Authorization: `Bearer ${auth.token}` },
       })
-      const data = JSON.parse(res.text)
+      const data = res.json()
       const files: string[] = data.files || []
       setPickerItems(files.slice(0, 20).map(f => ({ label: f, value: f })))
     } catch {
@@ -659,7 +762,7 @@ export default function App() {
           },
           body: JSON.stringify({ name: 'skill', call_id: `skill-${Date.now()}`, args: { skill: item.value } }),
         })
-        const data = JSON.parse(res.text)
+        const data = res.json()
         const content = data.output || data.error || ''
         // Replace the /token with formatted skill insertion
         const insertion = `请加载并遵循下面的 PierCode skill。\n<skill name="${item.value}">\n${content}\n</skill>\n任务：`
@@ -768,6 +871,47 @@ export default function App() {
       return next
     })
   }
+
+  const handleRegenerate = useCallback(() => {
+    // Find the last user message and re-send it
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
+    if (!lastUserMsg || streaming) return
+
+    // Remove the last assistant message
+    setMessages(prev => {
+      const next = [...prev]
+      if (next.length > 0 && next[next.length - 1].role === 'assistant') {
+        next.pop()
+      }
+      return next
+    })
+
+    setError('')
+    const now = Date.now()
+    const assistantMsg: ChatMessage = { role: 'assistant', content: '', streaming: true, ts: now }
+    setMessages(prev => [...prev, assistantMsg])
+    currentAssistantIdx.current = messages.length  // assistant is at the end
+    setStreaming(true)
+
+    chrome.runtime.sendMessage({
+      type: 'CHAT_REQUEST',
+      platform,
+      model,
+      chatId: chatIdRef.current,
+      parentId: null,  // reset parent for regenerate
+      message: lastUserMsg.content,
+    })
+  }, [messages, platform, model, streaming])
+
+  const handleQuestionAnswer = useCallback((answer: string) => {
+    if (!pendingQuestion) return
+    chrome.runtime.sendMessage({
+      type: 'CHAT_QUESTION_ANSWER',
+      call_id: pendingQuestion.callId,
+      answer,
+    })
+    setPendingQuestion(null)
+  }, [pendingQuestion])
 
   const startNewSession = useCallback(() => {
     if (streaming) chrome.runtime.sendMessage({ type: 'CHAT_CANCEL' })
@@ -892,7 +1036,13 @@ export default function App() {
             )}
           </div>
         )}
-        {messages.map((msg, i) => <MessageBubble key={i} msg={msg} />)}
+        {messages.map((msg, i) => (
+          <MessageBubble
+            key={i}
+            msg={msg}
+            onRegenerate={msg.role === 'assistant' && !msg.streaming ? handleRegenerate : undefined}
+          />
+        ))}
       </div>
 
       {/* ── Sub-agents ──────────────────────────────────────────────────────── */}
@@ -901,6 +1051,17 @@ export default function App() {
           {subAgents.map(a => (
             <SubAgentCard key={a.id} agent={a} />
           ))}
+        </div>
+      )}
+
+      {/* ── Question card (user interaction) ─────────────────────────────────── */}
+      {pendingQuestion && (
+        <div className="flex-shrink-0 px-3 py-1 border-t border-amber-800/30 bg-gray-950">
+          <QuestionCard
+            question={pendingQuestion.question}
+            options={pendingQuestion.options}
+            onAnswer={handleQuestionAnswer}
+          />
         </div>
       )}
 
@@ -936,7 +1097,6 @@ export default function App() {
             rows={1}
             className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 outline-none focus:border-blue-500 transition-colors resize-none overflow-hidden"
             style={{ maxHeight: '120px' }}
-            disabled={streaming}
           />
           {streaming ? (
             <button onClick={handleCancel} className="px-3 py-2 bg-red-600 hover:bg-red-500 text-white text-sm rounded-lg transition-colors cursor-pointer flex-shrink-0" title="停止生成">■</button>
