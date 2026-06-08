@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import MessageView, { type ChatMessage, type ToolResult, type ThinkingStep } from './MessageView'
 import Picker, { type PickerItem } from './Picker'
 import TokenPanel from './token-panel'
+import WorkerRadar, { type SubAgent } from './WorkerRadar'
 import { classifyCompletion } from './completions'
 import { filterAgentTemplates } from './agent-templates'
 import {
@@ -75,15 +76,7 @@ async function getAuth(): Promise<{ apiUrl: string; token: string } | null> {
   })
 }
 
-// ── Sub-agent types + id helper ────────────────────────────────────────────
-
-interface SubAgent {
-  id: string
-  label: string
-  task: string
-  status: 'running' | 'done' | 'error'
-  messages: ChatMessage[]
-}
+// ── Sub-agent id helper ────────────────────────────────────────────────────
 
 function genId(): string {
   return `s-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
@@ -691,6 +684,10 @@ export default function App() {
     setMessages(prev => prev.map((m, i) => i === idx ? { ...m, pinned: !m.pinned } : m))
   }, [])
 
+  const jumpToAgent = useCallback((id: string) => {
+    document.getElementById(`agent-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [])
+
   const handleQuestionAnswer = useCallback((answer: string) => {
     if (!pendingQuestion) return
     chrome.runtime.sendMessage({
@@ -803,6 +800,9 @@ export default function App() {
         )}
       </div>
 
+      {/* ── Worker radar ────────────────────────────────────────────────────── */}
+      <WorkerRadar agents={subAgents} onJump={jumpToAgent} />
+
       {/* ── Messages ────────────────────────────────────────────────────────── */}
       <div ref={listRef} className="flex-1 overflow-y-auto chat-scroll py-2 space-y-1">
         {messages.length === 0 && (
@@ -838,7 +838,9 @@ export default function App() {
       {subAgents.length > 0 && (
         <div className="px-3 py-1.5 border-t border-gray-800/40 bg-gray-950/60 flex-shrink-0 space-y-1 max-h-40 overflow-y-auto">
           {subAgents.map(a => (
-            <SubAgentCard key={a.id} agent={a} />
+            <div key={a.id} id={`agent-${a.id}`}>
+              <SubAgentCard agent={a} />
+            </div>
           ))}
         </div>
       )}
