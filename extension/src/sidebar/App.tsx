@@ -8,6 +8,8 @@ import { classifyCompletion } from './completions'
 import { filterAgentTemplates } from './agent-templates'
 import CommandPalette, { type SearchHit } from './CommandPalette'
 import { type Command } from './commands'
+import { useGlow } from './use-glow'
+import { GLOW_COLORS } from './glow'
 import {
   saveSession, loadSession, listSessions, deleteSession,
   getActiveSessionId, setActiveSessionId,
@@ -106,12 +108,12 @@ function QuestionCard({ question, options, onAnswer }: {
   const [customInput, setCustomInput] = useState('')
 
   return (
-    <div className="my-2 mx-1 rounded-xl border border-amber-600/40 bg-amber-900/10 p-3">
+    <div className="my-2 mx-1 rounded-sm border p-3" style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}>
       <div className="flex items-center gap-2 mb-2">
-        <span className="text-amber-400">❓</span>
-        <span className="text-sm text-amber-200 font-medium">需要你的回答</span>
+        <span className="glow-text">?</span>
+        <span className="text-sm font-medium glow-text">需要你的回答</span>
       </div>
-      <p className="text-sm text-gray-200 mb-3 whitespace-pre-wrap">{question}</p>
+      <p className="text-sm mb-3 whitespace-pre-wrap" style={{ color: 'var(--txt)' }}>{question}</p>
 
       {/* Option buttons */}
       {options.length > 0 && (
@@ -120,7 +122,8 @@ function QuestionCard({ question, options, onAnswer }: {
             <button
               key={i}
               onClick={() => onAnswer(opt)}
-              className="w-full text-left px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 hover:bg-gray-700 hover:border-blue-500/50 transition-colors cursor-pointer"
+              className="w-full text-left px-3 py-1.5 rounded-sm border text-sm transition-colors cursor-pointer hover:opacity-80"
+              style={{ background: 'var(--panel)', borderColor: 'var(--line)', color: 'var(--txt)' }}
             >
               {opt}
             </button>
@@ -135,12 +138,14 @@ function QuestionCard({ question, options, onAnswer }: {
           onChange={e => setCustomInput(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && customInput.trim()) onAnswer(customInput.trim()) }}
           placeholder={options.length > 0 ? '或输入自定义回答...' : '输入回答...'}
-          className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-100 placeholder-gray-600 outline-none focus:border-amber-500 transition-colors"
+          className="flex-1 rounded-sm border px-3 py-1.5 text-sm outline-none"
+          style={{ background: 'var(--panel)', borderColor: 'var(--line)', color: 'var(--txt)' }}
         />
         <button
           onClick={() => customInput.trim() && onAnswer(customInput.trim())}
           disabled={!customInput.trim()}
-          className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-sm rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          className="px-3 py-1.5 text-sm rounded-sm glow-border cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{ color: 'var(--glow)' }}
         >
           提交
         </button>
@@ -153,18 +158,19 @@ function QuestionCard({ question, options, onAnswer }: {
 
 function SubAgentCard({ agent }: { agent: SubAgent }) {
   const [open, setOpen] = useState(false)
-  const icon = agent.status === 'running' ? '⏳' : agent.status === 'error' ? '❌' : '✅'
+  const mark = agent.status === 'running' ? '▸▸' : agent.status === 'error' ? '✗' : '✓'
+  const markCls = agent.status === 'running' ? 'text-amber-400 animate-pulse-dot' : agent.status === 'error' ? 'text-red-400' : 'glow-text'
   const transcript = agent.messages.map(m => m.content).join('')
   return (
-    <div className="rounded-md border border-gray-800 bg-gray-900/60 text-xs">
+    <div className="rounded-sm border text-xs" style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}>
       <div className="flex items-center gap-2 px-2 py-1 cursor-pointer" onClick={() => setOpen(o => !o)}>
-        <span>{icon}</span>
-        <span className="text-purple-300 font-mono text-[11px]">@{agent.label}</span>
-        <span className="text-gray-600 truncate flex-1">{agent.task.slice(0, 40)}</span>
-        <span className="text-gray-600 text-[10px]">{open ? '▲' : '▼'}</span>
+        <span className={markCls}>{mark}</span>
+        <span className="glow-text text-[11px]">@{agent.label}</span>
+        <span className="truncate flex-1" style={{ color: 'var(--dim)' }}>{agent.task.slice(0, 40)}</span>
+        <span className="text-[10px]" style={{ color: 'var(--dim)' }}>{open ? '▾' : '▸'}</span>
       </div>
       {open && (
-        <pre className="px-2 pb-2 text-[10px] text-gray-400 whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
+        <pre className="px-2 pb-2 text-[10px] whitespace-pre-wrap break-all max-h-32 overflow-y-auto" style={{ color: 'var(--dim)' }}>
           {transcript || '(暂无输出)'}
         </pre>
       )}
@@ -212,6 +218,10 @@ export default function App() {
 
   // ── Command palette ───────────────────────────────────────────────────
   const [paletteOpen, setPaletteOpen] = useState(false)
+
+  // ── Theme glow color ──────────────────────────────────────────────────
+  const [glow, setGlow] = useGlow()
+  const [glowMenuOpen, setGlowMenuOpen] = useState(false)
 
   // ── Connection check ──────────────────────────────────────────────────
   useEffect(() => {
@@ -762,53 +772,69 @@ export default function App() {
 
   // ── Render ────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-screen bg-gray-950 text-gray-100 font-sans">
+    <div className="flex flex-col h-screen crt-scanlines crt-grain" style={{ background: 'var(--bg)', color: 'var(--txt)' }}>
       {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800 bg-gray-950 flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <span className="text-base">⚡</span>
-          <span className="text-sm font-semibold text-white">PierCode Chat</span>
+      <div className="boot boot-1 flex items-center justify-between px-3 py-2 border-b flex-shrink-0" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="glow-text">⌁</span>
+          <span className="text-sm font-medium glow-text">PIERCODE</span>
+          <span className="text-[11px] truncate" style={{ color: 'var(--dim)' }}>
+            //{sessions.find(s => s.id === sessionIdRef.current)?.title || 'new'}
+          </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 relative">
           {sessions.length > 0 && (
             <select
               value={sessionIdRef.current}
               onChange={e => switchSession(e.target.value)}
-              className="bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-[10px] text-gray-300 outline-none max-w-[120px]"
+              className="rounded-sm px-1 py-0.5 text-[10px] outline-none max-w-[110px] border"
+              style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--txt)' }}
               title="切换会话"
             >
               {sessions.map(s => <option key={s.id} value={s.id}>{s.title || '新对话'}</option>)}
             </select>
           )}
-          <button onClick={startNewSession} className="text-[10px] text-gray-600 hover:text-blue-400 cursor-pointer" title="新对话">➕</button>
-          <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-400' : 'bg-red-400'}`} />
-          <span className="text-[10px] text-gray-500">{connected ? '已连接' : '未连接'}</span>
+          <button onClick={startNewSession} className="text-[12px] cursor-pointer" style={{ color: 'var(--dim)' }} title="新对话">＋</button>
+          {/* glow picker */}
+          <button onClick={() => setGlowMenuOpen(o => !o)} className="w-3 h-3 rounded-full border" style={{ background: 'var(--glow)', borderColor: 'var(--line)' }} title="主题色" />
+          {glowMenuOpen && (
+            <div className="absolute right-0 top-6 z-[55] rounded-sm border p-1 flex gap-1" style={{ background: 'var(--panel)', borderColor: 'var(--line)' }}>
+              {GLOW_COLORS.map(g => (
+                <button key={g.key} onClick={() => { setGlow(g.key); setGlowMenuOpen(false) }}
+                  className={`w-4 h-4 rounded-full border ${glow === g.key ? 'glow-border' : ''}`}
+                  style={{ background: g.hex, borderColor: 'var(--line)' }} title={g.label} />
+              ))}
+            </div>
+          )}
+          <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'dot-live' : ''}`} style={{ background: connected ? undefined : '#7a2a2a' }} />
+          <span className="text-[10px]" style={{ color: 'var(--dim)' }}>{connected ? 'live' : 'off'}</span>
           {messages.length > 0 && (
-            <button onClick={removeCurrentSession} className="text-[10px] text-gray-600 hover:text-red-400 cursor-pointer ml-1" title="删除当前对话">🗑️</button>
+            <button onClick={removeCurrentSession} className="text-[11px] cursor-pointer" style={{ color: 'var(--dim)' }} title="删除当前对话">✕</button>
           )}
         </div>
       </div>
 
-      {/* ── Platform selector + model ───────────────────────────────────────── */}
-      <div className="flex items-center gap-1 px-3 py-1.5 border-b border-gray-800/60 flex-shrink-0 overflow-x-auto">
-        {PLATFORMS.map(p => (
-          <button
-            key={p.key}
-            onClick={() => setPlatform(p.key)}
-            className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-xs transition-colors cursor-pointer whitespace-nowrap ${
-              platform === p.key
-                ? 'bg-blue-600/20 text-blue-300 border border-blue-600/40'
-                : 'text-gray-500 hover:text-gray-300 border border-transparent'
-            }`}
-          >
-            <span>{p.icon}</span><span>{p.label}</span>
-          </button>
-        ))}
+      {/* ── Platform rail ───────────────────────────────────────────────────── */}
+      <div className="boot boot-2 flex items-center gap-2 px-3 py-1.5 border-b flex-shrink-0 overflow-x-auto text-xs" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
+        {PLATFORMS.map(p => {
+          const on = platform === p.key
+          return (
+            <button
+              key={p.key}
+              onClick={() => setPlatform(p.key)}
+              className={`whitespace-nowrap cursor-pointer pb-0.5 border-b-2 ${on ? 'glow-text' : ''}`}
+              style={{ borderColor: on ? 'var(--glow)' : 'transparent', color: on ? undefined : 'var(--dim)' }}
+            >
+              {on ? '> ' : ''}{p.label.toLowerCase()}
+            </button>
+          )
+        })}
         {models.length > 0 ? (
           <select
             value={model}
             onChange={e => handleModelChange(e.target.value)}
-            className="ml-auto w-40 bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-[11px] text-gray-300 outline-none focus:border-blue-500 transition-colors cursor-pointer"
+            className="ml-auto w-40 rounded-sm px-1 py-0.5 text-[11px] outline-none border"
+            style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--txt)' }}
           >
             {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
@@ -816,8 +842,9 @@ export default function App() {
           <input
             value={model}
             onChange={e => handleModelChange(e.target.value)}
-            className="ml-auto w-36 bg-gray-900 border border-gray-700 rounded px-2 py-0.5 text-[11px] text-gray-300 outline-none focus:border-blue-500 transition-colors"
-            placeholder="模型名"
+            className="ml-auto w-36 rounded-sm px-2 py-0.5 text-[11px] outline-none border"
+            style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--txt)' }}
+            placeholder="model"
           />
         )}
       </div>
@@ -825,23 +852,35 @@ export default function App() {
       {/* ── Worker radar ────────────────────────────────────────────────────── */}
       <WorkerRadar agents={subAgents} onJump={jumpToAgent} />
 
+      {/* ── Pinned region ───────────────────────────────────────────────────── */}
+      {messages.some(m => m.pinned) && (
+        <div className="flex-shrink-0 px-3 py-1 border-b text-[11px] space-y-0.5 max-h-24 overflow-y-auto chat-scroll" style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}>
+          {messages.map((m, i) => m.pinned ? (
+            <button key={i} onClick={() => scrollToMessage(i)} className="block w-full text-left truncate cursor-pointer" style={{ color: 'var(--dim)' }}>
+              <span className="glow-text">★</span> {m.content.slice(0, 50).replace(/\n/g, ' ')}
+            </button>
+          ) : null)}
+        </div>
+      )}
+
       {/* ── Messages ────────────────────────────────────────────────────────── */}
-      <div ref={listRef} className="flex-1 overflow-y-auto chat-scroll py-2 space-y-1">
+      <div ref={listRef} className="boot boot-3 flex-1 overflow-y-auto chat-scroll py-2 space-y-1">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-gray-600 text-xs gap-3 px-4">
-            <span className="text-3xl">💬</span>
-            <span className="text-gray-500 font-medium">选择平台，输入消息开始对话</span>
-            <div className="text-center text-gray-700 space-y-1 max-w-[260px]">
-              <p>⚡ 首条消息自动注入系统提示词</p>
-              <p>/skills 自动补全技能</p>
-              <p>@文件名 引用本地文件</p>
-              <p>@@ 派发子 agent / 任务模板</p>
-              <p>工具调用自动执行，结果注入对话</p>
+          <div className="flex flex-col items-center justify-center h-full text-xs gap-3 px-4" style={{ color: 'var(--dim)' }}>
+            <pre className="glow-text text-[10px] leading-tight select-none">{`  ___ _           ___         _
+ | _ (_)___ _ _ / __|___  __| |___
+ |  _/ / -_) '_| (__/ _ \\/ _\` / -_)
+ |_| |_\\___|_|  \\___\\___/\\__,_\\___|`}</pre>
+            <span>选择平台，输入命令开始</span>
+            <div className="text-center space-y-1 max-w-[260px] text-[11px]">
+              <p>⌁ 首条消息自动注入系统提示词</p>
+              <p>/skills · @文件 · @@子agent</p>
+              <p>Cmd/Ctrl+K 打开指令面板</p>
               <p className="text-[10px] mt-2">Enter 发送 · Shift+Enter 换行</p>
             </div>
             {!connected && (
-              <div className="mt-2 text-[10px] text-amber-600 text-center">
-                ⚠️ 未连接 PierCode 服务<br/>请先在扩展弹窗中配置 Token
+              <div className="mt-2 text-[10px] text-amber-500 text-center">
+                ⚠ 未连接 PierCode 服务<br/>请在扩展弹窗配置 Token
               </div>
             )}
           </div>
@@ -858,7 +897,7 @@ export default function App() {
 
       {/* ── Sub-agents ──────────────────────────────────────────────────────── */}
       {subAgents.length > 0 && (
-        <div className="px-3 py-1.5 border-t border-gray-800/40 bg-gray-950/60 flex-shrink-0 space-y-1 max-h-40 overflow-y-auto">
+        <div className="px-3 py-1.5 border-t flex-shrink-0 space-y-1 max-h-40 overflow-y-auto chat-scroll" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
           {subAgents.map(a => (
             <div key={a.id} id={`agent-${a.id}`}>
               <SubAgentCard agent={a} />
@@ -869,7 +908,7 @@ export default function App() {
 
       {/* ── Question card (user interaction) ─────────────────────────────────── */}
       {pendingQuestion && (
-        <div className="flex-shrink-0 px-3 py-1 border-t border-amber-800/30 bg-gray-950">
+        <div className="flex-shrink-0 px-3 py-1 border-t" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
           <QuestionCard
             question={pendingQuestion.question}
             options={pendingQuestion.options}
@@ -880,10 +919,10 @@ export default function App() {
 
       {/* ── Error bar ───────────────────────────────────────────────────────── */}
       {error && (
-        <div className="px-3 py-1.5 bg-red-900/30 border-t border-red-800/40 text-xs text-red-300 flex items-center gap-2 flex-shrink-0">
-          <span>⚠️</span>
+        <div className="px-3 py-1.5 border-t text-xs text-red-300 flex items-center gap-2 flex-shrink-0" style={{ borderColor: 'var(--line)', background: 'rgba(120,20,20,.2)' }}>
+          <span>⚠</span>
           <span className="flex-1 truncate">{error}</span>
-          <button onClick={() => setError('')} className="text-red-500 hover:text-red-300 cursor-pointer flex-shrink-0">✕</button>
+          <button onClick={() => setError('')} className="text-red-400 hover:text-red-200 cursor-pointer flex-shrink-0">✕</button>
         </div>
       )}
 
@@ -891,7 +930,7 @@ export default function App() {
       <TokenPanel messages={messages} threshold={tokenThreshold} platform={platform} />
 
       {/* ── Input ───────────────────────────────────────────────────────────── */}
-      <div className="flex-shrink-0 border-t border-gray-800 bg-gray-950 p-2 relative">
+      <div className="boot boot-4 flex-shrink-0 border-t p-2 relative" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
         {/* Picker popup */}
         {pickerItems.length > 0 && (
           <Picker
@@ -901,20 +940,21 @@ export default function App() {
           />
         )}
         <div className="flex gap-2 items-end">
+          <span className="glow-text pb-2 select-none">▌</span>
           <textarea
             ref={inputRef}
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder={connected ? '输入消息... / @ 技能和文件' : '请先连接 PierCode 服务'}
+            placeholder={connected ? 'type command…  / @ 技能文件' : '请先连接 PierCode 服务'}
             rows={1}
-            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 outline-none focus:border-blue-500 transition-colors resize-none overflow-hidden"
-            style={{ maxHeight: '120px' }}
+            className="flex-1 rounded-sm px-2 py-2 text-sm outline-none resize-none overflow-hidden border"
+            style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--txt)', maxHeight: '120px' }}
           />
           {streaming ? (
-            <button onClick={handleCancel} className="px-3 py-2 bg-red-600 hover:bg-red-500 text-white text-sm rounded-lg transition-colors cursor-pointer flex-shrink-0" title="停止生成">■</button>
+            <button onClick={handleCancel} className="px-3 py-2 text-sm rounded-sm cursor-pointer flex-shrink-0 text-red-300 border border-red-800/50" title="停止生成">■</button>
           ) : (
-            <button onClick={handleSend} disabled={!input.trim() || !connected} className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0" title="发送 (Enter)">➤</button>
+            <button onClick={handleSend} disabled={!input.trim() || !connected} className="px-3 py-2 text-sm rounded-sm cursor-pointer flex-shrink-0 glow-border disabled:opacity-40 disabled:cursor-not-allowed" style={{ color: 'var(--glow)' }} title="发送 (Enter)">⏎</button>
           )}
         </div>
       </div>
