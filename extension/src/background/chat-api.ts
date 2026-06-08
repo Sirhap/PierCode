@@ -33,13 +33,25 @@ interface PlatformConfig {
   createConversation?(token: string, model: string): Promise<string>
   getUrl(ctx?: { chatId?: string; model?: string }): string
   buildHeaders(token: string): Record<string, string>
-  buildBody(message: string, parentId: string | null, ctx?: { chatId?: string; model?: string }): string
+  buildBody(message: string, parentId: string | null, ctx?: BuildCtx): string
   parseChunk(data: any): string | null
   /** When true, parseChunk returns the cumulative full-text-so-far snapshot on
    *  each event (e.g. ChatGPT's content.parts[0]), not an incremental delta.
    *  processSSEStream then diffs against what it already has instead of
    *  appending, so fullContent isn't duplicated. */
   isSnapshot?: boolean
+  /** True if the platform's API accepts a real system role/field. openai +
+   *  claude do; qwen + chatgpt use a private web protocol with no system slot,
+   *  so the system prompt is prepended to the first user message instead. */
+  supportsSystem?: boolean
+}
+
+interface BuildCtx {
+  chatId?: string
+  model?: string
+  /** System prompt. Platforms with supportsSystem put it in a real system
+   *  field; others have it pre-merged into `message` by the caller. */
+  systemPrompt?: string
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -203,6 +215,7 @@ const PLATFORMS: Record<string, PlatformConfig> = {
     name: 'Claude',
     cookieName: 'sessionKey',
     cookieDomain: 'claude.ai',
+    supportsSystem: true,
     getUrl() {
       // Claude API requires org + conversation. This is resolved per-request
       // in getAuth() and stashed in session storage — no module mutation.
@@ -216,13 +229,15 @@ const PLATFORMS: Record<string, PlatformConfig> = {
         'Referer': 'https://claude.ai/',
       }
     },
-    buildBody(message, _parentId) {
-      return JSON.stringify({
+    buildBody(message, _parentId, ctx) {
+      const body: Record<string, unknown> = {
         model: 'claude-sonnet-4-20250514',
         max_tokens: 4096,
         messages: [{ role: 'user', content: message }],
         stream: true,
-      })
+      }
+      if (ctx?.systemPrompt) body.system = ctx.systemPrompt
+      return JSON.stringify(body)
     },
     parseChunk(data) {
       if (data.type === 'content_block_delta' && data.delta?.text) {
@@ -236,6 +251,7 @@ const PLATFORMS: Record<string, PlatformConfig> = {
     name: 'OpenAI 兼容',
     cookieName: '',
     cookieDomain: '',
+    supportsSystem: true,
     getUrl() {
       // Resolved per-request from storage
       return ''
@@ -246,10 +262,13 @@ const PLATFORMS: Record<string, PlatformConfig> = {
         'Authorization': `Bearer ${token}`,
       }
     },
-    buildBody(message, _parentId) {
+    buildBody(message, _parentId, ctx) {
+      const messages: Array<{ role: string; content: string }> = []
+      if (ctx?.systemPrompt) messages.push({ role: 'system', content: ctx.systemPrompt })
+      messages.push({ role: 'user', content: message })
       return JSON.stringify({
-        model: 'gpt-4o',
-        messages: [{ role: 'user', content: message }],
+        model: ctx?.model || 'gpt-4o',
+        messages,
         stream: true,
       })
     },
@@ -551,11 +570,15 @@ interface ChatRequestParams {
   parentId: string | null
   model?: string
   depth?: number
+  /** System/init prompt. Only honoured on the first turn (depth 0). For
+   *  platforms with supportsSystem it goes in a real system field; otherwise
+   *  it is prepended to the first user message. */
+  systemPrompt?: string
 }
 
 async function handleChatRequest(params: ChatRequestParams): Promise<void> {
-  const { platform, message, depth = 0 } = params
-  let { chatId, parentId, model: modelOverride } = params
+  const { platform, depth = 0, systemPrompt } = params
+  let { chatId, parentId, model: modelOverride, message } = params
 
   const config = PLATFORMS[platform]
   if (!config) {
@@ -598,7 +621,14 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
       chatId = crypto.randomUUID()
     }
   }
-  const ctx = { chatId, model: modelOverride }
+  // Init/system prompt: only on the first turn. supportsSystem platforms get it
+  // in a real system field via ctx; the rest get it prepended to the message.
+  let ctxSystem: string | undefined
+  if (systemPrompt && depth === 0) {
+    if (config.supportsSystem) ctxSystem = systemPrompt
+    else message = `${systemPrompt}\n\n---\n\n${message}`
+  }
+  const ctx: BuildCtx = { chatId, model: modelOverride, systemPrompt: ctxSystem }
 
   const url = auth.url || config.getUrl(ctx)
   if (!url) {
@@ -830,6 +860,7 @@ export function registerChatApiHandler() {
         chatId: msg.chatId || null,
         parentId: msg.parentId || null,
         model: msg.model,
+        systemPrompt: msg.systemPrompt,
       }).catch(error => {
           broadcast({
             type: 'CHAT_ERROR',

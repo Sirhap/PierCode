@@ -382,6 +382,8 @@ export default function App() {
   const currentAssistantIdx = useRef(-1)
   const chatIdRef = useRef<string | null>(null)
   const lastResponseIdRef = useRef<string | null>(null)
+  // Cache the fetched init/system prompt for the extension lifetime.
+  const initPromptCacheRef = useRef<string | null>(null)
 
   // ── Picker state ──────────────────────────────────────────────────────
   const [pickerItems, setPickerItems] = useState<PickerItem[]>([])
@@ -694,8 +696,24 @@ export default function App() {
     updateCompletions(value)
   }
 
+  // Fetch the init/system prompt once (cached). Empty string if unavailable.
+  const fetchInitPrompt = useCallback(async (): Promise<string> => {
+    if (initPromptCacheRef.current !== null) return initPromptCacheRef.current
+    const auth = await getAuth()
+    if (!auth) return ''
+    try {
+      const res = await bgFetch(`${auth.apiUrl}/prompt`, {
+        headers: { Authorization: `Bearer ${auth.token}` },
+      })
+      initPromptCacheRef.current = res.text || ''
+    } catch {
+      initPromptCacheRef.current = ''
+    }
+    return initPromptCacheRef.current
+  }, [])
+
   // ── Send ──────────────────────────────────────────────────────────────
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     const text = input.trim()
     if (!text || streaming) return
 
@@ -712,6 +730,12 @@ export default function App() {
     setPickerMode(null)
     setPickerItems([])
 
+    // First message of a fresh conversation: auto-inject the init/system prompt.
+    // The system prompt is NOT shown as a chat bubble; chat-api routes it into a
+    // real system field (openai/claude) or prepends it to this message (qwen/chatgpt).
+    const isFirstTurn = chatIdRef.current === null && messages.length === 0
+    const systemPrompt = isFirstTurn ? await fetchInitPrompt() : undefined
+
     chrome.runtime.sendMessage({
       type: 'CHAT_REQUEST',
       platform,
@@ -719,8 +743,9 @@ export default function App() {
       chatId: chatIdRef.current,
       parentId: lastResponseIdRef.current,
       message: text,
+      systemPrompt: systemPrompt || undefined,
     })
-  }, [input, messages, platform, model, streaming])
+  }, [input, messages, platform, model, streaming, fetchInitPrompt])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Don't send if picker is open (let Picker handle Enter)
@@ -781,37 +806,6 @@ export default function App() {
     else startNewSession()
   }, [switchSession, startNewSession])
 
-  // ── Init prompt ───────────────────────────────────────────────────────
-  const handleInit = async () => {
-    const auth = await getAuth()
-    if (!auth) return
-    try {
-      const res = await bgFetch(`${auth.apiUrl}/prompt`, {
-        headers: { Authorization: `Bearer ${auth.token}` },
-      })
-      const text = res.text
-      if (!text) return
-      // Send as user message
-      const now = Date.now()
-      const userMsg: ChatMessage = { role: 'user', content: text, ts: now }
-      const assistantMsg: ChatMessage = { role: 'assistant', content: '', streaming: true, ts: now }
-      const newMessages = [...messages, userMsg, assistantMsg]
-      currentAssistantIdx.current = newMessages.length - 1
-      setMessages(newMessages)
-      setStreaming(true)
-      chrome.runtime.sendMessage({
-        type: 'CHAT_REQUEST',
-        platform,
-        model,
-        chatId: chatIdRef.current,
-        parentId: lastResponseIdRef.current,
-        message: text,
-      })
-    } catch (err) {
-      setError(`初始化失败: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
-
   // ── Render ────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100 font-sans">
@@ -822,16 +816,6 @@ export default function App() {
           <span className="text-sm font-semibold text-white">PierCode Chat</span>
         </div>
         <div className="flex items-center gap-2">
-          {/* Init button — only when no messages */}
-          {messages.length === 0 && connected && (
-            <button
-              onClick={handleInit}
-              className="text-[10px] px-2 py-0.5 rounded bg-blue-600/20 text-blue-300 border border-blue-600/40 hover:bg-blue-600/40 cursor-pointer transition-colors"
-              title="发送初始化提示词"
-            >
-              ⚡ 初始化
-            </button>
-          )}
           {sessions.length > 0 && (
             <select
               value={sessionIdRef.current}
@@ -894,7 +878,7 @@ export default function App() {
             <span className="text-3xl">💬</span>
             <span className="text-gray-500 font-medium">选择平台，输入消息开始对话</span>
             <div className="text-center text-gray-700 space-y-1 max-w-[260px]">
-              <p>⚡ 初始化 注入系统提示词</p>
+              <p>⚡ 首条消息自动注入系统提示词</p>
               <p>/skills 自动补全技能</p>
               <p>@文件名 引用本地文件</p>
               <p>@@ 派发子 agent / 任务模板</p>
