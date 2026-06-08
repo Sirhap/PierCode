@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, DEFAULT_BATCH_QUIET_MS, DEFAULT_PERMISSION_MODE, DEFAULT_PLATFORM_THRESHOLDS, DEFAULT_STEALTH_MODE, MAX_BATCH_QUIET_MS, MIN_BATCH_QUIET_MS, type ContextCompressionConfig, type PermissionMode, resolveAutoApproveBrowserActions, resolveAutoExecute, resolveBatchQuietMs, resolveContextCompressionConfig, resolvePermissionMode, resolveStealthMode } from '../settings'
+import { DEFAULT_API_INTERCEPT_ENABLED, DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, DEFAULT_BATCH_QUIET_MS, DEFAULT_PERMISSION_MODE, DEFAULT_PLATFORM_THRESHOLDS, DEFAULT_STEALTH_MODE, MAX_BATCH_QUIET_MS, MIN_BATCH_QUIET_MS, type ContextCompressionConfig, type PermissionMode, resolveApiInterceptEnabled, resolveAutoApproveBrowserActions, resolveAutoExecute, resolveBatchQuietMs, resolveContextCompressionConfig, resolvePermissionMode, resolveStealthMode } from '../settings'
 
 const DEFAULT_PORT = 39527
 
@@ -122,21 +122,22 @@ function Toggle({
 }: {
   label: string; checked: boolean; onChange: (v: boolean) => void; risk?: boolean; desc?: string;
 }) {
-  const onColor = risk ? 'bg-amber-500' : 'bg-blue-600'
+  const onBg = risk ? 'var(--amber)' : 'var(--glow)'
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0">
-        <span className="text-sm text-gray-200">{label}</span>
-        {desc && <div className="text-[11px] leading-snug text-gray-500 mt-0.5">{desc}</div>}
+        <span className="text-sm" style={{ color: 'var(--txt)' }}>{label}</span>
+        {desc && <div className="text-[11px] leading-snug mt-0.5" style={{ color: 'var(--dim)' }}>{desc}</div>}
       </div>
       <button
         onClick={() => onChange(!checked)}
         role="switch"
         aria-checked={checked}
         aria-label={label}
-        className={`relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 mt-0.5 ${checked ? onColor : 'bg-gray-600'}`}
+        className="relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 mt-0.5"
+        style={{ background: checked ? onBg : 'var(--line)' }}
       >
-        <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
+        <span className={`inline-block w-5 h-5 mt-0.5 rounded-full shadow transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} style={{ background: checked ? '#0a0e0a' : 'var(--dim)' }} />
       </button>
     </div>
   )
@@ -146,8 +147,8 @@ function Toggle({
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="space-y-2">
-      <div className="text-[11px] font-medium uppercase tracking-wider text-gray-500">{title}</div>
-      <div className="space-y-3 rounded-lg border border-gray-800 bg-gray-900/50 p-3">
+      <div className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--dim)' }}>{title}</div>
+      <div className="space-y-3 rounded-sm border p-3" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
         {children}
       </div>
     </div>
@@ -156,10 +157,8 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 // 风险提示条（琥珀=注意，红=危险）。仅在对应高风险项开启时出现。
 function RiskNote({ tone = 'warn', children }: { tone?: 'warn' | 'danger'; children: ReactNode }) {
-  const cls = tone === 'danger'
-    ? 'border-red-500/40 bg-red-500/10 text-red-200'
-    : 'border-amber-500/30 bg-amber-500/10 text-amber-100'
-  return <div className={`rounded-md border px-3 py-2 text-[11px] leading-snug ${cls}`}>{children}</div>
+  const color = tone === 'danger' ? 'var(--red)' : 'var(--amber)'
+  return <div className="rounded-sm border px-3 py-2 text-[11px] leading-snug" style={{ borderColor: color, background: 'rgba(0,0,0,.2)', color }}>{children}</div>
 }
 
 export default function App() {
@@ -176,6 +175,7 @@ export default function App() {
   const [browserRelay, setBrowserRelay] = useState<BrowserRelayStatus>({})
   const [hasStoredAuth, setHasStoredAuth] = useState(false)
   const [stealthMode, setStealthMode] = useState(DEFAULT_STEALTH_MODE)
+  const [apiIntercept, setApiIntercept] = useState(DEFAULT_API_INTERCEPT_ENABLED)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(DEFAULT_PERMISSION_MODE)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [compression, setCompression] = useState<ContextCompressionConfig>(() => resolveContextCompressionConfig(undefined))
@@ -195,7 +195,7 @@ export default function App() {
   }, [toast])
 
   useEffect(() => {
-    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'batchQuietMs', 'stealthMode', 'contextCompressionConfig', 'qwenCompressionConfig'], (result) => {
+    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'batchQuietMs', 'stealthMode', 'apiInterceptEnabled', 'contextCompressionConfig', 'qwenCompressionConfig'], (result) => {
       const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
       if (result.authToken && savedUrl) {
         setHasStoredAuth(true)
@@ -220,6 +220,9 @@ export default function App() {
       const nextStealthMode = resolveStealthMode(result.stealthMode)
       setStealthMode(nextStealthMode)
       if (result.stealthMode === undefined) chrome.storage.local.set({ stealthMode: nextStealthMode })
+      const nextApiIntercept = resolveApiInterceptEnabled(result.apiInterceptEnabled)
+      setApiIntercept(nextApiIntercept)
+      if (result.apiInterceptEnabled === undefined) chrome.storage.local.set({ apiInterceptEnabled: nextApiIntercept })
       // 上下文压缩配置：新键缺失时从旧 qwenCompressionConfig 迁移。
       setCompression(resolveContextCompressionConfig(result.contextCompressionConfig, result.qwenCompressionConfig))
     })
@@ -438,6 +441,11 @@ export default function App() {
     chrome.storage.local.set({ stealthMode: val })
   }
 
+  const handleApiInterceptChange = (val: boolean) => {
+    setApiIntercept(val)
+    chrome.storage.local.set({ apiInterceptEnabled: val })
+  }
+
   // 持久化压缩配置：写回后 content 侧的 storage.onChanged 监听会失效缓存并按新值重算。
   const persistCompression = (next: ContextCompressionConfig) => {
     setCompression(next)
@@ -507,21 +515,23 @@ export default function App() {
     })
   }
 
-  const statusColor = status === 'connected' ? 'bg-emerald-400' : status === 'checking' ? 'bg-yellow-400' : 'bg-red-400'
+  const statusDotStyle = status === 'connected'
+    ? undefined  // use dot-live class
+    : { background: status === 'checking' ? 'var(--amber)' : 'var(--red)' }
   const statusText = status === 'checking' ? '检查中...' : status === 'connected' ? '本地服务已连接' : '未连接'
 
   return (
-    <div className="w-72 bg-gray-950 text-gray-100 p-4 font-sans">
+    <div className="w-72 p-4" style={{ background: 'var(--bg)', color: 'var(--txt)' }}>
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
-          <span className="text-lg">🔗</span>
-          <span className="font-semibold text-white tracking-wide">PierCode</span>
-          {version && <span className="text-[10px] text-gray-600">v{version}</span>}
+          <span className="text-lg glow-text">⌁</span>
+          <span className="font-semibold tracking-wide glow-text">PierCode</span>
+          {version && <span className="text-[10px]" style={{ color: 'var(--dim)' }}>v{version}</span>}
         </div>
         <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${statusColor} ${status === 'checking' ? 'animate-pulse' : ''}`} />
-          <span className="text-xs text-gray-400">{statusText}</span>
+          <span className={`w-2 h-2 rounded-full ${status === 'connected' ? 'dot-live' : ''} ${status === 'checking' ? 'animate-pulse' : ''}`} style={statusDotStyle} />
+          <span className="text-xs" style={{ color: 'var(--dim)' }}>{statusText}</span>
           {status === 'connected' && (
             <button
               onClick={() => {
@@ -540,7 +550,8 @@ export default function App() {
                 setReconfig(!reconfig)
                 setToken('')
               }}
-              className="text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
+              className="text-xs transition-colors cursor-pointer"
+              style={{ color: 'var(--dim)' }}
             >
               {reconfig ? '取消' : '重新配置'}
             </button>
@@ -551,29 +562,50 @@ export default function App() {
       {/* Multi-AI Hub: opens a page that embeds several AI sites side by side so
           they all run in the foreground at once (workers no longer throttle in
           background tabs). */}
-      <button
-        onClick={() => chrome.runtime.sendMessage({ type: 'OPEN_HUB' })}
-        className="w-full mb-4 rounded-md border border-indigo-700 bg-indigo-900/40 px-3 py-2 text-sm text-indigo-100 hover:bg-indigo-800/60 transition-colors cursor-pointer"
-      >
-        🗂️ 打开多 AI 工作台
-      </button>
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => chrome.runtime.sendMessage({ type: 'OPEN_HUB' })}
+          className="flex-1 rounded-md border px-3 py-2 text-sm transition-colors cursor-pointer"
+          style={{ borderColor: 'var(--line)', background: 'var(--panel-2)', color: 'var(--txt)' }}
+        >
+          🗂️ 多 AI 工作台
+        </button>
+        <button
+          onClick={() => {
+            // sidePanel.open requires tabId or windowId; use current window.
+            // Types are incomplete in @types/chrome for this API.
+            const openSidePanel = (chrome as any).sidePanel?.open
+            if (openSidePanel) {
+              openSidePanel({ windowId: chrome.windows.WINDOW_ID_CURRENT }).catch(() => {
+                chrome.tabs.create({ url: chrome.runtime.getURL('sidebar.html') })
+              })
+            } else {
+              chrome.tabs.create({ url: chrome.runtime.getURL('sidebar.html') })
+            }
+          }}
+          className="flex-1 rounded-md border px-3 py-2 text-sm transition-colors cursor-pointer"
+          style={{ borderColor: 'var(--line)', background: 'var(--panel-2)', color: 'var(--txt)' }}
+        >
+          💬 聊天侧边栏
+        </button>
+      </div>
 
       {/* 运行时状态摘要（仅连接后展示） */}
       {status === 'connected' && (
-        <div className="mb-4 space-y-2 rounded-lg border border-gray-800 bg-gray-900/50 p-3 text-xs">
+        <div className="mb-4 space-y-2 rounded-sm border p-3 text-xs" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
           {/* 工作区 */}
           {rootDir && (
-            <div className="flex items-center gap-1.5 text-gray-400">
-              <span className="text-gray-600">📁</span>
+            <div className="flex items-center gap-1.5" style={{ color: 'var(--dim)' }}>
+              <span style={{ color: 'var(--dim)' }}>📁</span>
               <span className="truncate" title={rootDir}>{rootDir}</span>
             </div>
           )}
           {/* 已连接 AI 平台 */}
           {Object.keys(browserProviders).length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-gray-600">🌐</span>
+              <span style={{ color: 'var(--dim)' }}>🌐</span>
               {Object.entries(browserProviders).map(([name, count]) => (
-                <span key={name} className="inline-flex items-center gap-1 rounded-full bg-emerald-900/40 border border-emerald-700/40 px-2 py-0.5 text-emerald-300">
+                <span key={name} className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5" style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--glow)' }}>
                   {name}{count > 1 ? `×${count}` : ''}
                 </span>
               ))}
@@ -581,11 +613,11 @@ export default function App() {
           )}
           {/* 后台任务 */}
           {tasksTotal > 0 && (
-            <div className="flex items-center gap-1.5 text-gray-400">
-              <span className="text-gray-600">⚡</span>
+            <div className="flex items-center gap-1.5" style={{ color: 'var(--dim)' }}>
+              <span style={{ color: 'var(--dim)' }}>⚡</span>
               <span>
                 {tasksRunning > 0
-                  ? <span className="text-amber-300">{tasksRunning} 个任务运行中</span>
+                  ? <span style={{ color: 'var(--amber)' }}>{tasksRunning} 个任务运行中</span>
                   : <span>共 {tasksTotal} 个任务已完成</span>
                 }
               </span>
@@ -604,12 +636,14 @@ export default function App() {
             onChange={(e) => setToken(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !loading && handleConnect()}
             disabled={loading}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 outline-none focus:border-blue-500 transition-colors disabled:opacity-50"
+            className="w-full rounded-sm border px-3 py-2 text-sm outline-none transition-colors disabled:opacity-50"
+            style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--txt)' }}
           />
           <button
             onClick={handleConnect}
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-sm font-medium rounded-lg py-2 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            className="w-full border text-sm font-medium rounded-sm py-2 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 glow-border"
+            style={{ color: 'var(--glow)' }}
           >
             {loading ? (
               <>
@@ -621,7 +655,7 @@ export default function App() {
               </>
             ) : '连接'}
           </button>
-          <p className="text-[11px] leading-snug text-gray-500">
+          <p className="text-[11px] leading-snug" style={{ color: 'var(--dim)' }}>
             粘贴 TUI 显示的认证 URL（或直接粘 token）。授权一次后 token 会持久化，服务重启无需重连。
           </p>
         </div>
@@ -631,7 +665,8 @@ export default function App() {
       {status === 'disconnected' && hasStoredAuth && !reconfig && (
         <button
           onClick={recheckNow}
-          className="w-full mb-4 bg-gray-800 hover:bg-gray-700 active:bg-gray-900 text-gray-200 text-sm font-medium rounded-lg py-2 transition-colors cursor-pointer flex items-center justify-center gap-2"
+          className="w-full mb-4 border text-sm font-medium rounded-sm py-2 transition-colors cursor-pointer flex items-center justify-center gap-2"
+          style={{ background: 'var(--panel)', borderColor: 'var(--line)', color: 'var(--txt)' }}
         >
           <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M4 4v5h5M20 20v-5h-5M5.5 9a7 7 0 0111.9-2.5M18.5 15a7 7 0 01-11.9 2.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -641,7 +676,7 @@ export default function App() {
       )}
 
       {/* Divider */}
-      <div className="border-t border-gray-800 my-3" />
+      <div className="border-t my-3" style={{ borderColor: 'var(--line)' }} />
 
       {/* 设置区：按"自动化/审批"与"沙箱/安全"两类分组，高风险项加警示 */}
       <div className="space-y-4">
@@ -656,7 +691,7 @@ export default function App() {
           />
           {autoExecute && (
             <div className="flex items-center gap-2 pl-0.5">
-              <span className="text-[11px] text-gray-400 flex-shrink-0">静默窗口</span>
+              <span className="text-[11px] flex-shrink-0" style={{ color: 'var(--dim)' }}>静默窗口</span>
               <input
                 type="number"
                 min={MIN_BATCH_QUIET_MS}
@@ -664,9 +699,10 @@ export default function App() {
                 step={50}
                 value={batchQuietMs}
                 onChange={(e) => handleBatchQuietMsChange(Number(e.target.value))}
-                className="w-16 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-xs text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
+                className="w-16 rounded-sm border px-2 py-1 text-xs text-center outline-none transition-colors"
+                style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--txt)' }}
               />
-              <span className="text-[11px] text-gray-500">ms · 0 = 流停即执行</span>
+              <span className="text-[11px]" style={{ color: 'var(--dim)' }}>ms · 0 = 流停即执行</span>
             </div>
           )}
 
@@ -687,12 +723,20 @@ export default function App() {
           {autoApproveBrowserActions && (
             <RiskNote>浏览器操作将自动允许、不再弹审批。请只在可信页面使用。</RiskNote>
           )}
+
+          <Toggle
+            label="API 工具拦截"
+            desc="拦截 code_interpreter 调用并翻译为 PierCode 工具（目前支持 Qwen）"
+            checked={apiIntercept}
+            onChange={handleApiInterceptChange}
+          />
         </Section>
 
         {/* 高级选项（默认折叠，减少首屏干扰） */}
         <button
           onClick={() => setAdvancedOpen(!advancedOpen)}
-          className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
+          className="flex items-center gap-1 text-xs transition-colors cursor-pointer"
+          style={{ color: 'var(--dim)' }}
         >
           <svg
             className={`h-3 w-3 transition-transform duration-200 ${advancedOpen ? 'rotate-90' : ''}`}
@@ -725,7 +769,7 @@ export default function App() {
               onChange={handleStealthModeChange}
             />
             {stealthMode && (
-              <div className="rounded-md border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-[11px] leading-snug text-indigo-100">
+              <div className="rounded-sm border px-3 py-2 text-[11px] leading-snug" style={{ borderColor: 'var(--line)', background: 'var(--panel-2)', color: 'var(--txt)' }}>
                 页面上仅保留右下角迷你圆点（点击可停止），关闭脉冲边框与大块徽章。
               </div>
             )}
@@ -761,7 +805,7 @@ export default function App() {
               <div className="space-y-1.5">
                 {COMPRESSION_PLATFORM_LABELS.map(({ key, label }) => (
                   <div key={key} className="flex items-center gap-2 pl-0.5">
-                    <span className="text-[11px] text-gray-400 w-16 flex-shrink-0">{label}</span>
+                    <span className="text-[11px] w-16 flex-shrink-0" style={{ color: 'var(--dim)' }}>{label}</span>
                     <input
                       type="number"
                       min={1}
@@ -772,12 +816,13 @@ export default function App() {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
                       }}
-                      className="w-24 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-xs text-center text-gray-100 outline-none focus:border-blue-500 transition-colors"
+                      className="w-24 rounded-sm border px-2 py-1 text-xs text-center outline-none transition-colors"
+                      style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--txt)' }}
                     />
-                    <span className="text-[11px] text-gray-500">k</span>
+                    <span className="text-[11px]" style={{ color: 'var(--dim)' }}>k</span>
                   </div>
                 ))}
-                <div className="text-[11px] leading-snug text-gray-500 pl-0.5">
+                <div className="text-[11px] leading-snug pl-0.5" style={{ color: 'var(--dim)' }}>
                   到阈值后请模型输出 piercode-context 包，失败回退本地摘要，并在新标签接续会话。
                 </div>
               </div>
@@ -789,34 +834,36 @@ export default function App() {
       {/* Info：状态详情，最多两行，不截断关键信息 */}
       {info && (
         <div
-          className="mt-3 text-xs leading-snug text-gray-500 line-clamp-2"
+          className="mt-3 text-xs leading-snug line-clamp-2"
+          style={{ color: 'var(--dim)' }}
           title={info}
         >
           {info}
         </div>
       )}
 
-      <div className="mt-3 rounded-lg border border-gray-800 bg-gray-900 p-3 text-xs text-gray-400">
+      <div className="mt-3 rounded-sm border p-3 text-xs" style={{ borderColor: 'var(--line)', background: 'var(--panel)', color: 'var(--dim)' }}>
         <div className="flex items-center justify-between">
-          <span className="font-medium text-gray-300">浏览器控制</span>
-          <span className={`inline-flex items-center gap-1.5 ${browserRelay.state === 'open' ? 'text-emerald-300' : 'text-gray-500'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${browserRelay.state === 'open' ? 'bg-emerald-400' : 'bg-gray-600'}`} />
+          <span className="font-medium" style={{ color: 'var(--txt)' }}>浏览器控制</span>
+          <span className="inline-flex items-center gap-1.5" style={{ color: browserRelay.state === 'open' ? 'var(--glow)' : 'var(--dim)' }}>
+            <span className={`w-1.5 h-1.5 rounded-full ${browserRelay.state === 'open' ? 'dot-live' : ''}`} style={browserRelay.state !== 'open' ? { background: 'var(--line)' } : undefined} />
             {browserRelay.state === 'open' ? '已连接' : '未连接'}
           </span>
         </div>
         {browserRelay.controlledTabId ? (
-          <div className="mt-1 text-gray-500">已接管标签页 #{browserRelay.controlledTabId}</div>
+          <div className="mt-1" style={{ color: 'var(--dim)' }}>已接管标签页 #{browserRelay.controlledTabId}</div>
         ) : (
-          <div className="mt-1 text-gray-500">尚未接管任何标签页（AI 触发浏览器操作时自动接管）</div>
+          <div className="mt-1" style={{ color: 'var(--dim)' }}>尚未接管任何标签页（AI 触发浏览器操作时自动接管）</div>
         )}
-        {browserRelay.lastError && <div className="mt-1 truncate text-red-300">{browserRelay.lastError}</div>}
+        {browserRelay.lastError && <div className="mt-1 truncate" style={{ color: 'var(--red)' }}>{browserRelay.lastError}</div>}
       </div>
 
       {/* Toast Notification */}
       {toast && (
-        <div className={`fixed top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg shadow-lg text-sm font-medium z-50 transition-all duration-300 animate-fade-in-down ${
-          toast.type === 'success' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'
-        }`}>
+        <div
+          className="fixed top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-sm shadow-lg text-sm font-medium z-50 transition-all duration-300 animate-fade-in-down"
+          style={{ background: toast.type === 'success' ? 'var(--glow)' : 'var(--red)', color: '#0a0e0a' }}
+        >
           {toast.msg}
         </div>
       )}

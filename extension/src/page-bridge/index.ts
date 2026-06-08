@@ -1,3 +1,5 @@
+import { installApiIntercept } from './api-intercept';
+
 const MONACO_REQUEST = 'PIERCODE_MONACO_TEXT_REQUEST';
 const MONACO_RESPONSE = 'PIERCODE_MONACO_TEXT_RESPONSE';
 
@@ -84,6 +86,7 @@ function installKeepAliveVisibilityShim(): void {
 }
 
 installKeepAliveVisibilityShim();
+installApiIntercept();
 
 function normalize(text: string): string {
   return text.replace(/\u00A0/g, ' ').trim();

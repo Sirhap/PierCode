@@ -160,6 +160,14 @@ export interface QwenCompressionConfig {
   maxSummaryTokens: number;
 }
 
+// API 工具拦截：在 page-bridge 层 monkey-patch fetch，拦截 code_interpreter
+// SSE 响应并翻译为 PierCode 工具调用。与 DOM 检测互斥。
+export const DEFAULT_API_INTERCEPT_ENABLED = false;
+
+export function resolveApiInterceptEnabled(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : DEFAULT_API_INTERCEPT_ENABLED;
+}
+
 export function resolveQwenCompressionConfig(value: unknown): QwenCompressionConfig {
   const defaults: QwenCompressionConfig = {
     enabled: DEFAULT_QWEN_COMPRESSION_ENABLED,
