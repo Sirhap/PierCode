@@ -1,7 +1,7 @@
 import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket } from '../parser';
 import { extractMonacoText, findQwenPierCodeBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
-import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, sendAgentResult } from './ws-linker';
+import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, sendAgentResult, injectToolResult } from './ws-linker';
 import { isConversationURLForCurrentPage, observeConversationURL, getConversationKey } from './conversation-scope';
 import { visualIndicator } from './visual-indicator';
 import { statusPanel, type ControlledTabInfo } from './status-panel';
@@ -28,6 +28,7 @@ import {
 } from './qwen-settings';
 import { dispatchEnterAsSendFallback } from './send-fallback';
 import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
+import { T_PANEL, T_PANEL2, T_LINE, T_DIM, T_TXT, T_GLOW, T_GLOW_SOFT, T_AMBER, T_RED, T_FONT } from './terminal-theme';
 
 // 静默窗口解析器（内联，避免 content 引入 ../settings 触发 Rollup 共享分块，
 // 进而让 content.js 输出 ESM import —— MV3 classic content script 不允许）。
@@ -357,7 +358,7 @@ async function triggerContextCompression(config?: ContextCompressionConfig): Pro
     }
 
     if (packet) {
-      await openContextPacketInNewSession(packet, 'piercode_requested');
+      await openContextPacketInNewSession(packet, 'piercode_requested', true);
       return;
     }
 
@@ -407,9 +408,16 @@ async function requestContextPacketFromModel(prompt: string, timeoutMs: number):
   return packetPromise;
 }
 
-async function openContextPacketInNewSession(packet: PierCodeContextPacket, reason: string): Promise<void> {
-  if (compressionInProgress) return; // another compression is already running
-  compressionInProgress = true;
+// alreadyOwned: the caller (triggerContextCompression) has already set
+// compressionInProgress and owns the run, so skip the re-entrancy guard that
+// otherwise protects the standalone model-initiated path. Without this, the
+// happy path (model returns a valid packet) would early-return here and the
+// packet would be silently dropped — the new session never opens.
+async function openContextPacketInNewSession(packet: PierCodeContextPacket, reason: string, alreadyOwned = false): Promise<void> {
+  if (!alreadyOwned) {
+    if (compressionInProgress) return; // another compression is already running
+    compressionInProgress = true;
+  }
   try {
     const packetText = packet.raw || packet.content;
     qwenConversationCtx = {
@@ -424,7 +432,9 @@ async function openContextPacketInNewSession(packet: PierCodeContextPacket, reas
     const payload = formatPacketHandoffPrompt(packetText, initPrompt);
     await openNewSessionWithPayload(payload, '已发送到新会话');
   } finally {
-    compressionInProgress = false;
+    // Only release the flag we acquired. When alreadyOwned, the caller
+    // (triggerContextCompression) owns it and clears it in its own finally.
+    if (!alreadyOwned) compressionInProgress = false;
   }
 }
 
@@ -664,8 +674,16 @@ function checkContext(showNotice = false): boolean {
 }
 
 function parseOptions(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw;
-  if (typeof raw === 'string') { try { return JSON.parse(raw); } catch { return []; } }
+  if (Array.isArray(raw)) return raw.map(String);
+  if (typeof raw === 'string') {
+    try {
+      const v = JSON.parse(raw);
+      // JSON.parse of a non-array string (e.g. "{}" or "5") must NOT be returned
+      // as string[]: downstream config.options.map() would throw and stall the
+      // question flow. Only arrays are valid options.
+      return Array.isArray(v) ? v.map(String) : [];
+    } catch { return []; }
+  }
   return [];
 }
 
@@ -1050,7 +1068,7 @@ function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivEle
 
   const header = document.createElement('div');
   header.textContent = 'PierCode 需要回答';
-  header.style.cssText = 'font-weight:600;margin-bottom:8px;color:#fbbf24';
+  header.style.cssText = `font-weight:600;margin-bottom:8px;color:${T_AMBER};font-family:${T_FONT}`;
   panel.appendChild(header);
 
   const body = document.createElement('div');
@@ -1066,12 +1084,12 @@ function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivEle
       btn.type = 'button';
       btn.textContent = `${i + 1}. ${opt}`;
       btn.style.cssText = [
-        'width:100%', 'padding:7px 10px', 'border:1px solid #64748b', 'border-radius:6px',
-        'background:#334155', 'color:#f1f5f9', 'cursor:pointer', 'font-size:12px',
-        'text-align:left', 'line-height:1.35',
+        'width:100%', 'padding:7px 10px', `border:1px solid ${T_LINE}`, 'border-radius:6px',
+        `background:${T_PANEL2}`, `color:${T_TXT}`, 'cursor:pointer', 'font-size:12px',
+        'text-align:left', 'line-height:1.35', `font-family:${T_FONT}`,
       ].join(';');
-      btn.onmouseenter = () => { btn.style.background = '#475569'; };
-      btn.onmouseleave = () => { btn.style.background = '#334155'; };
+      btn.onmouseenter = () => { btn.style.background = T_PANEL; btn.style.borderColor = T_GLOW; btn.style.color = T_GLOW; };
+      btn.onmouseleave = () => { btn.style.background = T_PANEL2; btn.style.borderColor = T_LINE; btn.style.color = T_TXT; };
       btn.onclick = () => submitAnswer(opt);
       optWrap.appendChild(btn);
     });
@@ -1083,9 +1101,9 @@ function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivEle
   input.placeholder = options.length > 0 ? '自定义回答，或输入选项序号后回车' : '输入回答后回车';
   input.style.cssText = [
     'width:100%', 'padding:8px 10px', 'box-sizing:border-box',
-    'border:1px solid #475569', 'border-radius:6px',
-    'background:#0f172a', 'color:#f1f5f9', 'font-size:13px',
-    'outline:none',
+    `border:1px solid ${T_LINE}`, 'border-radius:6px',
+    `background:${T_PANEL2}`, `color:${T_TXT}`, 'font-size:13px',
+    'outline:none', `font-family:${T_FONT}`,
   ].join(';');
   panel.appendChild(input);
 
@@ -1095,7 +1113,7 @@ function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivEle
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
   cancelBtn.textContent = '取消';
-  cancelBtn.style.cssText = 'padding:5px 10px;border:1px solid #64748b;border-radius:4px;background:transparent;color:#cbd5e1;cursor:pointer';
+  cancelBtn.style.cssText = `padding:5px 10px;border:1px solid ${T_LINE};border-radius:4px;background:transparent;color:${T_DIM};cursor:pointer;font-family:${T_FONT}`;
   cancelBtn.onclick = () => {
     config.onCancel?.();
     closePanel();
@@ -1104,7 +1122,7 @@ function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivEle
   const submitBtn = document.createElement('button');
   submitBtn.type = 'button';
   submitBtn.textContent = '提交';
-  submitBtn.style.cssText = 'padding:5px 14px;border:1px solid #2563eb;border-radius:4px;background:#2563eb;color:white;cursor:pointer;font-weight:600';
+  submitBtn.style.cssText = `padding:5px 14px;border:1px solid ${T_GLOW};border-radius:4px;background:transparent;color:${T_GLOW};cursor:pointer;font-weight:600;font-family:${T_FONT};box-shadow:0 0 0 1px ${T_GLOW_SOFT}`;
 
   const submit = () => {
     let answer = input.value.trim();
@@ -1155,10 +1173,10 @@ function buildQuestionPanelStyle(): string {
     `width:${Math.round(width)}px`, 'z-index:2147483646',
     'max-height:min(420px, calc(100vh - 32px))', 'overflow:auto',
     'padding:14px 16px', 'box-sizing:border-box',
-    'background:#1e293b', 'color:#f1f5f9',
-    'border:1px solid #475569', 'border-radius:10px',
-    'box-shadow:0 10px 30px rgba(0,0,0,0.4)',
-    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+    `background:${T_PANEL}`, `color:${T_TXT}`,
+    `border:1px solid ${T_LINE}`, 'border-radius:10px',
+    `box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 10px 30px rgba(0,0,0,0.5)`,
+    `font-family:${T_FONT}`,
     'font-size:13px', 'line-height:1.5',
   ].join(';');
 }
@@ -1179,20 +1197,20 @@ function renderTodoChecklist(container: HTMLElement, todos: unknown[]) {
   ul.style.cssText = 'list-style:none;margin:0;padding:0;font-size:12px';
   todos.forEach((raw, i) => {
     const li = document.createElement('li');
-    li.style.cssText = 'padding:2px 0;color:#cdd6f4';
+    li.style.cssText = `padding:2px 0;color:${T_TXT}`;
     const { text, status } = todoFieldsTS(raw);
     let marker = '☐';
-    let color = '#cdd6f4';
+    let color = T_TXT;
     switch (status.toLowerCase()) {
       case 'completed':
       case 'done':
-        marker = '☑'; color = '#a6e3a1'; break;
+        marker = '☑'; color = T_GLOW; break;
       case 'in_progress':
       case 'in-progress':
       case 'running':
-        marker = '◐'; color = '#fab387'; break;
+        marker = '◐'; color = T_AMBER; break;
       case 'blocked':
-        marker = '⚠'; color = '#f38ba8'; break;
+        marker = '⚠'; color = T_RED; break;
     }
     li.style.color = color;
     li.textContent = `${i + 1}. ${marker} ${text}`;
@@ -1397,6 +1415,94 @@ function bootstrapContentScript() {
 
   if (document.body) injectInitButton();
   else document.addEventListener('DOMContentLoaded', injectInitButton);
+
+  // ── API Intercept: translated code_interpreter tool calls from page-bridge ──
+  let apiInterceptEnabled = false;
+  try {
+    chrome.storage?.local?.get('apiInterceptEnabled', (r) => {
+      apiInterceptEnabled = !!r?.apiInterceptEnabled;
+    });
+    chrome.storage?.onChanged?.addListener((changes) => {
+      if (changes.apiInterceptEnabled) {
+        apiInterceptEnabled = !!changes.apiInterceptEnabled.newValue;
+      }
+    });
+  } catch {}
+
+  window.addEventListener('piercode-api-tool-call', ((e: CustomEvent) => {
+    const { name, args, source } = e.detail || {};
+    if (!name || !args) return;
+    // piercode-tool blocks from SSE are always processed (core functionality).
+    // code_interpreter translation requires the apiInterceptEnabled toggle.
+    if (source !== 'piercode-tool' && !apiInterceptEnabled) {
+      console.log(`[PierCode API] 收到 code_interpreter 事件但开关关闭，忽略: ${name}`);
+      return;
+    }
+    console.log(`[PierCode API] 检测到 ${source || 'unknown'} → ${name}`, args);
+    void executeApiInterceptToolCall(name, args, source);
+  }) as EventListener);
+
+  async function executeApiInterceptToolCall(
+    name: string,
+    toolArgs: Record<string, unknown>,
+    source: string,
+  ): Promise<void> {
+    try {
+      if (!checkContext(true)) return;
+      const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
+      if (!apiUrl) {
+        console.warn('[PierCode API] 未配置 API 地址');
+        return;
+      }
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+
+      const callId = `api-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const request = {
+        name,
+        call_id: callId,
+        args: toolArgs,
+        source: source || 'api-intercept',
+      };
+
+      // Use chrome.runtime.sendMessage to proxy through background (avoids CORS).
+      const response = await new Promise<{ ok: boolean; status: number; body: string }>((resolve) => {
+        try {
+          chrome.runtime.sendMessage(
+            { type: 'FETCH', url: `${apiUrl}/exec`, options: { method: 'POST', headers, body: JSON.stringify(request) } },
+            (result) => {
+              if (chrome.runtime.lastError) {
+                resolve({ ok: false, status: 0, body: chrome.runtime.lastError.message || '' });
+                return;
+              }
+              resolve(result || { ok: false, status: 0, body: '' });
+            },
+          );
+        } catch (err) {
+          resolve({ ok: false, status: 0, body: String(err) });
+        }
+      });
+
+      if (response.status === 401) {
+        console.warn('[PierCode API] 认证失败');
+        return;
+      }
+      if (!response.ok) {
+        console.warn(`[PierCode API] 工具执行失败: HTTP ${response.status}`, response.body);
+        return;
+      }
+
+      const result = JSON.parse(response.body);
+      const output = result.output || result.error || '[PierCode API] 空响应';
+      const resultText = `### ${name} #${callId}\n${output}`;
+
+      // Inject result back into the conversation.
+      injectToolResult(resultText);
+      console.log(`[PierCode API] 工具结果已注入: ${name}`);
+    } catch (error) {
+      console.error('[PierCode API] 工具执行异常:', error);
+    }
+  }
 
   function mountInputListener() {
     const attachCurrentEditor = () => {
@@ -1718,18 +1824,18 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   const args = data.args || {};
   const card = document.createElement('div');
   card.setAttribute('data-piercode-key', key);
-  card.style.cssText = 'border:1px solid #313244;border-radius:10px;padding:12px 14px;margin:10px 0;background:#1e1e2e;color:#cdd6f4;font-size:13px;box-shadow:0 2px 10px rgba(0,0,0,0.25);font-family:system-ui,-apple-system,sans-serif';
+  card.style.cssText = `border:1px solid ${T_LINE};border-radius:10px;padding:12px 14px;margin:10px 0;background:${T_PANEL};color:${T_TXT};font-size:13px;box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 2px 10px rgba(0,0,0,0.4);font-family:${T_FONT}`;
 
   ensureToolCardAnimStyles();
 
   const header = document.createElement('div');
   header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px';
   const nameBadge = document.createElement('span');
-  nameBadge.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-weight:600;font-size:13px;color:#89b4fa;background:#181825;border:1px solid #313244;border-radius:6px;padding:2px 8px';
-  nameBadge.textContent = `🔧 ${data.name}`;
+  nameBadge.style.cssText = `display:inline-flex;align-items:center;gap:5px;font-weight:600;font-size:13px;color:${T_GLOW};background:${T_PANEL2};border:1px solid ${T_LINE};border-radius:6px;padding:2px 8px`;
+  nameBadge.textContent = `◆ ${data.name}`;
   header.appendChild(nameBadge);
   const callId = document.createElement('span');
-  callId.style.cssText = 'color:#6c7086;font-size:11px;font-family:monospace';
+  callId.style.cssText = `color:${T_DIM};font-size:11px;font-family:${T_FONT}`;
   callId.textContent = `#${getToolCallId(data)}`;
   header.appendChild(callId);
 
@@ -1744,11 +1850,11 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
 
   type CardState = 'pending' | 'running' | 'background' | 'done' | 'error';
   const STATE_META: Record<CardState, { label: string; color: string; pulse: boolean }> = {
-    pending:    { label: '未执行',   color: '#9399b2', pulse: false },
-    running:    { label: '执行中',   color: '#f9e2af', pulse: true },
-    background: { label: '后台执行', color: '#a6e3a1', pulse: true },
-    done:       { label: '已执行',   color: '#a6e3a1', pulse: false },
-    error:      { label: '失败',     color: '#f38ba8', pulse: false },
+    pending:    { label: '[run]',  color: T_AMBER, pulse: false },
+    running:    { label: '[run]',  color: T_AMBER, pulse: true },
+    background: { label: '[run]',  color: T_AMBER, pulse: true },
+    done:       { label: '[done]', color: T_GLOW,  pulse: false },
+    error:      { label: '[fail]', color: T_RED,   pulse: false },
   };
   function setCardState(s: CardState): void {
     const meta = STATE_META[s];
@@ -1763,9 +1869,9 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
 
   // 折叠区：工具名/id 已在 header 识别出来；参数详情默认隐藏，点标题展开。
   const details = document.createElement('details');
-  details.style.cssText = 'margin:8px 0;background:#181825;border-radius:6px;padding:0';
+  details.style.cssText = `margin:8px 0;background:${T_PANEL2};border-radius:6px;padding:0;border:1px solid ${T_LINE}`;
   const summary = document.createElement('summary');
-  summary.style.cssText = 'cursor:pointer;list-style:none;padding:6px 8px;font-size:11px;color:#6c7086;user-select:none';
+  summary.style.cssText = `cursor:pointer;list-style:none;padding:6px 8px;font-size:11px;color:${T_DIM};user-select:none`;
   summary.textContent = '参数详情（点击展开）';
   details.appendChild(summary);
   const argsBox = document.createElement('div');
@@ -1777,11 +1883,11 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
       const row = document.createElement('div');
       row.style.cssText = 'margin-bottom:4px';
       const keyLabel = document.createElement('span');
-      keyLabel.style.cssText = 'color:#89b4fa;font-size:11px';
+      keyLabel.style.cssText = `color:${T_GLOW};font-size:11px`;
       keyLabel.textContent = k;
       row.appendChild(keyLabel);
       const val = document.createElement('div');
-      val.style.cssText = 'color:#cdd6f4;font-size:12px;font-family:monospace;white-space:pre-wrap;max-height:80px;overflow-y:auto';
+      val.style.cssText = `color:${T_TXT};font-size:12px;font-family:${T_FONT};white-space:pre-wrap;max-height:80px;overflow-y:auto`;
       val.textContent = typeof v === 'string' ? v : JSON.stringify(v);
       row.appendChild(val);
       argsBox.appendChild(row);
@@ -1797,9 +1903,9 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   if (blockEl) {
     blockEl.setAttribute('data-piercode-decorated', '1');
     const rawDetails = document.createElement('details');
-    rawDetails.style.cssText = 'margin:8px 0 0;background:#181825;border-radius:6px;padding:0';
+    rawDetails.style.cssText = `margin:8px 0 0;background:${T_PANEL2};border-radius:6px;padding:0;border:1px solid ${T_LINE}`;
     const rawSummary = document.createElement('summary');
-    rawSummary.style.cssText = 'cursor:pointer;list-style:none;padding:6px 8px;font-size:11px;color:#6c7086;user-select:none';
+    rawSummary.style.cssText = `cursor:pointer;list-style:none;padding:6px 8px;font-size:11px;color:${T_DIM};user-select:none`;
     rawSummary.textContent = '原始工具调用（点击展开）';
     rawDetails.appendChild(rawSummary);
     card.appendChild(rawDetails);
@@ -1820,7 +1926,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
     const warning = getDestructiveCommandWarning(cmdStr);
     if (warning) {
       const warnBox = document.createElement('div');
-      warnBox.style.cssText = 'margin:8px 0;background:#3a2a1a;border:1px solid #f9b572;border-left:3px solid #f9b572;border-radius:6px;padding:8px 10px;color:#f9b572;font-size:12px;line-height:1.45';
+      warnBox.style.cssText = `margin:8px 0;background:${T_PANEL2};border:1px solid ${T_AMBER};border-left:3px solid ${T_AMBER};border-radius:6px;padding:8px 10px;color:${T_AMBER};font-size:12px;line-height:1.45;font-family:${T_FONT}`;
       warnBox.textContent = `⚠️ 危险命令：${warning}`;
       card.appendChild(warnBox);
     }
@@ -1832,14 +1938,14 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   function ensureStreamBox(): HTMLDivElement {
     if (streamBox) return streamBox;
     streamBox = document.createElement('div');
-    streamBox.style.cssText = 'margin-top:10px;background:#11111b;border:1px solid #313244;border-radius:6px;padding:8px;max-height:240px;overflow-y:auto;font-family:monospace;font-size:12px;color:#cdd6f4;white-space:pre-wrap';
+    streamBox.style.cssText = `margin-top:10px;background:${T_PANEL2};border:1px solid ${T_LINE};border-radius:6px;padding:8px;max-height:240px;overflow-y:auto;font-family:${T_FONT};font-size:12px;color:${T_TXT};white-space:pre-wrap`;
     card.insertBefore(streamBox, btnRow);
     return streamBox;
   }
   function appendStreamChunk(stream: 'stdout' | 'stderr', text: string) {
     const box = ensureStreamBox();
     const span = document.createElement('span');
-    if (stream === 'stderr') span.style.color = '#f38ba8';
+    if (stream === 'stderr') span.style.color = T_RED;
     span.textContent = text;
     box.appendChild(span);
     box.scrollTop = box.scrollHeight;
@@ -1849,16 +1955,16 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
   btnRow.style.cssText = 'display:flex;gap:8px;margin-top:10px;align-items:center';
   const execBtn = document.createElement('button');
   execBtn.textContent = '执行';
-  execBtn.style.cssText = 'padding:5px 16px;background:#1677ff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600';
+  execBtn.style.cssText = `padding:5px 16px;background:transparent;color:${T_GLOW};border:1px solid ${T_GLOW};border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:${T_FONT};box-shadow:0 0 0 1px ${T_GLOW_SOFT}`;
   const skipBtn = document.createElement('button');
   skipBtn.textContent = '忽略';
-  skipBtn.style.cssText = 'padding:5px 12px;background:transparent;color:#9399b2;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px;margin-left:auto';
+  skipBtn.style.cssText = `padding:5px 12px;background:transparent;color:${T_DIM};border:1px solid ${T_LINE};border-radius:6px;cursor:pointer;font-size:12px;margin-left:auto;font-family:${T_FONT}`;
   btnRow.appendChild(execBtn);
   let bgBtn: HTMLButtonElement | null = null;
   if (String(data.name).toLowerCase() === 'exec_cmd') {
     bgBtn = document.createElement('button');
     bgBtn.textContent = '后台执行';
-    bgBtn.style.cssText = 'padding:5px 12px;background:transparent;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:6px;cursor:pointer;font-size:12px';
+    bgBtn.style.cssText = `padding:5px 12px;background:transparent;color:${T_AMBER};border:1px solid ${T_AMBER};border-radius:6px;cursor:pointer;font-size:12px;font-family:${T_FONT}`;
     btnRow.appendChild(bgBtn);
   }
   btnRow.appendChild(skipBtn);
@@ -1928,16 +2034,16 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
       if (isExecCmd && sawStreamChunk) {
         const insertBtn = document.createElement('button');
         insertBtn.textContent = '插入到对话';
-        insertBtn.style.cssText = 'margin-top:6px;padding:4px 12px;background:#313244;color:#89b4fa;border:1px solid #89b4fa;border-radius:6px;cursor:pointer;font-size:12px';
+        insertBtn.style.cssText = `margin-top:6px;padding:4px 12px;background:transparent;color:${T_GLOW};border:1px solid ${T_LINE};border-radius:6px;cursor:pointer;font-size:12px;font-family:${T_FONT}`;
         insertBtn.onclick = () => fillAndSend(text, true);
         card.appendChild(insertBtn);
       } else {
         const resultBox = document.createElement('div');
-        resultBox.style.cssText = 'margin-top:10px;background:#181825;border-radius:6px;padding:8px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:12px;color:#cdd6f4;white-space:pre-wrap';
+        resultBox.style.cssText = `margin-top:10px;background:${T_PANEL2};border-radius:6px;padding:8px;max-height:200px;overflow-y:auto;font-family:${T_FONT};font-size:12px;color:${T_TXT};white-space:pre-wrap;border:1px solid ${T_LINE}`;
         resultBox.textContent = text;
         const insertBtn = document.createElement('button');
         insertBtn.textContent = '插入到对话';
-        insertBtn.style.cssText = 'margin-top:6px;padding:4px 12px;background:#313244;color:#89b4fa;border:1px solid #89b4fa;border-radius:6px;cursor:pointer;font-size:12px';
+        insertBtn.style.cssText = `margin-top:6px;padding:4px 12px;background:transparent;color:${T_GLOW};border:1px solid ${T_LINE};border-radius:6px;cursor:pointer;font-size:12px;font-family:${T_FONT}`;
         insertBtn.onclick = () => fillAndSend(text, true);
         card.appendChild(resultBox);
         card.appendChild(insertBtn);
@@ -1986,7 +2092,7 @@ function renderToolCard(data: any, _full: string, sourceEl: Element, key: string
         // text contains "[backgrounded as task ...]" — show it under the args
         // so the user can correlate the task_id with the live stream below.
         const info = document.createElement('div');
-        info.style.cssText = 'margin-top:6px;color:#a6e3a1;font-size:11px;font-family:monospace;white-space:pre-wrap';
+        info.style.cssText = `margin-top:6px;color:${T_GLOW};font-size:11px;font-family:${T_FONT};white-space:pre-wrap`;
         info.textContent = text;
         card.insertBefore(info, btnRow);
       } catch {
@@ -2028,34 +2134,34 @@ function renderContextPacketCard(packet: PierCodeContextPacket, sourceEl: Elemen
   const fields = extractContextPacketFields(packet);
   const card = document.createElement('div');
   card.setAttribute('data-piercode-key', cardKey);
-  card.style.cssText = 'border:1px solid #45475a;border-left:3px solid #cba6f7;border-radius:10px;padding:12px 14px;margin:10px 0;background:#1e1e2e;color:#cdd6f4;font-size:13px;box-shadow:0 2px 10px rgba(0,0,0,0.25);font-family:system-ui,-apple-system,sans-serif';
+  card.style.cssText = `border:1px solid ${T_LINE};border-left:3px solid ${T_GLOW};border-radius:10px;padding:12px 14px;margin:10px 0;background:${T_PANEL};color:${T_TXT};font-size:13px;box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 2px 10px rgba(0,0,0,0.4);font-family:${T_FONT}`;
 
   const header = document.createElement('div');
   header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px';
   const badge = document.createElement('span');
-  badge.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-weight:600;font-size:13px;color:#cba6f7;background:#181825;border:1px solid #45475a;border-radius:6px;padding:2px 8px';
+  badge.style.cssText = `display:inline-flex;align-items:center;gap:5px;font-weight:600;font-size:13px;color:${T_GLOW};background:${T_PANEL2};border:1px solid ${T_LINE};border-radius:6px;padding:2px 8px`;
   badge.textContent = '📦 上下文已压缩';
   header.appendChild(badge);
   if (fields.reason) {
     const reasonTag = document.createElement('span');
-    reasonTag.style.cssText = 'color:#6c7086;font-size:11px;font-family:monospace';
+    reasonTag.style.cssText = `color:${T_DIM};font-size:11px;font-family:${T_FONT}`;
     reasonTag.textContent = fields.reason;
     header.appendChild(reasonTag);
   }
   card.appendChild(header);
 
   const body = document.createElement('div');
-  body.style.cssText = 'background:#181825;border-radius:6px;padding:8px 10px';
+  body.style.cssText = `background:${T_PANEL2};border-radius:6px;padding:8px 10px;border:1px solid ${T_LINE}`;
 
   const addTextRow = (label: string, value: string) => {
     if (!value.trim()) return;
     const row = document.createElement('div');
     row.style.cssText = 'margin-bottom:8px';
     const lab = document.createElement('div');
-    lab.style.cssText = 'color:#89b4fa;font-size:11px;margin-bottom:2px';
+    lab.style.cssText = `color:${T_GLOW};font-size:11px;margin-bottom:2px`;
     lab.textContent = label;
     const val = document.createElement('div');
-    val.style.cssText = 'color:#cdd6f4;font-size:12px;white-space:pre-wrap;word-break:break-word';
+    val.style.cssText = `color:${T_TXT};font-size:12px;white-space:pre-wrap;word-break:break-word`;
     val.textContent = value;
     row.append(lab, val);
     body.appendChild(row);
@@ -2065,11 +2171,11 @@ function renderContextPacketCard(packet: PierCodeContextPacket, sourceEl: Elemen
     const row = document.createElement('div');
     row.style.cssText = 'margin-bottom:8px';
     const lab = document.createElement('div');
-    lab.style.cssText = 'color:#89b4fa;font-size:11px;margin-bottom:2px';
+    lab.style.cssText = `color:${T_GLOW};font-size:11px;margin-bottom:2px`;
     lab.textContent = `${label} (${items.length})`;
     row.appendChild(lab);
     const ul = document.createElement('ul');
-    ul.style.cssText = 'margin:0;padding-left:18px;color:#cdd6f4;font-size:12px';
+    ul.style.cssText = `margin:0;padding-left:18px;color:${T_TXT};font-size:12px`;
     for (const item of items) {
       const li = document.createElement('li');
       li.style.cssText = 'margin-bottom:2px;white-space:pre-wrap;word-break:break-word';
@@ -2105,7 +2211,7 @@ function renderContextPacketCard(packet: PierCodeContextPacket, sourceEl: Elemen
   btnRow.style.cssText = 'display:flex;gap:8px;margin-top:10px;align-items:center';
   const copyBtn = document.createElement('button');
   copyBtn.textContent = '复制';
-  copyBtn.style.cssText = 'padding:5px 16px;background:#cba6f7;color:#11111b;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600';
+  copyBtn.style.cssText = `padding:5px 16px;background:transparent;color:${T_GLOW};border:1px solid ${T_GLOW};border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:${T_FONT};box-shadow:0 0 0 1px ${T_GLOW_SOFT}`;
   copyBtn.onclick = async () => {
     try {
       await navigator.clipboard.writeText(packet.raw || packet.content);
@@ -2675,20 +2781,26 @@ function startDOMObserver(_responseSelector: string) {
   // forwardAgentResultJSON parses one piercode-agent-result body and forwards it
   // to the server exactly once. Returns true when a complete packet was sent (or
   // already de-duped); false when the body is incomplete/malformed so the caller
-  // can schedule a settle-retry. `dedupSource` keys the dedup set (the full fence
-  // match for the generic path, or the recovered Monaco model text for Qwen) so
-  // repeated scans never re-send the same packet.
-  function forwardAgentResultJSON(jsonStr: string, dedupSource: string, processed: Set<string>): boolean {
+  // can schedule a settle-retry. The dedup key is derived from the PARSED packet
+  // content (id+status+summary+result), NOT the raw source string: the generic
+  // fence path passes `match[0]` (with backticks) while the Qwen Monaco path
+  // passes the recovered body (no fence), so hashing the source produced two
+  // different keys for the same packet → the coordinator got the same callback
+  // twice. Hashing the parsed content makes both paths collapse to one key.
+  function forwardAgentResultJSON(jsonStr: string, _dedupSource: string, processed: Set<string>): boolean {
     const agentId = workerAgentId();
     if (!agentId) return false;
     const packet = parseAgentResultPacket(jsonStr);
     if (!packet) return false; // incomplete (streaming / Monaco overflow) or malformed
     const reportedId = packet.agentId || agentId;
-    // Dedup by agent id + packet hash, persisted to sessionStorage. The in-memory
-    // `processed` set only lives for one scan pass, so a DOM re-scan or a page
-    // reload would otherwise re-forward (re-run) a packet already sent. The
-    // sessionStorage key survives both within the tab session.
-    const key = `agent-result:${reportedId}:${hashStr(dedupSource)}`;
+    // Dedup by agent id + a hash of the parsed packet body, persisted to
+    // sessionStorage. The in-memory `processed` set only lives for one scan pass,
+    // so a DOM re-scan or a page reload would otherwise re-forward (re-run) a
+    // packet already sent; the sessionStorage key survives both within the tab
+    // session. Keying off the parsed content (not the raw fence/body source) also
+    // de-dupes the generic-fence and Qwen-Monaco paths against each other.
+    const contentKey = `${reportedId} ${packet.status} ${packet.summary} ${packet.result}`;
+    const key = `agent-result:${reportedId}:${hashStr(contentKey)}`;
     if (processed.has(key) || agentResultAlreadySent(key)) return true;
     processed.add(key);
     markAgentResultSent(key);
@@ -2947,8 +3059,8 @@ function startDOMObserver(_responseSelector: string) {
 
 function injectInitButton() {
   const btn = document.createElement('button');
-  btn.textContent = '🔗 初始化';
-  btn.style.cssText = 'position:fixed;bottom:80px;right:20px;z-index:99999;padding:8px 14px;background:#1677ff;color:#fff;border:none;border-radius:20px;cursor:pointer;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,0.3)';
+  btn.textContent = '⌁ 初始化';
+  btn.style.cssText = `position:fixed;bottom:80px;right:20px;z-index:99999;padding:8px 14px;background:${T_PANEL};color:${T_GLOW};border:1px solid ${T_GLOW};border-radius:20px;cursor:pointer;font-size:13px;box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 2px 8px rgba(0,0,0,0.4);font-family:${T_FONT}`;
   btn.onclick = sendInitPrompt;
   document.body.appendChild(btn);
 }
@@ -3042,14 +3154,14 @@ function showQuestionPopup(question: string, options: string[]): Promise<string>
 // 让用户能看到"请求模型中→重试中→本地兜底中→完成/失败"整条链路。
 type CompressionPhase = 'requesting' | 'retrying' | 'local_fallback' | 'opening' | 'done' | 'failed' | 'cancelled' | 'manual';
 const COMPRESSION_PHASE_META: Record<CompressionPhase, { icon: string; color: string; label: string }> = {
-  requesting:     { icon: '⏳', color: '#f9e2af', label: '正在请求模型压缩上下文…' },
-  retrying:       { icon: '🔁', color: '#fab387', label: '模型未按时输出，正在加强约束重试…' },
-  local_fallback: { icon: '🧩', color: '#fab387', label: '模型两次未输出，正在本地摘要兜底…' },
-  opening:        { icon: '🚀', color: '#89b4fa', label: '正在打开新会话并注入压缩上下文…' },
-  done:           { icon: '✅', color: '#a6e3a1', label: '上下文已压缩并迁移到新会话' },
-  failed:         { icon: '❌', color: '#f38ba8', label: '上下文压缩失败' },
-  cancelled:      { icon: '🛑', color: '#9399b2', label: '已取消上下文压缩' },
-  manual:         { icon: '📋', color: '#89b4fa', label: '上下文已压缩（手动模式）' },
+  requesting:     { icon: '⏳', color: T_AMBER, label: '正在请求模型压缩上下文…' },
+  retrying:       { icon: '🔁', color: T_AMBER, label: '模型未按时输出，正在加强约束重试…' },
+  local_fallback: { icon: '🧩', color: T_AMBER, label: '模型两次未输出，正在本地摘要兜底…' },
+  opening:        { icon: '🚀', color: T_GLOW,  label: '正在打开新会话并注入压缩上下文…' },
+  done:           { icon: '✅', color: T_GLOW,  label: '上下文已压缩并迁移到新会话' },
+  failed:         { icon: '❌', color: T_RED,   label: '上下文压缩失败' },
+  cancelled:      { icon: '🛑', color: T_DIM,   label: '已取消上下文压缩' },
+  manual:         { icon: '📋', color: T_GLOW,  label: '上下文已压缩（手动模式）' },
 };
 
 const compressionStatusCard = (() => {
@@ -3063,14 +3175,14 @@ const compressionStatusCard = (() => {
     if (!document.body) return null;
     if (el) return el;
     el = document.createElement('div');
-    el.style.cssText = 'position:fixed;bottom:210px;right:20px;z-index:2147483647;display:flex;align-items:center;gap:8px;max-width:340px;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-left:3px solid #cba6f7;border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.4;box-shadow:0 4px 16px rgba(0,0,0,0.4);font-family:system-ui,-apple-system,sans-serif';
+    el.style.cssText = `position:fixed;bottom:210px;right:20px;z-index:2147483647;display:flex;align-items:center;gap:8px;max-width:340px;background:${T_PANEL};color:${T_TXT};border:1px solid ${T_LINE};border-left:3px solid ${T_GLOW};border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.4;box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 4px 16px rgba(0,0,0,0.5);font-family:${T_FONT}`;
     iconEl = document.createElement('span');
     iconEl.style.cssText = 'font-size:15px;flex-shrink:0';
     textEl = document.createElement('span');
     textEl.style.cssText = 'flex:1';
     cancelBtn = document.createElement('button');
     cancelBtn.textContent = '取消';
-    cancelBtn.style.cssText = 'flex-shrink:0;padding:3px 10px;background:transparent;color:#f38ba8;border:1px solid #f38ba8;border-radius:6px;cursor:pointer;font-size:12px;display:none';
+    cancelBtn.style.cssText = `flex-shrink:0;padding:3px 10px;background:transparent;color:${T_RED};border:1px solid ${T_RED};border-radius:6px;cursor:pointer;font-size:12px;display:none;font-family:${T_FONT}`;
     el.append(iconEl, textEl, cancelBtn);
     document.body.appendChild(el);
     return el;
@@ -3119,7 +3231,7 @@ const compressionConfirmCard = (() => {
     if (!document.body) return;
     dismiss();
     el = document.createElement('div');
-    el.style.cssText = 'position:fixed;bottom:260px;right:20px;z-index:2147483647;max-width:340px;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-left:3px solid #cba6f7;border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5;box-shadow:0 4px 16px rgba(0,0,0,0.4);font-family:system-ui,-apple-system,sans-serif';
+    el.style.cssText = `position:fixed;bottom:260px;right:20px;z-index:2147483647;max-width:340px;background:${T_PANEL};color:${T_TXT};border:1px solid ${T_LINE};border-left:3px solid ${T_GLOW};border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5;box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 4px 16px rgba(0,0,0,0.5);font-family:${T_FONT}`;
     const msg = document.createElement('div');
     msg.style.cssText = 'margin-bottom:10px';
     msg.textContent = `上下文已达阈值（${formatTokenCount(used)} / ${formatTokenCount(threshold)} tokens）。是否压缩并迁移到新会话？`;
@@ -3127,11 +3239,11 @@ const compressionConfirmCard = (() => {
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
     const skipBtn = document.createElement('button');
     skipBtn.textContent = '跳过，继续执行';
-    skipBtn.style.cssText = 'padding:5px 12px;background:transparent;color:#9399b2;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px';
+    skipBtn.style.cssText = `padding:5px 12px;background:transparent;color:${T_DIM};border:1px solid ${T_LINE};border-radius:6px;cursor:pointer;font-size:12px;font-family:${T_FONT}`;
     skipBtn.onclick = () => { dismiss(); opts.onSkip(); };
     const compressBtn = document.createElement('button');
     compressBtn.textContent = '压缩';
-    compressBtn.style.cssText = 'padding:5px 16px;background:#cba6f7;color:#1e1e2e;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600';
+    compressBtn.style.cssText = `padding:5px 16px;background:transparent;color:${T_GLOW};border:1px solid ${T_GLOW};border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:${T_FONT};box-shadow:0 0 0 1px ${T_GLOW_SOFT}`;
     compressBtn.onclick = () => { dismiss(); opts.onCompress(); };
     row.append(skipBtn, compressBtn);
     el.append(msg, row);
@@ -3144,7 +3256,7 @@ const compressionConfirmCard = (() => {
 function showToast(msg: string, durationMs = 3000): void {
   if (!document.body) return;
   const toast = document.createElement('div');
-  toast.style.cssText = 'position:fixed;bottom:170px;right:20px;z-index:2147483647;background:#1e1e2e;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:10px;padding:10px 16px;font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,0.4)';
+  toast.style.cssText = `position:fixed;bottom:170px;right:20px;z-index:2147483647;background:${T_PANEL};color:${T_GLOW};border:1px solid ${T_GLOW};border-radius:10px;padding:10px 16px;font-size:13px;box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 4px 16px rgba(0,0,0,0.5);font-family:${T_FONT}`;
   toast.textContent = msg;
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), durationMs);
@@ -3366,7 +3478,7 @@ function showPickerPopup(
   onDismiss: () => void
 ): () => void {
   const popup = document.createElement('div');
-  popup.style.cssText = 'position:fixed;z-index:2147483647;background:#1e1e2e;border:1px solid #45475a;border-radius:8px;padding:4px;min-width:240px;max-width:400px;max-height:240px;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,0.5)';
+  popup.style.cssText = `position:fixed;z-index:2147483647;background:${T_PANEL};border:1px solid ${T_LINE};border-radius:8px;padding:4px;min-width:240px;max-width:400px;max-height:240px;overflow-y:auto;box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 4px 16px rgba(0,0,0,0.5);font-family:${T_FONT}`;
 
   let activeIdx = 0;
   const rows: HTMLElement[] = [];
@@ -3376,21 +3488,21 @@ function showPickerPopup(
     rows.length = 0;
     if (items.length === 0) {
       const empty = document.createElement('div');
-      empty.style.cssText = 'padding:8px 12px;color:#6c7086;font-size:12px';
+      empty.style.cssText = `padding:8px 12px;color:${T_DIM};font-size:12px`;
       empty.textContent = '无匹配项';
       popup.appendChild(empty);
       return;
     }
     items.forEach((item, i) => {
       const row = document.createElement('div');
-      row.style.cssText = `padding:6px 12px;border-radius:6px;cursor:pointer;display:flex;flex-direction:column;gap:2px;background:${i === activeIdx ? '#313244' : 'transparent'}`;
+      row.style.cssText = `padding:6px 12px;border-radius:6px;cursor:pointer;display:flex;flex-direction:column;gap:2px;background:${i === activeIdx ? T_PANEL2 : 'transparent'}`;
       const label = document.createElement('span');
-      label.style.cssText = 'color:#cdd6f4;font-size:13px';
+      label.style.cssText = `color:${T_TXT};font-size:13px`;
       label.textContent = item.label;
       row.appendChild(label);
       if (item.sub) {
         const sub = document.createElement('span');
-        sub.style.cssText = 'color:#6c7086;font-size:11px';
+        sub.style.cssText = `color:${T_DIM};font-size:11px`;
         sub.textContent = item.sub;
         row.appendChild(sub);
       }
@@ -3405,7 +3517,7 @@ function showPickerPopup(
     if (rows[activeIdx]) rows[activeIdx].style.background = 'transparent';
     activeIdx = i;
     if (rows[activeIdx]) {
-      rows[activeIdx].style.background = '#313244';
+      rows[activeIdx].style.background = T_PANEL2;
       rows[activeIdx].scrollIntoView({ block: 'nearest' });
     }
   }
