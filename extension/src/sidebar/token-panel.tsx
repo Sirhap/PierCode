@@ -4,10 +4,9 @@ import {
   platformAccuracy,
   tokenizerState,
   whenTokenizerReady,
+  type MeterMessage,
   type TokenAccuracy,
-} from '../content/token-meter'
-import type { ConversationContext } from '../content/qwen-context-compress'
-import { DEFAULT_PLATFORM_THRESHOLDS } from '../content/qwen-settings'
+} from './token-count'
 
 interface ChatMessage {
   role: 'user' | 'assistant' | 'tool_result' | 'system'
@@ -18,6 +17,17 @@ interface TokenPanelProps {
   messages: ChatMessage[]
   threshold?: number
   platform?: string
+}
+
+// Per-platform compression thresholds (mirror content/qwen-settings.ts
+// DEFAULT_PLATFORM_THRESHOLDS — inlined so the sidebar doesn't import the
+// content-side leaf and pull it into content.js's chunk).
+const DEFAULT_THRESHOLDS: Record<string, number> = {
+  chatgpt: 128_000,
+  qwen: 256_000,
+  claude: 200_000,
+  gemini: 1_000_000,
+  openai: 128_000,
 }
 
 // Rough per-1M-token USD price for cost estimate (input+output blended, conservative).
@@ -40,9 +50,8 @@ const ACCURACY_STYLE: Record<TokenAccuracy, string> = {
   estimate: 'text-gray-500',
 }
 
-// token-meter's ConversationContext only knows user/assistant/system; map the
-// sidebar's tool_result role onto 'user' so it counts toward input.
-function toMeterRole(role: ChatMessage['role']): 'user' | 'assistant' | 'system' {
+// The sidebar's tool_result role maps onto 'user' so it counts toward input.
+function toMeterRole(role: ChatMessage['role']): MeterMessage['role'] {
   if (role === 'assistant') return 'assistant'
   if (role === 'system') return 'system'
   return 'user'
@@ -59,16 +68,12 @@ export default function TokenPanel({ messages, threshold, platform = 'qwen' }: T
   }, [])
 
   const meter = useMemo(() => {
-    const ctx: ConversationContext = {
-      messages: messages.map(m => ({ role: toMeterRole(m.role), content: m.content, timestamp: 0 })),
-      totalChars: messages.reduce((s, m) => s + m.content.length, 0),
-      lastCompressedAt: 0,
-    }
-    return computeMeter(ctx, platform)
+    const meterMsgs: MeterMessage[] = messages.map(m => ({ role: toMeterRole(m.role), content: m.content }))
+    return computeMeter(meterMsgs, platform)
   }, [messages, platform])
 
   const accuracy = platformAccuracy(platform, tokenizerState())
-  const effectiveThreshold = threshold || DEFAULT_PLATFORM_THRESHOLDS[platform] || 128_000
+  const effectiveThreshold = threshold || DEFAULT_THRESHOLDS[platform] || 128_000
   const ratio = meter.total / effectiveThreshold
   const pct = Math.min(100, Math.round(ratio * 100))
 

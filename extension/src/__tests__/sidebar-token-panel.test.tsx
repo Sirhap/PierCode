@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import TokenPanel from '../sidebar/token-panel';
-import { __resetTokenizerForTest } from '../content/token-meter';
+import { __resetTokenizerForTest } from '../sidebar/token-count';
 
 // Deterministic tokenizer: 1 token per 4 chars.
 vi.mock('js-tiktoken', () => ({
