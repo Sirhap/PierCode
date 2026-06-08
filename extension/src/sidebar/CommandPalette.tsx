@@ -28,7 +28,7 @@ export default function CommandPalette({ commands, onClose, onSearch, onPickSear
 
   function onKey(e: React.KeyboardEvent) {
     if (e.key === 'Escape') { e.preventDefault(); onClose(); return }
-    if (e.key === 'ArrowDown') { e.preventDefault(); setSel(s => Math.min(count - 1, s + 1)); return }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSel(s => count > 0 ? Math.min(count - 1, s + 1) : 0); return }
     if (e.key === 'ArrowUp') { e.preventDefault(); setSel(s => Math.max(0, s - 1)); return }
     if (e.key === 'Enter') { e.preventDefault(); exec(sel); return }
     if (e.key === 'Tab') { e.preventDefault(); setMode(m => m === 'command' ? 'search' : 'command'); setQuery('') }
