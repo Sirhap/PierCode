@@ -71,7 +71,14 @@ export function initCRT(canvas: HTMLCanvasElement): void {
   }
 
   resize()
-  window.addEventListener('resize', resize)
+
+  // Debounce resize: it reallocates the drop array, so coalesce rapid
+  // window-drag events into one rebuild.
+  let resizeTimer = 0
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer)
+    resizeTimer = window.setTimeout(resize, 150)
+  })
 
   // throttle to ~24fps
   let last = 0

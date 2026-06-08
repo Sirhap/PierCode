@@ -1,7 +1,9 @@
 import './styles/main.css'
-import '@fontsource/jetbrains-mono/400.css'
-import '@fontsource/jetbrains-mono/700.css'
-import '@fontsource/jetbrains-mono/800.css'
+// Latin-only subsets — the UI is zh/en, so vietnamese/greek/cyrillic faces
+// would only bloat the artifact (browsers gate them by unicode-range anyway).
+import '@fontsource/jetbrains-mono/latin-400.css'
+import '@fontsource/jetbrains-mono/latin-700.css'
+import '@fontsource/jetbrains-mono/latin-800.css'
 import { gsap } from 'gsap'
 import { ScrollTrigger } from 'gsap/ScrollTrigger'
 import { coreCapabilities, featureTools, platforms } from './data'
