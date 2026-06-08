@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import MessageView, { type ChatMessage, type ToolResult, type ThinkingStep } from './MessageView'
 import Picker, { type PickerItem } from './Picker'
 import TokenPanel from './token-panel'
@@ -6,6 +6,8 @@ import WorkerRadar, { type SubAgent } from './WorkerRadar'
 import StatusHUD from './StatusHUD'
 import { classifyCompletion } from './completions'
 import { filterAgentTemplates } from './agent-templates'
+import CommandPalette, { type SearchHit } from './CommandPalette'
+import { type Command } from './commands'
 import {
   saveSession, loadSession, listSessions, deleteSession,
   getActiveSessionId, setActiveSessionId,
@@ -207,6 +209,9 @@ export default function App() {
   const [subAgents, setSubAgents] = useState<SubAgent[]>([])
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const sessionIdRef = useRef<string>(genId())
+
+  // ── Command palette ───────────────────────────────────────────────────
+  const [paletteOpen, setPaletteOpen] = useState(false)
 
   // ── Connection check ──────────────────────────────────────────────────
   useEffect(() => {
@@ -433,6 +438,18 @@ export default function App() {
   }, [input])
 
   useEffect(() => { inputRef.current?.focus() }, [])
+
+  // ── Cmd/Ctrl+K → command palette ─────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen(o => !o)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // ── /skills, @files, @@agents autocomplete ────────────────────────────
   const updateCompletions = useCallback(async (text: string) => {
@@ -707,6 +724,42 @@ export default function App() {
     else startNewSession()
   }, [switchSession, startNewSession])
 
+  // ── Palette command list ───────────────────────────────────────────────
+  const paletteCommands = useMemo<Command[]>(() => {
+    const list: Command[] = [
+      { id: 'new', title: '新对话', hint: 'new', run: () => startNewSession() },
+      { id: 'clear', title: '清空当前消息', hint: 'clear', run: () => setMessages([]) },
+    ]
+    for (const p of PLATFORMS) {
+      list.push({ id: `plat-${p.key}`, title: `切换到 ${p.label}`, hint: 'platform', run: () => setPlatform(p.key) })
+    }
+    for (const s of sessions) {
+      if (s.id === sessionIdRef.current) continue
+      list.push({ id: `sess-${s.id}`, title: `会话: ${s.title || '新对话'}`, hint: 'switch', run: () => switchSession(s.id) })
+    }
+    return list
+  }, [sessions, startNewSession, switchSession])
+
+  // ── Palette search callbacks ───────────────────────────────────────────
+  const searchMessages = useCallback((q: string): SearchHit[] => {
+    const query = q.trim().toLowerCase()
+    if (!query) return []
+    const hits: SearchHit[] = []
+    messages.forEach((m, index) => {
+      if (m.content.toLowerCase().includes(query)) {
+        const at = m.content.toLowerCase().indexOf(query)
+        hits.push({ index, preview: m.content.slice(Math.max(0, at - 12), at + 40).replace(/\n/g, ' ') })
+      }
+    })
+    return hits
+  }, [messages])
+
+  const scrollToMessage = useCallback((index: number) => {
+    const el = listRef.current?.children[index] as HTMLElement | undefined
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el?.animate([{ background: 'var(--glow-soft)' }, { background: 'transparent' }], { duration: 1200 })
+  }, [])
+
   // ── Render ────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100 font-sans">
@@ -874,6 +927,16 @@ export default function App() {
         threshold={tokenThreshold || 200_000}
         activeAgents={subAgents.filter(a => a.status === 'running').length}
       />
+
+      {/* ── Command palette (Cmd+K) ──────────────────────────────────────────── */}
+      {paletteOpen && (
+        <CommandPalette
+          commands={paletteCommands}
+          onClose={() => setPaletteOpen(false)}
+          onSearch={searchMessages}
+          onPickSearch={scrollToMessage}
+        />
+      )}
     </div>
   )
 }
