@@ -7,9 +7,16 @@ import StatusHUD from './StatusHUD'
 import { classifyCompletion } from './completions'
 import { filterAgentTemplates } from './agent-templates'
 import CommandPalette, { type SearchHit } from './CommandPalette'
-import { type Command } from './commands'
+import { type Command, fuzzyMatch } from './commands'
 import { useGlow } from './use-glow'
 import { GLOW_COLORS } from './glow'
+import {
+  computeMeter,
+  whenTokenizerReady,
+  tokenizerState,
+  type TokenMeter,
+  type MeterMessage,
+} from './token-count'
 import {
   saveSession, loadSession, listSessions, deleteSession,
   getActiveSessionId, setActiveSessionId,
@@ -178,6 +185,16 @@ function SubAgentCard({ agent }: { agent: SubAgent }) {
   )
 }
 
+// ── Token meter helper (shared role mapping) ──────────────────────────────
+
+type AnyRole = 'user' | 'assistant' | 'tool_result' | 'system'
+
+function toMeterRole(role: AnyRole): MeterMessage['role'] {
+  if (role === 'assistant') return 'assistant'
+  if (role === 'system') return 'system'
+  return 'user'
+}
+
 // ── Main App ───────────────────────────────────────────────────────────────
 
 interface PendingQuestion {
@@ -222,6 +239,20 @@ export default function App() {
   // ── Theme glow color ──────────────────────────────────────────────────
   const [glow, setGlow] = useGlow()
   const [glowMenuOpen, setGlowMenuOpen] = useState(false)
+
+  // ── Tokenizer-ready state (triggers re-render when tiktoken loads) ─────
+  const [, setTokReady] = useState(tokenizerState)
+  useEffect(() => {
+    let alive = true
+    whenTokenizerReady().then(() => { if (alive) setTokReady(tokenizerState()) })
+    return () => { alive = false }
+  }, [])
+
+  // ── Lifted token meter (computed once, shared by TokenPanel + StatusHUD) ─
+  const meter = useMemo<TokenMeter>(() => {
+    const meterMsgs: MeterMessage[] = messages.map(m => ({ role: toMeterRole(m.role as AnyRole), content: m.content }))
+    return computeMeter(meterMsgs, platform)
+  }, [messages, platform])
 
   // ── Connection check ──────────────────────────────────────────────────
   useEffect(() => {
@@ -481,7 +512,7 @@ export default function App() {
       const now = Date.now()
       if (skillsCacheRef.current && now - skillsCacheRef.current.ts < 30_000) {
         setPickerItems(skillsCacheRef.current.items.filter(
-          item => item.label.includes(match.query) || (item.sub || '').includes(match.query)))
+          item => fuzzyMatch(`${item.label} ${item.sub || ''}`, match.query)))
         return
       }
       const auth = await getAuth()
@@ -495,7 +526,7 @@ export default function App() {
           .filter((s: any) => !s.name?.startsWith('piercode-'))
           .map((s: any) => ({ label: s.name, sub: s.description, value: s.name }))
         skillsCacheRef.current = { ts: now, items: skills }
-        setPickerItems(skills.filter(item => item.label.includes(match.query) || (item.sub || '').includes(match.query)))
+        setPickerItems(skills.filter(item => fuzzyMatch(`${item.label} ${item.sub || ''}`, match.query)))
       } catch {
         setPickerItems([])
       }
@@ -939,7 +970,7 @@ export default function App() {
       )}
 
       {/* ── Token panel ─────────────────────────────────────────────────────── */}
-      <TokenPanel messages={messages} threshold={tokenThreshold} platform={platform} />
+      <TokenPanel meter={meter} threshold={tokenThreshold} platform={platform} />
 
       {/* ── Input ───────────────────────────────────────────────────────────── */}
       <div className="boot boot-4 flex-shrink-0 border-t p-2 relative" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
@@ -974,7 +1005,7 @@ export default function App() {
       {/* ── Status HUD ──────────────────────────────────────────────────────── */}
       <StatusHUD
         connected={connected}
-        messages={messages}
+        meter={meter}
         platform={platform}
         threshold={tokenThreshold || 200_000}
         activeAgents={subAgents.filter(a => a.status === 'running').length}

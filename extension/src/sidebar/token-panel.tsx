@@ -1,20 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
 import {
-  computeMeter,
   platformAccuracy,
   tokenizerState,
-  whenTokenizerReady,
-  type MeterMessage,
+  type TokenMeter,
   type TokenAccuracy,
 } from './token-count'
 
-interface ChatMessage {
-  role: 'user' | 'assistant' | 'tool_result' | 'system'
-  content: string
-}
-
 interface TokenPanelProps {
-  messages: ChatMessage[]
+  meter: TokenMeter
   threshold?: number
   platform?: string
 }
@@ -50,27 +42,10 @@ const ACCURACY_STYLE: Record<TokenAccuracy, string> = {
   estimate: 'text-gray-500',
 }
 
-// The sidebar's tool_result role maps onto 'user' so it counts toward input.
-function toMeterRole(role: ChatMessage['role']): MeterMessage['role'] {
-  if (role === 'assistant') return 'assistant'
-  if (role === 'system') return 'system'
-  return 'user'
-}
-
-export default function TokenPanel({ messages, threshold, platform = 'qwen' }: TokenPanelProps) {
-  // Re-render once the lazy tokenizer finishes loading so counts upgrade from
-  // estimate → exact/approx without a user action.
-  const [, setReady] = useState(tokenizerState())
-  useEffect(() => {
-    let alive = true
-    whenTokenizerReady().then(() => { if (alive) setReady(tokenizerState()) })
-    return () => { alive = false }
-  }, [])
-
-  const meter = useMemo(() => {
-    const meterMsgs: MeterMessage[] = messages.map(m => ({ role: toMeterRole(m.role), content: m.content }))
-    return computeMeter(meterMsgs, platform)
-  }, [messages, platform])
+export default function TokenPanel({ meter, threshold, platform = 'qwen' }: TokenPanelProps) {
+  // The tokenizer-ready effect now lives in App.tsx, which re-renders when
+  // tiktoken loads and passes a freshly computed meter down as a prop. No
+  // internal effect or recompute needed here.
 
   const accuracy = platformAccuracy(platform, tokenizerState())
   const effectiveThreshold = threshold || DEFAULT_THRESHOLDS[platform] || 128_000

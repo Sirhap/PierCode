@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import TokenPanel from '../sidebar/token-panel';
-import { __resetTokenizerForTest } from '../sidebar/token-count';
+import { computeMeter, __resetTokenizerForTest } from '../sidebar/token-count';
 
 // Deterministic tokenizer: 1 token per 4 chars.
 vi.mock('js-tiktoken', () => ({
@@ -31,10 +31,11 @@ afterEach(() => {
 
 describe('sidebar TokenPanel', () => {
   it('renders an estimate badge before the tokenizer loads', () => {
+    const meter = computeMeter([{ role: 'user', content: 'hello world' }], 'qwen');
     act(() => {
       root!.render(
         <TokenPanel
-          messages={[{ role: 'user', content: 'hello world' }]}
+          meter={meter}
           platform="qwen"
         />,
       );
@@ -43,13 +44,18 @@ describe('sidebar TokenPanel', () => {
   });
 
   it('counts user content as input and assistant content as output', () => {
+    // App computes meter from messages; test mirrors that pre-computation.
+    const meter = computeMeter(
+      [
+        { role: 'user', content: 'aaaa' },
+        { role: 'assistant', content: 'bbbbbbbb' },
+      ],
+      'chatgpt',
+    );
     act(() => {
       root!.render(
         <TokenPanel
-          messages={[
-            { role: 'user', content: 'aaaa' },
-            { role: 'assistant', content: 'bbbbbbbb' },
-          ]}
+          meter={meter}
           platform="chatgpt"
         />,
       );

@@ -1,20 +1,15 @@
-import { useEffect, useState, useMemo } from 'react'
-import { computeMeter, type MeterMessage } from './token-count'
+import { useEffect, useState } from 'react'
+import { type TokenMeter } from './token-count'
 
-interface HudMsg { role: 'user' | 'assistant' | 'tool_result'; content: string }
-
-function toMeterRole(role: HudMsg['role']): MeterMessage['role'] {
-  return role === 'assistant' ? 'assistant' : 'user'
-}
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
 }
 
-export default function StatusHUD({ connected, messages, platform, threshold, activeAgents }: {
+export default function StatusHUD({ connected, meter, platform: _platform, threshold, activeAgents }: {
   connected: boolean
-  messages: HudMsg[]
+  meter: TokenMeter
   platform: string
   threshold: number
   activeAgents: number
@@ -34,10 +29,7 @@ export default function StatusHUD({ connected, messages, platform, threshold, ac
     })
   }, [connected])
 
-  const total = useMemo(() => {
-    const m = computeMeter(messages.map(x => ({ role: toMeterRole(x.role), content: x.content })), platform)
-    return m.total
-  }, [messages, platform])
+  const total = meter.total
 
   const ratio = threshold > 0 ? Math.min(1, total / threshold) : 0
   const segs = 10

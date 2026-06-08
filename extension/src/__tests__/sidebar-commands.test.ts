@@ -1,11 +1,29 @@
 import { describe, it, expect } from 'vitest'
-import { fuzzyFilter, type Command } from '../sidebar/commands'
+import { fuzzyFilter, fuzzyMatch, type Command } from '../sidebar/commands'
 
 const cmds: Command[] = [
   { id: 'new', title: '新对话', hint: 'new chat', run: () => {} },
   { id: 'clear', title: '清屏', hint: 'clear messages', run: () => {} },
   { id: 'plat-qwen', title: '切换到 Qwen', hint: 'platform', run: () => {} },
 ]
+
+describe('fuzzyMatch', () => {
+  it('returns true for exact substring match', () => {
+    expect(fuzzyMatch('hello world', 'world')).toBe(true)
+  })
+  it('matches case-insensitively', () => {
+    expect(fuzzyMatch('切换到 Qwen', 'QWEN')).toBe(true)
+  })
+  it('matches subsequence (chars appear in order, not adjacent)', () => {
+    expect(fuzzyMatch('new chat session', 'ncs')).toBe(true)
+  })
+  it('returns false when haystack does not contain query', () => {
+    expect(fuzzyMatch('hello world', 'zzz')).toBe(false)
+  })
+  it('returns true for empty query', () => {
+    expect(fuzzyMatch('anything', '')).toBe(true)
+  })
+})
 
 describe('fuzzyFilter', () => {
   it('returns all commands for an empty query', () => {
