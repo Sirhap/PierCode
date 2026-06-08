@@ -18,7 +18,7 @@
 /* ── Code blocks inside messages ─────────────────────────────────────────── */
 .msg-content pre { background: #06120a; border-radius: 4px; padding: 10px 12px; margin: 8px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; border: 1px solid var(--line); }
 .msg-content code { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 0.9em; }
-.msg-content :not(pre) > code { background: rgba(57,255,20,0.08); padding: 1px 5px; border-radius: 3px; color: var(--glow); }
+.msg-content :not(pre) > code { background: var(--glow-soft); padding: 1px 5px; border-radius: 3px; color: var(--glow); }
 .msg-content h1, .msg-content h2, .msg-content h3 { font-weight: 500; margin: 12px 0 6px; line-height: 1.3; color: var(--txt); }
 .msg-content h1 { font-size: 1.2em; } .msg-content h2 { font-size: 1.08em; } .msg-content h3 { font-size: 1em; }
 .msg-content ul, .msg-content ol { padding-left: 1.5em; margin: 6px 0; }
@@ -29,4 +29,4 @@
 .msg-content hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
 .msg-content table { border-collapse: collapse; margin: 8px 0; font-size: 0.9em; width: 100%; }
 .msg-content th, .msg-content td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
-.msg-content th { background: rgba(57,255,20,0.06); font-weight: 500; }
+.msg-content th { background: var(--glow-soft); font-weight: 500; }

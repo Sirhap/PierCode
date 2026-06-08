@@ -665,8 +665,11 @@ export default function App() {
     setError('')
     const now = Date.now()
     const assistantMsg: ChatMessage = { role: 'assistant', content: '', streaming: true, ts: now }
-    setMessages(prev => [...prev, assistantMsg])
-    currentAssistantIdx.current = messages.length  // assistant is at the end
+    setMessages(prev => {
+      const next = [...prev, assistantMsg]
+      currentAssistantIdx.current = next.length - 1  // assistant is at the end
+      return next
+    })
     setStreaming(true)
 
     chrome.runtime.sendMessage({
@@ -738,7 +741,12 @@ export default function App() {
   const paletteCommands = useMemo<Command[]>(() => {
     const list: Command[] = [
       { id: 'new', title: '新对话', hint: 'new', run: () => startNewSession() },
-      { id: 'clear', title: '清空当前消息', hint: 'clear', run: () => setMessages([]) },
+      { id: 'clear', title: '清空当前消息', hint: 'clear', run: () => {
+      setMessages([])
+      chatIdRef.current = null
+      lastResponseIdRef.current = null
+      currentAssistantIdx.current = -1
+    } },
     ]
     for (const p of PLATFORMS) {
       list.push({ id: `plat-${p.key}`, title: `切换到 ${p.label}`, hint: 'platform', run: () => setPlatform(p.key) })
