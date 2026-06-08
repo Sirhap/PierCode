@@ -65,7 +65,11 @@ export default function OverviewBar(props: OverviewBarProps) {
       </span>
 
       <span className="ov-right">
-        <span className="ov-conn" data-on={props.connected} title={props.connected ? '已连接' : '未连接'}>●</span>
+        <span
+          className={`ov-conn${props.connected ? ' dot-live' : ''}`}
+          data-on={props.connected}
+          title={props.connected ? '已连接' : '未连接'}
+        />
         <button className="ov-drawer-toggle" title="子 agent 详情" onClick={props.onToggleDrawer}>⌗</button>
       </span>
     </div>
