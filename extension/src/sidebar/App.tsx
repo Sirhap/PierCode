@@ -287,7 +287,7 @@ export default function App() {
         model,
         chatId: chatIdRef.current,
         lastResponseId: lastResponseIdRef.current,
-        messages: messages.map(m => ({ role: m.role, content: m.content })),
+        messages: messages.map(m => ({ role: m.role, content: m.content, pinned: m.pinned })),
         ts: Date.now(),
       }
       saveSession(payload).then(() => { setActiveSessionId(id); listSessions().then(setSessions) })

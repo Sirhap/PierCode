@@ -10,6 +10,7 @@
 export interface StoredMessage {
   role: 'user' | 'assistant' | 'tool_result' | 'system'
   content: string
+  pinned?: boolean
 }
 
 export interface StoredSession {

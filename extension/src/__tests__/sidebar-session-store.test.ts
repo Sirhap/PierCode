@@ -77,4 +77,19 @@ describe('session-store', () => {
     await setActiveSessionId('s6');
     expect(await getActiveSessionId()).toBe('s6');
   });
+
+  it('round-trips the pinned flag on a message', async () => {
+    const s: StoredSession = {
+      id: 'p1', platform: 'qwen', model: 'm', chatId: null, lastResponseId: null,
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'yo', pinned: true },
+      ],
+      ts: 1,
+    }
+    await saveSession(s)
+    const got = await loadSession('p1')
+    expect(got?.messages[1].pinned).toBe(true)
+    expect(got?.messages[0].pinned).toBeUndefined()
+  });
 });
