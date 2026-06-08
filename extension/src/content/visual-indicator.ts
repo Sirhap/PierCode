@@ -4,6 +4,8 @@
  * 提供：脉冲边框、停止按钮、状态徽章
  */
 
+import { T_GLOW, T_RED } from './terminal-theme';
+
 interface VisualIndicatorState {
   isPulsingActive: boolean;
   wasPulsingBeforeHide: boolean;
@@ -124,13 +126,13 @@ function createPulseStyles(root: ShadowRoot): void {
     @keyframes piercode-agent-pulse {
       0%, 100% {
         box-shadow:
-          inset 0 0 4px rgba(74, 222, 128, 0.5),
-          inset 0 0 8px rgba(74, 222, 128, 0.25);
+          inset 0 0 4px rgba(57, 255, 20, 0.5),
+          inset 0 0 8px rgba(57, 255, 20, 0.25);
       }
       50% {
         box-shadow:
-          inset 0 0 6px rgba(74, 222, 128, 0.7),
-          inset 0 0 12px rgba(74, 222, 128, 0.35);
+          inset 0 0 6px rgba(57, 255, 20, 0.7),
+          inset 0 0 12px rgba(57, 255, 20, 0.35);
       }
     }
 
@@ -185,8 +187,8 @@ function showPulsingBorder(): void {
       transition: opacity 0.3s ease-in-out;
       animation: piercode-agent-pulse 2s ease-in-out infinite;
       box-shadow:
-        inset 0 0 4px rgba(74, 222, 128, 0.5),
-        inset 0 0 8px rgba(74, 222, 128, 0.25);
+        inset 0 0 4px rgba(57, 255, 20, 0.5),
+        inset 0 0 8px rgba(57, 255, 20, 0.25);
     `;
     root.appendChild(glowBorder);
   }
@@ -261,8 +263,8 @@ function createStopButton(): HTMLDivElement {
     align-items: center;
     justify-content: center;
     box-shadow:
-      0 40px 80px rgba(74, 222, 128, 0.24),
-      0 4px 14px rgba(74, 222, 128, 0.24);
+      0 40px 80px rgba(57, 255, 20, 0.24),
+      0 4px 14px rgba(57, 255, 20, 0.24);
     transition: all 0.2s ease;
     pointer-events: auto;
   `;
@@ -299,9 +301,9 @@ function createStopButton(): HTMLDivElement {
 }
 
 const DOT_COLORS: Record<string, string> = {
-  loading: '#4ade80',
-  completed: '#4CAF50',
-  error: '#f44336',
+  loading: T_GLOW,
+  completed: T_GLOW,
+  error: T_RED,
 };
 
 // 隐身模式下的迷你指示：右下角一个小圆点。loading 时脉冲呼吸，
@@ -371,9 +373,9 @@ function showStatusBadge(status: 'loading' | 'completed' | 'error'): void {
   };
 
   const colorMap: Record<string, string> = {
-    loading: '#2196F3',
-    completed: '#4CAF50',
-    error: '#f44336',
+    loading: T_GLOW,
+    completed: T_GLOW,
+    error: T_RED,
   };
 
   const badge = document.createElement('div');

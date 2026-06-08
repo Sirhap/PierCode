@@ -2,7 +2,7 @@
 // from content/token-meter.ts.
 //
 // Why a copy and not an import: content/index.ts is a classic MV3 content script
-// (no ESM import allowed). content/status-panel.ts + token-hud.ts import
+// (no ESM import allowed). content/status-panel.ts imports
 // content/token-meter.ts, so if the sidebar ALSO imported it, Rollup would hoist
 // token-meter into a shared chunk and emit a static `import ... from` into
 // content.js — breaking the classic content script (content-build.test.ts guards
@@ -44,13 +44,22 @@ export function platformAccuracy(platform: string, state: LoadState): TokenAccur
   return 'estimate'
 }
 
-// Character-based fallback estimate (mirror qwen-context-compress estimateTokens):
-// ASCII ~4 chars/token, non-ASCII ~1.5 chars/token.
+// Character-based fallback estimate:
+// ASCII ~4 chars/token, CJK ~1 char/token, other non-ASCII ~2 chars/token.
 export function estimateTokens(text: string): number {
   if (!text) return 0
-  const ascii = (text.match(/[\x00-\x7F]/g) || []).length
-  const nonAscii = text.length - ascii
-  return Math.ceil(ascii / 4 + nonAscii / 1.5)
+  let tokens = 0
+  for (const ch of text) {
+    const code = ch.charCodeAt(0)
+    if (code < 128) {
+      tokens += 0.25   // ASCII: ~4 chars per token
+    } else if (code >= 0x4e00 && code <= 0x9fff) {
+      tokens += 1.0    // CJK unified ideographs: ~1 char per token
+    } else {
+      tokens += 0.5    // Other non-ASCII (emoji, Cyrillic, etc.): ~2 chars per token
+    }
+  }
+  return Math.ceil(tokens)
 }
 
 type Encoder = { encode: (text: string) => number[] }

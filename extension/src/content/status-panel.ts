@@ -1,7 +1,8 @@
-// 状态面板：AI 页面右下角悬浮，与 tokenHud 错开。折叠成圆点，点击展开显示
+// 状态面板：AI 页面右下角悬浮。折叠成圆点，点击展开显示
 // 操作状态 / AI 提供商 / token 计量 / 控制的 tab。stealth 隐藏；展开态存 storage。
 
 import type { TokenMeter } from './token-meter';
+import { T_PANEL, T_LINE, T_DIM, T_TXT, T_GLOW, T_GLOW_SOFT, T_AMBER, T_RED, T_FONT } from './terminal-theme';
 
 const PANEL_STORAGE_KEY = 'statusPanelExpanded';
 const Z = '2147483645';
@@ -17,11 +18,11 @@ const OP_LABELS: Record<OpState, string> = {
   error: '错误',
 };
 const OP_COLORS: Record<OpState, string> = {
-  idle: '#8E8E93',
-  thinking: '#0A84FF',
-  executing: '#F5A623',
-  done: '#30A46C',
-  error: '#E5484D',
+  idle: T_DIM,
+  thinking: T_GLOW,
+  executing: T_AMBER,
+  done: T_GLOW,
+  error: T_RED,
 };
 
 export function opStateLabel(s: OpState): string {
@@ -164,10 +165,11 @@ class StatusPanel {
 
     const panel = document.createElement('div');
     panel.style.cssText = `
-      all: initial; font-family: -apple-system, system-ui, sans-serif;
+      all: initial; font-family: ${T_FONT};
       position: absolute; right: 0; bottom: 22px; min-width: 220px; max-width: 280px;
-      background: #1c1c1e; color: #f2f2f7; border-radius: 10px;
-      padding: 10px 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      background: ${T_PANEL}; color: ${T_TXT}; border-radius: 10px;
+      border: 1px solid ${T_LINE}; box-shadow: 0 0 0 1px ${T_GLOW_SOFT}, 0 4px 16px rgba(0,0,0,0.5);
+      padding: 10px 12px;
       font-size: 12px; line-height: 1.6; display: none;
     `;
     panel.onclick = (e) => e.stopPropagation();
@@ -209,33 +211,33 @@ class StatusPanel {
       : '—';
     const m = this.meter;
     const pct = m && this.threshold > 0 ? Math.min(100, Math.round((m.total / this.threshold) * 100)) : 0;
-    const color = pct >= 100 ? '#E5484D' : pct >= 80 ? '#F5A623' : '#30A46C';
+    const color = pct >= 100 ? T_RED : pct >= 80 ? T_AMBER : T_GLOW;
     const acc = m ? (ACC_LABEL[m.accuracy] || m.accuracy) : '—';
 
     const tabBlock = this.tab
-      ? `<div style="margin-top:8px;border-top:1px solid #3a3a3c;padding-top:6px;">
-           <div style="opacity:.7;">控制的 Tab</div>
-           <div style="margin-top:2px;">#${this.tab.tabId} · ${escapeHtml(this.tab.title || '(untitled)')}</div>
-           <div style="font-size:10px;opacity:.55;word-break:break-all;">${escapeHtml(this.tab.url || '')}</div>
+      ? `<div style="margin-top:8px;border-top:1px solid ${T_LINE};padding-top:6px;color:${T_DIM};">
+           <div>控制的 Tab</div>
+           <div style="margin-top:2px;color:${T_TXT};">#${this.tab.tabId} · ${escapeHtml(this.tab.title || '(untitled)')}</div>
+           <div style="font-size:10px;word-break:break-all;">${escapeHtml(this.tab.url || '')}</div>
          </div>`
-      : `<div style="margin-top:8px;border-top:1px solid #3a3a3c;padding-top:6px;opacity:.5;">无受控 Tab</div>`;
+      : `<div style="margin-top:8px;border-top:1px solid ${T_LINE};padding-top:6px;color:${T_DIM};opacity:.5;">无受控 Tab</div>`;
 
     this.panel.style.display = 'block';
     this.panel.innerHTML = `
-      <div style="font-weight:600;margin-bottom:6px;color:#fff;">PierCode 状态</div>
+      <div style="font-weight:600;margin-bottom:6px;color:${T_GLOW};">⌁ PierCode 状态</div>
       <div style="display:flex;justify-content:space-between;align-items:center;">
-        <span style="opacity:.7;">操作</span>
+        <span style="color:${T_DIM};">操作</span>
         <span style="color:${OP_COLORS[this.op]};font-weight:600;">${OP_LABELS[this.op]}</span>
       </div>
-      <div style="display:flex;justify-content:space-between;"><span style="opacity:.7;">提供商</span><span>${provider}</span></div>
-      <div style="display:flex;justify-content:space-between;"><span style="opacity:.7;">输入</span><span>${m ? fmt(m.input) : '—'}</span></div>
-      <div style="display:flex;justify-content:space-between;"><span style="opacity:.7;">输出</span><span>${m ? fmt(m.output) : '—'}</span></div>
-      <div style="display:flex;justify-content:space-between;font-weight:600;"><span style="opacity:.85;">总计</span><span>${m ? fmt(m.total) : '—'}</span></div>
-      <div style="display:flex;justify-content:space-between;"><span style="opacity:.7;">阈值</span><span>${this.threshold > 0 ? fmt(this.threshold) : '—'}</span></div>
-      <div style="margin-top:8px;height:5px;border-radius:3px;background:#3a3a3c;overflow:hidden;">
+      <div style="display:flex;justify-content:space-between;"><span style="color:${T_DIM};">提供商</span><span style="color:${T_TXT};">${provider}</span></div>
+      <div style="display:flex;justify-content:space-between;"><span style="color:${T_DIM};">输入</span><span style="color:${T_TXT};">${m ? fmt(m.input) : '—'}</span></div>
+      <div style="display:flex;justify-content:space-between;"><span style="color:${T_DIM};">输出</span><span style="color:${T_TXT};">${m ? fmt(m.output) : '—'}</span></div>
+      <div style="display:flex;justify-content:space-between;font-weight:600;"><span style="color:${T_DIM};">总计</span><span style="color:${T_TXT};">${m ? fmt(m.total) : '—'}</span></div>
+      <div style="display:flex;justify-content:space-between;"><span style="color:${T_DIM};">阈值</span><span style="color:${T_TXT};">${this.threshold > 0 ? fmt(this.threshold) : '—'}</span></div>
+      <div style="margin-top:8px;height:5px;border-radius:3px;background:${T_LINE};overflow:hidden;">
         <div style="height:100%;width:${pct}%;background:${color};transition:width .3s;"></div>
       </div>
-      <div style="margin-top:6px;font-size:10px;opacity:.55;">${pct}% · ${acc}</div>
+      <div style="margin-top:6px;font-size:10px;color:${T_DIM};">${pct}% · ${acc}</div>
       ${tabBlock}
     `;
   }
