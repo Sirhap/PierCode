@@ -1,5 +1,5 @@
 import { browserRelayWsUrl, isAiPageUrl } from './browser-relay-utils';
-import { applyFrameUnlock } from './frame-unlock';
+import { registerChatApiHandler } from './chat-api';
 import {
   DOWNLOAD_STORAGE_KEY,
   MAX_DOWNLOAD_RECORDS,
@@ -810,13 +810,18 @@ async function resizeWindow(params: Record<string, unknown>): Promise<unknown> {
 }
 
 async function getRecentDownloads(params: Record<string, unknown>): Promise<unknown> {
-  const records = await loadDownloadRecords();
   const queriedRecords = await queryRecentDownloads().catch(() => []);
-  const merged = queriedRecords.reduce(
-    (acc, record) => upsertDownloadRecord(acc, record),
-    records,
-  );
-  if (queriedRecords.length > 0) await saveDownloadRecords(merged);
+  // Run the read-merge-write inside the shared queue so it cannot interleave
+  // with the onCreated/onChanged listeners and lose their updates.
+  const merged = await enqueueDownloadWrite(async () => {
+    const records = await loadDownloadRecords();
+    const next = queriedRecords.reduce(
+      (acc, record) => upsertDownloadRecord(acc, record),
+      records,
+    );
+    if (queriedRecords.length > 0) await saveDownloadRecords(next);
+    return next;
+  });
   const limit = typeof params.limit === 'number' ? params.limit : 20;
   const state = typeof params.state === 'string' ? params.state : 'all';
   return filterDownloadRecords(merged, state, limit);
@@ -853,6 +858,24 @@ async function saveDownloadRecords(records: DownloadRecord[]): Promise<void> {
   await chrome.storage.local.set({ [DOWNLOAD_STORAGE_KEY]: records });
 }
 
+// onCreated and onChanged fire concurrently, and getRecentDownloads also
+// merges. Each does an un-serialized read-modify-write on the same
+// chrome.storage.local key, so a later write can clobber an earlier one and
+// drop an update. Serialize every record mutation through a single promise
+// chain so the read-modify-write is atomic with respect to the others.
+let downloadWriteQueue: Promise<unknown> = Promise.resolve();
+
+function enqueueDownloadWrite<T>(mutate: () => Promise<T>): Promise<T> {
+  const run = downloadWriteQueue.then(mutate, mutate);
+  // Keep the chain alive even if a mutation rejects; swallow only for the
+  // queue tail, callers still receive the original (possibly rejected) result.
+  downloadWriteQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 function isDownloadRecord(value: unknown): value is DownloadRecord {
   return !!value && typeof value === 'object' &&
     typeof (value as DownloadRecord).id === 'string' &&
@@ -860,19 +883,23 @@ function isDownloadRecord(value: unknown): value is DownloadRecord {
 }
 
 async function recordDownloadCreated(item: chrome.downloads.DownloadItem): Promise<void> {
-  const records = await loadDownloadRecords();
-  await saveDownloadRecords(upsertDownloadRecord(records, downloadItemToRecord(item)));
+  await enqueueDownloadWrite(async () => {
+    const records = await loadDownloadRecords();
+    await saveDownloadRecords(upsertDownloadRecord(records, downloadItemToRecord(item)));
+  });
 }
 
 async function recordDownloadChanged(delta: chrome.downloads.DownloadDelta): Promise<void> {
-  const records = await loadDownloadRecords();
-  const id = String(delta.id);
-  const existing = records.find(item => item.id === id) || {
-    id,
-    state: 'in_progress' as const,
-    startedAt: new Date().toISOString(),
-  };
-  await saveDownloadRecords(upsertDownloadRecord(records, applyDownloadDelta(existing, delta)));
+  await enqueueDownloadWrite(async () => {
+    const records = await loadDownloadRecords();
+    const id = String(delta.id);
+    const existing = records.find(item => item.id === id) || {
+      id,
+      state: 'in_progress' as const,
+      startedAt: new Date().toISOString(),
+    };
+    await saveDownloadRecords(upsertDownloadRecord(records, applyDownloadDelta(existing, delta)));
+  });
 }
 
 async function listBrowserTabs(includeAiPages: boolean): Promise<{ tabs: ReturnType<typeof tabToDTO>[] }> {
@@ -1037,19 +1064,6 @@ function errorMessage(error: unknown): string {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.type === 'OPEN_HUB') {
-    // Re-assert the frame-unlock rules (in case the SW was asleep) then open the
-    // Hub page in its own tab. The Hub's iframes live in this one active tab, so
-    // every embedded AI site stays visible/unthrottled and streams at once.
-    applyFrameUnlock()
-      .catch(err => console.warn('[PierCode] frame-unlock on OPEN_HUB failed', err))
-      .finally(() => {
-        chrome.tabs.create({ url: chrome.runtime.getURL('hub.html') })
-          .then(tab => sendResponse({ ok: true, tabId: tab.id }))
-          .catch(error => sendResponse({ ok: false, error: String(error) }));
-      });
-    return true;
-  }
   if (msg.type === 'FETCH') {
     const { url, options } = msg;
     fetch(url, options)
@@ -1204,11 +1218,8 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
 
 connectBrowserRelay();
 
-// Install the iframe-unlock DNR rules + register the Hub-frame content scripts so
-// the Hub page can embed AI sites. Scoped to the extension's own initiator, so a
-// user browsing the AI sites in normal tabs is unaffected. Safe to run on every
-// service-worker wake (idempotent: it clears its own prior rules/scripts first).
-applyFrameUnlock().catch(err => console.warn('[PierCode] frame-unlock setup failed', err));
+// Register the sidebar chat API handler (SSE streaming + tool auto-exec)
+registerChatApiHandler();
 
 async function focusSenderTab(sender: chrome.runtime.MessageSender, options?: { forceFocus?: boolean }): Promise<{ ok: boolean }> {
   // Default: do NOT steal window focus. Only activate tab if explicitly requested.

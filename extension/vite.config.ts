@@ -49,9 +49,6 @@ export default defineConfig({
         if (existsSync('dist/src/popup/index.html')) {
           copyFileSync('dist/src/popup/index.html', 'dist/popup.html')
         }
-        if (existsSync('dist/src/hub/index.html')) {
-          copyFileSync('dist/src/hub/index.html', 'dist/hub.html')
-        }
         if (existsSync('dist/src/sidebar/index.html')) {
           copyFileSync('dist/src/sidebar/index.html', 'dist/sidebar.html')
         }
@@ -72,7 +69,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         popup: resolve(__dirname, 'src/popup/index.html'),
-        hub: resolve(__dirname, 'src/hub/index.html'),
         sidebar: resolve(__dirname, 'src/sidebar/index.html'),
         content: resolve(__dirname, 'src/content/index.ts'),
         injected: resolve(__dirname, 'src/injected/index.ts'),

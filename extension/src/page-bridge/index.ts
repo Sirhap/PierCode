@@ -27,13 +27,12 @@ const KEEP_ALIVE_HOSTS = [
 function installKeepAliveVisibilityShim(): void {
   const host = location.hostname.toLowerCase();
   if (!KEEP_ALIVE_HOSTS.some(h => host.includes(h))) return;
-  // Only spoof visibility where a tab actually needs to keep generating while not
-  // focused: a Hub iframe pane (a sub-frame) or a worker tab (carries the
-  // ?piercode_agent marker). A normal FOREGROUND tab the user opened directly is
-  // left alone, so the site keeps its own real pause-when-hidden behavior.
-  const isEmbeddedFrame = window.top !== window;
+  // Only spoof visibility for worker tabs (carries the ?piercode_agent marker) that
+  // need to keep generating while running in the background. Normal foreground tabs
+  // the user opened directly are left alone so the site keeps its own real
+  // pause-when-hidden behavior.
   const isWorkerTab = /[?&]piercode_agent=/.test(location.search);
-  if (!isEmbeddedFrame && !isWorkerTab) return;
+  if (!isWorkerTab) return;
   if ((window as any).__PIERCODE_KEEP_ALIVE_SHIM__) return;
   (window as any).__PIERCODE_KEEP_ALIVE_SHIM__ = true;
 

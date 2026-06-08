@@ -559,17 +559,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Multi-AI Hub: opens a page that embeds several AI sites side by side so
-          they all run in the foreground at once (workers no longer throttle in
-          background tabs). */}
-      <div className="flex gap-2 mb-4">
-        <button
-          onClick={() => chrome.runtime.sendMessage({ type: 'OPEN_HUB' })}
-          className="flex-1 rounded-md border px-3 py-2 text-sm transition-colors cursor-pointer"
-          style={{ borderColor: 'var(--line)', background: 'var(--panel-2)', color: 'var(--txt)' }}
-        >
-          🗂️ 多 AI 工作台
-        </button>
+      <div className="mb-4">
         <button
           onClick={() => {
             // sidePanel.open requires tabId or windowId; use current window.
@@ -583,7 +573,7 @@ export default function App() {
               chrome.tabs.create({ url: chrome.runtime.getURL('sidebar.html') })
             }
           }}
-          className="flex-1 rounded-md border px-3 py-2 text-sm transition-colors cursor-pointer"
+          className="w-full rounded-md border px-3 py-2 text-sm transition-colors cursor-pointer"
           style={{ borderColor: 'var(--line)', background: 'var(--panel-2)', color: 'var(--txt)' }}
         >
           💬 聊天侧边栏
