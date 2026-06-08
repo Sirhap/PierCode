@@ -1,9 +1,17 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { resolve } from 'path'
 import { copyFileSync, mkdirSync, existsSync } from 'fs'
 
 export default defineConfig({
+  // forks pool (vitest default) intermittently bypasses `vi.mock('js-tiktoken')`
+  // for token-meter.ts's lazy `await import('js-tiktoken')`, letting the real
+  // tokenizer load and breaking deterministic token-count assertions. threads
+  // pool (worker_threads) applies the mock reliably for dynamic imports.
+  test: {
+    pool: 'threads',
+  },
   plugins: [
     react(),
     {
