@@ -1,23 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { PROVIDERS, providerIdForPlatform } from './pane-manager';
+import { PROVIDERS, PROVIDERS_BY_ID, providerIdForPlatform, paneSrc, type Pane } from './pane-manager';
 import {
   Project,
-  Viewport,
   createProject,
   deleteProject,
   addNode,
   addChildNode,
   removeNode,
-  moveNode,
-  resizeNode,
-  setContentZoom,
-  setViewport,
-  applyTreeLayout,
   findNodeByAgentId,
   migrateLegacyPanes,
   normalizeProjects,
 } from './project-store';
-import Canvas from './canvas/Canvas';
 import OverviewBar from './dashboard/OverviewBar';
 import ProjectDrawer from './dashboard/ProjectDrawer';
 import { HubWsClient, fetchAgents, type HubAddPaneMessage } from './dashboard/hub-ws';
@@ -66,7 +59,6 @@ export default function App() {
   const [agents, setAgents] = useState<AgentVM[]>([]);
   const [connected, setConnected] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [freeLayout, setFreeLayout] = useState(false); // false = fixed tree, true = drag canvas
   const wsRef = useRef<HubWsClient | null>(null);
   // activeIdRef keeps the latest active project id available inside the WS
   // callback closure (set up once) without re-subscribing on every switch.
@@ -169,60 +161,36 @@ export default function App() {
     setActiveId(p.id);
   };
   const removeProject = (id: string) => {
-    setProjects(prev => {
-      const next = deleteProject(prev, id);
-      return next.length ? next : [createProject('我的项目')];
-    });
-    setActiveId(prev => {
-      if (prev !== id) return prev;
-      // Read from projectsRef (freshly synced) instead of closure-captured
-      // `projects` which may be stale if React batches the setProjects call.
-      const remaining = projectsRef.current.filter(p => p.id !== id);
-      return remaining[0]?.id ?? null;
-    });
+    const remaining = deleteProject(projectsRef.current, id);
+    const next = remaining.length ? remaining : [createProject('我的项目')];
+    setProjects(next);
+    setActiveId(active =>
+      active && next.some(p => p.id === active) ? active : (next[0]?.id ?? null),
+    );
   };
 
-  // ── canvas ops (scoped to active project) ────────────────────────────────
+  // ── pane ops (scoped to active project) ──────────────────────────────────
   const addAi = (providerId: string) => {
     if (!activeId) return;
     setProjects(prev => addNode(prev, activeId, providerId));
   };
-  const onMoveNode = useCallback((nodeId: string, x: number, y: number) => {
-    if (!activeIdRef.current) return;
-    setProjects(prev => moveNode(prev, activeIdRef.current!, nodeId, x, y));
-  }, []);
-  const onSetViewport = useCallback((vp: Viewport) => {
-    if (!activeIdRef.current) return;
-    setProjects(prev => setViewport(prev, activeIdRef.current!, vp));
-  }, []);
-  const onResizeNode = useCallback((nodeId: string, w: number, h: number) => {
-    if (!activeIdRef.current) return;
-    setProjects(prev => resizeNode(prev, activeIdRef.current!, nodeId, w, h));
-  }, []);
-  const onContentZoom = useCallback((nodeId: string, zoom: number) => {
-    if (!activeIdRef.current) return;
-    setProjects(prev => setContentZoom(prev, activeIdRef.current!, nodeId, zoom));
-  }, []);
-  const onTidy = useCallback(() => {
-    if (!activeIdRef.current) return;
-    setProjects(prev => applyTreeLayout(prev, activeIdRef.current!));
-  }, []);
-  const onCloseNode = useCallback((nodeId: string) => {
+
+  // closeNode stops the agent (if any) then removes the node. Replaces the old
+  // onCloseNode which sent the same stop signal before canvas removal.
+  const closeNode = useCallback((nodeId: string) => {
     const projectId = activeIdRef.current;
     if (!projectId) return;
     setProjects(prev => {
-      // Closing a worker pane should also stop its agent server-side; otherwise
-      // the registry keeps a stuck "running" record (and its tab) around forever.
       const node = prev.find(p => p.id === projectId)?.nodes.find(n => n.id === nodeId);
       if (node?.agentId) wsRef.current?.sendAgentControl('stop', node.agentId);
       return removeNode(prev, projectId, nodeId);
     });
   }, []);
 
-  // Focus a canvas node by its agent id (from the drawer). Delegates to the
-  // canvas via a custom event the Canvas listens for — keeps Canvas self-owned.
+  // focusAgent scrolls the matching pane into view (drawer → pane grid).
   const focusAgent = (agentId: string) => {
-    window.dispatchEvent(new CustomEvent('piercode-hub-focus-agent', { detail: agentId }));
+    const loc = findNodeByAgentId(projectsRef.current, agentId);
+    if (loc) document.getElementById(`pane-${loc.nodeId}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
   const stopAgent = (agentId: string) => wsRef.current?.sendAgentControl('stop', agentId);
   const retryAgent = (agentId: string) => wsRef.current?.sendAgentControl('retry', agentId);
@@ -253,37 +221,26 @@ export default function App() {
         {availableToAdd.map(p => (
           <button key={p.id} className="hub-add-btn" onClick={() => addAi(p.id)}>{p.label}</button>
         ))}
-        <span className="hub-toolbar-sep" />
-        {/* Single mode toggle: tree (fixed, tidy) ⇄ free (drag to place). */}
-        <button
-          className="hub-add-btn"
-          data-active={freeLayout}
-          title={freeLayout
-            ? '当前：自由布局，可拖动卡片摆位。点击切回固定树形。'
-            : '当前：固定树形，卡片自动整齐排列、不能拖。点击切换为自由拖拽。'}
-          onClick={() => setFreeLayout(v => !v)}
-        >{freeLayout ? '✋ 自由布局' : '🌳 树形布局'}</button>
-        {freeLayout && (
-          <button className="hub-add-btn" title="重排成整齐的树状布局" onClick={onTidy}>整理</button>
-        )}
-        <span className="hub-toolbar-hint">空格+拖动=平移画布</span>
       </div>
 
       <div className="hub-body">
-        {active ? (
-          <Canvas
-            key={active.id}
-            project={active}
-            statusByAgentId={Object.fromEntries(agents.map(a => [a.agent_id, a.status]))}
-            freeLayout={freeLayout}
-            onMoveNode={onMoveNode}
-            onResizeNode={onResizeNode}
-            onContentZoom={onContentZoom}
-            onSetViewport={onSetViewport}
-            onCloseNode={onCloseNode}
-          />
+        {active && active.nodes.length > 0 ? (
+          <div className="hub-pane-grid">
+            {active.nodes.map(n => {
+              const pane: Pane = { key: n.id, providerId: n.providerId, agentId: n.agentId };
+              return (
+                <div key={n.id} id={`pane-${n.id}`} className="hub-pane">
+                  <div className="hub-pane-bar">
+                    <span className="hub-pane-title">{PROVIDERS_BY_ID[n.providerId]?.label ?? n.providerId}{n.agentId ? ` · @${n.agentId.slice(0, 6)}` : ''}</span>
+                    <button className="hub-pane-close" onClick={() => closeNode(n.id)} title="关闭并停止 agent">✕</button>
+                  </div>
+                  <iframe className="hub-pane-frame" src={paneSrc(pane)} title={n.id} />
+                </div>
+              );
+            })}
+          </div>
         ) : (
-          <div className="canvas-empty">用「+ 项目」新建一个项目</div>
+          <div className="canvas-empty">用「+ AI」添加一个 AI 面板</div>
         )}
         <ProjectDrawer
           open={drawerOpen}

@@ -95,155 +95,23 @@ html, body, #root {
   border: 1px solid rgba(137,180,250,.3); background: rgba(49,50,68,.5); color: #cdd6f4;
 }
 .hub-add-btn:hover { background: rgba(137,180,250,.16); box-shadow: 0 0 10px rgba(137,180,250,.3); }
-.hub-add-btn[data-active="true"] { background: rgba(203,166,247,.22); border-color: rgba(203,166,247,.7); color: #cba6f7; }
-.hub-toolbar-sep { width: 1px; height: 18px; background: rgba(137,180,250,.25); margin: 0 4px; }
-.hub-toolbar-hint { font-size: 11px; opacity: .45; margin-left: auto; }
 
 .hub-body { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
 
-/* ── Canvas ───────────────────────────────────────────────────────────────── */
-.canvas-viewport {
-  flex: 1 1 auto; position: relative; overflow: hidden; min-width: 0;
-  cursor: default;
-}
-/* Grab hand only appears while Space is held (intentional pan). */
-.canvas-viewport[data-spacepan="true"] { cursor: grab; }
-.canvas-viewport[data-panning="true"] { cursor: grabbing; }
-.canvas-world {
-  position: absolute; left: 0; top: 0;
-  transform-origin: 0 0;
-  width: 0; height: 0; /* children are absolutely positioned in logical space */
-}
+/* ── Empty state ──────────────────────────────────────────────────────────── */
 .canvas-empty {
   position: absolute; inset: 0; margin: auto; width: max-content; height: max-content;
   opacity: .45;
 }
 
-/* Zoom controls — overlay bottom-right, outside the canvas transform.
-   An embedded <iframe>, once loaded, becomes its OWN composited layer and will
-   paint OVER a plain absolutely-positioned sibling regardless of z-index (the
-   classic "iframe covers my overlay" bug — the control flashed then vanished as
-   the pane's iframe finished loading). Forcing this overlay onto its own
-   composited layer (transform/will-change) + isolating its stacking context keeps
-   it above the iframe layer. */
-.canvas-zoom {
-  position: fixed; right: 18px; bottom: 16px; z-index: 2147483000;
-  transform: translateZ(0);
-  will-change: transform;
-  isolation: isolate;
-  display: flex; align-items: center; gap: 2px;
-  padding: 3px; border-radius: 10px;
-  background: rgba(24,24,37,.92);
-  backdrop-filter: blur(12px) saturate(140%);
-  -webkit-backdrop-filter: blur(12px) saturate(140%);
-  border: 1px solid rgba(137,180,250,.25);
-  box-shadow: 0 4px 20px rgba(0,0,0,.4);
-}
-.canvas-zoom button {
-  background: transparent; border: 0; color: #cdd6f4; cursor: pointer;
-  border-radius: 6px; padding: 4px 8px; font-size: 13px; line-height: 1;
-}
-.canvas-zoom button:hover { background: rgba(137,180,250,.16); color: #cba6f7; }
-.cz-pct { min-width: 46px; text-align: center; font-variant-numeric: tabular-nums; font-size: 12px !important; }
-.cz-fit { font-size: 12px !important; border-left: 1px solid rgba(137,180,250,.2) !important; margin-left: 2px; }
-.cz-fit[data-active="true"] { background: rgba(137,180,250,.22); color: #cba6f7; }
-
-/* Card locator dropdown — same fixed/high-z layer as the zoom bar so an iframe
-   can't paint over it. Sits just above the zoom controls, bottom-right. */
-.canvas-locator {
-  position: fixed; right: 18px; bottom: 60px; z-index: 2147483000;
-  transform: translateZ(0); will-change: transform; isolation: isolate;
-  width: 240px; max-height: 50vh; display: flex; flex-direction: column;
-  border-radius: 10px; overflow: hidden;
-  background: rgba(24,24,37,.96);
-  backdrop-filter: blur(12px) saturate(140%);
-  -webkit-backdrop-filter: blur(12px) saturate(140%);
-  border: 1px solid rgba(137,180,250,.3);
-  box-shadow: 0 8px 30px rgba(0,0,0,.5);
-}
-.canvas-locator-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 7px 10px; font-size: 12px; font-weight: 600;
-  border-bottom: 1px solid rgba(137,180,250,.16);
-}
-.canvas-locator-head button {
-  background: transparent; border: 1px solid rgba(137,180,250,.3); color: #cdd6f4;
-  border-radius: 6px; cursor: pointer; padding: 2px 8px; font-size: 11px;
-}
-.canvas-locator-head button:hover { background: rgba(137,180,250,.16); color: #cba6f7; }
-.canvas-locator-empty { padding: 14px; text-align: center; opacity: .5; font-size: 12px; }
-.canvas-locator-list { list-style: none; margin: 0; padding: 4px; overflow-y: auto; }
-.canvas-locator-list li { margin: 0; }
-.canvas-locator-list button {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  width: 100%; text-align: left; background: transparent; border: 0; cursor: pointer;
-  color: #cdd6f4; padding: 6px 8px; border-radius: 6px; font-size: 12px;
-}
-.canvas-locator-list button:hover { background: rgba(137,180,250,.14); }
-.canvas-locator-list button[data-focused="true"] { background: rgba(203,166,247,.18); }
-.cl-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cl-sub { flex: 0 0 auto; font-size: 10px; opacity: .55; font-family: monospace; }
-
-/* Node card */
-.canvas-node {
-  position: absolute;
-  display: flex; flex-direction: column;
-  border-radius: 12px; overflow: hidden;
-  background: rgba(24,24,37,.82);
-  border: 1px solid rgba(137,180,250,.28);
-  box-shadow: 0 8px 40px rgba(0,0,0,.45), 0 0 0 1px rgba(137,180,250,.06);
-}
-.canvas-node[data-status="running"] { box-shadow: 0 0 22px rgba(137,180,250,.55); border-color: rgba(137,180,250,.7); animation: nodePulse 2s ease-in-out infinite; }
-.canvas-node[data-status="completed"] { box-shadow: 0 0 18px rgba(166,227,161,.5); border-color: rgba(166,227,161,.6); }
-.canvas-node[data-status="failed"], .canvas-node[data-status="blocked"] { box-shadow: 0 0 18px rgba(243,139,168,.5); border-color: rgba(243,139,168,.6); }
-.canvas-node[data-focused="true"] { border-color: rgba(203,166,247,.9); box-shadow: 0 0 30px rgba(203,166,247,.6); }
-@keyframes nodePulse {
-  0%,100% { box-shadow: 0 0 16px rgba(137,180,250,.4); }
-  50% { box-shadow: 0 0 30px rgba(137,180,250,.75); }
-}
-.canvas-node-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 7px 10px; font-size: 12px; cursor: default;
-  background: rgba(17,17,27,.9);
-  border-bottom: 1px solid rgba(137,180,250,.16);
-  transition: background .12s ease;
-}
-.canvas-node-head:hover { background: rgba(30,30,46,.95); }
-/* Move handle only in free-layout mode. */
-.canvas-node-head[data-draggable="true"] { cursor: move; }
-.canvas-node-head[data-draggable="true"]:active { cursor: grabbing; }
-.canvas-node-name { font-weight: 600; display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.canvas-node-grip { opacity: .35; font-size: 11px; letter-spacing: -1px; }
-.canvas-node-head:hover .canvas-node-grip { opacity: .7; }
-.canvas-node-worker { font-weight: 400; opacity: .55; font-family: monospace; font-size: 11px; }
-.canvas-node-ctrl { display: inline-flex; align-items: center; gap: 1px; flex: 0 0 auto; }
-.canvas-node-ctrl button {
-  background: transparent; border: 0; color: #cdd6f4; cursor: pointer; padding: 0 4px; font-size: 13px;
-  position: relative; z-index: 1;
-}
-.canvas-node-ctrl button:hover { color: #cba6f7; }
-/* Size-preset chips read as text, slightly dimmer than icon buttons. */
-.canvas-node-size { font-size: 11px !important; opacity: .7; padding: 0 3px !important; }
-.canvas-node-size:hover { opacity: 1; }
-.canvas-node-body { position: relative; flex: 1 1 auto; min-height: 0; }
-.canvas-node-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
-/* Gesture shield: present only while a pan/drag/resize is in progress so the
-   gesture isn't swallowed by the iframe. Idle = no shield, iframe interactive. */
-.canvas-node-shield { position: absolute; inset: 0; background: transparent; cursor: grabbing; }
-/* Resize handle: bottom-right grip, above the iframe so it stays grabbable. */
-.canvas-node-resize {
-  position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
-  z-index: 3; cursor: nwse-resize;
-  background: linear-gradient(135deg, transparent 50%, rgba(137,180,250,.5) 50%);
-  border-bottom-right-radius: 12px;
-}
-.canvas-node-resize:hover { background: linear-gradient(135deg, transparent 50%, rgba(203,166,247,.85) 50%); }
-
-/* Edges — above the node cards so wires stay visible over opaque panes; the SVG
-   itself never blocks interaction (pointer-events:none set inline). */
-.canvas-edges { position: absolute; z-index: 4; pointer-events: none; }
-.canvas-edge-path { animation: edgeFlow 1s linear infinite; }
-@keyframes edgeFlow { to { stroke-dashoffset: -12; } }
+/* ── Pane grid ────────────────────────────────────────────────────────────── */
+.hub-pane-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 10px; padding: 10px; height: 100%; overflow-y: auto; align-content: start; }
+.hub-pane { display: flex; flex-direction: column; border: 1px solid var(--line, #1a2a1a); border-radius: 4px; background: var(--panel, #0d130d); min-height: 420px; overflow: hidden; }
+.hub-pane-bar { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; border-bottom: 1px solid var(--line, #1a2a1a); font-size: 11px; color: var(--dim, #5a6a5a); font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+.hub-pane-title { color: var(--glow, #39FF14); }
+.hub-pane-close { background: none; border: none; color: var(--dim, #5a6a5a); cursor: pointer; }
+.hub-pane-close:hover { color: var(--glow, #39FF14); }
+.hub-pane-frame { flex: 1; width: 100%; border: 0; background: #fff; }
 
 /* ── Project drawer (right slide-out, glass) ─────────────────────────────── */
 .dr-root {

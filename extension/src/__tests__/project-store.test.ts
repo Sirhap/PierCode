@@ -6,15 +6,8 @@ import {
   addNode,
   addChildNode,
   removeNode,
-  moveNode,
-  resizeNode,
-  setContentZoom,
-  layoutTree,
-  applyTreeLayout,
   findNodeByAgentId,
   migrateLegacyPanes,
-  MIN_NODE_W,
-  MIN_NODE_H,
   type Project,
 } from '../hub/project-store';
 
@@ -27,11 +20,10 @@ function withRoot(): { projects: Project[]; pid: string; rootId: string } {
 }
 
 describe('project-store', () => {
-  it('createProject yields an empty canvas with a default viewport', () => {
+  it('createProject yields an empty project', () => {
     const p = createProject('demo');
     expect(p.name).toBe('demo');
     expect(p.nodes).toEqual([]);
-    expect(p.viewport.zoom).toBe(1);
   });
 
   it('rename/delete project', () => {
@@ -62,7 +54,6 @@ describe('project-store', () => {
     projects = addChildNode(projects, pid, { agentId: 'child-1', parentAgentId: 'parent-agent', providerId: 'claude' });
     const child = projects[0].nodes.find(n => n.agentId === 'child-1')!;
     expect(child.parentNodeId).toBe(rootId);
-    expect(child.y).toBeGreaterThan(projects[0].nodes.find(n => n.id === rootId)!.y);
   });
 
   it('addChildNode falls back to the project root for a first-level spawn', () => {
@@ -87,28 +78,6 @@ describe('project-store', () => {
     expect(projects[0].nodes.find(n => n.agentId === 'c')!.parentNodeId).toBeUndefined();
   });
 
-  it('moveNode updates coordinates', () => {
-    const { projects, pid, rootId } = withRoot();
-    const next = moveNode(projects, pid, rootId, 123, 456);
-    expect(next[0].nodes[0]).toMatchObject({ x: 123, y: 456 });
-  });
-
-  it('resizeNode sets size and clamps to the minimum', () => {
-    const { projects, pid, rootId } = withRoot();
-    const big = resizeNode(projects, pid, rootId, 800, 700);
-    expect(big[0].nodes[0]).toMatchObject({ w: 800, h: 700 });
-    const tiny = resizeNode(projects, pid, rootId, 10, 10);
-    expect(tiny[0].nodes[0].w).toBe(MIN_NODE_W);
-    expect(tiny[0].nodes[0].h).toBe(MIN_NODE_H);
-  });
-
-  it('setContentZoom clamps to [0.6, 2]', () => {
-    const { projects, pid, rootId } = withRoot();
-    expect(setContentZoom(projects, pid, rootId, 1.5)[0].nodes[0].contentZoom).toBe(1.5);
-    expect(setContentZoom(projects, pid, rootId, 5)[0].nodes[0].contentZoom).toBe(2);
-    expect(setContentZoom(projects, pid, rootId, 0.1)[0].nodes[0].contentZoom).toBe(0.6);
-  });
-
   it('first-level worker attaches under the +AI main panel (so a main→worker edge exists)', () => {
     let projects = [createProject('p')];
     const pid = projects[0].id;
@@ -119,35 +88,6 @@ describe('project-store', () => {
     projects = addChildNode(projects, pid, { agentId: 'w1', providerId: 'qwen', fallbackParentNodeId: rootId });
     const worker = projects[0].nodes.find(n => n.agentId === 'w1')!;
     expect(worker.parentNodeId).toBe(mainId); // edge anchor present
-  });
-
-  it('layoutTree places a child below its parent and centers the parent', () => {
-    const nodes = [
-      { id: 'p', providerId: 'qwen', x: 999, y: 999, w: 560, h: 520 },
-      { id: 'c1', providerId: 'qwen', parentNodeId: 'p', x: 0, y: 0, w: 560, h: 520 },
-      { id: 'c2', providerId: 'qwen', parentNodeId: 'p', x: 0, y: 0, w: 560, h: 520 },
-    ];
-    const out = layoutTree(nodes as any);
-    const p = out.find(n => n.id === 'p')!;
-    const c1 = out.find(n => n.id === 'c1')!;
-    const c2 = out.find(n => n.id === 'c2')!;
-    expect(c1.y).toBeGreaterThan(p.y);            // children below parent
-    expect(c2.x).toBeGreaterThan(c1.x);            // siblings spread horizontally
-    // Parent centered over its children's span.
-    const pCenter = p.x + p.w / 2;
-    const span = (c1.x + c1.w / 2 + c2.x + c2.w / 2) / 2;
-    expect(Math.abs(pCenter - span)).toBeLessThan(2);
-  });
-
-  it('applyTreeLayout writes tidy tree coordinates into stored nodes', () => {
-    let { projects, pid } = withRoot();
-    // give the root a child, scatter both, then tidy
-    projects = addChildNode(projects, pid, { agentId: 'w', providerId: 'qwen', fallbackParentNodeId: projects[0].nodes[0].id });
-    projects = moveNode(projects, pid, projects[0].nodes[0].id, 9999, 9999);
-    projects = applyTreeLayout(projects, pid);
-    const parent = projects[0].nodes.find(n => !n.parentNodeId)!;
-    const child = projects[0].nodes.find(n => n.agentId === 'w')!;
-    expect(child.y).toBeGreaterThan(parent.y); // tidied: child below parent
   });
 
   it('findNodeByAgentId locates a node across projects', () => {
