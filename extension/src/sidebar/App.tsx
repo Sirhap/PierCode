@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import ToolCard, { type ToolCall, type ToolResult } from './ToolCard'
+import MessageView, { type ChatMessage, type ToolResult, type ThinkingStep } from './MessageView'
 import Picker, { type PickerItem } from './Picker'
 import TokenPanel from './token-panel'
 import { classifyCompletion } from './completions'
@@ -13,22 +13,6 @@ import {
 // ── Types ──────────────────────────────────────────────────────────────────
 
 type Platform = 'qwen' | 'chatgpt' | 'claude' | 'openai'
-
-interface ThinkingStep {
-  title: string
-  thought: string
-}
-
-interface ChatMessage {
-  role: 'user' | 'assistant' | 'tool_result'
-  content: string
-  toolCalls?: ToolCall[]
-  toolResults?: ToolResult[]
-  toolStreams?: Record<string, string[]>  // call_id → stream chunks
-  thinking?: ThinkingStep[]               // reasoning summary (Qwen thinking_summary)
-  streaming?: boolean
-  ts?: number
-}
 
 const PLATFORMS: { key: Platform; label: string; icon: string; tip: string }[] = [
   { key: 'qwen', label: 'Qwen', icon: '🔮', tip: '需要已登录 chat.qwen.ai' },
@@ -91,24 +75,6 @@ async function getAuth(): Promise<{ apiUrl: string; token: string } | null> {
   })
 }
 
-function formatTime(ts?: number): string {
-  if (!ts) return ''
-  return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-}
-
-function copyToClipboard(text: string): void {
-  navigator.clipboard.writeText(text).catch(() => {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-  })
-}
-
 // ── Sub-agent types + id helper ────────────────────────────────────────────
 
 interface SubAgent {
@@ -132,108 +98,6 @@ function appendAgentChunk(messages: ChatMessage[], chunk: string): ChatMessage[]
     next.push({ role: 'assistant', content: chunk, streaming: true })
   }
   return next
-}
-
-// ── Strip piercode-tool blocks from display text ───────────────────────────
-
-const TOOL_FENCE_RE = /```piercode-tool\s*\n[\s\S]*?\n```/gi
-
-function stripToolBlocks(text: string): string {
-  return text.replace(TOOL_FENCE_RE, '').replace(/\n{3,}/g, '\n\n').trim()
-}
-
-// ── Markdown renderer ──────────────────────────────────────────────────────
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-}
-
-function renderMarkdown(text: string): string {
-  if (!text) return ''
-  let src = text.replace(/\r\n/g, '\n')
-
-  const codeBlocks: string[] = []
-  src = src.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
-    const idx = codeBlocks.length
-    const langAttr = lang ? ` class="language-${escapeHtml(lang)}"` : ''
-    codeBlocks.push(`<pre><code${langAttr}>${escapeHtml(code.replace(/\n$/, ''))}</code></pre>`)
-    return `\x00CODE${idx}\x00`
-  })
-
-  src = escapeHtml(src)
-  src = src.replace(/^### (.+)$/gm, '<h3>$1</h3>')
-  src = src.replace(/^## (.+)$/gm, '<h2>$1</h2>')
-  src = src.replace(/^# (.+)$/gm, '<h1>$1</h1>')
-  src = src.replace(/^---+$/gm, '<hr/>')
-  src = src.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>')
-  src = src.replace(/^(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)+)/gm, (_m, header, _sep, body) => {
-    const ths = header.split('|').filter(Boolean).map((c: string) => `<th>${c.trim()}</th>`).join('')
-    const rows = body.trim().split('\n').map((row: string) => {
-      const tds = row.split('|').filter(Boolean).map((c: string) => `<td>${c.trim()}</td>`).join('')
-      return `<tr>${tds}</tr>`
-    }).join('')
-    return `<table><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>`
-  })
-  src = src.replace(/^[\s]*[-*+] (.+)$/gm, '<li>$1</li>')
-  src = src.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>')
-  src = src.replace(/^[\s]*\d+\. (.+)$/gm, '<li>$1</li>')
-  src = src.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-  src = src.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  src = src.replace(/\*(.+?)\*/g, '<em>$1</em>')
-  src = src.replace(/~~(.+?)~~/g, '<del>$1</del>')
-  src = src.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-  src = src.replace(/`([^`]+)`/g, '<code>$1</code>')
-  src = src.replace(/\n\n+/g, '</p><p>')
-  src = src.replace(/\n/g, '<br/>')
-  src = `<p>${src}</p>`
-  src = src.replace(/<p>\s*<\/p>/g, '')
-  src = src.replace(/<p>(<(?:h[1-3]|ul|ol|pre|blockquote|hr|table))/g, '$1')
-  src = src.replace(/(<\/(?:h[1-3]|ul|ol|pre|blockquote|hr|table)>)<\/p>/g, '$1')
-  src = src.replace(/<p>(<hr\/?>)/g, '$1')
-  src = src.replace(/\x00CODE(\d+)\x00/g, (_m, idx) => codeBlocks[Number(idx)] || '')
-  return src
-}
-
-// ── Thinking Block (Claude-Code style collapsible reasoning) ───────────────
-
-function ThinkingBlock({ steps, streaming }: { steps: ThinkingStep[]; streaming?: boolean }) {
-  const [open, setOpen] = useState(false)
-  if (steps.length === 0) return null
-  const last = steps[steps.length - 1]
-  return (
-    <div className="mb-1.5 text-[11px]">
-      <div className="flex items-center gap-1.5 cursor-pointer text-gray-500 hover:text-gray-400" onClick={() => setOpen(o => !o)}>
-        <span>💭</span>
-        <span className="italic truncate flex-1">{last.title || '思考中…'}</span>
-        {streaming && <span className="animate-pulse-dot">·</span>}
-        <span className="text-gray-700">{open ? '▲' : `${steps.length} 步 ▼`}</span>
-      </div>
-      {open && (
-        <div className="mt-1 pl-4 border-l border-gray-800 space-y-1.5">
-          {steps.map((s, i) => (
-            <div key={i}>
-              {s.title && <div className="text-gray-500">{s.title}</div>}
-              {s.thought && <div className="text-gray-600 whitespace-pre-wrap leading-relaxed">{s.thought}</div>}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Action Button ──────────────────────────────────────────────────────────
-
-function ActionBtn({ icon, title, onClick }: { icon: string; title: string; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="p-1 rounded text-gray-600 hover:text-gray-300 hover:bg-gray-700/50 transition-colors cursor-pointer text-[11px]"
-      title={title}
-    >
-      {icon}
-    </button>
-  )
 }
 
 // ── Question Card (user interaction for question tool) ─────────────────────
@@ -284,86 +148,6 @@ function QuestionCard({ question, options, onAnswer }: {
         >
           提交
         </button>
-      </div>
-    </div>
-  )
-}
-
-// ── Message Bubble Component (Qwen-style) ──────────────────────────────────
-
-function MessageBubble({ msg, onRegenerate }: { msg: ChatMessage; onRegenerate?: () => void }) {
-  const isUser = msg.role === 'user'
-  const isTool = msg.role === 'tool_result'
-
-  if (isTool) {
-    return (
-      <div className="msg-row px-4 py-1">
-        <div className="rounded-lg bg-gray-800/40 border border-gray-800/60 p-2.5 text-xs text-gray-400">
-          <div className="flex items-center gap-1.5 text-gray-500 mb-1">
-            <span>📎</span><span>工具结果</span>
-          </div>
-          <pre className="whitespace-pre-wrap break-all max-h-32 overflow-y-auto text-gray-400">
-            {msg.content.slice(0, 500)}{msg.content.length > 500 ? '...' : ''}
-          </pre>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className={`msg-row px-4 py-1.5 ${isUser ? 'flex justify-end' : ''}`}>
-      <div className="relative group max-w-[92%]">
-        {/* Message bubble */}
-        <div className={`rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed ${
-          isUser
-            ? 'bg-blue-600 text-white'
-            : 'bg-gray-800/80 text-gray-100 border border-gray-700/30'
-        }`}>
-          {/* Thinking block */}
-          {msg.thinking && msg.thinking.length > 0 && (
-            <ThinkingBlock steps={msg.thinking} streaming={msg.streaming && !msg.content} />
-          )}
-          {/* Tool cards */}
-          {msg.toolCalls?.map((tc, i) => (
-            <ToolCard
-              key={tc.call_id || i}
-              tool={tc}
-              result={msg.toolResults?.find(r => r.call_id === tc.call_id)}
-              streams={msg.toolStreams?.[tc.call_id]}
-            />
-          ))}
-          {/* Text content (strip tool blocks if ToolCards present) */}
-          {msg.content && (() => {
-            const displayText = msg.toolCalls?.length
-              ? stripToolBlocks(msg.content)
-              : msg.content
-            if (!displayText) return null
-            return (
-              <div
-                className={`msg-content ${msg.toolCalls?.length ? 'mt-2' : ''}`}
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(displayText) }}
-              />
-            )
-          })()}
-          {/* Streaming cursor */}
-          {msg.streaming && (
-            <span className="inline-block w-1.5 h-4 bg-gray-400 animate-pulse-dot ml-0.5 align-text-bottom" />
-          )}
-        </div>
-
-        {/* Footer: timestamp + action buttons */}
-        <div className={`flex items-center gap-1 mt-1 ${isUser ? 'justify-end' : ''}`}>
-          {msg.ts && <span className="text-[10px] text-gray-600 mr-1">{formatTime(msg.ts)}</span>}
-          {/* Action buttons — visible on hover */}
-          <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
-            {msg.content && !msg.streaming && (
-              <ActionBtn icon="📋" title="复制" onClick={() => copyToClipboard(msg.content)} />
-            )}
-            {!isUser && !msg.streaming && onRegenerate && (
-              <ActionBtn icon="🔄" title="重新生成" onClick={onRegenerate} />
-            )}
-          </div>
-        </div>
       </div>
     </div>
   )
@@ -903,6 +687,10 @@ export default function App() {
     })
   }, [messages, platform, model, streaming])
 
+  const togglePin = useCallback((idx: number) => {
+    setMessages(prev => prev.map((m, i) => i === idx ? { ...m, pinned: !m.pinned } : m))
+  }, [])
+
   const handleQuestionAnswer = useCallback((answer: string) => {
     if (!pendingQuestion) return
     chrome.runtime.sendMessage({
@@ -1037,10 +825,11 @@ export default function App() {
           </div>
         )}
         {messages.map((msg, i) => (
-          <MessageBubble
+          <MessageView
             key={i}
             msg={msg}
             onRegenerate={msg.role === 'assistant' && !msg.streaming ? handleRegenerate : undefined}
+            onTogglePin={() => togglePin(i)}
           />
         ))}
       </div>
