@@ -381,6 +381,43 @@ func TestDetectCRLF(t *testing.T) {
 	}
 }
 
+// A file that is LF-dominant but has a stray CRLF line counts as LF
+// (detectCRLF == false). Patching an unrelated, LF-terminated line must leave
+// the untouched CRLF line's \r intact — earlier the whole file was rebuilt from
+// \r-stripped lines and rejoined with \n, silently stripping the \r.
+func TestApplyPatchPreservesUntouchedCRLFInMixedFile(t *testing.T) {
+	cfg := testConfig(t)
+	p := filepath.Join(cfg.RootDir, "mixed.txt")
+	// LF-dominant file (detectCRLF==false) with a stray CRLF line ("two\r\n")
+	// that sits OUTSIDE the hunk's matched region, so it is genuinely untouched.
+	// The patch edits "four" → "FOUR", far from "two".
+	original := "one\ntwo\r\nthree\nfour\nfive\n"
+	if err := os.WriteFile(p, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+	res := NewApplyPatchTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+		"patch": strings.Join([]string{
+			"*** Begin Patch",
+			"*** Update File: mixed.txt",
+			"@@",
+			" three",
+			"-four",
+			"+FOUR",
+			" five",
+			"*** End Patch",
+		}, "\n"),
+	}))
+	if res.Status != "success" {
+		t.Fatalf("apply_patch failed: %s", res.Error)
+	}
+	got, _ := os.ReadFile(p)
+	// The untouched "two\r\n" (outside the hunk) must keep its \r; only the
+	// edited region around four→FOUR changes.
+	if string(got) != "one\ntwo\r\nthree\nFOUR\nfive\n" {
+		t.Fatalf("untouched CRLF line not preserved: got %q", got)
+	}
+}
+
 func TestApplyPatchFuzzyIndentFallback(t *testing.T) {
 	t.Run("matches despite indentation difference", func(t *testing.T) {
 		cfg := testConfig(t)

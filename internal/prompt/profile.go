@@ -32,10 +32,55 @@ type renderCacheKey struct {
 	skillsHash uint64
 }
 
+// renderCacheMaxEntries bounds the memoization map. Each distinct rootDir,
+// skill write, or tool-set change mints a new key, so without a cap the map
+// grows for the life of the process. A small LRU keeps the hot prompts cached
+// (one per active profile/workspace) while evicting stale ones.
+const renderCacheMaxEntries = 64
+
 var (
-	renderCacheMu sync.Mutex
-	renderCache   = map[renderCacheKey][]byte{}
+	renderCacheMu    sync.Mutex
+	renderCache      = map[renderCacheKey][]byte{}
+	renderCacheOrder []renderCacheKey // oldest first; LRU recency order
 )
+
+// renderCacheGet returns the cached body and promotes the key to most-recent.
+// Caller must hold renderCacheMu.
+func renderCacheGet(key renderCacheKey) ([]byte, bool) {
+	body, ok := renderCache[key]
+	if ok {
+		renderCacheTouch(key)
+	}
+	return body, ok
+}
+
+// renderCachePut stores body and evicts the least-recently-used entry when the
+// cap is exceeded. Caller must hold renderCacheMu.
+func renderCachePut(key renderCacheKey, body []byte) {
+	if _, exists := renderCache[key]; !exists {
+		renderCacheOrder = append(renderCacheOrder, key)
+	} else {
+		renderCacheTouch(key)
+	}
+	renderCache[key] = body
+	for len(renderCacheOrder) > renderCacheMaxEntries {
+		oldest := renderCacheOrder[0]
+		renderCacheOrder = renderCacheOrder[1:]
+		delete(renderCache, oldest)
+	}
+}
+
+// renderCacheTouch moves key to the most-recent position. Caller must hold
+// renderCacheMu.
+func renderCacheTouch(key renderCacheKey) {
+	for i, k := range renderCacheOrder {
+		if k == key {
+			renderCacheOrder = append(renderCacheOrder[:i], renderCacheOrder[i+1:]...)
+			renderCacheOrder = append(renderCacheOrder, key)
+			return
+		}
+	}
+}
 
 func hashTools(tools []tool.ToolInfo) uint64 {
 	h := fnv.New64a()
@@ -182,7 +227,7 @@ func (p Profile) renderBodyCached(rootDir string, tools []tool.ToolInfo, skills 
 	}
 
 	renderCacheMu.Lock()
-	if cached, ok := renderCache[key]; ok {
+	if cached, ok := renderCacheGet(key); ok {
 		renderCacheMu.Unlock()
 		return cached
 	}
@@ -196,7 +241,7 @@ func (p Profile) renderBodyCached(rootDir string, tools []tool.ToolInfo, skills 
 		content = append(content, []byte("\n\n")...)
 		content = append(content, []byte(renderBody(p.PromptAppend, filteredTools))...)
 	}
-	renderCache[key] = content
+	renderCachePut(key, content)
 	renderCacheMu.Unlock()
 	return content
 }

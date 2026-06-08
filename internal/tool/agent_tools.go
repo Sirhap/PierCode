@@ -34,22 +34,6 @@ var platformURLs = map[string]string{
 // cap stops an off-script worker AI from fanning out tabs/panes without bound.
 const maxSpawnDepth = 3
 
-// hubEmbeddablePlatforms is the set of spawn_agent platforms the Hub workspace
-// can embed as a pane. It MUST stay a subset of the Hub's PROVIDERS catalog in
-// extension/src/hub/pane-manager.ts — a platform here that the Hub can't render
-// would make the worker vanish (server skips the standalone tab, Hub ignores the
-// unknown pane). aistudio/mimo are deliberately absent: not in the Hub catalog,
-// so they always fall back to a standalone tab even when the Hub is open.
-var hubEmbeddablePlatforms = map[string]bool{
-	"qwen":    true,
-	"chatgpt": true,
-	"claude":  true,
-	"gemini":  true,
-	"kimi":    true,
-	"z.ai":    true,
-	"zai":     true,
-}
-
 // resolvePlatformURL returns the worker tab base URL for a platform name, with
 // the agent id encoded as a query param so the worker can self-identify.
 func resolvePlatformURL(platform, agentID string) (string, error) {
@@ -101,17 +85,9 @@ func NewSpawnAgentTool() Tool {
 
 			// If the caller is itself a worker (a sub-agent spawning a sub-agent),
 			// its source client id maps back to its own agent record — that agent
-			// is the parent. The child inherits the parent's project so the whole
-			// sub-tree lands in the same Hub canvas. A main-agent (ai-page) caller
-			// has no such mapping: parent and project stay empty and the Hub places
-			// the node in the currently open project.
+			// is the parent. A main-agent (ai-page) caller has no such mapping:
+			// parentAgentID stays empty for a root agent.
 			parentAgentID := ctx.Agents.AgentIDByWorkerClient(ctx.SourceClientID)
-			projectID := ""
-			if parentAgentID != "" {
-				if parent, ok := ctx.Agents.Get(parentAgentID); ok {
-					projectID = parent.ProjectID
-				}
-			}
 
 			// Warn (don't block) if the coordinator already has a live worker on the
 			// same task — it has no cross-turn memory of prior spawns and otherwise
@@ -121,34 +97,7 @@ func NewSpawnAgentTool() Tool {
 				dupWarn = fmt.Sprintf("\n⚠️ 你已有一个在跑的 worker 描述同为 %q —— 确认不是重复派发，别开多个。", desc)
 			}
 
-			rec := ctx.Agents.CreateInProject(ctx.SourceClientID, ctx.ConversationURL, platform, "", desc, task, parentAgentID, projectID)
-
-			// Prefer the Hub workspace: when its page is connected and the platform
-			// is one the Hub can embed, inject the worker as a pane so it runs
-			// visible and foreground (no background-tab throttling). The Hub mounts
-			// an iframe with ?piercode_agent=<id>; the worker content self-binds over
-			// WS exactly like a standalone worker tab — no extra server plumbing.
-			if ctx.HubOnline != nil && ctx.HubOnline() && hubEmbeddablePlatforms[strings.ToLower(platform)] {
-				if ctx.HubAddPane != nil {
-					ctx.HubAddPane(rec.AgentID, parentAgentID, platform, desc)
-					return fmt.Sprintf(
-						"Dispatched worker %s on %s into the Hub workspace: %s\nThe worker runs in a Hub pane and reports back as a <task-notification>. Do not poll or read its pane — end your turn and wait for the callback.%s%s",
-						rec.AgentID, platform, desc, dupWarn, activeRosterSuffix(ctx.Agents, ctx.SourceClientID),
-					), nil
-				}
-			}
-
-			// Fallback: Hub not open (or platform not Hub-embeddable). Open a
-			// standalone worker tab, the original behavior. Surface WHY so a user who
-			// expected a Hub pane can diagnose (Hub tab closed / not connected, or the
-			// platform isn't one the Hub can embed).
-			hubOnline := ctx.HubOnline != nil && ctx.HubOnline()
-			var fallbackReason string
-			if !hubOnline {
-				fallbackReason = "（Hub 工作台未连接，已开独立标签；打开/刷新 Hub 页后再 spawn 会进画布面板）"
-			} else if !hubEmbeddablePlatforms[strings.ToLower(platform)] {
-				fallbackReason = fmt.Sprintf("（平台 %s 不在 Hub 可嵌入列表，已开独立标签）", platform)
-			}
+			rec := ctx.Agents.CreateInProject(ctx.SourceClientID, ctx.ConversationURL, platform, "", desc, task, parentAgentID)
 
 			workerURL, err := resolvePlatformURL(platform, rec.AgentID)
 			if err != nil {
@@ -162,9 +111,14 @@ func NewSpawnAgentTool() Tool {
 				return "", fmt.Errorf("open worker tab: %w", err)
 			}
 
+			// Schedule an auto-confirmation inject to mitigate SPA hydration races.
+			// This sends a lightweight follow-up after 4 seconds to ensure the seed
+			// task was properly submitted (the "send button not clicked" issue).
+			scheduleAutoConfirmSpawn(ctx, rec.AgentID, task)
+
 			return fmt.Sprintf(
-				"Dispatched worker %s on %s (tab %d): %s%s\nThe worker will run autonomously and report back as a <task-notification>. Do not poll or read its tab — end your turn and wait for the callback.%s%s",
-				rec.AgentID, platform, tab.TabID, desc, fallbackReason, dupWarn, activeRosterSuffix(ctx.Agents, ctx.SourceClientID),
+				"Dispatched worker %s on %s (tab %d): %s\nThe worker will run autonomously and report back as a <task-notification>. Do not poll or read its tab — end your turn and wait for the callback.%s%s\n\n✅ 已启用自动确认机制（4秒后发送跟进消息确保任务执行）",
+				rec.AgentID, platform, tab.TabID, desc, dupWarn, activeRosterSuffix(ctx.Agents, ctx.SourceClientID),
 			), nil
 		},
 	}
@@ -274,6 +228,45 @@ func NewStopAgentTool() Tool {
 	}
 }
 
+// scheduleAutoConfirmSpawn schedules a delayed confirmation inject to ensure
+// the worker's seed task was properly submitted. This mitigates SPA hydration
+// races where the initial inject may have filled the input but failed to click send.
+func scheduleAutoConfirmSpawn(ctx *Context, agentID, task string) {
+	if ctx.BroadcastToClient == nil {
+		return
+	}
+	go func() {
+		// Wait for the worker to connect and hydrate (4 seconds is usually enough
+		// for most AI SPAs to mount their input components and register handlers).
+		time.Sleep(4 * time.Second)
+
+		rec, ok := ctx.Agents.Get(agentID)
+		if !ok || rec.WorkerClientID == "" {
+			return // worker not connected yet, skip confirmation
+		}
+		// Don't re-inject if the worker already started or finished: a terminal
+		// status, an observed AI response, or a reported result all mean the seed
+		// (server.go:bindAndSeedWorker, guarded by MarkSeeded) took. Re-sending the
+		// full task here would make the worker restart or run it twice.
+		switch rec.Status {
+		case AgentCompleted, AgentFailed, AgentBlocked, AgentStopped:
+			return
+		}
+		if rec.LastAIResponse != "" || rec.LastResult != "" {
+			return
+		}
+
+		// The worker is bound but silent: nudge it to start WITHOUT re-sending the
+		// whole task (it was already seeded). A short prompt avoids duplicate work.
+		confirmMsg := "如果你还没开始执行刚才注入的任务，请立即开始；完成后报告结果。"
+		payload, err := json.Marshal(map[string]any{"type": "inject", "text": confirmMsg})
+		if err != nil {
+			return
+		}
+		ctx.BroadcastToClient(rec.WorkerClientID, payload)
+	}()
+}
+
 // defaultPlatformFor picks a fallback platform when the coordinator does not
 // specify one. Without per-client platform tracking we default to qwen (the
 // primary compression+worker target); the coordinator can always override.
@@ -309,7 +302,15 @@ func (t *agentTool) Execute(ctx *Context) *Result {
 	// the parent of whatever it spawns, so its depth + 1 is the child's depth.
 	if t.name == "spawn_agent" {
 		if parentID := ctx.Agents.AgentIDByWorkerClient(ctx.SourceClientID); parentID != "" {
-			if ctx.Agents.Depth(parentID)+1 > maxSpawnDepth {
+			// The main/coordinator AI page has no registry record, so the first
+			// worker it spawns is stored with ParentAgentID="" and reports
+			// Depth()==0 even though it conceptually sits one level below the
+			// (unrecorded) main agent. Counting that hidden root, the child this
+			// worker would spawn is at tree-depth Depth(parentID)+2. Using `>=`
+			// here makes the cap fire one level earlier than a naive `>`, so the
+			// deepest worker level is exactly maxSpawnDepth and we don't allow an
+			// extra fourth level past the limit.
+			if ctx.Agents.Depth(parentID)+1 >= maxSpawnDepth {
 				result.Status = "error"
 				result.Error = fmt.Sprintf("spawn depth limit reached (max %d levels); do this part yourself or report back to your coordinator", maxSpawnDepth)
 				return result

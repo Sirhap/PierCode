@@ -94,9 +94,9 @@ func TestAgentRegistryListByDispatcher(t *testing.T) {
 
 func TestAgentRegistryParentChainDepth(t *testing.T) {
 	r := NewAgentRegistry()
-	root := r.CreateInProject("d", "", "qwen", "", "root", "t", "", "proj-1")
-	child := r.CreateInProject("d", "", "qwen", "", "child", "t", root.AgentID, "proj-1")
-	grand := r.CreateInProject("d", "", "qwen", "", "grand", "t", child.AgentID, "proj-1")
+	root := r.CreateInProject("d", "", "qwen", "", "root", "t", "")
+	child := r.CreateInProject("d", "", "qwen", "", "child", "t", root.AgentID)
+	grand := r.CreateInProject("d", "", "qwen", "", "grand", "t", child.AgentID)
 
 	if d := r.Depth(root.AgentID); d != 0 {
 		t.Errorf("root depth = %d, want 0", d)
@@ -124,31 +124,14 @@ func TestAgentRegistryAgentIDByWorkerClient(t *testing.T) {
 	}
 }
 
-func TestAgentRegistryListByProject(t *testing.T) {
+func TestAgentSummaryExposesParent(t *testing.T) {
 	r := NewAgentRegistry()
-	r.CreateInProject("d", "", "qwen", "", "a", "t", "", "proj-1")
-	r.CreateInProject("d", "", "qwen", "", "b", "t", "", "proj-1")
-	r.CreateInProject("d", "", "qwen", "", "c", "t", "", "proj-2")
-
-	if got := len(r.ListByProject("proj-1")); got != 2 {
-		t.Errorf("proj-1 should have 2 agents, got %d", got)
-	}
-	if got := len(r.ListByProject("proj-2")); got != 1 {
-		t.Errorf("proj-2 should have 1 agent, got %d", got)
-	}
-	if got := len(r.ListByProject("")); got != 3 {
-		t.Errorf("empty project filter should return all 3, got %d", got)
-	}
-}
-
-func TestAgentSummaryExposesParentAndProject(t *testing.T) {
-	r := NewAgentRegistry()
-	root := r.CreateInProject("d", "", "qwen", "", "root", "t", "", "proj-1")
-	child := r.CreateInProject("d", "", "qwen", "", "child", "t", root.AgentID, "proj-1")
+	root := r.CreateInProject("d", "", "qwen", "", "root", "t", "")
+	child := r.CreateInProject("d", "", "qwen", "", "child", "t", root.AgentID)
 	for _, s := range r.List("") {
 		if s.AgentID == child.AgentID {
-			if s.ParentAgentID != root.AgentID || s.ProjectID != "proj-1" {
-				t.Fatalf("child summary missing parent/project: %+v", s)
+			if s.ParentAgentID != root.AgentID {
+				t.Fatalf("child summary missing parent: %+v", s)
 			}
 			return
 		}
@@ -175,7 +158,7 @@ func TestAgentSummaryExposesLastResult(t *testing.T) {
 func TestAgentRegistryActiveByDispatcher(t *testing.T) {
 	r := NewAgentRegistry()
 	a := r.Create("d1", "", "qwen", "", "research", "t")
-	r.BindWorker(a.AgentID, "w1") // running
+	r.BindWorker(a.AgentID, "w1")                      // running
 	r.Create("d1", "", "qwen", "", "pending one", "t") // pending
 	done := r.Create("d1", "", "qwen", "", "old", "t")
 	r.RecordResult(done.AgentID, "completed", "x") // terminal → excluded

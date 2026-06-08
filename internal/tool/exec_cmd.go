@@ -120,7 +120,15 @@ func (t *ExecCmdTool) Execute(ctx *Context) *Result {
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}
-	execCtx, cancel := context.WithTimeout(parentCtx, time.Duration(t.config.Timeout)*time.Second)
+	// Normalize the timeout: a non-positive config value (e.g. -timeout 0, which
+	// background mode treats as "no limit") would make context.WithTimeout return
+	// an already-cancelled context and instantly kill every foreground command.
+	// Mirror Description()/background-mode guarding by falling back to 60s.
+	timeoutSec := 60
+	if t.config != nil && t.config.Timeout > 0 {
+		timeoutSec = t.config.Timeout
+	}
+	execCtx, cancel := context.WithTimeout(parentCtx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
 	shell, flag := getShell()

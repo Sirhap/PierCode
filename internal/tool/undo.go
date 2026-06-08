@@ -45,6 +45,28 @@ func (t *UndoTool) Validate(args map[string]interface{}) error {
 			return errors.New("action must be 'list' or 'revert'")
 		}
 	}
+	if v, ok := args["id"]; ok && v != nil {
+		s, ok := v.(string)
+		if !ok {
+			return errors.New("id must be a string")
+		}
+		if err := validateSnapshotID(strings.TrimSpace(s)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateSnapshotID rejects any id that is not a clean single path segment, so
+// a crafted id cannot traverse out of the snapshot tree via filepath.Join. An
+// empty id is allowed (it means "the most recent snapshot").
+func validateSnapshotID(id string) error {
+	if id == "" {
+		return nil
+	}
+	if id != filepath.Base(id) || strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
+		return errors.New("invalid snapshot id")
+	}
 	return nil
 }
 
@@ -65,6 +87,11 @@ func (t *UndoTool) Execute(ctx *Context) *Result {
 	}
 	id, _ := ctx.Args["id"].(string)
 	id = strings.TrimSpace(id)
+	if err := validateSnapshotID(id); err != nil {
+		result.Status = "error"
+		result.Error = err.Error()
+		return result
+	}
 
 	if action == "list" {
 		result.Status = "success"

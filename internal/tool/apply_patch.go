@@ -552,7 +552,7 @@ func applyPatchHunk(content string, hunk patchHunk) (string, int, int, error) {
 		return "", 0, 0, errors.New("empty hunk context")
 	}
 
-	lines, style := splitContentLines(content)
+	lines, endings, trailingNewline, style := splitContentLinesRaw(content)
 	idx, count := findLineRun(lines, hunk.oldLines)
 	fuzzyMatch := false
 	if count == 0 {
@@ -575,12 +575,106 @@ func applyPatchHunk(content string, hunk patchHunk) (string, int, int, error) {
 	if fuzzyMatch {
 		newLines = materializeFuzzyHunkNewLines(lines[idx:idx+len(hunk.oldLines)], hunk)
 	}
-	updated := make([]string, 0, len(lines)-len(hunk.oldLines)+len(hunk.newLines))
-	updated = append(updated, lines[:idx]...)
-	updated = append(updated, newLines...)
-	updated = append(updated, lines[idx+len(hunk.oldLines):]...)
 
-	return joinContentLines(updated, style), len(hunk.oldLines), len(newLines), nil
+	// Splice the new region back over the matched run while leaving every line
+	// the hunk did NOT touch byte-for-byte intact (mirrors edit.go's raw-splice
+	// strategy). splitContentLines used to strip \r from every line and rejoin
+	// with a single dominant separator — for a mixed-ending file that was
+	// LF-dominant, untouched CRLF lines silently lost their \r. By rebuilding
+	// the head/tail from the original per-line endings we touch only the
+	// replaced lines. New/replacement lines use the dominant separator so a hunk
+	// added to a CRLF file gets CRLF and to an LF file gets LF.
+	sep := "\n"
+	if style.crlf {
+		sep = "\r\n"
+	}
+	var b strings.Builder
+	// Head: lines before the match, with their original terminators preserved.
+	for i := 0; i < idx; i++ {
+		b.WriteString(lines[i])
+		b.WriteString(endings[i])
+	}
+	// Replacement region. The terminator of the last replaced line follows the
+	// terminator that the last matched line had on disk: if the match ran to the
+	// final line of a file with no trailing newline, the replacement also ends
+	// without one; otherwise each new line is separated by the dominant sep.
+	lastMatched := idx + len(hunk.oldLines) - 1
+	matchEndsFile := lastMatched == len(lines)-1
+	lastMatchedHadTerminator := endings[lastMatched] != ""
+	for i, nl := range newLines {
+		b.WriteString(nl)
+		isLastNew := i == len(newLines)-1
+		if isLastNew {
+			// Preserve "no trailing newline at EOF" only when the matched run
+			// ended the file and that final line had no terminator.
+			if matchEndsFile && !lastMatchedHadTerminator {
+				// no terminator
+			} else {
+				b.WriteString(sep)
+			}
+		} else {
+			b.WriteString(sep)
+		}
+	}
+	// Tail: lines after the match, with their original terminators preserved.
+	for i := idx + len(hunk.oldLines); i < len(lines); i++ {
+		b.WriteString(lines[i])
+		b.WriteString(endings[i])
+	}
+	_ = trailingNewline // retained for symmetry/clarity; EOF handling is per-line above
+
+	return b.String(), len(hunk.oldLines), len(newLines), nil
+}
+
+// splitContentLinesRaw is like splitContentLines but also returns each line's
+// original terminator ("\r\n", "\n", or "" for a final line with no trailing
+// newline). The endings slice is parallel to lines. This lets the patch splice
+// rebuild untouched regions byte-for-byte instead of forcing a single dominant
+// separator across the whole file (which corrupted untouched lines in
+// mixed-ending files). trailingNewline and style mirror splitContentLines.
+func splitContentLinesRaw(content string) (lines []string, endings []string, trailingNewline bool, style lineStyle) {
+	if content == "" {
+		return nil, nil, false, lineStyle{}
+	}
+	style.crlf = detectCRLF(content)
+	trailingNewline = strings.HasSuffix(content, "\n")
+	style.trailingNewline = trailingNewline
+
+	lines = make([]string, 0, strings.Count(content, "\n")+1)
+	endings = make([]string, 0, cap(lines))
+	rest := content
+	for {
+		nl := strings.IndexByte(rest, '\n')
+		if nl < 0 {
+			// Final segment with no trailing '\n'.
+			line := rest
+			ending := ""
+			if strings.HasSuffix(line, "\r") {
+				// A lone trailing '\r' with no '\n' is an odd ending; keep it as
+				// part of the terminator so the line text matches the
+				// \r-stripped logical form used elsewhere.
+				line = strings.TrimSuffix(line, "\r")
+				ending = "\r"
+			}
+			lines = append(lines, line)
+			endings = append(endings, ending)
+			break
+		}
+		segment := rest[:nl]
+		ending := "\n"
+		if strings.HasSuffix(segment, "\r") {
+			segment = strings.TrimSuffix(segment, "\r")
+			ending = "\r\n"
+		}
+		lines = append(lines, segment)
+		endings = append(endings, ending)
+		rest = rest[nl+1:]
+		if rest == "" {
+			// content ended exactly on a '\n'; there is no further line.
+			break
+		}
+	}
+	return lines, endings, trailingNewline, style
 }
 
 func materializeFuzzyHunkNewLines(matchedOldLines []string, hunk patchHunk) []string {
@@ -589,11 +683,22 @@ func materializeFuzzyHunkNewLines(matchedOldLines []string, hunk patchHunk) []st
 	}
 	out := make([]string, 0, len(hunk.newLines))
 	oldIdx := 0
+	// Fuzzy match fired because the patch's indentation differs from the file's.
+	// Track the leading-whitespace delta between the patch's context lines and
+	// the file's actual matched lines, and re-indent inserted '+' lines by the
+	// same delta so they align with the file instead of keeping the patch's
+	// (wrong) indentation — which would corrupt indentation-sensitive files.
+	patchIndent, fileIndent := "", ""
+	haveIndent := false
 	for _, line := range hunk.lines {
 		switch line.prefix {
 		case ' ':
 			if oldIdx < len(matchedOldLines) {
-				out = append(out, matchedOldLines[oldIdx])
+				matched := matchedOldLines[oldIdx]
+				patchIndent = leadingWhitespace(line.text)
+				fileIndent = leadingWhitespace(matched)
+				haveIndent = true
+				out = append(out, matched)
 			} else {
 				out = append(out, line.text)
 			}
@@ -601,10 +706,35 @@ func materializeFuzzyHunkNewLines(matchedOldLines []string, hunk patchHunk) []st
 		case '-':
 			oldIdx++
 		case '+':
-			out = append(out, line.text)
+			out = append(out, reindentLine(line.text, patchIndent, fileIndent, haveIndent))
 		}
 	}
 	return out
+}
+
+// leadingWhitespace returns the run of spaces/tabs at the start of s.
+func leadingWhitespace(s string) string {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	return s[:i]
+}
+
+// reindentLine swaps a '+' line's patch-derived base indent for the file's base
+// indent, derived from the nearest matched context line. If the line doesn't
+// start with the patch indent (or no context was seen yet), it's left as-is.
+func reindentLine(text, patchIndent, fileIndent string, have bool) string {
+	if !have || patchIndent == fileIndent {
+		return text
+	}
+	if patchIndent != "" && strings.HasPrefix(text, patchIndent) {
+		return fileIndent + text[len(patchIndent):]
+	}
+	if patchIndent == "" {
+		return fileIndent + text
+	}
+	return text
 }
 
 // findLineRun returns the start index of the first occurrence of run within

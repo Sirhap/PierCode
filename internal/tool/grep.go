@@ -151,7 +151,7 @@ func grepNative(pattern, searchPath, include string) (string, error) {
 			return nil
 		}
 		if include != "" {
-			if ok, _ := filepath.Match(include, d.Name()); !ok {
+			if !matchIncludeGlob(include, d.Name()) {
 				return nil
 			}
 		}
@@ -196,19 +196,46 @@ func grepNative(pattern, searchPath, include string) (string, error) {
 	return formatGrepLines(lines, 100), nil
 }
 
+// matchIncludeGlob matches a base name against an include pattern, adding the
+// single-level brace alternation (e.g. *.{ts,tsx}) that the tool description
+// advertises but Go's filepath.Match does not support. Each alternative is
+// matched with filepath.Match; any hit passes.
+func matchIncludeGlob(include, name string) bool {
+	open := strings.IndexByte(include, '{')
+	close := strings.IndexByte(include, '}')
+	if open < 0 || close < open {
+		ok, _ := filepath.Match(include, name)
+		return ok
+	}
+	prefix := include[:open]
+	suffix := include[close+1:]
+	for _, alt := range strings.Split(include[open+1:close], ",") {
+		if ok, _ := filepath.Match(prefix+alt+suffix, name); ok {
+			return true
+		}
+	}
+	return false
+}
+
 func formatGrepLines(lines []string, limit int) string {
 	var out []string
 	count := 0
+	truncated := false
 	for _, l := range lines {
 		if l == "" {
 			continue
 		}
-		out = append(out, l)
-		count++
 		if count >= limit {
-			out = append(out, fmt.Sprintf("(结果已截断，仅显示前 %d 条)", limit))
+			// A further non-empty result exists beyond the limit; only now is the
+			// truncation hint warranted (exactly `limit` results is NOT truncated).
+			truncated = true
 			break
 		}
+		out = append(out, l)
+		count++
+	}
+	if truncated {
+		out = append(out, fmt.Sprintf("(结果已截断，仅显示前 %d 条)", limit))
 	}
 	if len(out) == 0 {
 		return "No matches found"

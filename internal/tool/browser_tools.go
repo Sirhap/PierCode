@@ -330,10 +330,26 @@ func shouldAttachScreenshot(ctx *Context) bool {
 		return false
 	}
 	if ctx.Args != nil {
-		if v, ok := ctx.Args["attach"].(bool); ok {
-			return v
+		if raw, present := ctx.Args["attach"]; present {
+			// attach is present: honor an explicit opt-out. Accept a real bool,
+			// or the string "true"/"false" that some models emit. A present but
+			// otherwise-unparseable value must NOT silently default to true —
+			// that would drop a malformed opt-out; treat it as "do not attach".
+			switch v := raw.(type) {
+			case bool:
+				return v
+			case string:
+				switch strings.ToLower(strings.TrimSpace(v)) {
+				case "true":
+					return true
+				case "false":
+					return false
+				}
+			}
+			return false
 		}
 	}
+	// attach omitted entirely: default to attaching.
 	return true
 }
 

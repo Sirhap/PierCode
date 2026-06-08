@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sirhap/piercode/internal/security"
 )
 
 // Snapshot infrastructure: before a destructive write (write_file overwrite,
@@ -211,7 +213,22 @@ func revertSnapshot(rootDir, id string) (string, error) {
 	}
 	var restored []string
 	for _, e := range entries {
+		// Never trust the AbsPath stored in the manifest blindly: a manifest can
+		// be forged inside the sandbox (write_file into .piercode/snapshots/<id>/)
+		// to point AbsPath anywhere on disk, and a snapshot captured under a
+		// different rootDir would otherwise write outside the current sandbox.
+		// SafeAbsPath re-resolves symlinks on both sides and requires the target
+		// to stay within the current rootDir, rejecting both attacks. Backup is
+		// restricted to a single segment inside the snapshot dir for the same
+		// reason.
+		safeAbs, err := security.SafeAbsPath(e.AbsPath, rootDir)
+		if err != nil {
+			return "", fmt.Errorf("snapshot entry %s escapes sandbox: %w", e.RelPath, err)
+		}
 		if e.Existed {
+			if err := validateSnapshotID(e.Backup); err != nil {
+				return "", fmt.Errorf("invalid backup name for %s", e.RelPath)
+			}
 			raw, err := os.ReadFile(filepath.Join(dir, e.Backup))
 			if err != nil {
 				return "", fmt.Errorf("backup missing for %s: %w", e.RelPath, err)
@@ -220,16 +237,16 @@ func revertSnapshot(rootDir, id string) (string, error) {
 			if mode == 0 {
 				mode = 0644
 			}
-			if err := os.MkdirAll(filepath.Dir(e.AbsPath), 0755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(safeAbs), 0755); err != nil {
 				return "", err
 			}
-			if err := os.WriteFile(e.AbsPath, raw, mode); err != nil {
+			if err := os.WriteFile(safeAbs, raw, mode); err != nil {
 				return "", err
 			}
 			restored = append(restored, "restored "+e.RelPath)
 		} else {
 			// File was created by the edit; undo means removing it.
-			if err := os.Remove(e.AbsPath); err != nil && !os.IsNotExist(err) {
+			if err := os.Remove(safeAbs); err != nil && !os.IsNotExist(err) {
 				return "", err
 			}
 			restored = append(restored, "removed "+e.RelPath)

@@ -161,5 +161,9 @@ func restoreLineStyle(lfContent string, style lineStyle) string {
 	if !style.crlf {
 		return lfContent
 	}
+	// Collapse any CRLF that entered via a replacement's new_string (the model may
+	// author a block with literal \r\n) back to LF first, so the single \n→\r\n
+	// expansion below doesn't double it into \r\r\n on CRLF files.
+	lfContent = strings.ReplaceAll(lfContent, "\r\n", "\n")
 	return strings.ReplaceAll(lfContent, "\n", "\r\n")
 }

@@ -25,7 +25,6 @@ const (
 type AgentRecord struct {
 	AgentID                   string
 	ParentAgentID             string // agent that spawned this one; empty for a root (a main agent)
-	ProjectID                 string // Hub project this agent's node belongs to; empty if not in a project
 	DispatcherClientID        string // coordinator page that spawned this worker
 	DispatcherConversationURL string
 	WorkerClientID            string // worker page; empty until bound
@@ -49,7 +48,6 @@ type AgentRecord struct {
 type AgentSummary struct {
 	AgentID                   string `json:"agent_id"`
 	ParentAgentID             string `json:"parent_agent_id,omitempty"`
-	ProjectID                 string `json:"project_id,omitempty"`
 	DispatcherClientID        string `json:"dispatcher_client_id,omitempty"`
 	DispatcherConversationURL string `json:"dispatcher_conversation_url,omitempty"`
 	WorkerClientID            string `json:"worker_client_id,omitempty"`
@@ -71,7 +69,6 @@ func (r *AgentRecord) summary() AgentSummary {
 	s := AgentSummary{
 		AgentID:                   r.AgentID,
 		ParentAgentID:             r.ParentAgentID,
-		ProjectID:                 r.ProjectID,
 		DispatcherClientID:        r.DispatcherClientID,
 		DispatcherConversationURL: r.DispatcherConversationURL,
 		WorkerClientID:            r.WorkerClientID,
@@ -118,23 +115,22 @@ func NewAgentRegistry() *AgentRegistry {
 	return &AgentRegistry{agents: make(map[string]*AgentRecord)}
 }
 
-// Create registers a new pending root agent (no parent, no project) and returns
-// its record. Thin wrapper over CreateInProject for the common/legacy call shape.
+// Create registers a new pending root agent (no parent) and returns its record.
+// Thin wrapper over CreateInProject for the common/legacy call shape.
 func (r *AgentRegistry) Create(dispatcherClientID, dispatcherConversationURL, platform, host, description, task string) *AgentRecord {
-	return r.CreateInProject(dispatcherClientID, dispatcherConversationURL, platform, host, description, task, "", "")
+	return r.CreateInProject(dispatcherClientID, dispatcherConversationURL, platform, host, description, task, "")
 }
 
 // CreateInProject registers a new pending agent with an optional parent (the
-// agent that spawned it, empty for a main/root agent) and project. The agent id
-// is generated here so spawn_agent can seed it into the worker's task prompt.
-func (r *AgentRegistry) CreateInProject(dispatcherClientID, dispatcherConversationURL, platform, host, description, task, parentAgentID, projectID string) *AgentRecord {
+// agent that spawned it, empty for a main/root agent). The agent id is generated
+// here so spawn_agent can seed it into the worker's task prompt.
+func (r *AgentRegistry) CreateInProject(dispatcherClientID, dispatcherConversationURL, platform, host, description, task, parentAgentID string) *AgentRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seq++
 	rec := &AgentRecord{
 		AgentID:                   fmt.Sprintf("agent-%d-%d", time.Now().UnixNano(), r.seq),
 		ParentAgentID:             parentAgentID,
-		ProjectID:                 projectID,
 		DispatcherClientID:        dispatcherClientID,
 		DispatcherConversationURL: dispatcherConversationURL,
 		Platform:                  platform,
@@ -388,23 +384,56 @@ func (r *AgentRegistry) Delete(agentID string) bool {
 	return true
 }
 
-// Sweep removes finished agents (completed/failed/blocked/stopped) whose EndedAt
-// is older than maxAge, returning the number removed. A periodic caller keeps the
-// registry from accumulating dead records over a long-running session, while the
-// maxAge grace window lets a reconnecting dispatcher still fetch a recent result.
+// orphanRunningTTL is how long a non-terminal (pending/running) agent record is
+// kept before Sweep reclaims it as an orphan. It is much longer than the
+// terminal maxAge grace window so a legitimately long-running worker is never
+// reaped mid-task; the only records this catches are ones whose worker tab was
+// closed (or never bound) and which therefore will never reach a terminal
+// status to be swept the normal way. Anchored on BoundAt for a running agent
+// (when work actually started) and CreatedAt for one still pending.
+const orphanRunningTTL = 6 * time.Hour
+
+// Sweep removes dead agent records, returning the number removed. Two cases:
+//   - Terminal agents (completed/failed/blocked/stopped) whose EndedAt is older
+//     than maxAge. The maxAge grace window lets a reconnecting dispatcher still
+//     fetch a recent result.
+//   - Orphaned non-terminal agents (pending/running) older than orphanRunningTTL.
+//     A worker tab that closes before reporting leaves its record stuck in
+//     pending/running forever; without this it would never be reclaimed. The
+//     long TTL keeps genuinely in-flight workers safe.
+//
+// A periodic caller keeps the registry from accumulating dead records over a
+// long-running session.
 func (r *AgentRegistry) Sweep(maxAge time.Duration) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	cutoff := time.Now().Add(-maxAge)
+	now := time.Now()
+	terminalCutoff := now.Add(-maxAge)
+	orphanCutoff := now.Add(-orphanRunningTTL)
 	removed := 0
 	for id, rec := range r.agents {
 		switch rec.Status {
 		case AgentCompleted, AgentFailed, AgentBlocked, AgentStopped:
+			if rec.EndedAt.IsZero() || rec.EndedAt.After(terminalCutoff) {
+				continue // no end time, or still within the grace window
+			}
+		case AgentRunning:
+			// Anchor on when work started (BoundAt); fall back to CreatedAt if a
+			// running record somehow has no bind timestamp.
+			ref := rec.BoundAt
+			if ref.IsZero() {
+				ref = rec.CreatedAt
+			}
+			if ref.IsZero() || ref.After(orphanCutoff) {
+				continue // still within the orphan TTL — assume the worker lives
+			}
+		case AgentPending:
+			// Never bound a worker. CreatedAt is the only timestamp available.
+			if rec.CreatedAt.IsZero() || rec.CreatedAt.After(orphanCutoff) {
+				continue
+			}
 		default:
-			continue // not in a terminal state; keep
-		}
-		if rec.EndedAt.IsZero() || rec.EndedAt.After(cutoff) {
-			continue // no end time, or still within the grace window
+			continue // unknown status; keep
 		}
 		delete(r.agents, id)
 		removed++
@@ -420,23 +449,6 @@ func (r *AgentRegistry) List(dispatcherClientID string) []AgentSummary {
 	out := make([]AgentSummary, 0, len(r.agents))
 	for _, rec := range r.agents {
 		if dispatcherClientID != "" && rec.DispatcherClientID != dispatcherClientID {
-			continue
-		}
-		out = append(out, rec.summary())
-	}
-	return out
-}
-
-// ListByProject returns summaries of every agent in a project. An empty projectID
-// returns every agent (same as List("")). The Hub's project drawer uses it to
-// show only the current project's agent tree.
-func (r *AgentRegistry) ListByProject(projectID string) []AgentSummary {
-	projectID = strings.TrimSpace(projectID)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]AgentSummary, 0, len(r.agents))
-	for _, rec := range r.agents {
-		if projectID != "" && rec.ProjectID != projectID {
 			continue
 		}
 		out = append(out, rec.summary())

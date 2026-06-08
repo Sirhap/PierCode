@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sirhap/piercode/internal/logsink"
 	"github.com/sirhap/piercode/internal/prompt"
@@ -23,9 +24,14 @@ type Executor struct {
 	// guidance cadence (operating reminder every few turns, checkpoint every
 	// fifth) follows each conversation's own progress instead of a single global
 	// counter shared across all tabs/workers. Keyed by conversation URL, falling
-	// back to client id, then a shared bucket.
-	guidanceCounts sync.Map // map[string]*atomic.Int64
-	toolMu         sync.RWMutex
+	// back to client id, then a shared bucket. Each entry carries a lastSeen
+	// timestamp so the GC goroutine can evict idle conversations — otherwise a
+	// long-running server leaks one permanent entry per conversation URL ever
+	// seen.
+	guidanceCounts  sync.Map // map[string]*guidanceCounter
+	guidanceGCStop  chan struct{}
+	guidanceGCClose sync.Once
+	toolMu          sync.RWMutex
 	// logger is read from Execute on every tool call (potentially many
 	// goroutines) and written from SetLogger at startup or when the TUI
 	// reconfigures. atomic.Pointer keeps the read path lock-free and
@@ -35,8 +41,6 @@ type Executor struct {
 	agents            *tool.AgentRegistry
 	broadcast         atomic.Pointer[func([]byte)]
 	broadcastToClient atomic.Pointer[func(string, []byte) bool]
-	hubOnline         atomic.Pointer[func() bool]
-	hubAddPane        atomic.Pointer[func(agentID, parentAgentID, platform, description string)]
 	browserMu         sync.RWMutex
 	browser           tool.BrowserController
 }
@@ -75,23 +79,6 @@ func (e *Executor) SetClientBroadcaster(fn func(string, []byte) bool) {
 	e.broadcastToClient.Store(&fn)
 }
 
-// SetHubBridge wires the Hub workspace integration: `online` reports whether a
-// Hub page is connected (role=hub), and `addPane` asks it to mount a worker
-// pane. spawn_agent uses both to inject workers into the Hub instead of opening
-// standalone tabs. Passing nil for either disables that half.
-func (e *Executor) SetHubBridge(online func() bool, addPane func(agentID, parentAgentID, platform, description string)) {
-	if online == nil {
-		e.hubOnline.Store(nil)
-	} else {
-		e.hubOnline.Store(&online)
-	}
-	if addPane == nil {
-		e.hubAddPane.Store(nil)
-	} else {
-		e.hubAddPane.Store(&addPane)
-	}
-}
-
 func (e *Executor) SetBrowserController(controller tool.BrowserController) {
 	e.browserMu.Lock()
 	e.browser = controller
@@ -111,12 +98,14 @@ func (e *Executor) Agents() *tool.AgentRegistry {
 
 func New(config *types.Config) *Executor {
 	e := &Executor{
-		config:   config,
-		registry: tool.NewRegistry(),
-		profiles: prompt.DefaultProfileRegistry(config.DefaultPrompt),
-		tasks:    NewTaskManager(),
-		agents:   tool.NewAgentRegistry(),
+		config:         config,
+		registry:       tool.NewRegistry(),
+		profiles:       prompt.DefaultProfileRegistry(config.DefaultPrompt),
+		tasks:          NewTaskManager(),
+		agents:         tool.NewAgentRegistry(),
+		guidanceGCStop: make(chan struct{}),
 	}
+	go e.runGuidanceGC()
 	e.registry.Register(tool.NewExecCmdTool(config))
 	e.registry.Register(tool.NewListDirTool(config))
 	e.registry.Register(tool.NewReadFileTool(config))
@@ -271,12 +260,6 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	if bp := e.broadcastToClient.Load(); bp != nil {
 		toolCtx.BroadcastToClient = *bp
 	}
-	if hp := e.hubOnline.Load(); hp != nil {
-		toolCtx.HubOnline = *hp
-	}
-	if hp := e.hubAddPane.Load(); hp != nil {
-		toolCtx.HubAddPane = *hp
-	}
 	toolCtx.SourceClientID = req.SourceClientID
 	toolCtx.ConversationURL = req.ConversationURL
 
@@ -327,6 +310,25 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	return resp
 }
 
+// guidanceCounter is one conversation's guidance turn counter plus the wall
+// time it was last touched. lastSeen is stored as unix nanoseconds so it can be
+// read/written atomically from the hot path (every tool call) and the GC sweep
+// concurrently without a mutex.
+type guidanceCounter struct {
+	count    atomic.Int64
+	lastSeen atomic.Int64 // unix nanoseconds
+}
+
+const (
+	// guidanceIdleTTL is how long a conversation's guidance counter survives
+	// without a tool call before the GC evicts it. A conversation idle this long
+	// is effectively over; if it ever resumes, a fresh counter is created (the
+	// cadence resets, which is harmless).
+	guidanceIdleTTL = 2 * time.Hour
+	// guidanceGCInterval is how often the GC goroutine sweeps idle counters.
+	guidanceGCInterval = 15 * time.Minute
+)
+
 // nextGuidanceCount returns the per-conversation guidance counter, incremented.
 // Keyed by conversation URL so each conversation's cadence follows its own turn
 // count; falls back to client id, then a shared bucket, when the URL is absent.
@@ -338,8 +340,53 @@ func (e *Executor) nextGuidanceCount(req *types.ToolRequest) int64 {
 	if key == "" {
 		key = "_shared"
 	}
-	v, _ := e.guidanceCounts.LoadOrStore(key, new(atomic.Int64))
-	return v.(*atomic.Int64).Add(1)
+	v, _ := e.guidanceCounts.LoadOrStore(key, new(guidanceCounter))
+	gc := v.(*guidanceCounter)
+	gc.lastSeen.Store(time.Now().UnixNano())
+	return gc.count.Add(1)
+}
+
+// runGuidanceGC periodically evicts idle per-conversation guidance counters so
+// the guidanceCounts map does not grow without bound over a long-running server
+// (one entry per conversation URL ever seen would otherwise leak forever).
+// Mirrors TaskManager.runGC. Exits when Close closes guidanceGCStop.
+func (e *Executor) runGuidanceGC() {
+	ticker := time.NewTicker(guidanceGCInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			e.guidanceGCSweep(time.Now())
+		case <-e.guidanceGCStop:
+			return
+		}
+	}
+}
+
+func (e *Executor) guidanceGCSweep(now time.Time) {
+	cutoff := now.Add(-guidanceIdleTTL).UnixNano()
+	e.guidanceCounts.Range(func(key, value any) bool {
+		gc, ok := value.(*guidanceCounter)
+		if !ok {
+			e.guidanceCounts.Delete(key)
+			return true
+		}
+		if gc.lastSeen.Load() < cutoff {
+			e.guidanceCounts.Delete(key)
+		}
+		return true
+	})
+}
+
+// Close stops the executor's background goroutines (currently the guidance-GC
+// sweeper). Safe to call multiple times via sync.Once. The owned TaskManager has
+// its own Close and is shut down by the server separately.
+func (e *Executor) Close() {
+	e.guidanceGCClose.Do(func() {
+		if e.guidanceGCStop != nil {
+			close(e.guidanceGCStop)
+		}
+	})
 }
 
 // ResolveProfile returns the prompt profile for the given adapter/profile id

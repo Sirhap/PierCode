@@ -189,12 +189,21 @@ func parse(path, content string) Info {
 	if !strings.HasPrefix(content, "---") {
 		return Info{Name: name, Description: description}
 	}
-	end := strings.Index(content[3:], "---")
-	if end < 0 {
+	// Find the closing fence on a line boundary, not the first "---" substring:
+	// a frontmatter value may legitimately contain "---" (e.g. a description like
+	// "step 1 --- step 2"), and a raw substring search would truncate the block.
+	allLines := strings.Split(content, "\n")
+	closeIdx := -1
+	for i := 1; i < len(allLines); i++ {
+		if strings.TrimSpace(allLines[i]) == "---" {
+			closeIdx = i
+			break
+		}
+	}
+	if closeIdx < 0 {
 		return Info{Name: name, Description: description}
 	}
-	front := content[3 : end+3]
-	lines := strings.Split(front, "\n")
+	lines := allLines[1:closeIdx]
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 		line = strings.TrimSpace(line)
