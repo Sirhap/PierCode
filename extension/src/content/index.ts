@@ -2256,7 +2256,7 @@ function startDOMObserver(_responseSelector: string) {
   const activateIfFreshResponse = (container: Element): boolean => {
     if (isResponseSessionActive()) return true;
     // 快照尚未建立时不能判断"新旧"，保守地不激活（交给 markCurrentResponsesAsHistory）。
-    if (!preInitMarked) {
+    if (!preInitMarked && !isResponseSessionActive()) {
       preConnectionBuffer.add(container);
       return false;
     }
