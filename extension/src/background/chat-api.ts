@@ -60,6 +60,12 @@ interface BuildCtx {
   /** System prompt. Platforms with supportsSystem put it in a real system
    *  field; others have it pre-merged into `message` by the caller. */
   systemPrompt?: string
+  /** Per-platform "thinking level" key from the sidebar picker (see
+   *  sidebar/reasoning.ts). 'off' = no reasoning everywhere; the rest are
+   *  platform-scoped ('fast'/'think'/'auto' for qwen, 'low'/'medium'/'high'
+   *  for openai, etc.). Each buildBody maps its own keys onto request fields
+   *  and ignores keys it doesn't recognise. Undefined → platform default. */
+  reasoning?: string
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -72,7 +78,8 @@ const MAX_TOOL_DEPTH = 10
 // Note: `getUrl()` is a function, not a mutable field, to avoid module-level
 // state mutation that would cause races if two requests run concurrently.
 
-const PLATFORMS: Record<string, PlatformConfig> = {
+// Exported for unit tests (buildBody reasoning mapping). Not used elsewhere.
+export const PLATFORMS: Record<string, PlatformConfig> = {
   qwen: {
     name: 'Qwen',
     cookieName: 'token',
@@ -133,6 +140,16 @@ const PLATFORMS: Record<string, PlatformConfig> = {
       const now = Math.floor(Date.now() / 1000)
       const fid = crypto.randomUUID()
 
+      // Map the sidebar thinking-level key onto Qwen's feature_config knobs.
+      // Default ('off') keeps the original behaviour (no deep thinking) so the
+      // model emits tool calls directly instead of analysing for pages.
+      const r = ctx?.reasoning || 'off'
+      const thinkingCfg =
+        r === 'auto'  ? { thinking_enabled: true,  auto_thinking: true,  thinking_mode: 'Thinking' } :
+        r === 'think' ? { thinking_enabled: true,  auto_thinking: false, thinking_mode: 'Thinking' } :
+        r === 'fast'  ? { thinking_enabled: true,  auto_thinking: false, thinking_mode: 'Fast' } :
+                        { thinking_enabled: false, auto_thinking: false, thinking_mode: 'Fast' }
+
       const msg: Record<string, unknown> = {
         fid,
         parentId: null,
@@ -145,13 +162,9 @@ const PLATFORMS: Record<string, PlatformConfig> = {
         models: [model],
         chat_type: 't2t',
         feature_config: {
-          // Sidebar: disable deep thinking to avoid verbose reasoning loops.
-          // The model should output tool calls directly, not analyze for pages.
-          thinking_enabled: false,
+          ...thinkingCfg,
           output_schema: 'phase',
           research_mode: 'normal',
-          auto_thinking: false,
-          thinking_mode: 'Fast',
           auto_search: true,
         },
         extra: { meta: { subChatType: 't2t' } },
@@ -213,11 +226,22 @@ const PLATFORMS: Record<string, PlatformConfig> = {
         'Referer': 'https://chatgpt.com/',
       }
     },
-    buildBody(message, _parentId) {
+    buildBody(message, _parentId, ctx) {
+      // ChatGPT picks reasoning by MODEL SLUG, not a separate flag: from the
+      // captured /backend-api/models response, thinking models carry
+      // reasoning_type:"reasoning" + thinking_efforts (standard|extended), and
+      // /settings/user.last_used_model_config stores the effort as a "juice".
+      // 'think' → a thinking slug; 'auto' (default) → the auto-routing model.
+      // TODO(reasoning): the whole ChatGPT send path is currently NON-FUNCTIONAL
+      // — chatgpt.com gates /conversation behind sentinel + turnstile
+      // (/backend-api/sentinel/chat-requirements/prepare) which this bare POST
+      // does not satisfy. Slug/juice mapping below is unverified end-to-end and
+      // only takes effect once the send path is fixed.
+      const slug = ctx?.reasoning === 'think' ? 'gpt-5-5-thinking' : 'auto'
       return JSON.stringify({
         action: 'next',
         messages: [{ author: { role: 'user' }, content: { content_type: 'text', parts: [message] } }],
-        model: 'auto',
+        model: slug,
         stream: true,
       })
     },
@@ -260,6 +284,13 @@ const PLATFORMS: Record<string, PlatformConfig> = {
         stream: true,
       }
       if (ctx?.systemPrompt) body.system = ctx.systemPrompt
+      // TODO(reasoning): claude.ai's web endpoint is reverse-engineered and we
+      // have NOT confirmed it accepts the public-API extended-thinking field.
+      // Shape below mirrors the documented API; verify against a real claude.ai
+      // request before relying on it. 'off' (default) sends nothing.
+      if (ctx?.reasoning === 'think') {
+        body.thinking = { type: 'enabled', budget_tokens: 4096 }
+      }
       return JSON.stringify(body)
     },
     parseChunk(data) {
@@ -289,11 +320,19 @@ const PLATFORMS: Record<string, PlatformConfig> = {
       const messages: Array<{ role: string; content: string }> = []
       if (ctx?.systemPrompt) messages.push({ role: 'system', content: ctx.systemPrompt })
       messages.push({ role: 'user', content: message })
-      return JSON.stringify({
+      const body: Record<string, unknown> = {
         model: ctx?.model || 'gpt-4o',
         messages,
         stream: true,
-      })
+      }
+      // OpenAI reasoning models accept reasoning_effort=low|medium|high. Only
+      // send it for an explicit level: non-reasoning models reject the unknown
+      // field on some gateways, so 'off' (default) omits it entirely.
+      const r = ctx?.reasoning
+      if (r === 'low' || r === 'medium' || r === 'high') {
+        body.reasoning_effort = r
+      }
+      return JSON.stringify(body)
     },
     parseChunk(data) {
       return data.choices?.[0]?.delta?.content || null
@@ -304,6 +343,43 @@ const PLATFORMS: Record<string, PlatformConfig> = {
 // ── State ──────────────────────────────────────────────────────────────────
 
 let currentAbort: AbortController | null = null
+
+// Per-sub-agent abort controllers, keyed by agentId. Lets a single worker be
+// cancelled without touching the global currentAbort or sibling workers.
+const agentAborts = new Map<string, AbortController>()
+
+// mergedAgentSignal returns a signal that aborts when EITHER this agent's own
+// controller fires (single-worker cancel) OR the outer signal fires (global
+// stop). Borrowed from Claude Code's capacityWake.ts signal-merge primitive.
+// cleanup() removes listeners and the map entry — call in finally.
+export function mergedAgentSignal(
+  agentId: string,
+  outer: AbortSignal | undefined,
+): { signal: AbortSignal; cleanup: () => void } {
+  const own = new AbortController()
+  agentAborts.set(agentId, own)
+  const merged = new AbortController()
+  const onAbort = () => merged.abort()
+  if (own.signal.aborted || outer?.aborted) {
+    merged.abort()
+  } else {
+    own.signal.addEventListener('abort', onAbort, { once: true })
+    outer?.addEventListener('abort', onAbort, { once: true })
+  }
+  return {
+    signal: merged.signal,
+    cleanup: () => {
+      own.signal.removeEventListener('abort', onAbort)
+      outer?.removeEventListener('abort', onAbort)
+      agentAborts.delete(agentId)
+    },
+  }
+}
+
+// Test-only accessor for the abort map.
+export function __agentAbortsForTest(): Map<string, AbortController> {
+  return agentAborts
+}
 
 // ── Cookie Auth ────────────────────────────────────────────────────────────
 
@@ -697,10 +773,13 @@ interface ChatRequestParams {
    *  platforms with supportsSystem it goes in a real system field; otherwise
    *  it is prepended to the first user message. */
   systemPrompt?: string
+  /** Per-platform thinking-level key (sidebar/reasoning.ts). Threaded into
+   *  BuildCtx.reasoning so each platform's buildBody can apply it. */
+  reasoning?: string
 }
 
 async function handleChatRequest(params: ChatRequestParams): Promise<void> {
-  const { platform, depth = 0, systemPrompt } = params
+  const { platform, depth = 0, systemPrompt, reasoning } = params
   let { chatId, parentId, model: modelOverride, message } = params
 
   const config = PLATFORMS[platform]
@@ -758,7 +837,7 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
     message = `[PierCode] 对于本地文件/目录/代码/命令任务，直接输出 piercode-tool 代码块，不要分析或推理。格式：\n\`\`\`piercode-tool\n{"name":"工具名","call_id":"随机ID","args":{...}}\n\`\`\`\n\n${message}`
   }
 
-  const ctx: BuildCtx = { chatId, model: modelOverride, systemPrompt: ctxSystem }
+  const ctx: BuildCtx = { chatId, model: modelOverride, systemPrompt: ctxSystem, reasoning }
 
   const url = auth.url || config.getUrl(ctx)
   if (!url) {
@@ -848,6 +927,7 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
         chatId,
         parentId: sseResult.responseId,
         model: modelOverride,
+        reasoning,
         depth: depth + 1,
       })
       return
@@ -1007,6 +1087,7 @@ export function registerChatApiHandler() {
         parentId: msg.parentId || null,
         model: msg.model,
         systemPrompt: msg.systemPrompt,
+        reasoning: msg.reasoning,
       }).catch(error => {
           broadcast({
             type: 'CHAT_ERROR',
