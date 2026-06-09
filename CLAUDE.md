@@ -1,7 +1,4 @@
-# CLAUDE.md - Guidance for PierCode Local AI Assistant
-
-This file provides instructions for Claude Code (claude.ai/code) when interacting with PierCode, the local AI assistant proxy connecting web-based AI to local sandboxed Go server and Chrome extension.
-
+# CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -12,6 +9,12 @@ PierCode is a browser-local proxy that connects web-based AI assistants to the l
 **Two-component system:**
 1. **Go Server** (`cmd/server/`): HTTP + WebSocket server that executes sandboxed tool calls
 2. **Chrome Extension** (`extension/`): Manifest V3 extension with content scripts, background service worker, and popup UI
+
+## Environment Requirements
+
+- Go 1.24+ (toolchain 1.24.8)
+- Node.js 18+
+- Chrome or Chromium browser with Manifest V3 support
 
 ## Development Commands
 
@@ -35,6 +38,14 @@ npm run dev          # watch mode (auto-rebuild on changes)
 npm test             # vitest (run once)
 npm run test:watch   # vitest (watch mode)
 npx tsc --noEmit     # type-check only
+
+# --- Windows build script (test + build + package) ---
+.\scripts\build.ps1              # full build with tests
+.\scripts\build.ps1 -SkipTests   # build without running tests
+
+# --- Browser smoke test (after extension build) ---
+cd extension; npm run build; cd ..
+node scripts/browser-smoke.mjs
 ```
 
 ## Code Architecture
@@ -73,6 +84,7 @@ Local Filesystem / Browser CDP
 - Core tools: `exec_cmd`, `read_file`, `write_file`, `edit`, `apply_patch` (multi-file contextual patches), `list_dir`, `glob`, `grep`, `web_fetch`, `skill`, `question`, `todo_write`, `todo_read`, `task_list`, `task_output`, `task_stop`, `send_stdin`, `tool_help` (on-demand tool docs)
 - Browser tools (`browser_tools.go`, `browser_tools_ext.go`, `browser_tools_find.go`): ~25 browser automation tools using CDP via the extension's debugger API
 - Multi-agent tools (`agent_tools.go`, `agent_registry.go`): `spawn_agent` / `send_to_agent` / `stop_agent` let a coordinator AI dispatch worker agents into new AI tabs. `AgentRegistry` maps `agent_id → {dispatcher, worker, status}`. Worker page carries `?piercode_agent=<id>` in its tab URL → WS `agent` query → server binds it (`handleWS`) and seeds the `worker`-profile prompt + task via an `inject` message. Worker reports back with a `piercode-agent-result` fenced packet → content detects it → WS `agent_result` → server routes a `<task-notification>` `inject` to the dispatcher (push callback; coordinator never polls). Worker prompt contract lives in `prompts/worker_append.txt` (the `worker` profile).
+- **Sidebar API sub-agents** (a separate system from the web-worker route above): the chat sidebar (`extension/src/sidebar/`) talks to AI platforms directly via API, and its `spawn_agent` runs each sub-agent as an in-memory API sub-conversation (`background/chat-api.ts` `runSubAgent` → `runIsolatedConversation`), with NO browser tab — so none of the web-worker plumbing (Monaco-truncation packet parsing, keep-alive shim, WS `agent_result` routing, URL-migration callback loss) applies. Sub-agents run in parallel (`Promise.all`); each worker has its own abort via `mergedAgentSignal(agentId, currentAbort?.signal)` (signal-merge of global-stop + per-worker cancel) and is cancellable from the running card's ✕ → `CHAT_AGENT_ABORT` → `agentAborts.get(id).abort()`. A finished done-card fades out and is removed; once a whole batch is terminal the parent chat gets ONE inline `agentSummary` card (`subagent-ui.ts` `buildAgentSummary` → `MessageView` ⏺/⎿ tree).
 - `tool.go`: `Tool` interface, `Context` struct (carries RootDir snapshot, Streamer, TaskRunner, Agents registry, Broadcast callbacks), `BrowserController` interface
 
 **`internal/browser/`**: Browser automation core
