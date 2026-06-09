@@ -23,17 +23,19 @@ func TestQuestionToolRoutesAskToSourceClient(t *testing.T) {
 			"question":    "Continue?",
 			"timeout_sec": 1,
 		},
-		SourceClientID: "client-a",
-		Broadcast: func([]byte) {
-			broadcasted = true
-		},
-		BroadcastToClient: func(clientID string, payload []byte) bool {
-			gotClientID = clientID
-			if err := json.Unmarshal(payload, &ask); err != nil {
-				t.Fatalf("unmarshal ask payload: %v", err)
-			}
-			PendingQuestions.Deliver("question-route-test", "yes")
-			return true
+		Client: ClientIO{
+			SourceClientID: "client-a",
+			Broadcast: func([]byte) {
+				broadcasted = true
+			},
+			BroadcastToClient: func(clientID string, payload []byte) bool {
+				gotClientID = clientID
+				if err := json.Unmarshal(payload, &ask); err != nil {
+					t.Fatalf("unmarshal ask payload: %v", err)
+				}
+				PendingQuestions.Deliver("question-route-test", "yes")
+				return true
+			},
 		},
 	})
 

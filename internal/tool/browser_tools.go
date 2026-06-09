@@ -326,7 +326,7 @@ func NewBrowserScreenshotTool() Tool {
 }
 
 func shouldAttachScreenshot(ctx *Context) bool {
-	if ctx == nil || ctx.SourceClientID == "" || ctx.BroadcastToClient == nil {
+	if ctx == nil || ctx.Client.SourceClientID == "" || ctx.Client.BroadcastToClient == nil {
 		return false
 	}
 	if ctx.Args != nil {
@@ -375,7 +375,7 @@ func uploadScreenshotAttachment(ctx *Context, shot BrowserScreenshot) (string, e
 	if err != nil {
 		return "", err
 	}
-	if !ctx.BroadcastToClient(ctx.SourceClientID, payload) {
+	if !ctx.Client.BroadcastToClient(ctx.Client.SourceClientID, payload) {
 		return "", fmt.Errorf("source AI page is not connected")
 	}
 	timer := time.NewTimer(30 * time.Second)

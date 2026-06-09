@@ -76,23 +76,25 @@ func TestBrowserScreenshotUploadsAttachmentToSourceClient(t *testing.T) {
 			"format":  "png",
 			"call_id": "shot1",
 		},
-		RootDir:        root,
-		Browser:        fake,
-		SourceClientID: "client1",
-		BroadcastToClient: func(clientID string, payload []byte) bool {
-			if clientID != "client1" {
-				t.Fatalf("unexpected client id: %q", clientID)
-			}
-			var msg map[string]interface{}
-			if err := json.Unmarshal(payload, &msg); err != nil {
-				t.Fatalf("invalid attachment payload: %v", err)
-			}
-			if msg["type"] != "browser_attachment_upload" || msg["call_id"] != "shot1" {
-				t.Fatalf("unexpected attachment payload: %#v", msg)
-			}
-			sent = true
-			go PendingAttachmentUploads.Deliver("shot1", AttachmentUploadResult{OK: true})
-			return true
+		RootDir: root,
+		Browser: fake,
+		Client: ClientIO{
+			SourceClientID: "client1",
+			BroadcastToClient: func(clientID string, payload []byte) bool {
+				if clientID != "client1" {
+					t.Fatalf("unexpected client id: %q", clientID)
+				}
+				var msg map[string]interface{}
+				if err := json.Unmarshal(payload, &msg); err != nil {
+					t.Fatalf("invalid attachment payload: %v", err)
+				}
+				if msg["type"] != "browser_attachment_upload" || msg["call_id"] != "shot1" {
+					t.Fatalf("unexpected attachment payload: %#v", msg)
+				}
+				sent = true
+				go PendingAttachmentUploads.Deliver("shot1", AttachmentUploadResult{OK: true})
+				return true
+			},
 		},
 	})
 	if result.Status != "success" {
@@ -117,12 +119,14 @@ func TestBrowserScreenshotAttachFalseSkipsAttachmentUpload(t *testing.T) {
 			"call_id": "shot2",
 			"attach":  false,
 		},
-		RootDir:        root,
-		Browser:        fake,
-		SourceClientID: "client1",
-		BroadcastToClient: func(string, []byte) bool {
-			t.Fatal("attachment upload should not be sent when attach=false")
-			return false
+		RootDir: root,
+		Browser: fake,
+		Client: ClientIO{
+			SourceClientID: "client1",
+			BroadcastToClient: func(string, []byte) bool {
+				t.Fatal("attachment upload should not be sent when attach=false")
+				return false
+			},
 		},
 	})
 	if result.Status != "success" {
