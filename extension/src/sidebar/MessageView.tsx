@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import ToolCard, { type ToolCall, type ToolResult } from './ToolCard'
+import type { AgentSummaryItem } from './subagent-ui'
 
 export type { ToolCall, ToolResult }
 
@@ -15,6 +16,7 @@ export interface ChatMessage {
   streaming?: boolean
   ts?: number
   pinned?: boolean
+  agentSummary?: AgentSummaryItem[]
 }
 
 export function formatTime(ts?: number): string {
@@ -31,8 +33,67 @@ export function copyToClipboard(text: string): void {
 }
 
 const TOOL_FENCE_RE = /```piercode-tool\s*\n[\s\S]*?\n```/gi
-function stripToolBlocks(text: string): string {
-  return text.replace(TOOL_FENCE_RE, '').replace(/\n{3,}/g, '\n\n').trim()
+// A piercode-tool fence still streaming in — opening fence present, closing ```
+// not yet arrived. Matches from the opener to end-of-string so the raw JSON
+// never flashes as plain text before CHAT_TOOLS lands.
+const TOOL_FENCE_OPEN_RE = /```piercode-tool[\s\S]*$/i
+
+export function stripToolBlocks(text: string): string {
+  return text
+    .replace(TOOL_FENCE_RE, '')      // completed fences
+    .replace(TOOL_FENCE_OPEN_RE, '') // a trailing unclosed fence (mid-stream)
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+// Best-effort parse of tool calls out of the (possibly still-streaming) message
+// text, so a placeholder ToolCard can render the instant a fence appears —
+// before the background's CHAT_TOOLS (which only fires after the full SSE
+// stream). Returns [] when nothing parses yet; the real toolCalls from
+// CHAT_TOOLS supersede these once they arrive.
+export function parsePartialToolCalls(text: string): ToolCall[] {
+  const out: ToolCall[] = []
+  // Closed fences first (complete JSON).
+  const bodies: string[] = []
+  for (const m of text.matchAll(/```piercode-tool\s*\n([\s\S]*?)\n```/gi)) {
+    bodies.push(m[1])
+  }
+  // A trailing unclosed fence — try to parse whatever JSON has streamed in.
+  const openIdx = text.search(/```piercode-tool/i)
+  if (openIdx >= 0) {
+    const tail = text.slice(openIdx)
+    if (!/\n```/.test(tail)) {
+      const nl = tail.indexOf('\n')
+      if (nl >= 0) bodies.push(tail.slice(nl + 1))
+    }
+  }
+  for (const body of bodies) {
+    const parsed = parseLenientToolJSON(body)
+    if (parsed) out.push(parsed)
+  }
+  return out
+}
+
+function parseLenientToolJSON(body: string): ToolCall | null {
+  const trimmed = body.trim()
+  if (!trimmed) return null
+  // Find the first balanced-looking JSON object; tolerate a truncated tail by
+  // trying progressively shorter prefixes ending at a closing brace.
+  const start = trimmed.indexOf('{')
+  if (start < 0) return null
+  for (let end = trimmed.lastIndexOf('}'); end > start; end = trimmed.lastIndexOf('}', end - 1)) {
+    try {
+      const obj = JSON.parse(trimmed.slice(start, end + 1))
+      if (obj && typeof obj.name === 'string') {
+        return {
+          name: obj.name,
+          call_id: typeof obj.call_id === 'string' ? obj.call_id : '',
+          args: (obj.args && typeof obj.args === 'object') ? obj.args : {},
+        }
+      }
+    } catch { /* keep shrinking */ }
+  }
+  return null
 }
 
 function escapeHtml(s: string): string {
@@ -126,6 +187,27 @@ function ActionBtn({ icon, title, onClick, active }: { icon: string; title: stri
   )
 }
 
+function AgentSummaryRow({ item }: { item: AgentSummaryItem }) {
+  const [open, setOpen] = useState(false)
+  const mark = item.status === 'error' ? '✗' : '✓'
+  const markColor = item.status === 'error' ? 'var(--red, #e06c75)' : 'var(--glow)'
+  return (
+    <div className="cc-result-row text-[11px]">
+      <span className="cc-corner" style={{ color: 'var(--dim)' }}>⎿  </span>
+      <div className="flex-1 cursor-pointer select-none" onClick={() => setOpen(o => !o)}>
+        <span style={{ color: 'var(--glow)' }}>@{item.label}</span>{' '}
+        <span style={{ color: markColor }}>{mark}</span>{' '}
+        <span style={{ color: 'var(--dim)' }}>{item.summary || '(无输出)'}</span>
+        {open && (
+          <pre className="whitespace-pre-wrap break-all mt-1" style={{ color: 'var(--txt)', lineHeight: 1.35, margin: 0 }}>
+            {item.output || '(无输出)'}
+          </pre>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function MessageView({ msg, onRegenerate, onTogglePin }: {
   msg: ChatMessage
   onRegenerate?: () => void
@@ -158,6 +240,23 @@ export default function MessageView({ msg, onRegenerate, onTogglePin }: {
     )
   }
 
+  if (msg.agentSummary && msg.agentSummary.length > 0) {
+    return (
+      <div className="msg-row px-4 py-2">
+        <div className="cc-tool text-[12px]">
+          <div className="flex items-baseline gap-1">
+            <span style={{ color: 'var(--dim)', fontSize: '0.85em', lineHeight: 1 }}>⏺</span>
+            <span className="font-medium" style={{ color: 'var(--txt)' }}>spawn_agent</span>
+            <span style={{ color: 'var(--dim)' }}>×{msg.agentSummary.length}</span>
+          </div>
+          <div className="cc-result-tree">
+            {msg.agentSummary.map((it, i) => <AgentSummaryRow key={i} item={it} />)}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="msg-row px-4 py-2">
       <div className="relative group w-full">
@@ -170,29 +269,42 @@ export default function MessageView({ msg, onRegenerate, onTogglePin }: {
           </div>
         ) : (
           /* Assistant message: thinking → tool cards → markdown content, no prefix, flowing */
-          <div className="text-sm leading-relaxed" style={{ color: 'var(--txt)' }}>
-            {msg.thinking && msg.thinking.length > 0 && (
-              <ThinkingBlock steps={msg.thinking} streaming={msg.streaming && !msg.content} />
-            )}
-            {msg.toolCalls?.map((tc, i) => (
-              <ToolCard key={tc.call_id || i} tool={tc}
-                result={msg.toolResults?.find(r => r.call_id === tc.call_id)}
-                streams={msg.toolStreams?.[tc.call_id]} />
-            ))}
-            {msg.content && (() => {
-              const displayText = msg.toolCalls?.length ? stripToolBlocks(msg.content) : msg.content
-              if (!displayText) return null
-              return (
-                <div
-                  className={`msg-content${msg.toolCalls?.length ? ' mt-2' : ''}`}
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(displayText) }}
-                />
-              )
-            })()}
-            {msg.streaming && (
-              <span className="animate-pulse-dot ml-0.5" style={{ color: 'var(--dim)' }}>▍</span>
-            )}
-          </div>
+          (() => {
+            // Real tool calls (from CHAT_TOOLS, post-stream) take precedence;
+            // while streaming, parse partial fences so a placeholder card shows
+            // the instant a ```piercode-tool fence appears.
+            const toolCards = msg.toolCalls?.length
+              ? msg.toolCalls
+              : (msg.streaming ? parsePartialToolCalls(msg.content) : [])
+            // Always strip tool fences from the visible text so raw JSON never
+            // flashes (covers both closed and still-streaming fences).
+            const displayText = stripToolBlocks(msg.content)
+            const hasCards = toolCards.length > 0
+            // Hide the blinking cursor while tool cards are the active surface and
+            // no continuation text is streaming — the card's own ⏺ shows progress.
+            const showCursor = msg.streaming && !(hasCards && !displayText)
+            return (
+              <div className="text-sm leading-relaxed" style={{ color: 'var(--txt)' }}>
+                {msg.thinking && msg.thinking.length > 0 && (
+                  <ThinkingBlock steps={msg.thinking} streaming={msg.streaming && !msg.content} />
+                )}
+                {toolCards.map((tc, i) => (
+                  <ToolCard key={tc.call_id || i} tool={tc}
+                    result={msg.toolResults?.find(r => r.call_id === tc.call_id)}
+                    streams={tc.call_id ? msg.toolStreams?.[tc.call_id] : undefined} />
+                ))}
+                {displayText && (
+                  <div
+                    className={`msg-content${hasCards ? ' mt-2' : ''}`}
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(displayText) }}
+                  />
+                )}
+                {showCursor && (
+                  <span className="animate-pulse-dot ml-0.5" style={{ color: 'var(--dim)' }}>▍</span>
+                )}
+              </div>
+            )
+          })()
         )}
 
         {/* Footer: timestamp + action buttons */}
