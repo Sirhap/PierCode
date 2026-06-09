@@ -34,6 +34,7 @@ import { selectorsForHost } from './platform-selectors';
 import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
 import { T_PANEL, T_PANEL2, T_LINE, T_DIM, T_TXT, T_GLOW, T_GLOW_SOFT, T_AMBER, T_RED, T_FONT } from './terminal-theme';
 import { TIMING } from './timing';
+import { DOM_EXTRACT } from './dom-extract-config';
 
 // 静默窗口解析器（内联，避免 content 引入 ../settings 触发 Rollup 共享分块，
 // 进而让 content.js 输出 ESM import —— MV3 classic content script 不允许）。
@@ -2558,7 +2559,7 @@ function startDOMObserver(_responseSelector: string) {
     // ── Phase 0: 直接从 DOM 提取 tool 代码块（Qwen Monaco Editor 专用） ──
     if (sourceEl && platformAdapter.name === 'qwen') {
       let parsedQwenTool = false;
-      const toolPres = sourceEl.querySelectorAll('pre.qwen-markdown-code');
+      const toolPres = sourceEl.querySelectorAll(DOM_EXTRACT.qwenToolBlock);
       for (const pre of toolPres) {
         const block = findQwenPierCodeBody(pre);
         if (!block) continue;
@@ -2636,10 +2637,10 @@ function startDOMObserver(_responseSelector: string) {
 
     // ── Phase 0b: 直接从 DOM 提取 tool 代码块（Chat Z CodeMirror6 专用） ──
     if (sourceEl && platformAdapter.name === 'chatz') {
-      const toolContainers = sourceEl.querySelectorAll('.language-piercode-tool, .language-tool');
+      const toolContainers = sourceEl.querySelectorAll(DOM_EXTRACT.chatzToolContainer);
       for (const container of toolContainers) {
         // 从 CodeMirror6 提取文本
-        const cmContent = container.querySelector('.cm-content');
+        const cmContent = container.querySelector(DOM_EXTRACT.codeMirrorContent);
         if (!cmContent) continue;
 
         const lines: string[] = [];
