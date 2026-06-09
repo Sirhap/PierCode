@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { extractToolCalls, runSubAgentBatch } from '../background/chat-api'
+import { hasApiClient } from '../content/platform-caps'
 
 describe('extractToolCalls via shared parser', () => {
   it('parses a fence with a trailing comma (repair chain)', () => {
@@ -22,5 +23,17 @@ describe('runSubAgentBatch', () => {
     const out = await runSubAgentBatch([], 'qwen', undefined, 0)
     expect(Array.isArray(out)).toBe(true)
     expect(out).toHaveLength(0)
+  })
+})
+
+describe('hasApiClient', () => {
+  it('true for cookie-session platforms', () => {
+    for (const p of ['qwen', 'chatgpt', 'claude']) expect(hasApiClient(p)).toBe(true)
+  })
+  it('false for platforms without an API client', () => {
+    for (const p of ['gemini', 'kimi', 'z', 'mimo']) expect(hasApiClient(p)).toBe(false)
+  })
+  it('false for unknown platform', () => {
+    expect(hasApiClient('unknown')).toBe(false)
   })
 })
