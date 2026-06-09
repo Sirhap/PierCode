@@ -9,6 +9,7 @@ import (
 func NewBrowserFindTool() Tool {
 	return &browserTool{
 		name:        "browser_find",
+		readOnly:    true,
 		description: "Search page elements by keyword matching against text, aria-label, title, and role. Returns scored results with CSS selectors. Use the 'ref' field as the 'selector' parameter in browser_click/browser_hover/browser_type.",
 		parameters: map[string]string{
 			"query":      "string (required) - keywords to search for",
@@ -165,6 +166,7 @@ func NewBrowserFormInputTool() Tool {
 func NewBrowserConsoleTool() Tool {
 	return &browserTool{
 		name:        "browser_console",
+		readOnly:    true,
 		description: "Read browser console messages (log, error, warn, etc.) from the controlled tab. Supports pattern filtering.",
 		parameters: map[string]string{
 			"pattern":    "string (optional) - regex pattern to filter messages",
@@ -197,6 +199,7 @@ func NewBrowserConsoleTool() Tool {
 func NewBrowserNetworkTool() Tool {
 	return &browserTool{
 		name:        "browser_network",
+		readOnly:    true,
 		description: "Read HTTP network requests from the controlled tab. Supports URL pattern filtering.",
 		parameters: map[string]string{
 			"urlPattern": "string (optional) - URL substring to filter requests",

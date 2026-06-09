@@ -443,6 +443,10 @@ func toolIsReadOnly(t tool.Tool) bool {
 	return isReadOnlyToolName(t.Name())
 }
 
+// isReadOnlyToolName is the FALLBACK path for tools that have not yet declared
+// Metadata().ReadOnly. As of the metadata migration all listed tools implement
+// MetadataProvider; this list now only guards against a future tool being added
+// without Metadata(). Prefer adding Metadata() over extending this list.
 func isReadOnlyToolName(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question", "tool_help",

@@ -10,6 +10,7 @@ import (
 func NewBrowserWaitTool() Tool {
 	return &browserTool{
 		name:        "browser_wait",
+		readOnly:    true,
 		description: "Wait for a selector state or document load state in the controlled browser tab.",
 		parameters: map[string]string{
 			"selector":  "string (optional) - CSS selector to wait for",
@@ -34,6 +35,7 @@ func NewBrowserWaitTool() Tool {
 func NewBrowserWaitForFunctionTool() Tool {
 	return &browserTool{
 		name:        "browser_wait_for_function",
+		readOnly:    true,
 		description: "Wait until a JavaScript expression returns a truthy value in the controlled browser tab.",
 		parameters: map[string]string{
 			"expression": "string (required, max 10000 chars) - JS expression evaluated until truthy",
@@ -162,6 +164,7 @@ func NewBrowserEvaluateTool() Tool {
 func NewBrowserGetContentTool() Tool {
 	return &browserTool{
 		name:        "browser_get_content",
+		readOnly:    true,
 		description: "Extract text, HTML, or structured page content from the controlled browser tab.",
 		parameters: map[string]string{
 			"format":   "string (optional, text|html|structured, default text)",
@@ -363,6 +366,7 @@ func NewBrowserDragTool() Tool {
 func NewBrowserPDFTool() Tool {
 	return &browserTool{
 		name:        "browser_pdf",
+		readOnly:    true,
 		description: "Print the controlled browser tab to a PDF file under the workspace.",
 		parameters: map[string]string{
 			"outputPath": "string (optional) - absolute path under workspace or ~/.claude/.piercode/.agent; defaults to .piercode/pdfs",

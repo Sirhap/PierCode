@@ -219,6 +219,7 @@ func NewBrowserEmulateTool() Tool {
 func NewBrowserGetAttributesTool() Tool {
 	return &browserTool{
 		name:        "browser_get_attributes",
+		readOnly:    true,
 		description: "Read element attributes and computed styles from the controlled tab. Useful for verifying colors, sizes, and state without writing JavaScript.",
 		parameters: map[string]string{
 			"ref":        "string (optional) - target ref from browser_snapshot",

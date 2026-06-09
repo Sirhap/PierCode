@@ -15,6 +15,8 @@ func NewToolHelpTool(registry *Registry) *ToolHelpTool {
 	return &ToolHelpTool{registry: registry}
 }
 
+func (t *ToolHelpTool) Metadata() ToolMetadata { return ToolMetadata{ReadOnly: true} }
+
 func (t *ToolHelpTool) Name() string { return "tool_help" }
 
 func (t *ToolHelpTool) Description() string {

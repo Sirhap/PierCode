@@ -17,6 +17,8 @@ func NewListDirTool(config *types.Config) *ListDirTool {
 	return &ListDirTool{config: config}
 }
 
+func (t *ListDirTool) Metadata() ToolMetadata { return ToolMetadata{ReadOnly: true} }
+
 func (t *ListDirTool) Name() string {
 	return "list_dir"
 }

@@ -22,7 +22,9 @@ func NewTodoReadTool(config *types.Config) *TodoReadTool {
 	return &TodoReadTool{config: config}
 }
 
-func (t *TodoReadTool) Name() string        { return "todo_read" }
+func (t *TodoReadTool) Metadata() ToolMetadata { return ToolMetadata{ReadOnly: true} }
+
+func (t *TodoReadTool) Name() string { return "todo_read" }
 func (t *TodoReadTool) Description() string { return "Read the current todo list from .todos.json" }
 func (t *TodoReadTool) Parameters() interface{} {
 	return map[string]string{}

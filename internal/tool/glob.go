@@ -20,6 +20,8 @@ func NewGlobTool(config *types.Config) *GlobTool {
 	return &GlobTool{config: config}
 }
 
+func (t *GlobTool) Metadata() ToolMetadata { return ToolMetadata{ReadOnly: true} }
+
 func (t *GlobTool) Name() string { return "glob" }
 func (t *GlobTool) Description() string {
 	return `Fast file search by glob pattern. Use this to find files by name — prefer it over running find/ls via exec_cmd.

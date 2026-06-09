@@ -20,6 +20,8 @@ func NewReadFileTool(config *types.Config) *ReadFileTool {
 	return &ReadFileTool{config: config}
 }
 
+func (t *ReadFileTool) Metadata() ToolMetadata { return ToolMetadata{ReadOnly: true} }
+
 func (t *ReadFileTool) Name() string {
 	return "read_file"
 }

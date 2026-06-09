@@ -19,7 +19,9 @@ type WebFetchTool struct{}
 
 func NewWebFetchTool() *WebFetchTool { return &WebFetchTool{} }
 
-func (t *WebFetchTool) Name() string        { return "web_fetch" }
+func (t *WebFetchTool) Metadata() ToolMetadata { return ToolMetadata{ReadOnly: true} }
+
+func (t *WebFetchTool) Name() string { return "web_fetch" }
 func (t *WebFetchTool) Description() string { return "Fetch web page content via HTTP" }
 func (t *WebFetchTool) Parameters() interface{} {
 	return map[string]string{
