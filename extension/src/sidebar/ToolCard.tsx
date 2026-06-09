@@ -68,7 +68,7 @@ export default function ToolCard({ tool, result, streams }: {
           {Object.keys(tool.args).length > 0 && (
             <div>
               <div className="text-[10px] mb-0.5" style={{ color: 'var(--dim)' }}>args</div>
-              <pre className="text-[11px] rounded-sm px-2 py-1 overflow-x-auto whitespace-pre-wrap break-all" style={{ background: '#0d1017', color: 'var(--txt)' }}>
+              <pre className="text-[11px] rounded-sm px-2 py-1 overflow-x-auto whitespace-pre-wrap break-all" style={{ background: '#161615', color: 'var(--txt)' }}>
                 {JSON.stringify(tool.args, null, 2)}
               </pre>
             </div>
@@ -76,7 +76,7 @@ export default function ToolCard({ tool, result, streams }: {
           {streams && streams.length > 0 && (
             <div>
               <div className="text-[10px] mb-0.5" style={{ color: 'var(--dim)' }}>stdout</div>
-              <pre className="text-[11px] rounded-sm px-2 py-1 max-h-32 overflow-y-auto whitespace-pre-wrap glow-text" style={{ background: '#0d1017' }}>
+              <pre className="text-[11px] rounded-sm px-2 py-1 max-h-32 overflow-y-auto whitespace-pre-wrap glow-text" style={{ background: '#161615' }}>
                 {streams.join('')}
               </pre>
             </div>
@@ -84,7 +84,7 @@ export default function ToolCard({ tool, result, streams }: {
           {result && (
             <div>
               <div className="text-[10px] mb-0.5" style={{ color: 'var(--dim)' }}>result</div>
-              <pre className={`text-[11px] rounded-sm px-2 py-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all ${result.success ? '' : 'text-red-300'}`} style={{ background: '#0d1017', color: result.success ? 'var(--txt)' : undefined }}>
+              <pre className={`text-[11px] rounded-sm px-2 py-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all ${result.success ? '' : 'text-red-300'}`} style={{ background: '#161615', color: result.success ? 'var(--txt)' : undefined }}>
                 {output}
               </pre>
             </div>

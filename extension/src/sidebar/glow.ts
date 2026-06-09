@@ -1,4 +1,4 @@
-// Pure accent-color helpers for the sidebar theme (modern dark-tech palette).
+// Pure accent-color helpers for the sidebar theme (Claude Code palette).
 // No chrome / React here so it stays unit-testable. The CSS variable swap happens
 // in theme.css via the [data-glow="..."] attribute that use-glow.ts sets.
 // NB: the key strings are kept ('green'/'amber'/'cyan'/'magenta') for storage
@@ -13,10 +13,10 @@ export interface GlowColor {
 }
 
 export const GLOW_COLORS: GlowColor[] = [
-  { key: 'green', label: '蓝', hex: '#4da3ff' },
-  { key: 'amber', label: '琥珀', hex: '#e8a23d' },
-  { key: 'cyan', label: '青', hex: '#2dd4bf' },
-  { key: 'magenta', label: '紫', hex: '#a78bfa' },
+  { key: 'green', label: '橙', hex: '#d77757' },
+  { key: 'amber', label: '琥珀', hex: '#b8842a' },
+  { key: 'cyan', label: '蓝', hex: '#5769f7' },
+  { key: 'magenta', label: '紫', hex: '#8a63d2' },
 ]
 
 const KEYS = new Set<string>(GLOW_COLORS.map(g => g.key))

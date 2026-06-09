@@ -1,4 +1,4 @@
-/* Terminal-punk design tokens for the PierCode sidebar.
+/* Claude Code palette design tokens for the PierCode sidebar.
    --glow switches via [data-glow="..."] set by use-glow.ts. */
 
 @font-face {
@@ -17,20 +17,22 @@
 }
 
 :root {
-  --bg: #0b0d10;
-  --panel: #141821;
-  --panel-2: #1a1f2b;
-  --line: #232a36;
-  --dim: #6b7686;
-  --txt: #cdd4de;
-  --glow: #4da3ff;
-  --glow-soft: rgba(77, 163, 255, 0.16);
+  --bg: #1a1a1a;
+  --panel: #1f1f1f;
+  --panel-2: #262625;
+  --line: #2e2e2c;
+  --dim: #8a8580;
+  --txt: #e8e6e3;
+  --glow: #d77757;
+  --glow-soft: rgba(215,119,87,0.16);
+  --amber: #b8842a;
+  --red: #c0394e;
 }
-/* Accent presets (key names kept for storage compat; values modernized). */
-:root[data-glow="green"]   { --glow: #4da3ff; --glow-soft: rgba(77,163,255,.16); }
-:root[data-glow="amber"]   { --glow: #e8a23d; --glow-soft: rgba(232,162,61,.16); }
-:root[data-glow="cyan"]    { --glow: #2dd4bf; --glow-soft: rgba(45,212,191,.16); }
-:root[data-glow="magenta"] { --glow: #a78bfa; --glow-soft: rgba(167,139,250,.16); }
+/* Accent presets (key names kept for storage compat; values are Claude Code palette). */
+:root[data-glow="green"]   { --glow: #d77757; --glow-soft: rgba(215,119,87,.16); }
+:root[data-glow="amber"]   { --glow: #b8842a; --glow-soft: rgba(184,132,42,.16); }
+:root[data-glow="cyan"]    { --glow: #5769f7; --glow-soft: rgba(87,105,247,.16); }
+:root[data-glow="magenta"] { --glow: #8a63d2; --glow-soft: rgba(138,99,210,.16); }
 
 html, body {
   background: var(--bg);

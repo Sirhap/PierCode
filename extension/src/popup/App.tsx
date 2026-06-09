@@ -137,7 +137,7 @@ function Toggle({
         className="relative inline-flex w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0 mt-0.5"
         style={{ background: checked ? onBg : 'var(--line)' }}
       >
-        <span className={`inline-block w-5 h-5 mt-0.5 rounded-full shadow transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} style={{ background: checked ? '#0b0d10' : 'var(--dim)' }} />
+        <span className={`inline-block w-5 h-5 mt-0.5 rounded-full shadow transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} style={{ background: checked ? '#1a1a1a' : 'var(--dim)' }} />
       </button>
     </div>
   )
@@ -852,7 +852,7 @@ export default function App() {
       {toast && (
         <div
           className="fixed top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-sm shadow-lg text-sm font-medium z-50 transition-all duration-300 animate-fade-in-down"
-          style={{ background: toast.type === 'success' ? 'var(--glow)' : 'var(--red)', color: '#0b0d10' }}
+          style={{ background: toast.type === 'success' ? 'var(--glow)' : 'var(--red)', color: '#1a1a1a' }}
         >
           {toast.msg}
         </div>

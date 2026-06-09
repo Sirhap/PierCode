@@ -126,13 +126,13 @@ function createPulseStyles(root: ShadowRoot): void {
     @keyframes piercode-agent-pulse {
       0%, 100% {
         box-shadow:
-          inset 0 0 4px rgba(77, 163, 255, 0.5),
-          inset 0 0 8px rgba(77, 163, 255, 0.25);
+          inset 0 0 4px rgba(215, 119, 87, 0.5),
+          inset 0 0 8px rgba(215, 119, 87, 0.25);
       }
       50% {
         box-shadow:
-          inset 0 0 6px rgba(77, 163, 255, 0.7),
-          inset 0 0 12px rgba(77, 163, 255, 0.35);
+          inset 0 0 6px rgba(215, 119, 87, 0.7),
+          inset 0 0 12px rgba(215, 119, 87, 0.35);
       }
     }
 
@@ -187,8 +187,8 @@ function showPulsingBorder(): void {
       transition: opacity 0.3s ease-in-out;
       animation: piercode-agent-pulse 2s ease-in-out infinite;
       box-shadow:
-        inset 0 0 4px rgba(77, 163, 255, 0.5),
-        inset 0 0 8px rgba(77, 163, 255, 0.25);
+        inset 0 0 4px rgba(215, 119, 87, 0.5),
+        inset 0 0 8px rgba(215, 119, 87, 0.25);
     `;
     root.appendChild(glowBorder);
   }
@@ -263,8 +263,8 @@ function createStopButton(): HTMLDivElement {
     align-items: center;
     justify-content: center;
     box-shadow:
-      0 40px 80px rgba(77, 163, 255, 0.24),
-      0 4px 14px rgba(77, 163, 255, 0.24);
+      0 40px 80px rgba(215, 119, 87, 0.24),
+      0 4px 14px rgba(215, 119, 87, 0.24);
     transition: all 0.2s ease;
     pointer-events: auto;
   `;
