@@ -925,6 +925,7 @@ async function runSubAgent(
   model: string | undefined,
   parentDepth: number,
   batchId: string,
+  originTabId?: number,
 ): Promise<ToolResult> {
   const agentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   const label = String(call.args.label || 'agent')
@@ -937,7 +938,7 @@ async function runSubAgent(
     return shapeSubAgentResult(call, '(spawn_agent 缺少 task 参数)')
   }
 
-  broadcastAgentLifecycle({ type: 'CHAT_AGENT_SPAWN', agentId, label, task, batchId })
+  broadcastAgentLifecycle({ type: 'CHAT_AGENT_SPAWN', agentId, label, task, batchId }, originTabId)
 
   const workerPrompt = await fetchWorkerPrompt()
   const message = buildSubAgentMessage(workerPrompt, task)
@@ -954,14 +955,14 @@ async function runSubAgent(
     })
     const cancelled = signal.aborted
     const output = cancelled ? `${finalText}\n\n(已取消)`.trim() : finalText
-    broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: cancelled ? 'error' : 'done' })
+    broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: cancelled ? 'error' : 'done' }, originTabId)
     return cancelled
       ? { call_id: call.call_id, name: call.name, output: output || '(已取消)', success: false }
       : shapeSubAgentResult(call, finalText)
   } catch (err) {
     const cancelled = signal.aborted
     const msg = cancelled ? '(已取消)' : `子 agent 失败: ${err instanceof Error ? err.message : String(err)}`
-    broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: 'error' })
+    broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: 'error' }, originTabId)
     return { call_id: call.call_id, name: call.name, output: msg, success: false }
   } finally {
     cleanup()
@@ -978,10 +979,11 @@ export async function runSubAgentBatch(
   platform: string,
   model: string | undefined,
   depth: number,
+  originTabId?: number,
 ): Promise<ToolResult[]> {
   if (spawns.length === 0) return []
   const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-  return Promise.all(spawns.map(tc => runSubAgent(tc, platform, model, depth, batchId)))
+  return Promise.all(spawns.map(tc => runSubAgent(tc, platform, model, depth, batchId, originTabId)))
 }
 
 // runIsolatedConversation drives one sub-agent turn loop: it streams the model,
@@ -1063,28 +1065,23 @@ function broadcast(msg: Record<string, unknown>) {
   })
 }
 
-// broadcastAgentLifecycle fans a sub-agent SPAWN/DONE event to BOTH the sidebar
-// (runtime.sendMessage, like broadcast) AND every page tab (tabs.sendMessage).
-// runtime.sendMessage does not reach content scripts, so the content-script
-// StatusPanel would otherwise never see these. Only lifecycle events are fanned
-// out to tabs — high-frequency stream events stay sidebar-only via broadcast().
-function broadcastAgentLifecycle(msg: Record<string, unknown>) {
-  broadcast(msg)
-  try {
-    chrome.tabs.query({}, (tabs) => {
-      for (const t of tabs) {
-        if (t.id != null) chrome.tabs.sendMessage(t.id, msg).catch(() => {})
-      }
-    })
-  } catch {
-    // tabs API unavailable — silent
+// broadcastAgentLifecycle delivers a sub-agent SPAWN/DONE event to the sidebar
+// (runtime.sendMessage, like broadcast) and, for content-route sub-agents, to
+// their ORIGIN tab only (tabs.sendMessage). runtime.sendMessage does not reach
+// content scripts, so a content-route StatusPanel sees its own agents via the
+// origin tab. When originTabId is undefined (sidebar route), it stays sidebar-
+// only — no all-tabs fan-out, so other AI tabs don't show foreign agent rows.
+function broadcastAgentLifecycle(msg: Record<string, unknown>, originTabId?: number) {
+  broadcast(msg) // sidebar (runtime.sendMessage)
+  if (originTabId != null) {
+    chrome.tabs.sendMessage(originTabId, msg).catch(() => {})
   }
 }
 
 // ── Message Handler Registration ───────────────────────────────────────────
 
 export function registerChatApiHandler() {
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'CHAT_REQUEST') {
       handleChatRequest({
         platform: msg.platform,
@@ -1123,7 +1120,8 @@ export function registerChatApiHandler() {
       const spawns = (msg.spawns || []) as ToolCall[]
       const platform = String(msg.platform || '')
       const model = msg.model ? String(msg.model) : undefined
-      runSubAgentBatch(spawns, platform, model, 0)
+      const originTabId = sender.tab?.id
+      runSubAgentBatch(spawns, platform, model, 0, originTabId)
         .then(results => sendResponse({ ok: true, results }))
         .catch(err => sendResponse({ ok: false, error: String(err?.message || err) }))
       return true // keep the message channel open for async sendResponse
