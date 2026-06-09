@@ -454,11 +454,22 @@ function compactSection(section: string, budget: number): string {
   const bodyBudget = Math.max(1_000, budget - heading.length - 200);
   const headChars = Math.min(8_000, Math.floor(bodyBudget * 0.75));
   const tailChars = Math.min(2_000, Math.max(500, bodyBudget - headChars));
-  const omitted = Math.max(0, body.length - headChars - tailChars);
+  // Slicing at an arbitrary UTF-16 index can split a surrogate pair (emoji /
+  // astral CJK), leaving a lone surrogate that renders as garbage. Nudge any
+  // boundary that lands on a low surrogate back by one so pairs stay intact.
+  const safeBoundary = (idx: number): number => {
+    if (idx <= 0 || idx >= body.length) return idx;
+    const code = body.charCodeAt(idx);
+    // 0xDC00–0xDFFF is a low surrogate: index sits inside a pair, step back.
+    return code >= 0xdc00 && code <= 0xdfff ? idx - 1 : idx;
+  };
+  const headEnd = safeBoundary(headChars);
+  const tailStart = safeBoundary(Math.max(headEnd, body.length - tailChars));
+  const omitted = Math.max(0, tailStart - headEnd);
   const compactedBody = [
-    body.slice(0, headChars).trimEnd(),
+    body.slice(0, headEnd).trimEnd(),
     `\n... [已省略 ${omitted} 字符，原始工具结果过长] ...\n`,
-    body.slice(Math.max(headChars, body.length - tailChars)).trimStart()
+    body.slice(tailStart).trimStart()
   ].join('');
 
   return heading ? `${heading}\n${compactedBody}` : compactedBody;

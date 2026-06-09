@@ -87,10 +87,16 @@ func (t *SkillTool) Execute(ctx *Context) *Result {
 		return result
 	}
 
-	// Validate the skill file path stays within the workspace sandbox.
+	// Validate the skill file stays within a directory we're actually willing to
+	// load skills from. The allowed set is the union of the workspace roots and
+	// every SkillDirs entry — so any skill the loader could discover (including
+	// the shared home dirs like ~/.claude/skills) can also be loaded. Validating
+	// only against the workspace roots used to reject every home-dir skill the
+	// picker still listed, producing "path outside sandbox" on selection.
 	// Defense-in-depth: skill.Get already restricts names, but a symlink in a
-	// skill directory could point outside the workspace.
-	if _, err := security.SafeAbsPath(info.Location, ctx.EffectiveAllowedRoots()...); err != nil {
+	// skill directory could still point outside these roots.
+	allowedRoots := append(ctx.EffectiveAllowedRoots(), skill.SkillDirs(ctx.EffectiveRootDir())...)
+	if _, err := security.SafeAbsPath(info.Location, allowedRoots...); err != nil {
 		result.Status = "error"
 		result.Error = fmt.Sprintf("skill %q: %v", skillName, err)
 		return result

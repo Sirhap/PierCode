@@ -3,7 +3,7 @@ import { GLOW_COLORS, isGlow, normalizeGlow, type Glow } from '../sidebar/glow'
 
 describe('glow helpers', () => {
   it('lists exactly the four supported glow colors', () => {
-    expect(GLOW_COLORS.map(g => g.key)).toEqual(['green', 'amber', 'cyan', 'magenta'])
+    expect(GLOW_COLORS.map(g => g.key)).toEqual(['cyan', 'green', 'amber', 'magenta'])
   })
 
   it('isGlow accepts valid keys and rejects others', () => {
@@ -14,10 +14,10 @@ describe('glow helpers', () => {
     expect(isGlow(42)).toBe(false)
   })
 
-  it('normalizeGlow falls back to green for invalid input', () => {
-    expect(normalizeGlow('cyan')).toBe<Glow>('cyan')
-    expect(normalizeGlow('nope')).toBe<Glow>('green')
-    expect(normalizeGlow(null)).toBe<Glow>('green')
+  it('normalizeGlow falls back to cyan for invalid input', () => {
+    expect(normalizeGlow('green')).toBe<Glow>('green')
+    expect(normalizeGlow('nope')).toBe<Glow>('cyan')
+    expect(normalizeGlow(null)).toBe<Glow>('cyan')
   })
 
   it('every glow color has a hex swatch for the picker UI', () => {

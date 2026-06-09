@@ -29,22 +29,27 @@ export default function Picker({ items, onSelect, onClose }: PickerProps) {
     el?.scrollIntoView({ block: 'nearest' })
   }, [selected])
 
-  // Keyboard handler (attached to document so it works even when input is focused)
+  // Keyboard handler — only intercept navigation keys, let others pass through
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
+        e.stopPropagation()
         setSelected(prev => Math.min(prev + 1, items.length - 1))
       } else if (e.key === 'ArrowUp') {
         e.preventDefault()
+        e.stopPropagation()
         setSelected(prev => Math.max(prev - 1, 0))
       } else if (e.key === 'Enter') {
         e.preventDefault()
+        e.stopPropagation()
         if (items[selected]) onSelect(items[selected])
       } else if (e.key === 'Escape') {
         e.preventDefault()
+        e.stopPropagation()
         onClose()
       }
+      // All other keys (Tab, typing, etc.) pass through to the input
     }
     document.addEventListener('keydown', handler, true)
     return () => document.removeEventListener('keydown', handler, true)

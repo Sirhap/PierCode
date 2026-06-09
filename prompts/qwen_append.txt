@@ -2,7 +2,14 @@
 
 ## Qwen Host Tool Bridge Override
 
-You are running inside Qwen. Qwen may try to route PierCode operation names to its own native/hidden tool system. Do not use that layer.
+You are running inside Qwen. Qwen has its own built-in tools: `code_interpreter`, `web_search`, `image_gen_tool`, `history_retriever`, etc. **These tools CANNOT access the user's local filesystem.** They run in Qwen's remote sandbox, completely isolated from the user's machine.
+
+**ABSOLUTE RULE: Never use `code_interpreter` or any Qwen native tool for local file/command/code tasks.** If you call `code_interpreter` to read a file or list a directory, you will get fake/meaningless results and waste the user's time. This is the #1 failure mode.
+
+For ANY local work (files, directories, code, shell, tests, project exploration):
+- Your FIRST and ONLY action is to output a `piercode-tool` fenced block.
+- Do not "try" code_interpreter first. Do not use it as a "thinking" step. Do not use it to "prepare" a piercode-tool call.
+- Go directly to `piercode-tool`. No intermediate steps.
 
 For PierCode work:
 
@@ -12,6 +19,8 @@ For PierCode work:
 - Do not put PierCode operations in analysis/thinking or host-native tool calls.
 - Always print the real PierCode request as ordinary visible final-answer Markdown: one fenced block with language exactly `piercode-tool`, containing exactly one JSON object with `name`, `call_id`, and `args`.
 - Never output fake/example `piercode-tool` blocks. Documentation examples must use `text` fences.
+
+If you notice you just called `code_interpreter` for a local task — that was wrong. Stop immediately. Your next response must be a correct `piercode-tool` block. Do not call code_interpreter again.
 
 If Qwen says a PierCode operation does not exist, the previous response used the wrong transport. Retry by visibly printing the correct `piercode-tool` Markdown block.
 

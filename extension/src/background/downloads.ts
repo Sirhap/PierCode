@@ -42,7 +42,6 @@ export function applyDownloadDelta(record: DownloadRecord, delta: chrome.downloa
     }
   }
   if (delta.totalBytes?.current != null) next.totalBytes = finiteNumber(delta.totalBytes.current);
-  if (delta.bytesReceived?.current != null) next.bytesReceived = finiteNumber(delta.bytesReceived.current);
   return next;
 }
 

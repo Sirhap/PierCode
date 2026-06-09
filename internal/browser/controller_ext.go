@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"mime"
 	"os"
@@ -636,7 +637,9 @@ func (c *Controller) resolveSelectorObject(ctx context.Context, tabID int, selec
 	}
 	release := func() {
 		params, _ := json.Marshal(map[string]string{"objectId": out.Result.ObjectID})
-		_, _ = c.relay.SendCommand(context.Background(), Command{TabID: &tabID, Domain: "Runtime", Method: "releaseObject", Params: params}, time.Second)
+		if _, err := c.relay.SendCommand(context.Background(), Command{TabID: &tabID, Domain: "Runtime", Method: "releaseObject", Params: params}, time.Second); err != nil {
+			log.Printf("[browser] releaseObject failed (tab=%d): %v", tabID, err)
+		}
 	}
 	return out.Result.ObjectID, release, nil
 }
@@ -667,7 +670,9 @@ func (c *Controller) resolveRefObject(ctx context.Context, tabID int, snapshotID
 	}
 	release := func() {
 		params, _ := json.Marshal(map[string]string{"objectId": out.Object.ObjectID})
-		_, _ = c.relay.SendCommand(context.Background(), Command{TabID: &tabID, Domain: "Runtime", Method: "releaseObject", Params: params}, time.Second)
+		if _, err := c.relay.SendCommand(context.Background(), Command{TabID: &tabID, Domain: "Runtime", Method: "releaseObject", Params: params}, time.Second); err != nil {
+			log.Printf("[browser] releaseObject failed (tab=%d): %v", tabID, err)
+		}
 	}
 	return out.Object.ObjectID, release, nil
 }
@@ -801,7 +806,9 @@ func (c *Controller) resolveRefObjectByBackendID(ctx context.Context, tabID, bac
 	}
 	release := func() {
 		params, _ := json.Marshal(map[string]string{"objectId": out.Object.ObjectID})
-		_, _ = c.relay.SendCommand(context.Background(), Command{TabID: &tabID, Domain: "Runtime", Method: "releaseObject", Params: params}, time.Second)
+		if _, err := c.relay.SendCommand(context.Background(), Command{TabID: &tabID, Domain: "Runtime", Method: "releaseObject", Params: params}, time.Second); err != nil {
+			log.Printf("[browser] releaseObject failed (tab=%d): %v", tabID, err)
+		}
 	}
 	return out.Object.ObjectID, release, nil
 }

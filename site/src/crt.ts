@@ -57,7 +57,7 @@ export function initCRT(canvas: HTMLCanvasElement): void {
         const yy = d.y - i * cell
         if (yy < -cell || yy > h) continue
         const a = i === 0 ? 0.7 : (1 - i / d.trail) * 0.22
-        ctx!.fillStyle = `rgba(137, 180, 250, ${a})`
+        ctx!.fillStyle = `rgba(91, 140, 255, ${a})`
         const g = i === 0 ? d.glyph : GLYPHS[rnd(GLYPHS.length)]
         ctx!.fillText(g, d.x, yy)
       }

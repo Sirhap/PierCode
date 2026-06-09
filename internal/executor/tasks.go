@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -292,12 +294,20 @@ func (m *TaskManager) fanoutDone(taskID, callID string, exitCode int, status str
 }
 
 func safeChunkCB(cb ChunkSubscriber, taskID, callID, stream, text string) {
-	defer func() { _ = recover() }()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Task] chunk subscriber panic (task=%s call=%s): %v\n%s", taskID, callID, r, debug.Stack())
+		}
+	}()
 	cb(taskID, callID, stream, text)
 }
 
 func safeDoneCB(cb DoneSubscriber, taskID, callID string, exitCode int, status string, errMsg string, durationMs int64) {
-	defer func() { _ = recover() }()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Task] done subscriber panic (task=%s call=%s): %v\n%s", taskID, callID, r, debug.Stack())
+		}
+	}()
 	cb(taskID, callID, exitCode, status, errMsg, durationMs)
 }
 

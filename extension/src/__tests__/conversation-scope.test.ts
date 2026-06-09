@@ -66,16 +66,28 @@ describe('conversation-scope', () => {
     expect(isConversationURLForCurrentPage('https://claude.ai/new')).toBe(true);
   });
 
-  it('getConversationKey returns the stable URL after a /new -> /chat migration', () => {
-    observeConversationURL('https://claude.ai/new');
-    // After the first message the SPA settles on the stable conversation URL.
-    expect(getConversationKey('https://claude.ai/chat/uuid-2')).toBe('https://claude.ai/chat/uuid-2');
-    // And the key stays stable on subsequent observations of the same URL.
-    expect(getConversationKey('https://claude.ai/chat/uuid-2')).toBe('https://claude.ai/chat/uuid-2');
+  it('getConversationKey is stable across a /new -> /chat migration (first message onward)', () => {
+    // The key is now a synthetic scope id, not the URL, precisely so the first
+    // tool call (keyed while still on /new) is NOT re-executed after the URL
+    // migrates to /chat/<uuid>. The exact value is opaque; what matters is that
+    // it does not change across the transient->stable flip.
+    const onNew = getConversationKey('https://claude.ai/new');
+    expect(onNew).toBeTruthy();
+    const afterMigration = getConversationKey('https://claude.ai/chat/uuid-2');
+    expect(afterMigration).toBe(onNew);
+    // And it stays stable on subsequent observations of the same conversation.
+    expect(getConversationKey('https://claude.ai/chat/uuid-2')).toBe(onNew);
   });
 
-  it('getConversationKey falls back to the current URL when no migration happened', () => {
-    expect(getConversationKey('https://chat.qwen.ai/c/abc')).toBe('https://chat.qwen.ai/c/abc');
+  it('getConversationKey returns a fresh stable key for a distinct conversation', () => {
+    const a = getConversationKey('https://chat.qwen.ai/c/abc');
+    expect(a).toBeTruthy();
+    // Navigating to a different stable conversation yields a different key.
+    const b = getConversationKey('https://chat.qwen.ai/c/xyz');
+    expect(b).toBeTruthy();
+    expect(b).not.toBe(a);
+    // ...and re-observing the same conversation returns its stable key.
+    expect(getConversationKey('https://chat.qwen.ai/c/xyz')).toBe(b);
   });
 });
 

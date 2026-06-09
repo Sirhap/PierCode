@@ -1432,9 +1432,12 @@ function bootstrapContentScript() {
   window.addEventListener('piercode-api-tool-call', ((e: CustomEvent) => {
     const { name, args, source } = e.detail || {};
     if (!name || !args) return;
-    // piercode-tool blocks from SSE are always processed (core functionality).
-    // code_interpreter translation requires the apiInterceptEnabled toggle.
-    if (source !== 'piercode-tool' && !apiInterceptEnabled) {
+    // Only the code_interpreter translation path reaches here, gated by the
+    // apiInterceptEnabled toggle. piercode-tool blocks on the live AI page are
+    // executed by the DOM observer below (single source of truth) — the SSE
+    // interceptor no longer dispatches them, which previously caused the same
+    // tool call to run twice (once via SSE, once via DOM).
+    if (!apiInterceptEnabled) {
       console.log(`[PierCode API] 收到 code_interpreter 事件但开关关闭，忽略: ${name}`);
       return;
     }
@@ -3497,12 +3500,13 @@ function showPickerPopup(
       const row = document.createElement('div');
       row.style.cssText = `padding:6px 12px;border-radius:6px;cursor:pointer;display:flex;flex-direction:column;gap:2px;background:${i === activeIdx ? T_PANEL2 : 'transparent'}`;
       const label = document.createElement('span');
-      label.style.cssText = `color:${T_TXT};font-size:13px`;
+      label.style.cssText = `color:${T_TXT};font-size:13px;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`;
       label.textContent = item.label;
       row.appendChild(label);
       if (item.sub) {
         const sub = document.createElement('span');
-        sub.style.cssText = `color:${T_DIM};font-size:11px`;
+        sub.style.cssText = `color:${T_DIM};font-size:11px;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`;
+        sub.title = item.sub;
         sub.textContent = item.sub;
         row.appendChild(sub);
       }

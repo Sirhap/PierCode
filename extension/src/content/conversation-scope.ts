@@ -6,8 +6,17 @@ type LocationLike = Pick<Location, 'origin' | 'pathname'>;
 // conversation, so server pushes (worker callbacks, compression handoffs) tagged
 // with the original /new URL would never match the now-/chat/<uuid> page.
 const ALIAS_STORAGE_KEY = 'piercode_conversation_aliases';
+// A synthetic, migration-stable identity for the current conversation. The URL
+// is unstable across the /new -> /chat/<uuid> flip AND not yet known on the very
+// first message (no stable alias exists yet), so keying exec-dedup on the URL
+// lets the first tool call re-run after migration. This id is assigned once when
+// a conversation begins and reused across the whole conversation, including the
+// transient surface and after migration, so the dedup key is stable from the
+// first message onward.
+const SCOPE_ID_STORAGE_KEY = 'piercode_conversation_scope_id';
 
 let observedConversationURL = '';
+let conversationScopeId = '';
 // All URLs known to refer to the current conversation. Seeded from sessionStorage
 // and grown as the SPA migrates the URL. Includes the canonical current URL plus
 // any transient predecessors (e.g. /new) it migrated from.
@@ -75,6 +84,53 @@ function ensureAliasSetLoaded(): void {
   }
 }
 
+function generateScopeId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `cs_${crypto.randomUUID()}`;
+    }
+  } catch {
+    // fall through to the non-crypto path
+  }
+  return `cs_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+}
+
+// ensureScopeId returns the conversation's migration-stable scope id, loading a
+// persisted one (survives tab refresh) or minting a new one on first use.
+function ensureScopeId(): string {
+  if (conversationScopeId) return conversationScopeId;
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      const stored = sessionStorage.getItem(SCOPE_ID_STORAGE_KEY);
+      if (stored) {
+        conversationScopeId = stored;
+        return conversationScopeId;
+      }
+    }
+  } catch {
+    // sessionStorage unavailable; keep the id in-memory only.
+  }
+  conversationScopeId = generateScopeId();
+  persistScopeId();
+  return conversationScopeId;
+}
+
+// resetScopeId mints a fresh id when a genuinely new conversation begins (a new
+// transient surface, or navigation between two distinct stable conversations).
+function resetScopeId(): void {
+  conversationScopeId = generateScopeId();
+  persistScopeId();
+}
+
+function persistScopeId(): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.setItem(SCOPE_ID_STORAGE_KEY, conversationScopeId);
+  } catch {
+    // ignore
+  }
+}
+
 export function observeConversationURL(value?: string | URL | LocationLike): string {
   const current = getCanonicalConversationURL(value);
   if (!current) return current;
@@ -84,23 +140,29 @@ export function observeConversationURL(value?: string | URL | LocationLike): str
   if (previous !== current) {
     if (isTransientConversationURL(current)) {
       // Landed on a fresh new-chat surface: this starts a *new* conversation.
-      // Drop the old aliases so a stale /chat/<old> no longer matches.
+      // Drop the old aliases so a stale /chat/<old> no longer matches, and mint a
+      // fresh scope id for the new conversation.
       conversationAliasSet = new Set([current]);
+      resetScopeId();
     } else if (previous && isTransientConversationURL(previous)) {
       // Migration: /new -> /chat/<uuid>. Keep the transient predecessor as an
       // alias of the now-stable conversation so server pushes tagged with the
-      // original /new URL still resolve to this page.
+      // original /new URL still resolve to this page. The scope id is unchanged
+      // (same conversation), so exec-dedup stays stable across the flip.
       conversationAliasSet.add(previous);
       conversationAliasSet.add(current);
+      ensureScopeId();
     } else if (!previous && conversationAliasSet.has(current)) {
       // Fresh load (e.g. tab refresh) and the persisted alias set already knows
       // this stable URL: keep the persisted aliases so a /new predecessor still
-      // matches. Only re-seed if this URL is unknown.
+      // matches. Reuse the persisted scope id.
       conversationAliasSet.add(current);
+      ensureScopeId();
     } else {
       // Navigated between two distinct stable conversations: reset to just the
-      // new one.
+      // new one and mint a fresh scope id.
       conversationAliasSet = new Set([current]);
+      resetScopeId();
     }
     persistAliasSet();
   } else if (!conversationAliasSet.has(current)) {
@@ -137,21 +199,23 @@ export function getConversationKey(currentURL?: string | URL | LocationLike): st
   const current = observeConversationURL(currentURL);
   if (!current) return '';
   ensureAliasSetLoaded();
-  if (!isTransientConversationURL(current)) return current;
-  // Still on a transient surface: if we already migrated once this session, the
-  // stable alias is the real identity; reuse it so the key is stable from the
-  // first message onward.
-  for (const alias of conversationAliasSet) {
-    if (!isTransientConversationURL(alias)) return alias;
-  }
-  return current;
+  // The synthetic scope id is stable across the transient->stable URL migration
+  // AND from the very first message (unlike the URL, which is transient on /new
+  // and not yet a stable alias on the first call). Keying exec-dedup on it means
+  // a URL flip neither re-runs an executed tool nor orphans per-conversation
+  // state. observeConversationURL has already assigned/loaded it above.
+  return ensureScopeId();
 }
 
 export function __resetConversationScopeForTest(): void {
   observedConversationURL = '';
   conversationAliasSet = new Set();
+  conversationScopeId = '';
   try {
-    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(ALIAS_STORAGE_KEY);
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem(ALIAS_STORAGE_KEY);
+      sessionStorage.removeItem(SCOPE_ID_STORAGE_KEY);
+    }
   } catch {
     // ignore
   }

@@ -1,32 +1,33 @@
 /* ──────────────────────────────────────────────────────────────
-   PierCode landing — CRT terminal structure on a Catppuccin palette.
-   Blue (#89b4fa) is the dominant accent, green (#a6e3a1) marks success /
-   results, amber = warning, cyan = sparse platform/link accent. The CRT
-   scanline / vignette / boot animation and the mono type stay; only the
-   colors are Catppuccin. (Var names kept from the green build so every
-   rule below maps onto the new palette by value.)
+   PierCode landing — clean modern terminal on a cold palette, unified
+   with the extension sidebar/popup. Blue (#5b8cff) is the dominant
+   accent, green (#56c08d) marks success / results, amber = warning,
+   cyan = sparse platform/link accent. CRT scanline / vignette / roll
+   overlays and glow text-shadows are dropped for a crisp look; the boot
+   animation and mono type stay. (Var names kept from earlier builds so
+   every rule below maps onto the palette by value.)
    ────────────────────────────────────────────────────────────── */
 
 :root {
-  /* Catppuccin Mocha backgrounds */
-  --crt-bg: #11111b;     /* crust — screen floor */
-  --crt-bg2: #181825;    /* mantle — panels */
-  --crt-bg3: #1e1e2e;    /* base — raised panels */
+  /* Cold modern backgrounds (unified with the extension sidebar/popup) */
+  --crt-bg: #0e1116;     /* screen floor */
+  --crt-bg2: #161a21;    /* panels */
+  --crt-bg3: #1b212b;    /* raised panels */
 
-  /* Accent (was phosphor green) → Catppuccin blue, with light body text */
-  --phosphor: #89b4fa;        /* primary accent: titles, commands */
-  --phosphor-dim: #a6adc8;    /* subtext: body / secondary text */
-  --phosphor-mute: #45475a;   /* surface2: borders, tertiary text */
-  --phosphor-faint: #313244;  /* surface: faint borders */
-  --phosphor-glow: rgba(137, 180, 250, 0.45);
+  /* Accent → cold blue, with light cool body text */
+  --phosphor: #5b8cff;        /* primary accent: titles, commands */
+  --phosphor-dim: #8b94a7;    /* subtext: body / secondary text */
+  --phosphor-mute: #3a4250;   /* borders, tertiary text */
+  --phosphor-faint: #262d3a;  /* faint borders */
+  --phosphor-glow: rgba(91, 140, 255, 0.35);
 
   /* Success / results / highlights */
-  --green: #a6e3a1;
-  --green-glow: rgba(166, 227, 161, 0.4);
+  --green: #56c08d;
+  --green-glow: rgba(86, 192, 141, 0.35);
 
-  --amber: #f9b572;
-  --amber-glow: rgba(249, 181, 114, 0.4);
-  --cyan: #89dceb;
+  --amber: #e0a44b;
+  --amber-glow: rgba(224, 164, 75, 0.35);
+  --cyan: #54b8e0;
   --scanline: rgba(0, 0, 0, 0.26);
 
   --maxw: 1080px;
@@ -61,7 +62,7 @@ code, pre { font-family: var(--mono); }
   width: 100%;
   height: 100%;
   pointer-events: none;
-  opacity: 0.5;
+  opacity: 0.14;
 }
 
 /* Static grid + corner glow behind the canvas (also the mobile fallback). */
@@ -71,69 +72,19 @@ body::before {
   inset: 0;
   z-index: -4;
   background-image:
-    linear-gradient(rgba(137, 180, 250, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(137, 180, 250, 0.035) 1px, transparent 1px),
-    radial-gradient(70% 55% at 22% 8%, rgba(137, 180, 250, 0.10), transparent 70%),
-    radial-gradient(60% 60% at 85% 92%, rgba(137, 180, 250, 0.06), transparent 72%);
+    linear-gradient(rgba(91, 140, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(91, 140, 255, 0.035) 1px, transparent 1px),
+    radial-gradient(70% 55% at 22% 8%, rgba(91, 140, 255, 0.10), transparent 70%),
+    radial-gradient(60% 60% at 85% 92%, rgba(91, 140, 255, 0.06), transparent 72%);
   background-size: 42px 42px, 42px 42px, 100% 100%, 100% 100%;
 }
 
-/* ── CRT scanline + vignette overlay (sits above content) ── */
-.crt-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  pointer-events: none;
-}
-.crt-overlay::before {
-  /* fine horizontal scanlines */
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    var(--scanline) 0,
-    var(--scanline) 1px,
-    transparent 1px,
-    transparent 3px
-  );
-  opacity: 0.55;
-}
-.crt-overlay::after {
-  /* vignette + faint screen tint */
-  content: "";
-  position: absolute;
-  inset: 0;
-  box-shadow:
-    inset 0 0 140px rgba(0, 0, 0, 0.75),
-    inset 0 0 40px rgba(0, 0, 0, 0.5);
-  background: radial-gradient(120% 120% at 50% 50%, transparent 55%, rgba(0, 0, 0, 0.35) 100%);
-}
-/* slow-rolling bright band */
-.crt-roll {
-  position: fixed;
-  left: 0;
-  right: 0;
-  height: 22vh;
-  z-index: 51;
-  pointer-events: none;
-  background: linear-gradient(
-    180deg,
-    transparent,
-    rgba(137, 180, 250, 0.025) 45%,
-    rgba(137, 180, 250, 0.05) 50%,
-    rgba(137, 180, 250, 0.025) 55%,
-    transparent
-  );
-  animation: roll 9s linear infinite;
-}
-@keyframes roll {
-  0% { transform: translateY(-30vh); }
-  100% { transform: translateY(130vh); }
-}
+/* CRT scanline / vignette / roll overlays removed for the clean modern look.
+   Classes kept as no-ops so existing markup needn't change. */
+.crt-overlay, .crt-roll { display: none; }
 
-/* glow helper */
-.glow { text-shadow: 0 0 6px var(--phosphor-glow); }
+/* glow helper — crisp accent, no CRT bloom */
+.glow { color: var(--phosphor); }
 
 /* ── Boot sequence overlay ───────────────────────────────── */
 #boot {
@@ -146,7 +97,7 @@ body::before {
   justify-content: center;
   transition: opacity 0.5s ease;
 }
-#boot.flash { background: #1b2535; }
+#boot.flash { background: #18202e; }
 #boot.gone { opacity: 0; pointer-events: none; }
 .boot-screen {
   width: min(620px, 86vw);
@@ -155,7 +106,7 @@ body::before {
   color: var(--phosphor-dim);
 }
 .boot-line { white-space: pre-wrap; word-break: break-word; }
-.boot-line .ok { color: var(--green); text-shadow: 0 0 6px var(--green-glow); }
+.boot-line .ok { color: var(--green); }
 .boot-line .lbl { color: var(--phosphor); }
 .boot-line .arg { color: var(--phosphor-mute); }
 .boot-cursor {
@@ -180,7 +131,7 @@ body::before {
   padding: 14px 28px;
   max-width: var(--maxw);
   margin: 0 auto;
-  background: rgba(17, 17, 27, 0.72);
+  background: rgba(14, 17, 22, 0.72);
   backdrop-filter: blur(6px);
   border-bottom: 1px solid var(--phosphor-faint);
 }
@@ -189,18 +140,16 @@ body::before {
   font-size: 18px;
   letter-spacing: 0.5px;
   color: var(--phosphor);
-  text-shadow: 0 0 8px var(--phosphor-glow);
 }
 .brand-mark {
   display: inline-block;
   margin-right: 4px;
   color: var(--green);
-  text-shadow: 0 0 8px var(--green-glow);
   animation: blink 1.2s steps(2) infinite;
 }
 .nav-links { display: flex; align-items: center; gap: 20px; font-size: 13px; }
 .nav-links a { color: var(--phosphor-dim); transition: color 0.2s, text-shadow 0.2s; }
-.nav-links a:hover { color: var(--phosphor); text-shadow: 0 0 6px var(--phosphor-glow); }
+.nav-links a:hover { color: var(--phosphor); }
 .lang-toggle {
   font: inherit;
   font-size: 13px;
@@ -216,7 +165,7 @@ body::before {
 .lang-toggle:hover {
   color: var(--phosphor);
   border-color: var(--phosphor);
-  box-shadow: 0 0 12px rgba(137, 180, 250, 0.25);
+  box-shadow: 0 0 12px rgba(91, 140, 255, 0.25);
 }
 .nav-cta {
   padding: 6px 13px;
@@ -227,7 +176,7 @@ body::before {
   font-size: 13px;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
-.nav-cta:hover { border-color: var(--phosphor); box-shadow: 0 0 16px rgba(137, 180, 250, 0.3); }
+.nav-cta:hover { border-color: var(--phosphor); box-shadow: 0 0 16px rgba(91, 140, 255, 0.3); }
 
 /* ── Sections ────────────────────────────────────────────── */
 main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
@@ -244,7 +193,6 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   letter-spacing: -0.5px;
   font-weight: 800;
   color: var(--phosphor);
-  text-shadow: 0 0 10px var(--phosphor-glow);
   line-height: 1.15;
 }
 .section-sub { color: var(--phosphor-dim); margin-top: 12px; margin-bottom: 44px; max-width: 60ch; }
@@ -270,7 +218,6 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   letter-spacing: -1.5px;
   font-weight: 800;
   color: var(--phosphor);
-  text-shadow: 0 0 14px var(--phosphor-glow);
   min-height: 1.1em;
 }
 .hero h1 .type-cursor {
@@ -304,15 +251,15 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
 .btn-primary {
   background: linear-gradient(100deg, var(--phosphor), var(--green));
   color: var(--crt-bg);
-  box-shadow: 0 0 22px rgba(137, 180, 250, 0.4);
+  box-shadow: 0 0 22px rgba(91, 140, 255, 0.4);
 }
-.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 0 34px rgba(137, 180, 250, 0.6); }
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 0 34px rgba(91, 140, 255, 0.6); }
 .btn-ghost {
   border: 1px solid var(--phosphor-mute);
   color: var(--phosphor);
   background: transparent;
 }
-.btn-ghost:hover { border-color: var(--phosphor); box-shadow: 0 0 16px rgba(137, 180, 250, 0.25); }
+.btn-ghost:hover { border-color: var(--phosphor); box-shadow: 0 0 16px rgba(91, 140, 255, 0.25); }
 .trust { margin-top: 24px; font-size: 13px; color: var(--phosphor-mute); }
 .trust code { color: var(--green); }
 
@@ -323,7 +270,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   border: 1px solid var(--phosphor-mute);
   border-radius: 8px;
   box-shadow:
-    0 0 50px rgba(137, 180, 250, 0.12),
+    0 0 50px rgba(91, 140, 255, 0.12),
     0 24px 60px rgba(0, 0, 0, 0.55),
     inset 0 0 60px rgba(0, 0, 0, 0.4);
   overflow: hidden;
@@ -372,7 +319,6 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   align-self: flex-start;
   color: var(--green);
   border-left: 2px solid var(--green);
-  text-shadow: 0 0 6px var(--green-glow);
   padding: 2px 0 2px 10px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -380,11 +326,10 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
 .cb-summary {
   align-self: flex-start;
   color: var(--phosphor);
-  text-shadow: 0 0 6px var(--phosphor-glow);
   border: 1px solid var(--phosphor-mute);
   border-radius: 6px;
   padding: 9px 12px;
-  background: rgba(137, 180, 250, 0.05);
+  background: rgba(91, 140, 255, 0.05);
 }
 
 /* Approval card — mirrors the real extension card, CRT-themed. */
@@ -420,7 +365,6 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   padding: 6px 8px;
   color: var(--amber);
   font-size: 12.5px;
-  text-shadow: 0 0 6px var(--amber-glow);
 }
 .pc-btns { display: flex; gap: 8px; }
 .pc-run, .pc-bg, .pc-skip {
@@ -436,7 +380,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
 .pc-run { border: 1px solid var(--phosphor); color: var(--phosphor); }
 .pc-bg { border: 1px solid var(--phosphor-mute); color: var(--phosphor-dim); }
 .pc-skip { border: 1px solid var(--phosphor-faint); color: var(--phosphor-mute); }
-.pc-press { box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.4); transform: scale(0.95); }
+.pc-press { box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.4); transform: scale(0.95); }
 .pc-done { border-color: var(--green); box-shadow: 0 0 20px var(--green-glow); }
 .pc-done .pc-run { background: var(--green); color: var(--crt-bg); border-color: var(--green); }
 .pc-done .pc-bg, .pc-done .pc-skip { display: none; }
@@ -451,7 +395,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   padding: 22px 18px;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
-.flow-step:hover { border-color: var(--phosphor-mute); box-shadow: 0 0 22px rgba(137, 180, 250, 0.08); }
+.flow-step:hover { border-color: var(--phosphor-mute); box-shadow: 0 0 22px rgba(91, 140, 255, 0.08); }
 .flow-step::after {
   content: "→";
   position: absolute;
@@ -469,7 +413,6 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   font-weight: 800;
   font-size: 13px;
   margin-bottom: 10px;
-  text-shadow: 0 0 6px var(--phosphor-glow);
 }
 .flow-step h3 { font-size: 15px; color: var(--phosphor); margin-bottom: 6px; font-weight: 700; }
 .flow-step p { font-size: 13px; color: var(--phosphor-dim); line-height: 1.6; }
@@ -487,14 +430,13 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
 .core-card:hover {
   transform: translateY(-4px);
   border-color: var(--phosphor-mute);
-  box-shadow: 0 0 36px rgba(137, 180, 250, 0.1);
+  box-shadow: 0 0 36px rgba(91, 140, 255, 0.1);
 }
 .core-icon {
   font-family: var(--mono);
   font-size: 15px;
   font-weight: 800;
   color: var(--phosphor);
-  text-shadow: 0 0 6px var(--phosphor-glow);
   margin-bottom: 14px;
   letter-spacing: 0.5px;
 }
@@ -524,7 +466,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
 .mode-card:hover {
   transform: translateY(-4px);
   border-color: var(--phosphor-mute);
-  box-shadow: 0 0 32px rgba(137, 180, 250, 0.1);
+  box-shadow: 0 0 32px rgba(91, 140, 255, 0.1);
 }
 .mode-tag {
   display: inline-block;
@@ -535,7 +477,6 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   border-radius: 4px;
   padding: 4px 10px;
   margin-bottom: 14px;
-  text-shadow: 0 0 6px var(--green-glow);
 }
 .mode-card h3 { font-size: 16px; color: var(--phosphor); margin-bottom: 8px; font-weight: 700; }
 .mode-card p { font-size: 13.5px; color: var(--phosphor-dim); line-height: 1.7; }
@@ -552,9 +493,9 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
 .card:hover {
   transform: translateY(-3px);
   border-color: var(--phosphor-mute);
-  box-shadow: 0 0 28px rgba(137, 180, 250, 0.1);
+  box-shadow: 0 0 28px rgba(91, 140, 255, 0.1);
 }
-.card-tool { color: var(--green); font-size: 13px; margin-bottom: 8px; text-shadow: 0 0 6px var(--green-glow); }
+.card-tool { color: var(--green); font-size: 13px; margin-bottom: 8px; }
 .card-tool::before { content: "▸ "; color: var(--phosphor-mute); }
 .card h3 { font-size: 15px; color: var(--phosphor-dim); margin-bottom: 6px; font-weight: 700; }
 .card p { font-size: 13px; color: var(--phosphor-dim); }
@@ -574,7 +515,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   color: var(--phosphor-dim);
   transition: border-color 0.2s, box-shadow 0.2s;
 }
-.platform:hover { border-color: var(--phosphor-mute); box-shadow: 0 0 18px rgba(137, 180, 250, 0.08); }
+.platform:hover { border-color: var(--phosphor-mute); box-shadow: 0 0 18px rgba(91, 140, 255, 0.08); }
 .platform .dot { width: 9px; height: 9px; border-radius: 50%; }
 .platform .pname { color: var(--phosphor); font-weight: 600; }
 .platform .pstat { font-size: 13px; color: var(--phosphor-mute); }
@@ -593,7 +534,6 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   font-size: 13px;
   font-weight: 800;
   color: var(--green);
-  text-shadow: 0 0 8px var(--green-glow);
   margin-bottom: 12px;
 }
 .sec-item h3 { font-size: 15px; color: var(--phosphor); margin-bottom: 8px; font-weight: 700; }
@@ -607,7 +547,6 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   color: var(--phosphor);
   font-weight: 800;
   font-size: 14px;
-  text-shadow: 0 0 6px var(--phosphor-glow);
   padding-top: 8px;
 }
 .step h3 { font-size: 14px; color: var(--phosphor-dim); margin-bottom: 8px; font-weight: 700; }
@@ -627,7 +566,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 .copy-cmd::before { content: "$ "; color: var(--phosphor-mute); }
-.copy-cmd:hover { border-color: var(--phosphor); box-shadow: 0 0 16px rgba(137, 180, 250, 0.15); }
+.copy-cmd:hover { border-color: var(--phosphor); box-shadow: 0 0 16px rgba(91, 140, 255, 0.15); }
 .copy-cmd .copy-hint {
   position: absolute;
   right: 12px;
@@ -636,7 +575,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
   font-size: 12px;
   color: var(--phosphor-mute);
 }
-.copy-cmd.copied .copy-hint { color: var(--green); text-shadow: 0 0 6px var(--green-glow); }
+.copy-cmd.copied .copy-hint { color: var(--green); }
 
 /* ── Footer ──────────────────────────────────────────────── */
 .footer {
@@ -650,7 +589,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
 .footer .exit { color: var(--phosphor-mute); font-size: 12.5px; margin: 14px 0 6px; }
 .footer nav { display: flex; gap: 20px; justify-content: center; margin: 14px 0; flex-wrap: wrap; }
 .footer nav a { color: var(--phosphor-dim); font-size: 13px; }
-.footer nav a:hover { color: var(--phosphor); text-shadow: 0 0 6px var(--phosphor-glow); }
+.footer nav a:hover { color: var(--phosphor); }
 .footer .fine { color: var(--phosphor-mute); font-size: 13px; }
 
 /* ── Reveal animation (GSAP toggles .in) ─────────────────── */

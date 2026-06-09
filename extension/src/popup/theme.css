@@ -8,13 +8,13 @@
   src: url('../sidebar/fonts/IBMPlexMono-Medium.woff2') format('woff2');
 }
 :root {
-  --bg: #1a1a1a; --panel: #1f1f1f; --panel-2: #262625; --line: #2e2e2c;
-  --dim: #8a8580; --txt: #e8e6e3; --glow: #d77757; --glow-soft: rgba(215,119,87,.16);
-  --amber: #b8842a; --red: #c0394e;
+  --bg: #0e1116; --panel: #161a21; --panel-2: #1b212b; --line: #262d3a;
+  --dim: #8b94a7; --txt: #e6e9ef; --glow: #5b8cff; --glow-soft: rgba(91,140,255,.16);
+  --amber: #e0a44b; --red: #e5556e;
 }
 html, body { background: var(--bg); color: var(--txt); font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; }
-.glow-text { color: var(--glow); text-shadow: 0 0 6px var(--glow-soft); }
-.glow-border { border-color: var(--glow); box-shadow: 0 0 0 1px var(--glow-soft), inset 0 0 8px var(--glow-soft); }
+.glow-text { color: var(--glow); }
+.glow-border { border-color: var(--glow); box-shadow: 0 0 0 1px var(--glow-soft); }
 @keyframes blink { 0%,49% { opacity: 1 } 50%,100% { opacity: 0 } }
 .cursor-blink { animation: blink 1s step-end infinite; }
 @keyframes dot-pulse { 0%,100% { opacity:.4; box-shadow:0 0 0 0 var(--glow-soft) } 50% { opacity:1; box-shadow:0 0 6px 1px var(--glow-soft) } }

@@ -993,6 +993,12 @@ export function sendBrowserApprovalAnswer(approvalID: string, approved: boolean,
   }
 }
 
+// injectToolResult fills the chat input with a tool execution result and sends it.
+// Used by the API intercept feature to inject translated code_interpreter results.
+export function injectToolResult(text: string): void {
+  handleInjectMessage(text);
+}
+
 // sendAgentResult routes a worker's result packet back to the Go server, which
 // records it and delivers a <task-notification> to the dispatcher (coordinator)
 // page. status/summary/result are parsed from the piercode-agent-result packet.

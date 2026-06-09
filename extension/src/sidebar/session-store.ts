@@ -22,6 +22,9 @@ export interface StoredSession {
   id: string
   platform: string
   model: string
+  /** Per-platform thinking-level key (sidebar/reasoning.ts). Optional for
+   *  backward-compat with sessions saved before the picker existed. */
+  reasoning?: string
   chatId: string | null
   lastResponseId: string | null
   messages: StoredMessage[]

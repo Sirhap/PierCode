@@ -33,6 +33,7 @@ interface ElementCoordinates {
 
 const refMap = new Map<string, HTMLElement>();
 let refCounter = 1;
+let lastCleanupCounter = 0;
 
 // 清理已脱离 DOM 的元素引用。
 function cleanupRefMap(): void {
@@ -40,6 +41,16 @@ function cleanupRefMap(): void {
     if (!element.isConnected) {
       refMap.delete(ref);
     }
+  }
+  lastCleanupCounter = refCounter;
+}
+
+// maybeCleanupRefMap triggers cleanup on a counter DELTA (not refCounter % 100,
+// which a single call adding many refs can jump past, skipping cleanup forever)
+// or when the map grows large — so detached SPA elements don't leak.
+function maybeCleanupRefMap(): void {
+  if (refCounter - lastCleanupCounter >= 100 || refMap.size > 500) {
+    cleanupRefMap();
   }
 }
 
@@ -139,11 +150,18 @@ function getName(element: HTMLElement): string {
   const ariaLabel = element.getAttribute('aria-label');
   if (ariaLabel) return ariaLabel.trim();
 
-  // aria-labelledby
+  // aria-labelledby 是空格分隔的 IDREF 列表：逐个解析再拼接，getElementById
+  // 只能匹配单个 id，整串传入会对多 id 形式（"id1 id2"）返回 null 丢失名称。
   const labelledBy = element.getAttribute('aria-labelledby');
   if (labelledBy) {
-    const labelElement = document.getElementById(labelledBy);
-    if (labelElement) return labelElement.textContent?.trim().slice(0, 100) || '';
+    const name = labelledBy
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(id => document.getElementById(id)?.textContent?.trim())
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    if (name) return name.slice(0, 100);
   }
 
   // title 属性
@@ -335,10 +353,8 @@ export function generateAccessibilityTree(
   maxChars: number = 50000,
   refId?: string
 ): AccessibilityTreeResult {
-  // 定期清理 refMap
-  if (refCounter % 100 === 0) {
-    cleanupRefMap();
-  }
+  // 定期清理 refMap（按计数增量/容量触发，避免跳过 100 的倍数后永不清理）
+  maybeCleanupRefMap();
 
   let rootElement: HTMLElement;
 
@@ -452,6 +468,12 @@ export function searchElements(query: string, maxResults: number = 20): Array<{
 }> {
   const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 0);
   const results: Array<{ ref: string; role: string; text: string; score: number }> = [];
+
+  // document.body 可能尚不存在（document_start / 无 body 的文档），createTreeWalker(null)
+  // 会抛 TypeError；提前返回空结果（与 generateAccessibilityTree 的守卫一致）。
+  if (!document.body) return results;
+  // 此路径独立于 generateAccessibilityTree，也要触发 refMap 清理，避免泄漏。
+  maybeCleanupRefMap();
 
   // 遍历所有元素
   const walker = document.createTreeWalker(

@@ -13,10 +13,10 @@ export interface GlowColor {
 }
 
 export const GLOW_COLORS: GlowColor[] = [
-  { key: 'green', label: '橙', hex: '#d77757' },
-  { key: 'amber', label: '琥珀', hex: '#b8842a' },
-  { key: 'cyan', label: '蓝', hex: '#5769f7' },
-  { key: 'magenta', label: '紫', hex: '#8a63d2' },
+  { key: 'cyan', label: '蓝', hex: '#5b8cff' },
+  { key: 'green', label: '绿', hex: '#56c08d' },
+  { key: 'amber', label: '琥珀', hex: '#e0a44b' },
+  { key: 'magenta', label: '紫', hex: '#a986ff' },
 ]
 
 const KEYS = new Set<string>(GLOW_COLORS.map(g => g.key))
@@ -26,8 +26,8 @@ export function isGlow(v: unknown): v is Glow {
 }
 
 export function normalizeGlow(v: unknown): Glow {
-  return isGlow(v) ? v : 'green'
+  return isGlow(v) ? v : 'cyan'
 }
 
-export const DEFAULT_GLOW: Glow = 'green'
+export const DEFAULT_GLOW: Glow = 'cyan'
 export const GLOW_STORAGE_KEY = 'sidebarGlow'

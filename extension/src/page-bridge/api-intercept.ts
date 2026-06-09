@@ -90,13 +90,7 @@ interface PendingInterpreter {
   functionId: string;  // function_call.function_id for dedup
 }
 
-// Accumulate answer-phase text to detect piercode-tool blocks.
-interface PendingAnswer {
-  content: string;  // accumulated answer text
-}
-
 const pendingByConversation = new Map<string, PendingInterpreter>();
-const answerByConversation = new Map<string, PendingAnswer>();
 
 function getConversationKey(url: string): string {
   try {
@@ -105,28 +99,6 @@ function getConversationKey(url: string): string {
   } catch {
     return 'default';
   }
-}
-
-// Regex to detect piercode-tool fenced blocks in accumulated text.
-const TOOL_FENCE_RE = /```piercode-tool\s*\n([\s\S]*?)\n```/gi;
-
-function extractToolCallsFromText(text: string): Array<{ name: string; args: Record<string, unknown>; call_id: string }> {
-  const calls: Array<{ name: string; args: Record<string, unknown>; call_id: string }> = [];
-  TOOL_FENCE_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = TOOL_FENCE_RE.exec(text)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1]);
-      if (parsed.name && typeof parsed.name === 'string') {
-        calls.push({
-          name: parsed.name,
-          args: parsed.args || {},
-          call_id: parsed.call_id || `intercept-${match.index}`,
-        });
-      }
-    } catch {}
-  }
-  return calls;
 }
 
 // Process one SSE data event. Returns true if a tool call was detected.
@@ -166,16 +138,6 @@ function processSSEEvent(json: Record<string, unknown>, conversationKey: string)
       continue;
     }
 
-    // Accumulate answer-phase content for piercode-tool detection.
-    if (phase === 'answer' && typeof delta.content === 'string') {
-      const existing = answerByConversation.get(conversationKey);
-      if (existing) {
-        existing.content += delta.content;
-      } else {
-        answerByConversation.set(conversationKey, { content: delta.content });
-      }
-    }
-
     // Phase changed away from code_interpreter — flush accumulated code.
     const pending = pendingByConversation.get(conversationKey);
     if (pending && pending.code) {
@@ -198,25 +160,6 @@ function processSSEEvent(json: Record<string, unknown>, conversationKey: string)
     }
   }
   return detected;
-}
-
-// Flush accumulated answer text and detect piercode-tool blocks.
-// Called when the SSE stream ends ([DONE] or stream close).
-function flushAnswerToolCalls(conversationKey: string): boolean {
-  const answer = answerByConversation.get(conversationKey);
-  if (!answer || !answer.content) return false;
-  answerByConversation.delete(conversationKey);
-
-  const toolCalls = extractToolCallsFromText(answer.content);
-  for (const tc of toolCalls) {
-    console.log(`[PierCode API] 检测到 piercode-tool → ${tc.name}`, tc.args);
-    try {
-      window.dispatchEvent(new CustomEvent('piercode-api-tool-call', {
-        detail: { ...tc, source: 'piercode-tool' }
-      }));
-    } catch {}
-  }
-  return toolCalls.length > 0;
 }
 
 // Tee the response body and parse the analysis stream for code_interpreter calls.
@@ -248,8 +191,9 @@ function interceptSSEStream(response: Response, url: string): Response {
           const data = trimmed.slice(6).trim();
 
           if (data === '[DONE]') {
-            // Stream ended — flush accumulated answer for piercode-tool detection.
-            flushAnswerToolCalls(conversationKey);
+            // Stream ended. piercode-tool blocks on the live AI page are handled
+            // by the content script's DOM observer, NOT here — this interceptor
+            // only translates code_interpreter calls (gated by apiInterceptEnabled).
             continue;
           }
 
@@ -263,8 +207,6 @@ function interceptSSEStream(response: Response, url: string): Response {
       // Stream errors are non-fatal — the page stream continues normally.
       console.warn('[PierCode API] 分析流错误:', e);
     } finally {
-      // Flush any remaining answer content for tool detection.
-      flushAnswerToolCalls(conversationKey);
       // Drop any half-accumulated code_interpreter buffer for this stream so a
       // truncated call (stream errored before a phase-change flush) can't leak
       // into the next conversation that reuses the same conversation key.
