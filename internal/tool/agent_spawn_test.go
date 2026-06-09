@@ -9,8 +9,8 @@ import (
 // countingBrowser is a BrowserController that only counts NewTab calls; the spawn
 // tests care whether a standalone tab was opened, not the tab's contents.
 type countingBrowser struct {
-	BrowserController // embed nil; only NewTab is exercised
-	newTabs           int
+	noopBrowserController // safe defaults; only NewTab is exercised
+	newTabs               int
 }
 
 func (b *countingBrowser) NewTab(context.Context, string) (BrowserTab, error) {

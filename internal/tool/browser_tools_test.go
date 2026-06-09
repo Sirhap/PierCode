@@ -169,34 +169,11 @@ func TestBrowserUploadResolvesWorkspaceFiles(t *testing.T) {
 }
 
 type fakeBrowserController struct {
+	noopBrowserController // safe defaults for the methods this test never calls
 	screenshotReq BrowserScreenshotRequest
 	uploadReq     BrowserUploadRequest
 }
 
-func (f *fakeBrowserController) ListTabs(context.Context, bool) ([]BrowserTab, error) {
-	return nil, nil
-}
-func (f *fakeBrowserController) NewTab(context.Context, string) (BrowserTab, error) {
-	return BrowserTab{}, nil
-}
-func (f *fakeBrowserController) UseTab(context.Context, int, string, string) (BrowserTab, error) {
-	return BrowserTab{}, nil
-}
-func (f *fakeBrowserController) Navigate(context.Context, *int, string, string) (BrowserTab, error) {
-	return BrowserTab{}, nil
-}
-func (f *fakeBrowserController) NavigateWithBeforeunload(context.Context, *int, string, string, string) (BrowserTab, error) {
-	return BrowserTab{}, nil
-}
-func (f *fakeBrowserController) Snapshot(context.Context, *int, int) (BrowserSnapshot, error) {
-	return BrowserSnapshot{}, nil
-}
-func (f *fakeBrowserController) Click(context.Context, BrowserClickRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) Type(context.Context, BrowserTypeRequest) (string, error) {
-	return "", nil
-}
 func (f *fakeBrowserController) Screenshot(_ context.Context, req BrowserScreenshotRequest) (BrowserScreenshot, error) {
 	f.screenshotReq = req
 	return BrowserScreenshot{
@@ -207,101 +184,16 @@ func (f *fakeBrowserController) Screenshot(_ context.Context, req BrowserScreens
 		FilePath: filepath.Join(req.OutputDir, "shot.png"),
 	}, nil
 }
-func (f *fakeBrowserController) Wait(context.Context, BrowserWaitRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) WaitForFunction(context.Context, BrowserWaitForFunctionRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) Hover(context.Context, BrowserHoverRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) Scroll(context.Context, BrowserScrollRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) Evaluate(context.Context, BrowserEvaluateRequest) (BrowserEvaluateResponse, error) {
-	return BrowserEvaluateResponse{}, nil
-}
-func (f *fakeBrowserController) GetContent(context.Context, BrowserGetContentRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) Select(context.Context, BrowserSelectRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) GoBack(context.Context, *int, string) (BrowserTab, error) {
-	return BrowserTab{}, nil
-}
-func (f *fakeBrowserController) GoForward(context.Context, *int, string) (BrowserTab, error) {
-	return BrowserTab{}, nil
-}
-func (f *fakeBrowserController) Reload(context.Context, BrowserReloadRequest) (BrowserTab, error) {
-	return BrowserTab{}, nil
-}
-func (f *fakeBrowserController) Focus(context.Context, BrowserFocusRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) PressKey(context.Context, BrowserPressKeyRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) Drag(context.Context, BrowserDragRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) PDF(context.Context, BrowserPDFRequest) (BrowserPDFResponse, error) {
-	return BrowserPDFResponse{}, nil
-}
+
 func (f *fakeBrowserController) Upload(_ context.Context, req BrowserUploadRequest) (string, error) {
 	f.uploadReq = req
 	return "", nil
 }
-func (f *fakeBrowserController) HandleDialog(context.Context, BrowserHandleDialogRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) Find(context.Context, BrowserFindRequest) ([]BrowserFindResult, error) {
-	return nil, nil
-}
-func (f *fakeBrowserController) Zoom(context.Context, BrowserZoomRequest) (BrowserZoomResponse, error) {
-	return BrowserZoomResponse{}, nil
-}
-func (f *fakeBrowserController) Resize(context.Context, BrowserResizeRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) FormInput(context.Context, BrowserFormInputRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) ReadConsole(context.Context, BrowserConsoleRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) ReadNetwork(context.Context, BrowserNetworkLogRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) Cookies(context.Context, BrowserCookiesRequest) (BrowserCookiesResponse, error) {
-	return BrowserCookiesResponse{}, nil
-}
-func (f *fakeBrowserController) FinalizeTabs(context.Context, BrowserFinalizeTabsRequest) (BrowserFinalizeTabsResponse, error) {
-	return BrowserFinalizeTabsResponse{}, nil
-}
-func (f *fakeBrowserController) Viewport(context.Context, BrowserViewportRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) Downloads(context.Context, BrowserDownloadsRequest) (BrowserDownloadsResponse, error) {
+
+func (f *fakeBrowserController) Downloads(_ context.Context, _ BrowserDownloadsRequest) (BrowserDownloadsResponse, error) {
 	return BrowserDownloadsResponse{
 		Downloads: []BrowserDownload{{ID: "1", State: "complete", Filename: "report.pdf"}},
 		Count:     1,
 		Total:     1,
 	}, nil
-}
-func (f *fakeBrowserController) Storage(context.Context, BrowserStorageRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) SetCookie(context.Context, BrowserSetCookieRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) WaitForNavigation(context.Context, BrowserWaitForNavigationRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) Emulate(context.Context, BrowserEmulateRequest) (string, error) {
-	return "", nil
-}
-func (f *fakeBrowserController) GetAttributes(context.Context, BrowserGetAttributesRequest) (string, error) {
-	return "", nil
 }
