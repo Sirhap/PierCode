@@ -1,4 +1,41 @@
-export const FENCE_RE = /```(?:piercode-tool|tool)\s*\n([\s\S]*?)\n```/gi;
+// The newline after the tag and before the closing ``` are OPTIONAL — models
+// often emit ```piercode-tool{...}``` on one line. Body is captured up to ```.
+export const FENCE_RE = /```(?:piercode-tool|tool)\b[ \t]*\r?\n?([\s\S]*?)```/gi;
+
+// splitFenceObjects pulls every top-level {...} JSON object out of a fence body.
+// Models frequently pack several tool calls into ONE fence as concatenated
+// objects ({...}{...}), which a single parse rejects. Brace-match each object
+// (string-aware, so braces inside string values don't split). Returns the body
+// as a single segment when no top-level object is found, so callers can still
+// try their normal parse path.
+export function splitFenceObjects(body: string): string[] {
+  const objs: string[] = [];
+  let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') { if (depth === 0) start = i; depth++; }
+    else if (ch === '}') { depth--; if (depth === 0 && start >= 0) { objs.push(body.slice(start, i + 1)); start = -1; } }
+  }
+  return objs.length > 0 ? objs : [body];
+}
+
+// parseFenceToolCalls parses a fence body that may contain one OR several tool
+// objects, returning every valid tool call (via the shared repair chain).
+export function parseFenceToolCalls(body: string): Array<{ name: string; callId: string | null; args: Record<string, unknown> }> {
+  const out: Array<{ name: string; callId: string | null; args: Record<string, unknown> }> = [];
+  for (const seg of splitFenceObjects(body.trim())) {
+    const tc = parseJsonFenceToolCall(seg);
+    if (tc) out.push(tc);
+  }
+  return out;
+}
 
 export const TOOL_RE = /<tool(?:\s[^>]*)?>[\s\S]*?<\/(?:tool|function)(?:_call)?>/gi;
 

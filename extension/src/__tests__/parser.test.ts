@@ -1,5 +1,50 @@
 import { describe, it, expect } from 'vitest';
-import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket } from '../parser';
+import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket, splitFenceObjects, parseFenceToolCalls } from '../parser';
+
+// ── multi-object fence handling (content/injected path hardening) ───────────
+
+describe('splitFenceObjects', () => {
+  it('splits concatenated top-level objects', () => {
+    expect(splitFenceObjects('{"a":1}{"b":2}')).toEqual(['{"a":1}', '{"b":2}']);
+  });
+  it('does not split on braces inside string values', () => {
+    expect(splitFenceObjects('{"cmd":"echo {hi}"}')).toEqual(['{"cmd":"echo {hi}"}']);
+  });
+  it('returns the body as one segment when no object present', () => {
+    expect(splitFenceObjects('not json')).toEqual(['not json']);
+  });
+});
+
+describe('parseFenceToolCalls', () => {
+  it('parses multiple tool objects packed in one fence body', () => {
+    const body = '{"name":"read_file","call_id":"a","args":{"path":"X"}}{"name":"grep","call_id":"b","args":{"pattern":"TODO"}}';
+    const calls = parseFenceToolCalls(body);
+    expect(calls.map(c => c.name)).toEqual(['read_file', 'grep']);
+    expect(calls[1].args).toMatchObject({ pattern: 'TODO' });
+  });
+  it('parses a single tool object', () => {
+    expect(parseFenceToolCalls('{"name":"list_dir","args":{"path":"."}}').map(c => c.name)).toEqual(['list_dir']);
+  });
+  it('skips invalid segments, keeps valid siblings', () => {
+    expect(parseFenceToolCalls('{"name":"glob","args":{}}{garbage}').map(c => c.name)).toEqual(['glob']);
+  });
+});
+
+describe('FENCE_RE tolerates missing newlines', () => {
+  it('matches a fence with no newline after the tag or before the close', () => {
+    const content = '```piercode-tool{"name":"list_dir","args":{"path":"."}}```';
+    FENCE_RE.lastIndex = 0;
+    const m = FENCE_RE.exec(content);
+    expect(m).not.toBeNull();
+    const calls = parseFenceToolCalls(m![1]);
+    expect(calls.map(c => c.name)).toEqual(['list_dir']);
+  });
+  it('still matches the well-formed newline form', () => {
+    const content = '```piercode-tool\n{"name":"read_file","args":{"path":"X"}}\n```';
+    FENCE_RE.lastIndex = 0;
+    expect(FENCE_RE.exec(content)).not.toBeNull();
+  });
+});
 
 // ── parseJsonFenceToolCall ─────────────────────────────────────────────────
 

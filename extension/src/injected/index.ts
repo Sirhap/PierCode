@@ -1,4 +1,27 @@
-const INJECTED_FENCE_RE = /```(?:piercode-tool|tool)\s*\n([\s\S]*?)\n```/gi;
+// Newline after the tag / before the closing ``` are OPTIONAL (models emit
+// ```piercode-tool{...}``` on one line).
+const INJECTED_FENCE_RE = /```(?:piercode-tool|tool)\b[ \t]*\r?\n?([\s\S]*?)```/gi;
+
+// Pull every top-level {...} JSON object out of a fence body (string-aware brace
+// match). Models often pack several tool calls into one fence as {...}{...};
+// returns the body unchanged as a single segment when no object is found.
+function splitInjectedObjects(body: string): string[] {
+  const objs: string[] = [];
+  let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') { if (depth === 0) start = i; depth++; }
+    else if (ch === '}') { depth--; if (depth === 0 && start >= 0) { objs.push(body.slice(start, i + 1)); start = -1; } }
+  }
+  return objs.length > 0 ? objs : [body];
+}
 
 function parseInjectedJsonFenceToolCall(jsonStr: string): any | null {
   try {
@@ -105,10 +128,18 @@ function tryParseInjectedToolJSON(raw: string): any | null {
               if (!processed.has(full)) {
                 processed.add(full);
                 const cleanedJson = inner.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, ' ').trim();
-                const toolCall = parseInjectedJsonFenceToolCall(cleanedJson) || tryParseInjectedToolJSON(cleanedJson);
-                if (toolCall) {
-                  window.postMessage({type: 'TOOL_CALL', data: toolCall}, '*');
-                } else {
+                // One fence may carry several concatenated tool objects ({...}{...});
+                // emit a TOOL_CALL for each. Falls back to single-segment parse.
+                const segments = splitInjectedObjects(cleanedJson);
+                let anyOk = false;
+                for (const seg of segments) {
+                  const toolCall = parseInjectedJsonFenceToolCall(seg) || tryParseInjectedToolJSON(seg);
+                  if (toolCall && toolCall.name) {
+                    window.postMessage({type: 'TOOL_CALL', data: toolCall}, '*');
+                    anyOk = true;
+                  }
+                }
+                if (!anyOk) {
                   window.postMessage({type: 'TOOL_CALL_FORMAT_ERROR', raw: full}, '*');
                 }
               }
