@@ -10,6 +10,8 @@
  * 6. 将工具结果注入对话，递归调用让 AI 继续
  */
 
+import { FENCE_RE, parseFenceToolCalls, formatToolResults } from '../parser'
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface ToolCall {
@@ -526,54 +528,17 @@ function askQuestion(tc: ToolCall): Promise<ToolResult> {
 
 // ── Tool Detection ─────────────────────────────────────────────────────────
 
-// Fence detection. The newline after the `piercode-tool` tag is OPTIONAL — models
-// frequently emit ```piercode-tool{"name":...}``` with no leading newline. The
-// `tool` alias is also accepted. Body is captured up to the closing ```.
-const FENCE_RE = /```(?:piercode-tool|tool)\b[ \t]*\r?\n?([\s\S]*?)```/gi
-
-// Pull every top-level {...} JSON object out of a fence body. Models often pack
-// several tool calls into ONE fence as concatenated objects ({...}{...}{...}),
-// which a single JSON.parse rejects. Brace-match each object and parse it alone.
-function splitJsonObjects(body: string): string[] {
-  const objs: string[] = []
-  let depth = 0, start = -1, inStr = false, esc = false
-  for (let i = 0; i < body.length; i++) {
-    const ch = body[i]
-    if (inStr) {
-      if (esc) esc = false
-      else if (ch === '\\') esc = true
-      else if (ch === '"') inStr = false
-      continue
-    }
-    if (ch === '"') { inStr = true; continue }
-    if (ch === '{') { if (depth === 0) start = i; depth++ }
-    else if (ch === '}') { depth--; if (depth === 0 && start >= 0) { objs.push(body.slice(start, i + 1)); start = -1 } }
-  }
-  return objs
-}
-
 export function extractToolCalls(content: string): ToolCall[] {
   const calls: ToolCall[] = []
   let match: RegExpExecArray | null
   FENCE_RE.lastIndex = 0
   while ((match = FENCE_RE.exec(content)) !== null) {
-    const body = match[1].trim()
-    // Try the whole body as one object first; fall back to multi-object split.
-    const segments = splitJsonObjects(body)
-    const candidates = segments.length > 0 ? segments : [body]
-    for (const seg of candidates) {
-      try {
-        const parsed = JSON.parse(seg)
-        if (parsed && parsed.name && typeof parsed.name === 'string') {
-          calls.push({
-            name: parsed.name,
-            args: parsed.args || {},
-            call_id: parsed.call_id || `detected-${match.index}-${calls.length}`,
-          })
-        }
-      } catch {
-        // Invalid JSON segment — skip
-      }
+    for (const tc of parseFenceToolCalls(match[1])) {
+      calls.push({
+        name: tc.name,
+        args: tc.args,
+        call_id: tc.callId || `detected-${match.index}-${calls.length}`,
+      })
     }
   }
   return calls
@@ -910,19 +875,14 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
       // rejects on a single worker error. One batchId tags this whole batch so
       // the sidebar can build the summary card from exactly these agents.
       if (spawns.length > 0 && !currentAbort.signal.aborted) {
-        const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-        const spawnResults = await Promise.all(
-          spawns.map(tc => runSubAgent(tc, platform, modelOverride, depth, batchId)),
-        )
+        const spawnResults = await runSubAgentBatch(spawns, platform, modelOverride, depth)
         for (const r of spawnResults) {
           results.push(r)
           broadcast({ type: 'CHAT_TOOL_DONE', result: r })
         }
       }
 
-      const toolResultContent = results.map(r =>
-        `### ${r.name} #${r.call_id}\n\n${r.output}`
-      ).join('\n\n')
+      const toolResultContent = formatToolResults(results)
 
       // Signal sidebar to create a new assistant message for the continuation
       broadcast({ type: 'CHAT_CONTINUING' })
@@ -977,7 +937,7 @@ async function runSubAgent(
     return shapeSubAgentResult(call, '(spawn_agent 缺少 task 参数)')
   }
 
-  broadcast({ type: 'CHAT_AGENT_SPAWN', agentId, label, task, batchId })
+  broadcastAgentLifecycle({ type: 'CHAT_AGENT_SPAWN', agentId, label, task, batchId })
 
   const workerPrompt = await fetchWorkerPrompt()
   const message = buildSubAgentMessage(workerPrompt, task)
@@ -994,18 +954,34 @@ async function runSubAgent(
     })
     const cancelled = signal.aborted
     const output = cancelled ? `${finalText}\n\n(已取消)`.trim() : finalText
-    broadcast({ type: 'CHAT_AGENT_DONE', agentId, status: cancelled ? 'error' : 'done' })
+    broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: cancelled ? 'error' : 'done' })
     return cancelled
       ? { call_id: call.call_id, name: call.name, output: output || '(已取消)', success: false }
       : shapeSubAgentResult(call, finalText)
   } catch (err) {
     const cancelled = signal.aborted
     const msg = cancelled ? '(已取消)' : `子 agent 失败: ${err instanceof Error ? err.message : String(err)}`
-    broadcast({ type: 'CHAT_AGENT_DONE', agentId, status: 'error' })
+    broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: 'error' })
     return { call_id: call.call_id, name: call.name, output: msg, success: false }
   } finally {
     cleanup()
   }
+}
+
+// runSubAgentBatch runs N spawn_agent calls as parallel in-memory sub-conversations
+// (no tabs). One batchId tags the whole batch so UIs can group the summary. Each
+// runSubAgent catches its own failure into a failed ToolResult, so Promise.all
+// never rejects on a single worker error. Used by both the sidebar turn loop and
+// the content-script CONTENT_SPAWN_AGENT route.
+export async function runSubAgentBatch(
+  spawns: ToolCall[],
+  platform: string,
+  model: string | undefined,
+  depth: number,
+): Promise<ToolResult[]> {
+  if (spawns.length === 0) return []
+  const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  return Promise.all(spawns.map(tc => runSubAgent(tc, platform, model, depth, batchId)))
 }
 
 // runIsolatedConversation drives one sub-agent turn loop: it streams the model,
@@ -1087,6 +1063,24 @@ function broadcast(msg: Record<string, unknown>) {
   })
 }
 
+// broadcastAgentLifecycle fans a sub-agent SPAWN/DONE event to BOTH the sidebar
+// (runtime.sendMessage, like broadcast) AND every page tab (tabs.sendMessage).
+// runtime.sendMessage does not reach content scripts, so the content-script
+// StatusPanel would otherwise never see these. Only lifecycle events are fanned
+// out to tabs — high-frequency stream events stay sidebar-only via broadcast().
+function broadcastAgentLifecycle(msg: Record<string, unknown>) {
+  broadcast(msg)
+  try {
+    chrome.tabs.query({}, (tabs) => {
+      for (const t of tabs) {
+        if (t.id != null) chrome.tabs.sendMessage(t.id, msg).catch(() => {})
+      }
+    })
+  } catch {
+    // tabs API unavailable — silent
+  }
+}
+
 // ── Message Handler Registration ───────────────────────────────────────────
 
 export function registerChatApiHandler() {
@@ -1123,6 +1117,16 @@ export function registerChatApiHandler() {
       agentAborts.get(String(msg.agentId || ''))?.abort()
       sendResponse({ ok: true })
       return false
+    }
+
+    if (msg.type === 'CONTENT_SPAWN_AGENT') {
+      const spawns = (msg.spawns || []) as ToolCall[]
+      const platform = String(msg.platform || '')
+      const model = msg.model ? String(msg.model) : undefined
+      runSubAgentBatch(spawns, platform, model, 0)
+        .then(results => sendResponse({ ok: true, results }))
+        .catch(err => sendResponse({ ok: false, error: String(err?.message || err) }))
+      return true // keep the message channel open for async sendResponse
     }
 
     if (msg.type === 'CHAT_QUESTION_ANSWER') {

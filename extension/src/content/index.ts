@@ -1,8 +1,10 @@
-import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket } from '../parser';
+import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket, formatToolResults } from '../parser';
+import { hasApiClient } from './platform-caps';
 import { extractMonacoText, findQwenPierCodeBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, sendAgentResult, injectToolResult } from './ws-linker';
 import { isConversationURLForCurrentPage, observeConversationURL, getConversationKey } from './conversation-scope';
+import { maybeTruncate } from './result-truncate';
 import { visualIndicator } from './visual-indicator';
 import { statusPanel, type ControlledTabInfo } from './status-panel';
 import { computeMeter } from './token-meter';
@@ -764,6 +766,10 @@ interface ToolExecutionResult {
   output: string;
   stopStream: boolean;
   sendable: boolean;
+  // The result was already filled into the chat input and submitted by this
+  // call (e.g. spawn_agent's API route uses injectToolResult), so the batch
+  // loop must NOT also push it to batchOutputs / re-submit it.
+  alreadyInjected?: boolean;
 }
 
 // ─── 流式工具输出分发 ─────────────────────────────────────────────────────────
@@ -1395,6 +1401,23 @@ function bootstrapContentScript() {
       console.warn('[PierCode] 状态面板初始化失败:', err);
     }
   });
+
+  // 后台子 agent（API 路由）生命周期广播 → 状态面板行。background 的 broadcast()
+  // 用 runtime.sendMessage 只到 sidebar；CHAT_AGENT_SPAWN/DONE 另经 tabs.sendMessage
+  // 转发到本内容脚本（见 chat-api.ts broadcastAgentLifecycle）。✕ 取消复用既有
+  // CHAT_AGENT_ABORT 路径（StatusPanel.renderAgents 内发出）。
+  try {
+    chrome.runtime?.onMessage?.addListener((msg) => {
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'CHAT_AGENT_SPAWN' && msg.agentId) {
+        statusPanel.addAgent(String(msg.agentId), String(msg.label || 'agent'));
+      } else if (msg.type === 'CHAT_AGENT_DONE' && msg.agentId) {
+        statusPanel.setAgentDone(String(msg.agentId), String(msg.status || 'done'));
+      }
+    });
+  } catch {
+    // runtime.onMessage 不可用时静默（不阻塞后续初始化）。
+  }
   // Register WS dispatchers (tool_stream/done + question_ask/cancel) up
   // front so question popups can appear even before any ToolCard renders.
   ensureStreamDispatchers();
@@ -1720,6 +1743,35 @@ async function executeToolCallReturn(toolCall: any, withGuidance = true): Promis
     const opts: string[] = parseOptions(rawOpts);
     const answer = await showQuestionPopup(q, opts);
     return { output: answer, stopStream: false, sendable: true };
+  }
+
+  // spawn_agent on API-client platforms (qwen/chatgpt/claude/openai) runs the
+  // sub-agent as an in-memory API sub-conversation in the background worker
+  // (NO new tab) and injects the result back into the chat. Other platforms
+  // fall through to /exec, where the server opens a tab-worker (unchanged).
+  if (toolCall.name === 'spawn_agent' && hasApiClient(platformProfile)) {
+    const spawn = {
+      name: toolCall.name,
+      args: toolCall.args || {},
+      call_id: getToolCallId(toolCall),
+    };
+    try {
+      const resp = await chrome.runtime.sendMessage({
+        type: 'CONTENT_SPAWN_AGENT',
+        spawns: [spawn],
+        platform: platformProfile,
+      });
+      if (resp?.ok) {
+        injectToolResult(maybeTruncate(formatToolResults(resp.results || [])));
+      } else {
+        injectToolResult(`子 agent 失败: ${resp?.error || '未知错误'}`);
+      }
+    } catch (error) {
+      injectToolResult(`子 agent 失败: ${error}`);
+    }
+    // Result already filled + submitted via injectToolResult; mark executed but
+    // don't let the batch loop push it to batchOutputs / submit it again.
+    return { output: '', stopStream: false, sendable: true, alreadyInjected: true };
   }
 
   try {
@@ -2458,11 +2510,13 @@ function startDOMObserver(_responseSelector: string) {
           // last tool of this drain when nothing else is queued. Other tools opt
           // out so the AI sees the operating reminder once, not once per tool.
           const withGuidance = i === batch.length - 1 && pendingBatch.length === 0;
-          const { output, stopStream, sendable } = await executeToolCallReturn(toolCall, withGuidance);
+          const { output, stopStream, sendable, alreadyInjected } = await executeToolCallReturn(toolCall, withGuidance);
           if (sendable) {
             markExecuted(key);
           }
-          if (sendable && output.trim()) {
+          // alreadyInjected tools (spawn_agent's API route) filled + submitted
+          // their own result via injectToolResult; don't re-queue it here.
+          if (sendable && !alreadyInjected && output.trim()) {
             const callId = getToolCallId(toolCall);
             batchOutputs.push(`### ${toolCall.name} #${callId}\n${output}`);
           }

@@ -46,10 +46,13 @@ function escapeHtml(s: string): string {
 
 const ACC_LABEL: Record<string, string> = { exact: '精确', approx: '近似', estimate: '估算' };
 
+type AgentRow = { label: string; status: string };
+
 class StatusPanel {
   private root: HTMLElement | null = null;
   private dot: HTMLElement | null = null;
   private panel: HTMLElement | null = null;
+  private agentsBox: HTMLElement | null = null;
   private expanded = false;
   private stealth = false;
   private op: OpState = 'idle';
@@ -58,6 +61,8 @@ class StatusPanel {
   private meter: TokenMeter | null = null;
   private threshold = 0;
   private tab: ControlledTabInfo | null = null;
+  private agents = new Map<string, AgentRow>();
+  private agentRemoveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private resetTimer: ReturnType<typeof setTimeout> | null = null;
   private onDocumentMouseDown = (event: MouseEvent) => {
     if (!this.expanded || !this.root) return;
@@ -127,6 +132,84 @@ class StatusPanel {
     this.paint();
   }
 
+  // 后台子 agent（API 路由，无可见 UI）：加一行 label · status · ✕。
+  // 容器挂在 root 上（独立于 paint() 的 innerHTML 重写），点 ✕ 复用既有取消路径
+  // —— 向 background 发 CHAT_AGENT_ABORT，触发 chat-api.ts 的 agentAborts.abort()。
+  addAgent(agentId: string, label: string): void {
+    const t = this.agentRemoveTimers.get(agentId);
+    if (t) { clearTimeout(t); this.agentRemoveTimers.delete(agentId); }
+    this.agents.set(agentId, { label, status: 'running' });
+    if (!this.root) this.ensureDom();
+    this.renderAgents();
+  }
+
+  setAgentDone(agentId: string, status: string): void {
+    const a = this.agents.get(agentId);
+    if (!a) return;
+    a.status = status;
+    this.renderAgents();
+    // 终态行短暂保留以示结果，~4s 后自动移除。
+    const prev = this.agentRemoveTimers.get(agentId);
+    if (prev) clearTimeout(prev);
+    this.agentRemoveTimers.set(agentId, setTimeout(() => {
+      this.agents.delete(agentId);
+      this.agentRemoveTimers.delete(agentId);
+      this.renderAgents();
+    }, 4000));
+  }
+
+  private renderAgents(): void {
+    if (!this.agentsBox) return;
+    this.agentsBox.replaceChildren();
+    if (this.agents.size === 0) {
+      this.agentsBox.style.display = 'none';
+      this.repositionStack();
+      return;
+    }
+    this.agentsBox.style.display = 'block';
+
+    const head = document.createElement('div');
+    head.textContent = `⌁ 子 agent (${this.agents.size})`;
+    head.style.cssText = `font-weight:600;color:${T_GLOW};margin-bottom:2px;`;
+    this.agentsBox.appendChild(head);
+
+    for (const [agentId, info] of this.agents) {
+      const row = document.createElement('div');
+      row.style.cssText = `display:flex;align-items:center;gap:6px;margin-top:4px;`;
+
+      const dot = document.createElement('span');
+      const running = info.status === 'running';
+      dot.style.cssText = `flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:${running ? T_AMBER : (info.status === 'error' ? T_RED : T_GLOW)};`;
+
+      const name = document.createElement('span');
+      name.textContent = info.label;
+      name.style.cssText = `flex:1 1 auto;color:${T_TXT};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+
+      const st = document.createElement('span');
+      st.textContent = running ? '运行中' : (info.status === 'error' ? '已停止' : '完成');
+      st.style.cssText = `flex:0 0 auto;color:${running ? T_AMBER : (info.status === 'error' ? T_RED : T_DIM)};font-size:10px;`;
+
+      row.appendChild(dot);
+      row.appendChild(name);
+      row.appendChild(st);
+
+      if (running) {
+        const btn = document.createElement('button');
+        btn.textContent = '✕';
+        btn.title = '取消子 agent';
+        btn.style.cssText = `all:unset;flex:0 0 auto;cursor:pointer;color:${T_DIM};font-size:11px;line-height:1;padding:0 2px;`;
+        btn.addEventListener('mouseenter', () => { btn.style.color = T_RED; });
+        btn.addEventListener('mouseleave', () => { btn.style.color = T_DIM; });
+        btn.addEventListener('click', () => {
+          try { chrome.runtime?.sendMessage?.({ type: 'CHAT_AGENT_ABORT', agentId }); } catch {}
+        });
+        row.appendChild(btn);
+      }
+      this.agentsBox.appendChild(row);
+    }
+    this.repositionStack();
+  }
+
   // 仅供测试：强制展开。
   expandForTest(): void {
     this.expanded = true;
@@ -135,9 +218,12 @@ class StatusPanel {
 
   destroy(): void {
     if (this.resetTimer) { clearTimeout(this.resetTimer); this.resetTimer = null; }
+    for (const t of this.agentRemoveTimers.values()) clearTimeout(t);
+    this.agentRemoveTimers.clear();
+    this.agents.clear();
     document.removeEventListener('mousedown', this.onDocumentMouseDown, true);
     this.root?.remove();
-    this.root = this.dot = this.panel = null;
+    this.root = this.dot = this.panel = this.agentsBox = null;
     this.op = 'idle';
     this.provider = this.profile = '';
     this.meter = null;
@@ -174,14 +260,32 @@ class StatusPanel {
     `;
     panel.onclick = (e) => e.stopPropagation();
 
+    // 子 agent 浮层：独立卡，常驻于圆点上方（即便面板折叠也显示后台活动）。
+    // 它在 panel 之后追加，所以 root 的第一个 <div> 仍是 panel（既有测试依赖此结构）。
+    // 容器独立于 panel 的 innerHTML 重写，故行内 ✕ 的事件监听器不会被 paint() 抹掉。
+    // marginBottom（在 paint() 中按面板是否展开动态调整）让两卡竖向堆叠不重叠。
+    const agentsBox = document.createElement('div');
+    agentsBox.setAttribute('data-piercode-status-agents', '');
+    agentsBox.style.cssText = `
+      all: initial; font-family: ${T_FONT};
+      position: absolute; right: 0; bottom: 22px; min-width: 220px; max-width: 280px;
+      background: ${T_PANEL}; color: ${T_TXT}; border-radius: 10px;
+      border: 1px solid ${T_LINE}; box-shadow: 0 0 0 1px ${T_GLOW_SOFT}, 0 4px 16px rgba(0,0,0,0.5);
+      padding: 8px 12px; font-size: 12px; line-height: 1.5; display: none;
+    `;
+    agentsBox.onclick = (e) => e.stopPropagation();
+
     root.appendChild(panel);
+    root.appendChild(agentsBox);
     root.appendChild(dot);
     document.body.appendChild(root);
     document.addEventListener('mousedown', this.onDocumentMouseDown, true);
     this.root = root;
     this.dot = dot;
     this.panel = panel;
+    this.agentsBox = agentsBox;
     this.applyVisibility();
+    this.renderAgents();
   }
 
   private toggle(): void {
@@ -201,10 +305,20 @@ class StatusPanel {
     this.root.style.display = this.stealth ? 'none' : 'block';
   }
 
+  // 让 panel（展开时）与 agentsBox（有子 agent 时）竖向堆叠不重叠：
+  // agentsBox 贴圆点；panel 在其上方，按 agentsBox 实测高度抬升。
+  private repositionStack(): void {
+    if (!this.panel || !this.agentsBox) return;
+    const agentsVisible = this.agentsBox.style.display !== 'none';
+    const gap = 8;
+    const lift = agentsVisible ? this.agentsBox.offsetHeight + gap : 0;
+    this.panel.style.bottom = `${22 + lift}px`;
+  }
+
   private paint(): void {
     if (!this.dot || !this.panel) return;
     this.dot.style.background = OP_COLORS[this.op];
-    if (!this.expanded) { this.panel.style.display = 'none'; return; }
+    if (!this.expanded) { this.panel.style.display = 'none'; this.repositionStack(); return; }
 
     const provider = this.provider
       ? `${escapeHtml(this.provider)}${this.profile && this.profile !== this.provider ? ' · ' + escapeHtml(this.profile) : ''}`
@@ -240,6 +354,7 @@ class StatusPanel {
       <div style="margin-top:6px;font-size:10px;color:${T_DIM};">${pct}% · ${acc}</div>
       ${tabBlock}
     `;
+    this.repositionStack();
   }
 }
 

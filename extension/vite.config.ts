@@ -42,6 +42,67 @@ export default defineConfig({
       }
     },
     {
+      // parser.ts is imported by content/index.ts (the classic MV3 content
+      // script) AND by background/chat-api.ts. Two entry trees importing the
+      // same module makes Rollup hoist it into a shared chunk and emit a static
+      // `import {…} from "./assets/parser-…"` at the top of content.js — which a
+      // classic content script can't have (content-build.test.ts guards this).
+      // Unlike the preload helper, parser is REAL code content needs at eval
+      // time, so we can't no-op it: we inline the parser chunk's body into
+      // content.js inside an IIFE (scoping its internal names to avoid collision
+      // with content's own minified symbols) and destructure the bindings the
+      // content import expected. background.js (a module-type service worker)
+      // keeps the normal static import. Generic over the chunk hash and the
+      // minified alias names, so it survives rebuilds.
+      name: 'inline-content-shared-chunk',
+      generateBundle(_options, bundle) {
+        const content = bundle['content.js']
+        if (!content || content.type !== 'chunk') return
+        const importRe = /import\s*\{([^}]*)\}\s*from\s*["']\.\/assets\/(parser-[^"']+)["'];?/
+        const m = content.code.match(importRe)
+        if (!m) return
+        const [, specifiers, chunkFile] = m
+        const chunk = bundle[`assets/${chunkFile}`]
+        if (!chunk || chunk.type !== 'chunk') return
+
+        // content import: `p as ht, t as Qe, …` → local var ← chunk export alias
+        const localByAlias: Record<string, string> = {}
+        for (const part of specifiers.split(',')) {
+          const mm = part.trim().match(/^(\w+)\s+as\s+(\w+)$/)
+          if (mm) localByAlias[mm[1]] = mm[2]
+        }
+        // chunk export: `export{h as F, d as T, …};` → export alias ← internal name
+        const exportRe = /export\s*\{([^}]*)\};?\s*$/
+        const em = chunk.code.match(exportRe)
+        if (!em) return
+        const internalByAlias: Record<string, string> = {}
+        for (const part of em[1].split(',')) {
+          const mm = part.trim().match(/^(\w+)\s+as\s+(\w+)$/)
+          if (mm) internalByAlias[mm[2]] = mm[1]
+        }
+
+        // For each binding content imported, resolve the chunk's INTERNAL name.
+        // pairs: [chunkInternalName, contentLocalVar]
+        const pairs: Array<[string, string]> = []
+        for (const [alias, local] of Object.entries(localByAlias)) {
+          const internal = internalByAlias[alias]
+          if (!internal) return // unexpected shape — bail, leave import intact
+          pairs.push([internal, local])
+        }
+
+        const body = chunk.code.replace(exportRe, '')
+        // IIFE scopes the chunk's internal names so they can't collide with
+        // content's own minified top-level symbols. It returns the internal
+        // names; we destructure them into the content-local var names.
+        const ret = pairs.map(([internal]) => internal).join(',')
+        const decl = pairs.map(([internal, local]) => `${internal}:${local}`).join(',')
+        content.code = content.code.replace(
+          importRe,
+          `const {${decl}}=(()=>{${body}return {${ret}};})();`,
+        )
+      },
+    },
+    {
       name: 'copy-files',
       closeBundle() {
         mkdirSync('dist', { recursive: true })
