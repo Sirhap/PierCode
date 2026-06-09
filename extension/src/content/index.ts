@@ -772,7 +772,7 @@ interface ToolExecutionResult {
   sendable: boolean;
   // The result was already filled into the chat input and submitted by this
   // call (e.g. spawn_agent's API route uses injectToolResult), so the batch
-  // loop must NOT also push it to batchOutputs / re-submit it.
+  // loop must NOT also accumulate it per-container / re-submit it.
   alreadyInjected?: boolean;
 }
 
@@ -1714,7 +1714,7 @@ async function executeToolCallReturn(toolCall: any, withGuidance = true): Promis
       injectToolResult(`子 agent 失败: ${error}`);
     }
     // Result already filled + submitted via injectToolResult; mark executed but
-    // don't let the batch loop push it to batchOutputs / submit it again.
+    // don't let the batch loop accumulate it per-container / submit it again.
     return { output: '', stopStream: false, sendable: true, alreadyInjected: true };
   }
 
@@ -2343,7 +2343,11 @@ function startDOMObserver(_responseSelector: string) {
   let batchTimer: ReturnType<typeof setTimeout> | null = null;
   let submitTimer: ReturnType<typeof setTimeout> | null = null;
   let batchExecuting = false;
-  const batchOutputs: string[] = [];
+  // 输出按响应容器分组，避免不同响应的工具结果混进同一次提交（问题 E）。
+  // WeakMap 不可遍历，配活跃容器 Set 供 scheduleFinalSubmit 遍历；提交后移除。
+  const outputsByContainer = new WeakMap<Element, string[]>();
+  const activeOutputContainers = new Set<Element>();
+  const submitDeferByContainer = new WeakMap<Element, number>();
   let lastResponseMutationAt = 0;
   let lastAutoToolSeenAt = 0;
   // 静默窗口：流式输出停止后等待 quietMs 再触发批量执行/提交。
@@ -2397,13 +2401,11 @@ function startDOMObserver(_responseSelector: string) {
   // 会恒 true，导致结果永不提交。设一个上限：自首个待提交结果产生起，最多顺延
   // MAX_SUBMIT_DEFER_MS 就强制提交，确保 stopBtn 误判不会吞掉工具结果。
   const MAX_SUBMIT_DEFER_MS = 15000;
-  let submitDeferStartedAt = 0;
 
   function scheduleFinalSubmit() {
-    if (batchOutputs.length === 0) return;
+    if (activeOutputContainers.size === 0) return;
     clearSubmitTimer();
-    if (submitDeferStartedAt === 0) submitDeferStartedAt = Date.now();
-    submitTimer = setTimeout(() => {
+    submitTimer = setTimeout(async () => {
       submitTimer = null;
       if (batchExecuting) return;
       // 还有待执行工具 → 不提交，重新进入批量流程（执行完会再次 scheduleFinalSubmit）。
@@ -2411,25 +2413,45 @@ function startDOMObserver(_responseSelector: string) {
         scheduleBatchExecution();
         return;
       }
-      const deferredTooLong = Date.now() - submitDeferStartedAt >= MAX_SUBMIT_DEFER_MS;
-      // 流仍在生成 → 顺延，等响应结束再一次性提交全部结果（同一响应=一次提交）。
-      // 但顺延不超过 MAX_SUBMIT_DEFER_MS，防 stopBtn 误判导致永久不提交。
-      if (!deferredTooLong && isResponseGenerating()) { scheduleFinalSubmit(); return; }
-      if (!deferredTooLong) {
-        const settleRemainingMs = responseSettleRemainingMs();
-        if (settleRemainingMs > 0) {
-          submitTimer = setTimeout(() => {
-            submitTimer = null;
-            scheduleFinalSubmit();
-          }, settleRemainingMs);
-          return;
+
+      const stillGenerating = isResponseGenerating();
+      const settleRemainingMs = responseSettleRemainingMs();
+
+      // 每个响应容器独立累积/提交：B 响应的结果不会混进 A 响应的提交（问题 E）。
+      // fillAndSend 是 async 且内部 await focusTab + clickSendWhenReady（Qwen 可达 90s），
+      // 同 tick 提交两个容器会抢同一个聊天输入框，故循环内 await 串行提交。
+      for (const c of Array.from(activeOutputContainers)) {
+        const arr = outputsByContainer.get(c);
+        if (!arr || arr.length === 0) { activeOutputContainers.delete(c); continue; }
+
+        // 顺延起点按容器记录：自该容器首个待提交结果产生起最多顺延 MAX_SUBMIT_DEFER_MS，
+        // 防 stopBtn 误判导致 isResponseGenerating 恒 true 而永不提交。
+        let startedAt = submitDeferByContainer.get(c);
+        if (startedAt == null) { startedAt = Date.now(); submitDeferByContainer.set(c, startedAt); }
+        const deferredTooLong = Date.now() - startedAt >= MAX_SUBMIT_DEFER_MS;
+
+        // 流仍在生成 → 顺延，等响应结束再一次性提交该容器全部结果。
+        if (!deferredTooLong && stillGenerating) continue;
+        // settle 窗口未到 → 顺延。
+        if (!deferredTooLong && settleRemainingMs > 0) continue;
+
+        const combinedOutput = arr.join('\n\n');
+        outputsByContainer.delete(c);
+        activeOutputContainers.delete(c);
+        submitDeferByContainer.delete(c);
+        if (combinedOutput) {
+          await fillAndSend(prepareToolOutputForChat(combinedOutput), true);
         }
       }
-      const combinedOutput = batchOutputs.join('\n\n');
-      batchOutputs.length = 0;
-      submitDeferStartedAt = 0;
-      if (combinedOutput) {
-        fillAndSend(prepareToolOutputForChat(combinedOutput), true);
+
+      // 仍有顺延中的容器 → 重排。settle 未到且非生成中时用剩余 settle 时间重排，
+      // 与旧逻辑的嵌套 settle setTimeout 等价。
+      if (activeOutputContainers.size > 0) {
+        if (settleRemainingMs > 0 && !isResponseGenerating()) {
+          submitTimer = setTimeout(() => { submitTimer = null; scheduleFinalSubmit(); }, settleRemainingMs);
+        } else {
+          scheduleFinalSubmit();
+        }
       }
     }, quietMs);
   }
@@ -2480,7 +2502,11 @@ function startDOMObserver(_responseSelector: string) {
           // their own result via injectToolResult; don't re-queue it here.
           if (sendable && !alreadyInjected && output.trim()) {
             const callId = getToolCallId(toolCall);
-            batchOutputs.push(`### ${toolCall.name} #${callId}\n${output}`);
+            const c = item.container;
+            let arr = outputsByContainer.get(c);
+            if (!arr) { arr = []; outputsByContainer.set(c, arr); }
+            arr.push(`### ${toolCall.name} #${callId}\n${output}`);
+            activeOutputContainers.add(c);
           }
 
           // 更新卡片状态为"已执行"
