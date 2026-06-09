@@ -46,3 +46,7 @@
 
 /* ActionBtn hover brightens to --glow */
 .cc-action-btn:hover { color: var(--glow) !important; }
+
+/* Sub-agent card fade-out before removal (App.tsx schedules removal after delay). */
+@keyframes agent-fade-out { to { opacity: 0; transform: translateY(-4px); } }
+.agent-fading { animation: agent-fade-out .4s ease forwards; }

@@ -6,6 +6,7 @@ export interface SubAgent {
   task: string
   status: 'running' | 'done' | 'error'
   messages: ChatMessage[]
+  fading?: boolean
 }
 
 const STATUS_MARK: Record<SubAgent['status'], { mark: string; cls: string }> = {

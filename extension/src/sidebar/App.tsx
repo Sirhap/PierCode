@@ -10,6 +10,7 @@ import CommandPalette, { type SearchHit } from './CommandPalette'
 import { type Command, fuzzyMatch } from './commands'
 import { useGlow } from './use-glow'
 import { GLOW_COLORS } from './glow'
+import { levelsForPlatform, defaultReasoning, normalizeReasoning, REASONING_STORAGE_KEY } from './reasoning'
 import {
   computeMeter,
   whenTokenizerReady,
@@ -22,6 +23,7 @@ import {
   getActiveSessionId, setActiveSessionId,
   type SessionMeta, type StoredSession,
 } from './session-store'
+import { buildAgentSummary, AGENT_FADE_DELAY_MS, AGENT_FADE_DURATION_MS } from './subagent-ui'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -168,12 +170,19 @@ function SubAgentCard({ agent }: { agent: SubAgent }) {
   const mark = agent.status === 'running' ? '▸▸' : agent.status === 'error' ? '✗' : '✓'
   const markCls = agent.status === 'running' ? 'text-amber-400 animate-pulse-dot' : agent.status === 'error' ? 'text-red-400' : 'glow-text'
   const transcript = agent.messages.map(m => m.content).join('')
+  const abortAgent = (e: { stopPropagation: () => void }) => {
+    e.stopPropagation()
+    chrome.runtime.sendMessage({ type: 'CHAT_AGENT_ABORT', agentId: agent.id })
+  }
   return (
-    <div className="rounded-sm border text-xs" style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}>
+    <div className={`rounded-sm border text-xs${agent.fading ? ' agent-fading' : ''}`} style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}>
       <div className="flex items-center gap-2 px-2 py-1 cursor-pointer" onClick={() => setOpen(o => !o)}>
         <span className={markCls}>{mark}</span>
         <span className="glow-text text-[11px]">@{agent.label}</span>
         <span className="truncate flex-1" style={{ color: 'var(--dim)' }}>{agent.task.slice(0, 40)}</span>
+        {agent.status === 'running' && (
+          <button onClick={abortAgent} title="停止此子 agent" className="px-1 cursor-pointer" style={{ color: 'var(--dim)' }}>✕</button>
+        )}
         <span className="text-[10px]" style={{ color: 'var(--dim)' }}>{open ? '▾' : '▸'}</span>
       </div>
       {open && (
@@ -208,6 +217,7 @@ export default function App() {
   const [input, setInput] = useState('')
   const [platform, setPlatform] = useState<Platform>('qwen')
   const [model, setModel] = useState(DEFAULT_MODELS.qwen)
+  const [reasoning, setReasoning] = useState(defaultReasoning('qwen'))
   const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null)
   const [models, setModels] = useState<ModelInfo[]>([])
   const [streaming, setStreaming] = useState(false)
@@ -230,6 +240,8 @@ export default function App() {
 
   // ── Sub-agent + session state ─────────────────────────────────────────
   const [subAgents, setSubAgents] = useState<SubAgent[]>([])
+  const agentTimers = useRef<Set<number>>(new Set())
+  const agentSummaryEmitted = useRef(false)
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const sessionIdRef = useRef<string>(genId())
 
@@ -246,6 +258,12 @@ export default function App() {
     let alive = true
     whenTokenizerReady().then(() => { if (alive) setTokReady(tokenizerState()) })
     return () => { alive = false }
+  }, [])
+
+  // ── Clear pending sub-agent fade/remove timers on unmount ──────────────
+  useEffect(() => () => {
+    agentTimers.current.forEach(id => window.clearTimeout(id))
+    agentTimers.current.clear()
   }, [])
 
   // ── Lifted token meter (computed once, shared by TokenPanel + StatusHUD) ─
@@ -296,6 +314,7 @@ export default function App() {
         id,
         platform,
         model,
+        reasoning,
         chatId: chatIdRef.current,
         lastResponseId: lastResponseIdRef.current,
         messages: messages.map(m => ({
@@ -308,14 +327,16 @@ export default function App() {
       saveSession(payload).then(() => { setActiveSessionId(id); listSessions().then(setSessions) })
     }, 300)
     return () => clearTimeout(handle)
-  }, [messages, platform, model])
+  }, [messages, platform, model, reasoning])
 
   // ── Load model + token threshold from storage ─────────────────────────
   useEffect(() => {
     const key = `${platform}Model`
-    chrome.storage.local.get([key, 'contextCompressionConfig'], (result) => {
+    const rkey = REASONING_STORAGE_KEY(platform)
+    chrome.storage.local.get([key, rkey, 'contextCompressionConfig'], (result) => {
       if (typeof result[key] === 'string') setModel(result[key])
       else setModel(DEFAULT_MODELS[platform] || 'gpt-4o')
+      setReasoning(normalizeReasoning(platform, result[rkey]))
       // Token threshold
       const cfg = result.contextCompressionConfig
       if (cfg?.perPlatformThresholds?.[platform]) {
@@ -345,6 +366,11 @@ export default function App() {
   const handleModelChange = (value: string) => {
     setModel(value)
     chrome.storage.local.set({ [`${platform}Model`]: value })
+  }
+
+  const handleReasoningChange = (value: string) => {
+    setReasoning(value)
+    chrome.storage.local.set({ [REASONING_STORAGE_KEY(platform)]: value })
   }
 
   // ── Streaming message listener ────────────────────────────────────────
@@ -447,13 +473,41 @@ export default function App() {
         })
         setStreaming(false)
       } else if (msg.type === 'CHAT_AGENT_SPAWN') {
+        agentSummaryEmitted.current = false
         setSubAgents(prev => [...prev, { id: msg.agentId, label: msg.label, task: msg.task, status: 'running', messages: [] }])
       } else if (msg.type === 'CHAT_AGENT_STREAM') {
         setSubAgents(prev => prev.map(a => a.id === msg.agentId
           ? { ...a, messages: appendAgentChunk(a.messages, msg.chunk || '') }
           : a))
       } else if (msg.type === 'CHAT_AGENT_DONE') {
-        setSubAgents(prev => prev.map(a => a.id === msg.agentId ? { ...a, status: msg.status === 'error' ? 'error' : 'done' } : a))
+        const agentId = msg.agentId
+        const isErr = msg.status === 'error'
+        setSubAgents(prev => prev.map(a => a.id === agentId ? { ...a, status: isErr ? 'error' : 'done' } : a))
+        // done (not error) cards fade out then get removed; errors stay for review.
+        if (!isErr) {
+          const fadeAt = window.setTimeout(() => {
+            setSubAgents(prev => prev.map(a => a.id === agentId ? { ...a, fading: true } : a))
+            const rmAt = window.setTimeout(() => {
+              setSubAgents(prev => prev.filter(a => a.id !== agentId))
+              agentTimers.current.delete(rmAt)
+            }, AGENT_FADE_DURATION_MS)
+            agentTimers.current.add(rmAt)
+            agentTimers.current.delete(fadeAt)
+          }, AGENT_FADE_DELAY_MS)
+          agentTimers.current.add(fadeAt)
+        }
+        // When the whole batch is terminal, append ONE summary card to the chat.
+        // Use the setSubAgents callback to read the freshest snapshot. emit-once
+        // guard reset on each new CHAT_AGENT_SPAWN (new batch).
+        setSubAgents(prev => {
+          const allTerminal = prev.length > 0 && prev.every(a => a.status !== 'running')
+          if (allTerminal && !agentSummaryEmitted.current) {
+            agentSummaryEmitted.current = true
+            const summary = buildAgentSummary(prev)
+            setMessages(m => [...m, { role: 'assistant', content: '', agentSummary: summary, ts: Date.now() }])
+          }
+          return prev
+        })
       } else if (msg.type === 'CHAT_ERROR') {
         setError(msg.error || '未知错误')
         setMessages(prev => {
@@ -654,12 +708,13 @@ export default function App() {
       type: 'CHAT_REQUEST',
       platform,
       model,
+      reasoning,
       chatId: chatIdRef.current,
       parentId: lastResponseIdRef.current,
       message: text,
       systemPrompt: systemPrompt || undefined,
     })
-  }, [input, messages, platform, model, streaming, fetchInitPrompt])
+  }, [input, messages, platform, model, reasoning, streaming, fetchInitPrompt])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Don't send if picker is open (let Picker handle Enter)
@@ -711,11 +766,12 @@ export default function App() {
       type: 'CHAT_REQUEST',
       platform,
       model,
+      reasoning,
       chatId: chatIdRef.current,
       parentId: null,  // reset parent for regenerate
       message: lastUserMsg.content,
     })
-  }, [messages, platform, model, streaming])
+  }, [messages, platform, model, reasoning, streaming])
 
   const togglePin = useCallback((idx: number) => {
     setMessages(prev => prev.map((m, i) => i === idx ? { ...m, pinned: !m.pinned } : m))
@@ -885,10 +941,24 @@ export default function App() {
           <input
             value={model}
             onChange={e => handleModelChange(e.target.value)}
-            className="ml-auto w-36 rounded-sm px-2 py-0.5 text-[11px] outline-none border"
+            className="w-36 rounded-sm px-2 py-0.5 text-[11px] outline-none border ml-auto"
             style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--txt)' }}
             placeholder="model"
           />
+        )}
+        {/* Thinking level — options vary per platform (sidebar/reasoning.ts) */}
+        {levelsForPlatform(platform).length > 0 && (
+          <select
+            value={reasoning}
+            onChange={e => handleReasoningChange(e.target.value)}
+            title="思考程度"
+            className={`${models.length > 0 ? '' : 'ml-1'} w-20 rounded-sm px-1 py-0.5 text-[11px] outline-none border`}
+            style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--txt)' }}
+          >
+            {levelsForPlatform(platform).map(l => (
+              <option key={l.key} value={l.key}>{`🧠 ${l.label}`}</option>
+            ))}
+          </select>
         )}
       </div>
 
