@@ -2725,7 +2725,7 @@ function startDOMObserver(_responseSelector: string) {
         // 清理 fence 内容：去除不可见字符和非断空格，去除首尾空白
         const cleanedJsonStr = jsonStr.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, ' ').trim();
         // 流式渲染中：内容可能不完整，跳过本次解析并安排兜底重扫。
-        if (!cleanedJsonStr.endsWith('}')) {
+        if (!isBalancedJson(cleanedJsonStr)) {
           if (sourceEl) scheduleSettleRetry(sourceEl);
           continue;
         }
