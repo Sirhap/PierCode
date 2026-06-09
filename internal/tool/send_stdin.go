@@ -39,7 +39,7 @@ func (t *SendStdinTool) Execute(ctx *Context) *Result {
 	result := &Result{StartTime: time.Now()}
 	defer func() { result.EndTime = time.Now() }()
 
-	if ctx.TaskRunner == nil {
+	if ctx.Tasks.Runner == nil {
 		result.Status = "error"
 		result.Error = "background tasks unavailable in this invocation"
 		return result
@@ -57,7 +57,7 @@ func (t *SendStdinTool) Execute(ctx *Context) *Result {
 		data += "\n"
 	}
 
-	if err := ctx.TaskRunner.SendStdin(id, data); err != nil {
+	if err := ctx.Tasks.Runner.SendStdin(id, data); err != nil {
 		result.Status = "error"
 		result.Error = err.Error()
 		return result

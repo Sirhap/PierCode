@@ -26,10 +26,12 @@ func spawnCtx(reg *AgentRegistry, br BrowserController) *Context {
 			"description": "do thing",
 			"platform":    "qwen",
 		},
-		Browser:         br,
-		Agents:          reg,
-		SourceClientID:  "dispatcher-1",
-		ConversationURL: "https://chat.qwen.ai/c/abc",
+		Browser: br,
+		Agents:  reg,
+		Client: ClientIO{
+			SourceClientID:  "dispatcher-1",
+			ConversationURL: "https://chat.qwen.ai/c/abc",
+		},
 	}
 }
 
@@ -44,7 +46,7 @@ func TestSpawnAgentSubAgentInheritsParent(t *testing.T) {
 
 	// The spawn call now comes FROM the parent worker (its WS client id).
 	ctx := spawnCtx(reg, br)
-	ctx.SourceClientID = "worker-parent"
+	ctx.Client.SourceClientID = "worker-parent"
 	res := NewSpawnAgentTool().Execute(ctx)
 	if res.Status != "success" {
 		t.Fatalf("spawn: %s %s", res.Status, res.Error)
@@ -86,7 +88,7 @@ func TestSpawnAgentDepthLimit(t *testing.T) {
 		prevID = rec.AgentID
 	}
 	ctx := spawnCtx(reg, br)
-	ctx.SourceClientID = deepestWorker
+	ctx.Client.SourceClientID = deepestWorker
 	res := NewSpawnAgentTool().Execute(ctx)
 	if res.Status != "error" {
 		t.Fatalf("spawn past depth limit should error, got status %q", res.Status)

@@ -138,14 +138,14 @@ func (t *ExecCmdTool) Execute(ctx *Context) *Result {
 
 	// Foreground mode: keep the original CombinedOutput semantics for callers
 	// that did not register a streamer, so existing behavior is unchanged.
-	if ctx.Streamer == nil {
+	if ctx.Client.Streamer == nil {
 		output, err := proc.CombinedOutput()
 		return t.finalizeForeground(result, cmd, output, err, execCtx)
 	}
 
 	// Streamed foreground mode: forward stdout/stderr to the streamer as the
 	// command runs, but still return the full collected output synchronously.
-	combined, err := runWithStreamer(proc, ctx.Streamer)
+	combined, err := runWithStreamer(proc, ctx.Client.Streamer)
 	return t.finalizeForeground(result, cmd, combined, err, execCtx)
 }
 
@@ -204,20 +204,20 @@ func (t *ExecCmdTool) finalizeForeground(result *Result, cmd string, output []by
 
 func (t *ExecCmdTool) executeBackground(ctx *Context, cmd string, result *Result) *Result {
 	result.EndTime = time.Now()
-	if ctx.TaskRunner == nil {
+	if ctx.Tasks.Runner == nil {
 		result.Status = "error"
 		result.Error = "background mode is not available in this invocation"
 		return result
 	}
 	callID, _ := ctx.Args["call_id"].(string)
 
-	// IMPORTANT: do not wire ctx.Streamer into spec.OnChunk. In background
+	// IMPORTANT: do not wire ctx.Client.Streamer into spec.OnChunk. In background
 	// mode the server has already registered a TaskManager-level chunk
 	// subscriber (SubscribeChunks) that broadcasts the same WS event. If we
-	// also forwarded chunks through spec.OnChunk -> ctx.Streamer, every
+	// also forwarded chunks through spec.OnChunk -> ctx.Client.Streamer, every
 	// chunk would be broadcast twice and the extension's streamBox would
 	// duplicate every line of stdout. Foreground mode is different: it
-	// relies on ctx.Streamer because it doesn't go through TaskManager at
+	// relies on ctx.Client.Streamer because it doesn't go through TaskManager at
 	// all.
 	//
 	// Background mode runs with no timeout by default — the whole point is to
@@ -237,13 +237,13 @@ func (t *ExecCmdTool) executeBackground(ctx *Context, cmd string, result *Result
 	}
 	spec := TaskSpec{
 		CallID:          callID,
-		SourceClientID:  ctx.SourceClientID,
-		ConversationURL: ctx.ConversationURL,
+		SourceClientID:  ctx.Client.SourceClientID,
+		ConversationURL: ctx.Client.ConversationURL,
 		Command:         cmd,
 		Dir:             ctx.EffectiveRootDir(),
 		Timeout:         taskTimeout,
 	}
-	id, err := ctx.TaskRunner.Start(spec)
+	id, err := ctx.Tasks.Runner.Start(spec)
 	if err != nil {
 		result.Status = "error"
 		result.Error = err.Error()

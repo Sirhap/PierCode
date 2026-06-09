@@ -245,23 +245,25 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 		RootDir:               rootSnapshot,
 		AdditionalAllowedDirs: additionalRootsSnapshot,
 		PermissionMode:        permissionModeSnapshot,
-		TaskRunner:            e.tasks,
 		Agents:                e.agents,
+		Tasks:                 tool.TaskAccess{Runner: e.tasks},
+		Client: tool.ClientIO{
+			SourceClientID:  req.SourceClientID,
+			ConversationURL: req.ConversationURL,
+		},
 	}
 	e.browserMu.RLock()
 	toolCtx.Browser = e.browser
 	e.browserMu.RUnlock()
 	if streamer != nil {
-		toolCtx.Streamer = func(stream, text string) { streamer(stream, text) }
+		toolCtx.Client.Streamer = func(stream, text string) { streamer(stream, text) }
 	}
 	if bp := e.broadcast.Load(); bp != nil {
-		toolCtx.Broadcast = *bp
+		toolCtx.Client.Broadcast = *bp
 	}
 	if bp := e.broadcastToClient.Load(); bp != nil {
-		toolCtx.BroadcastToClient = *bp
+		toolCtx.Client.BroadcastToClient = *bp
 	}
-	toolCtx.SourceClientID = req.SourceClientID
-	toolCtx.ConversationURL = req.ConversationURL
 
 	unlock := e.lockForTool(req.Name)
 	result := t.Execute(toolCtx)

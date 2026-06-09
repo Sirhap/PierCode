@@ -76,19 +76,19 @@ func (t *QuestionTool) Execute(ctx *Context) *Result {
 	answerCh, cleanup := PendingQuestions.Register(callID)
 	defer cleanup()
 
-	if ctx.Broadcast != nil || (ctx.BroadcastToClient != nil && ctx.SourceClientID != "") {
+	if ctx.Client.Broadcast != nil || (ctx.Client.BroadcastToClient != nil && ctx.Client.SourceClientID != "") {
 		payload := map[string]interface{}{
 			"type":      "question_ask",
 			"call_id":   callID,
-			"client_id": ctx.SourceClientID,
+			"client_id": ctx.Client.SourceClientID,
 			"question":  question,
 			"options":   options,
 		}
 		if data, err := json.Marshal(payload); err == nil {
-			if ctx.SourceClientID != "" && ctx.BroadcastToClient != nil {
-				ctx.BroadcastToClient(ctx.SourceClientID, data)
+			if ctx.Client.SourceClientID != "" && ctx.Client.BroadcastToClient != nil {
+				ctx.Client.BroadcastToClient(ctx.Client.SourceClientID, data)
 			} else {
-				ctx.Broadcast(data)
+				ctx.Client.Broadcast(data)
 			}
 		}
 	}
@@ -129,20 +129,20 @@ func (t *QuestionTool) Execute(ctx *Context) *Result {
 }
 
 func (t *QuestionTool) broadcastCancel(ctx *Context, callID, reason string) {
-	if ctx.Broadcast == nil && (ctx.BroadcastToClient == nil || ctx.SourceClientID == "") {
+	if ctx.Client.Broadcast == nil && (ctx.Client.BroadcastToClient == nil || ctx.Client.SourceClientID == "") {
 		return
 	}
 	payload := map[string]interface{}{
 		"type":      "question_cancel",
 		"call_id":   callID,
-		"client_id": ctx.SourceClientID,
+		"client_id": ctx.Client.SourceClientID,
 		"reason":    reason,
 	}
 	if data, err := json.Marshal(payload); err == nil {
-		if ctx.SourceClientID != "" && ctx.BroadcastToClient != nil {
-			ctx.BroadcastToClient(ctx.SourceClientID, data)
+		if ctx.Client.SourceClientID != "" && ctx.Client.BroadcastToClient != nil {
+			ctx.Client.BroadcastToClient(ctx.Client.SourceClientID, data)
 		} else {
-			ctx.Broadcast(data)
+			ctx.Client.Broadcast(data)
 		}
 	}
 }

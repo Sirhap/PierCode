@@ -28,7 +28,7 @@ func (t *TaskListTool) Execute(ctx *Context) *Result {
 	result := &Result{StartTime: time.Now()}
 	defer func() { result.EndTime = time.Now() }()
 
-	if ctx.TaskRunner == nil {
+	if ctx.Tasks.Runner == nil {
 		result.Status = "error"
 		result.Error = "background tasks unavailable in this invocation"
 		return result
@@ -37,7 +37,7 @@ func (t *TaskListTool) Execute(ctx *Context) *Result {
 	filter, _ := ctx.Args["status"].(string)
 	filter = strings.ToLower(strings.TrimSpace(filter))
 
-	snaps := ctx.TaskRunner.Snapshots()
+	snaps := ctx.Tasks.Runner.Snapshots()
 	if filter != "" {
 		filtered := snaps[:0]
 		for _, s := range snaps {
