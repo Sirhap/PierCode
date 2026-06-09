@@ -4,6 +4,7 @@ import { extractMonacoText, findQwenPierCodeBody, getAdapterNewSessionUrl, getAd
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, sendAgentResult, injectToolResult } from './ws-linker';
 import { isConversationURLForCurrentPage, observeConversationURL, getConversationKey } from './conversation-scope';
+import { maybeTruncate } from './result-truncate';
 import { visualIndicator } from './visual-indicator';
 import { statusPanel, type ControlledTabInfo } from './status-panel';
 import { computeMeter } from './token-meter';
@@ -1744,7 +1745,7 @@ async function executeToolCallReturn(toolCall: any, withGuidance = true): Promis
         platform: platformProfile,
       });
       if (resp?.ok) {
-        injectToolResult(formatToolResults(resp.results || []));
+        injectToolResult(maybeTruncate(formatToolResults(resp.results || [])));
       } else {
         injectToolResult(`子 agent 失败: ${resp?.error || '未知错误'}`);
       }
