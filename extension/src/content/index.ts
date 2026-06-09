@@ -1,4 +1,5 @@
-import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket } from '../parser';
+import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket, formatToolResults } from '../parser';
+import { hasApiClient } from './platform-caps';
 import { extractMonacoText, findQwenPierCodeBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, sendAgentResult, injectToolResult } from './ws-linker';
@@ -764,6 +765,10 @@ interface ToolExecutionResult {
   output: string;
   stopStream: boolean;
   sendable: boolean;
+  // The result was already filled into the chat input and submitted by this
+  // call (e.g. spawn_agent's API route uses injectToolResult), so the batch
+  // loop must NOT also push it to batchOutputs / re-submit it.
+  alreadyInjected?: boolean;
 }
 
 // ─── 流式工具输出分发 ─────────────────────────────────────────────────────────
@@ -1722,6 +1727,35 @@ async function executeToolCallReturn(toolCall: any, withGuidance = true): Promis
     return { output: answer, stopStream: false, sendable: true };
   }
 
+  // spawn_agent on API-client platforms (qwen/chatgpt/claude/openai) runs the
+  // sub-agent as an in-memory API sub-conversation in the background worker
+  // (NO new tab) and injects the result back into the chat. Other platforms
+  // fall through to /exec, where the server opens a tab-worker (unchanged).
+  if (toolCall.name === 'spawn_agent' && hasApiClient(platformProfile)) {
+    const spawn = {
+      name: toolCall.name,
+      args: toolCall.args || {},
+      call_id: getToolCallId(toolCall),
+    };
+    try {
+      const resp = await chrome.runtime.sendMessage({
+        type: 'CONTENT_SPAWN_AGENT',
+        spawns: [spawn],
+        platform: platformProfile,
+      });
+      if (resp?.ok) {
+        injectToolResult(formatToolResults(resp.results || []));
+      } else {
+        injectToolResult(`子 agent 失败: ${resp?.error || '未知错误'}`);
+      }
+    } catch (error) {
+      injectToolResult(`子 agent 失败: ${error}`);
+    }
+    // Result already filled + submitted via injectToolResult; mark executed but
+    // don't let the batch loop push it to batchOutputs / submit it again.
+    return { output: '', stopStream: false, sendable: true, alreadyInjected: true };
+  }
+
   try {
     if (!checkContext(true)) return { output: '', stopStream: false, sendable: false };
     const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
@@ -2458,11 +2492,13 @@ function startDOMObserver(_responseSelector: string) {
           // last tool of this drain when nothing else is queued. Other tools opt
           // out so the AI sees the operating reminder once, not once per tool.
           const withGuidance = i === batch.length - 1 && pendingBatch.length === 0;
-          const { output, stopStream, sendable } = await executeToolCallReturn(toolCall, withGuidance);
+          const { output, stopStream, sendable, alreadyInjected } = await executeToolCallReturn(toolCall, withGuidance);
           if (sendable) {
             markExecuted(key);
           }
-          if (sendable && output.trim()) {
+          // alreadyInjected tools (spawn_agent's API route) filled + submitted
+          // their own result via injectToolResult; don't re-queue it here.
+          if (sendable && !alreadyInjected && output.trim()) {
             const callId = getToolCallId(toolCall);
             batchOutputs.push(`### ${toolCall.name} #${callId}\n${output}`);
           }
