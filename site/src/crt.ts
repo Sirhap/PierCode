@@ -1,6 +1,7 @@
-// Lightweight CRT background: sparse falling-character "rain" over a faint
-// grid, throttled to ~24fps. Replaces the old Three.js grid scene. Skipped on
-// mobile / reduced-motion (the CSS grid + scanlines are the fallback).
+// Lightweight CRT background: sparse falling-character "rain" (Catppuccin
+// blue) over a faint grid, throttled to ~24fps. Replaces the old Three.js
+// grid scene. Skipped on mobile / reduced-motion (the CSS grid + scanlines
+// are the fallback).
 
 const GLYPHS = 'read_file edit exec_cmd grep glob browser_* spawn_agent 0123456789abcdef ▸ ✓ → ░▒'.replace(/\s+/g, '')
 
@@ -56,7 +57,7 @@ export function initCRT(canvas: HTMLCanvasElement): void {
         const yy = d.y - i * cell
         if (yy < -cell || yy > h) continue
         const a = i === 0 ? 0.7 : (1 - i / d.trail) * 0.22
-        ctx!.fillStyle = `rgba(51, 255, 102, ${a})`
+        ctx!.fillStyle = `rgba(137, 180, 250, ${a})`
         const g = i === 0 ? d.glyph : GLYPHS[rnd(GLYPHS.length)]
         ctx!.fillText(g, d.x, yy)
       }

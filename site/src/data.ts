@@ -10,6 +10,14 @@ export const coreCapabilities: { icon: string; i18nKey: string }[] = [
   { icon: '[ memory ]', i18nKey: 'core.4' },
 ]
 
+// Model modes — a compact strip; each maps to i18n keys mode.Nt / mode.Nd.
+// `tag` is a literal mono badge (model capability), never translated.
+export const modes: { tag: string; i18nKey: string }[] = [
+  { tag: 'thinking', i18nKey: 'mode.1' },
+  { tag: 'fast', i18nKey: 'mode.2' },
+  { tag: 'auto', i18nKey: 'mode.3' },
+]
+
 // Tool names for the feature cards (literal, never translated). Card title and
 // description come from i18n keys feat.1t/feat.1d … in the same order.
 export const featureTools: string[] = [

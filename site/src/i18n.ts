@@ -8,6 +8,7 @@ type Dict = Record<string, { zh: string; en: string }>
 export const strings: Dict = {
   'nav.how': { zh: '工作原理', en: 'How it works' },
   'nav.core': { zh: '核心能力', en: 'Capabilities' },
+  'nav.modes': { zh: '模型模式', en: 'Modes' },
   'nav.features': { zh: '能力', en: 'Features' },
   'nav.platforms': { zh: '支持平台', en: 'Platforms' },
   'nav.security': { zh: '安全', en: 'Security' },
@@ -97,6 +98,16 @@ export const strings: Dict = {
   'feat.5d': { zh: '约 25 个 CDP 工具——导航、点击、输入、快照、截图，均需批准。', en: '~25 CDP tools — navigate, click, type, snapshot, screenshot, with approval.' },
   'feat.6t': { zh: '规划与扩展', en: 'Plan & extend' },
   'feat.6d': { zh: '跟踪多步任务，按需加载可复用 skill。', en: 'Track multi-step work and load reusable skills on demand.' },
+
+  // ── Model modes ──
+  'mode.h2': { zh: '思考、快速、自动，按需选', en: 'Thinking, fast, or autonomous' },
+  'mode.sub': { zh: '用每个平台原生的模型能力——PierCode 不挑模式。', en: 'Use each platform’s native model capability — PierCode is mode-agnostic.' },
+  'mode.1t': { zh: '思考模式', en: 'Thinking mode' },
+  'mode.1d': { zh: '开启平台的深度思考 / 推理后再让它写工具调用。复杂重构、调试、规划更稳。', en: 'Turn on the platform’s deep-thinking / reasoning before it emits tool calls. Steadier on complex refactors, debugging, and planning.' },
+  'mode.2t': { zh: '快速输出', en: 'Fast output' },
+  'mode.2d': { zh: '用快速 / 轻量模型跑高频小操作——读文件、grep、小改、跑测试，几乎零等待。', en: 'Use a fast / lightweight model for high-frequency micro-ops — read, grep, small edits, test runs — with near-zero wait.' },
+  'mode.3t': { zh: '自动代理', en: 'Autonomous agent' },
+  'mode.3d': { zh: '协调者派发子任务给 worker 页面，无人值守连跑多步,结果自动回收。', en: 'A coordinator dispatches sub-tasks to worker pages, runs multi-step work unattended, and collects results automatically.' },
 
   'plat.h2': { zh: '在你常用的对话里就能用', en: 'Works where you already chat' },
   'plat.sub': { zh: '一个扩展，覆盖多个 AI 平台。', en: 'One extension, many AI surfaces.' },

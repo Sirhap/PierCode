@@ -6,7 +6,7 @@ import '@fontsource/jetbrains-mono/latin-700.css'
 import '@fontsource/jetbrains-mono/latin-800.css'
 import { gsap } from 'gsap'
 import { ScrollTrigger } from 'gsap/ScrollTrigger'
-import { coreCapabilities, featureTools, platforms } from './data'
+import { coreCapabilities, modes, featureTools, platforms } from './data'
 import { runChatDemo } from './chatdemo'
 import { applyLang, getLang, setLang, strings, type Lang } from './i18n'
 import { runBoot } from './boot'
@@ -30,6 +30,21 @@ function renderCoreCapabilities() {
         <h3 data-i18n="${cap.i18nKey}t"></h3>
         <p data-i18n="${cap.i18nKey}d"></p>
         <div class="core-highlight" data-i18n="${cap.i18nKey}h"></div>
+      </div>`,
+    )
+    .join('')
+}
+
+function renderModes() {
+  const root = document.getElementById('mode-cards')
+  if (!root) return
+  root.innerHTML = modes
+    .map(
+      (m) => `
+      <div class="mode-card reveal">
+        <div class="mode-tag">--${m.tag}</div>
+        <h3 data-i18n="${m.i18nKey}t"></h3>
+        <p data-i18n="${m.i18nKey}d"></p>
       </div>`,
     )
     .join('')
@@ -142,6 +157,7 @@ function initCopyButtons() {
 // ── Boot, then bring the page to life ────────────────────
 async function boot() {
   renderCoreCapabilities()
+  renderModes()
   renderFeatures()
   renderPlatforms()
   applyLang(getLang()) // localize static + freshly-rendered nodes; default zh
