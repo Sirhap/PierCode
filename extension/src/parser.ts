@@ -187,3 +187,14 @@ function repairUnescapedQuotes(input: string): string {
 function looksLikeToolCall(v: any): boolean {
   return v && typeof v === 'object' && !Array.isArray(v) && typeof v.name === 'string' && v.name.length > 0;
 }
+
+// formatToolResults renders tool execution results as the continuation message
+// fed back to the model: one `### name #call_id` block per result, blank-line
+// joined. Shared by the API channel (chat-api.ts) and the content channel.
+export function formatToolResults(
+  results: Array<{ name: string; call_id?: string | null; output: string }>
+): string {
+  return results
+    .map(r => `### ${r.name} #${r.call_id ?? ''}\n\n${r.output}`)
+    .join('\n\n')
+}
