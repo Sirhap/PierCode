@@ -13,6 +13,8 @@ type TaskOutputTool struct{}
 
 func NewTaskOutputTool() *TaskOutputTool { return &TaskOutputTool{} }
 
+func (t *TaskOutputTool) Metadata() ToolMetadata { return ToolMetadata{ReadOnly: true} }
+
 func (t *TaskOutputTool) Name() string { return "task_output" }
 func (t *TaskOutputTool) Description() string {
 	return "Read captured stdout/stderr and status of a background task"

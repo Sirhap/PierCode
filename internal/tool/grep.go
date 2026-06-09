@@ -24,6 +24,8 @@ func NewGrepTool(config *types.Config) *GrepTool {
 	return &GrepTool{config: config}
 }
 
+func (t *GrepTool) Metadata() ToolMetadata { return ToolMetadata{ReadOnly: true} }
+
 func (t *GrepTool) Name() string { return "grep" }
 func (t *GrepTool) Description() string {
 	return `Searches file contents with a regular expression. Prefer this over running grep/rg via exec_cmd.

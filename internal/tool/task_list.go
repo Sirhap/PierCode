@@ -13,6 +13,8 @@ type TaskListTool struct{}
 
 func NewTaskListTool() *TaskListTool { return &TaskListTool{} }
 
+func (t *TaskListTool) Metadata() ToolMetadata { return ToolMetadata{ReadOnly: true} }
+
 func (t *TaskListTool) Name() string { return "task_list" }
 func (t *TaskListTool) Description() string {
 	return "List background tasks started via exec_cmd with background:true"

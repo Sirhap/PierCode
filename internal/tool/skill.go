@@ -20,6 +20,8 @@ func NewSkillTool(config *types.Config) *SkillTool {
 	return &SkillTool{config: config}
 }
 
+func (t *SkillTool) Metadata() ToolMetadata { return ToolMetadata{ReadOnly: true} }
+
 func (t *SkillTool) Name() string { return "skill" }
 func (t *SkillTool) Description() string {
 	infos := skill.LoadInfos(t.config.GetRootDir())
