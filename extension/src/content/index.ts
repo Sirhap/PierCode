@@ -33,6 +33,7 @@ import { dispatchEnterAsSendFallback } from './send-fallback';
 import { selectorsForHost } from './platform-selectors';
 import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
 import { T_PANEL, T_PANEL2, T_LINE, T_DIM, T_TXT, T_GLOW, T_GLOW_SOFT, T_AMBER, T_RED, T_FONT } from './terminal-theme';
+import { TIMING } from './timing';
 
 // 静默窗口解析器（内联，避免 content 引入 ../settings 触发 Rollup 共享分块，
 // 进而让 content.js 输出 ESM import —— MV3 classic content script 不允许）。
@@ -506,7 +507,7 @@ async function fillCompressedContextWhenReady(text: string): Promise<boolean> {
       // 新标签 SPA 可能仍在 hydrate：editor 已可见但输入事件还没挂上。
       // 先等输入区稳定，再用 immediate 发送（会主动等发送按钮可点），
       // 单次填充避免重试把文本追加成重复内容。
-      await new Promise(resolve => setTimeout(resolve, 800));
+      await new Promise(resolve => setTimeout(resolve, TIMING.HANDOFF_EDITOR_SETTLE_MS));
       // 这条注入的 handoff 体积大，标记为"不触发压缩"，避免刚注入就再压一轮。
       suppressNextCompressionTrigger = true;
       const sent = await fillAndSend(text, true, { forceSend: true, immediate: true });
@@ -517,7 +518,7 @@ async function fillCompressedContextWhenReady(text: string): Promise<boolean> {
       }
       return sent;
     }
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise(resolve => setTimeout(resolve, TIMING.EDITOR_POLL_MS));
   }
   console.warn('[PierCode] 压缩上下文注入失败：30s 内未找到 Qwen 输入框');
   return false;
@@ -2574,7 +2575,7 @@ function startDOMObserver(_responseSelector: string) {
           } else {
             const clicked = clickQwenOverflowPlaceholders(blockBody);
             if (clicked) {
-              setTimeout(() => scheduleScan(sourceEl), 300);
+              setTimeout(() => scheduleScan(sourceEl), TIMING.MONACO_OVERFLOW_RESCAN_MS);
             }
             notifyQwenOverflowOnce(codeText);
             continue;
