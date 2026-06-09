@@ -30,6 +30,7 @@ import {
   thresholdForPlatform,
 } from './qwen-settings';
 import { dispatchEnterAsSendFallback } from './send-fallback';
+import { selectorsForHost } from './platform-selectors';
 import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
 import { T_PANEL, T_PANEL2, T_LINE, T_DIM, T_TXT, T_GLOW, T_GLOW_SOFT, T_AMBER, T_RED, T_FONT } from './terminal-theme';
 
@@ -1256,97 +1257,37 @@ function ensureToolCallId(data: any, key: string): any {
   return { ...data, callId: `ol_${Math.abs(hashStr(key)).toString(36)}` };
 }
 
-function getSiteConfig(): SiteConfig {
-  const h = location.hostname;
-  // 优先使用平台适配器的 responseSelector
-  const adapterSelector = platformAdapter.responseSelector;
+// aiStudioStopBtnMatch is the special "stop generating" finder for Google AI
+// Studio. Its Run/Stop share the same ms-run-button button (type="button", not
+// submit), distinguished ONLY by text content ("Run" vs containing "Stop"), so
+// CSS can't express the stop state — hence platform-selectors marks aistudio's
+// stopBtn as null and this callback is attached here. The page also has other
+// ms-button-primary buttons (API key, Tools), so we can't take the first match;
+// we narrow to ms-run-button button then check text. Lives in index.ts (not the
+// selector table) because it needs the DOM helper isVisibleElement.
+function aiStudioStopBtnMatch(): HTMLElement | null {
+  const btn = document.querySelector('ms-run-button button') as HTMLElement | null;
+  if (btn && isVisibleElement(btn) && btn.textContent?.includes('Stop')) return btn;
+  return null;
+}
 
-  if (h.includes('kimi.com'))
-    return { editor: 'div.chat-input-editor[contenteditable="true"]', sendBtn: 'div.send-button-container', stopBtn: '.send-button-container.stop, .send-button-container[class*="stop"]', fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || '.segment-assistant' };
-  if (h.includes('chat.z.ai'))
-    return {
-      editor: 'textarea#chat-input',
-      sendBtn: 'button#send-message-button',
-      // Chat Z 生成态：方块停止按钮的 class 全是 Tailwind（易变），但外层包了
-      // 稳定的 div[aria-label="停止"]。用它定位内部 button；兼容英文 aria-label="Stop"。
-      stopBtn: 'div[aria-label="停止"] button, div[aria-label="Stop"] button',
-      fillMethod: 'value',
-      useObserver: true,
-      responseSelector: adapterSelector || '#response-content-container'
-    };
-  if (h.includes('claude.ai') || h.includes('free.easychat.top'))
-    return {
-      editor: 'div[contenteditable="true"][data-testid="chat-input"], div.ProseMirror[contenteditable="true"][aria-label*="Claude"], div.ProseMirror[contenteditable="true"]',
-      sendBtn: 'button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled])',
-      stopBtn: 'button[aria-label="Stop response"], button[aria-label*="Stop response"]',
-      fillMethod: 'execCommand',
-      useObserver: true,
-      responseSelector: adapterSelector || '.font-claude-response'
-    };
-  if (h.includes('chatgpt.com') || h.includes('chat.openai.com'))
-    return {
-      editor: 'div#prompt-textarea.ProseMirror[contenteditable="true"], div#prompt-textarea[contenteditable="true"], div.ProseMirror[contenteditable="true"][aria-label*="ChatGPT"], textarea[name="prompt-textarea"]',
-      sendBtn: 'button[data-testid="send-button"]:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="发送"]:not([disabled]), button[aria-label*="提交"]:not([disabled])',
-      stopBtn: 'button[data-testid="stop-button"]',
-      fillMethod: 'execCommand',
-      useObserver: true,
-      responseSelector: adapterSelector || '[data-message-author-role="assistant"] .markdown, [data-message-author-role="assistant"]'
-    };
-  if (h.includes('gemini.google.com'))
-    return { editor: 'div.ql-editor[contenteditable="true"]', sendBtn: 'button.send-button[aria-label*="发送"], button.send-button[aria-label*="Send"]', stopBtn: 'button[aria-label="停止回答"], button[aria-label*="停止回答"], button[aria-label*="Stop response"], button[aria-label*="Stop generating"]', fillMethod: 'execCommand', useObserver: true, responseSelector: adapterSelector || 'model-response, .model-response-text, message-content' };
-  if (h.includes('qwen.ai') || h.includes('qwenlm.ai'))
-    return {
-      editor: [
-        'textarea[class*="MessageInput__TextArea"]',
-        'textarea.message-input-textarea',
-        'textarea[placeholder*="Qwen"]',
-        'textarea[placeholder*="Send"]',
-        'textarea[placeholder*="输入"]',
-        '[contenteditable="true"]'
-      ].join(','),
-      sendBtn: [
-        'div[class*="MessageInput__Submit"]:not([aria-disabled="true"])',
-        'button.send-button:not([disabled])',
-        'button[aria-label*="发送"]:not([disabled])',
-        'button[aria-label*="Send"]:not([disabled])'
-      ].join(','),
-      // 结束后停止按钮仍在但带 disabled（class 与/或属性）。用 :not([disabled])
-      // 排除已结束态，避免被误判为"仍在生成"而永不提交。
-      stopBtn: 'button.stop-button:not([disabled]):not(.disabled)',
-      fillMethod: 'value',
-      useObserver: true,
-      responseSelector: adapterSelector || '.qwen-chat-message-assistant'
-    };
-  if (h.includes('aistudio.xiaomimimo.com'))
-    return {
-      editor: 'textarea',
-      sendBtn: 'button[data-track-id="home_send_btn"]',
-      // Mimo 发送态与停止态共用同一 button[data-track-id="home_send_btn"]，
-      // 仅内部 SVG 不同：发送=纸飞机 viewBox="0 0 19 16"，停止=方块
-      // viewBox="0 0 24 24"。必须靠 :has() 区分，否则发送态会被误判为生成中
-      // 而导致工具结果永不提交。
-      stopBtn: 'button[data-track-id="home_send_btn"]:has(svg[viewBox="0 0 24 24"])',
-      fillMethod: 'value',
-      useObserver: true,
-      responseSelector: adapterSelector || '.markdown-prose'
-    };
-  // Default: AI Studio
-  // AI Studio 的 Run/Stop 共用 ms-run-button 内的同一 button（type="button"，非
-  // submit），仅文本区分：非生成态 "Run"，生成态含 "Stop"。页面还有别的
-  // ms-button-primary（API key、Tools），不能用 document.querySelector 取第一个，
-  // 必须收窄到 ms-run-button button 再判文本。
+function getSiteConfig(): SiteConfig {
+  // 优先使用平台适配器的 responseSelector，回退到表里的默认值
+  const adapterSelector = platformAdapter.responseSelector;
+  // Selector strings/order live in the PLATFORM_SELECTORS table (single source of
+  // truth); this builder applies the runtime-only bits: the adapter override and
+  // the AI-Studio stopBtnMatch callback when CSS can't express the stop state.
+  const base = selectorsForHost(location.hostname);
   return {
-    editor: 'textarea[placeholder*="Start typing a prompt"]',
-    sendBtn: 'ms-run-button button.ctrl-enter-submits, button.ctrl-enter-submits.ms-button-primary, button[aria-label*="Run"]',
-    stopBtn: null,
-    stopBtnMatch: () => {
-      const btn = document.querySelector('ms-run-button button') as HTMLElement | null;
-      if (btn && isVisibleElement(btn) && btn.textContent?.includes('Stop')) return btn;
-      return null;
-    },
-    fillMethod: 'value',
+    editor: base.editor,
+    sendBtn: base.sendBtn,
+    stopBtn: base.stopBtn,
+    // base.stopBtn === null ⇒ no CSS can distinguish the stop state (AI Studio):
+    // attach the text-content callback instead.
+    ...(base.stopBtn === null ? { stopBtnMatch: aiStudioStopBtnMatch } : {}),
+    fillMethod: base.fillMethod,
     useObserver: true,
-    responseSelector: adapterSelector || 'ms-chat-turn'
+    responseSelector: adapterSelector || base.responseSelector
   };
 }
 
