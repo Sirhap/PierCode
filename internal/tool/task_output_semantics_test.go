@@ -26,7 +26,7 @@ func TestTaskOutputAnnotatesBenignExitCode(t *testing.T) {
 		runner := &snapTaskRunner{snap: TaskSnapshot{
 			ID: "t1", Command: "grep foo big.log", Status: "done", ExitCode: 1,
 		}}
-		ctx := &Context{Args: map[string]interface{}{"task_id": "t1"}, TaskRunner: runner}
+		ctx := &Context{Args: map[string]interface{}{"task_id": "t1"}, Tasks: TaskAccess{Runner: runner}}
 		res := tool.Execute(ctx)
 		if !strings.Contains(res.Output, "not a failure") {
 			t.Errorf("expected benign-exit note, got: %s", res.Output)
@@ -40,7 +40,7 @@ func TestTaskOutputAnnotatesBenignExitCode(t *testing.T) {
 		runner := &snapTaskRunner{snap: TaskSnapshot{
 			ID: "t2", Command: "go build ./...", Status: "failed", ExitCode: 1,
 		}}
-		ctx := &Context{Args: map[string]interface{}{"task_id": "t2"}, TaskRunner: runner}
+		ctx := &Context{Args: map[string]interface{}{"task_id": "t2"}, Tasks: TaskAccess{Runner: runner}}
 		res := tool.Execute(ctx)
 		if strings.Contains(res.Output, "not a failure") {
 			t.Errorf("go build exit 1 is a real failure, should not be annotated: %s", res.Output)

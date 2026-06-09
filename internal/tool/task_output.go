@@ -35,7 +35,7 @@ func (t *TaskOutputTool) Execute(ctx *Context) *Result {
 	result := &Result{StartTime: time.Now()}
 	defer func() { result.EndTime = time.Now() }()
 
-	if ctx.TaskRunner == nil {
+	if ctx.Tasks.Runner == nil {
 		result.Status = "error"
 		result.Error = "background tasks unavailable in this invocation"
 		return result
@@ -44,7 +44,7 @@ func (t *TaskOutputTool) Execute(ctx *Context) *Result {
 	id, _ := ctx.Args["task_id"].(string)
 	id = strings.TrimSpace(id)
 
-	snap, stdout, stderr, ok := ctx.TaskRunner.GetSnapshot(id)
+	snap, stdout, stderr, ok := ctx.Tasks.Runner.GetSnapshot(id)
 	if !ok {
 		result.Status = "error"
 		result.Error = fmt.Sprintf("task %s not found", id)

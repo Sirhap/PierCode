@@ -89,7 +89,7 @@ func TestTaskListTool(t *testing.T) {
 	t.Run("no tasks", func(t *testing.T) {
 		runner := &fakeTaskRunnerFull{}
 		ctx := testCtx(cfg, map[string]interface{}{})
-		ctx.TaskRunner = runner
+		ctx.Tasks = TaskAccess{Runner: runner}
 		res := NewTaskListTool().Execute(ctx)
 		if res.Status != "success" || !strings.Contains(res.Output, "no background tasks") {
 			t.Errorf("got status=%s output=%q", res.Status, res.Output)
@@ -102,7 +102,7 @@ func TestTaskListTool(t *testing.T) {
 			{ID: "bg-1", Command: "echo a", Status: "running", StartedAt: time.Now().Format(time.RFC3339)},
 		}}
 		ctx := testCtx(cfg, map[string]interface{}{"status": "running"})
-		ctx.TaskRunner = runner
+		ctx.Tasks = TaskAccess{Runner: runner}
 		res := NewTaskListTool().Execute(ctx)
 		if res.Status != "success" {
 			t.Fatalf("status %s err=%s", res.Status, res.Error)
@@ -131,7 +131,7 @@ func TestTaskOutputTool(t *testing.T) {
 			getOK:     true,
 		}
 		ctx := testCtx(cfg, map[string]interface{}{"task_id": "bg-1"})
-		ctx.TaskRunner = runner
+		ctx.Tasks = TaskAccess{Runner: runner}
 		res := NewTaskOutputTool().Execute(ctx)
 		if res.Status != "success" {
 			t.Fatalf("status %s err=%s", res.Status, res.Error)
@@ -144,7 +144,7 @@ func TestTaskOutputTool(t *testing.T) {
 	t.Run("not found errors", func(t *testing.T) {
 		runner := &fakeTaskRunnerFull{getOK: false}
 		ctx := testCtx(cfg, map[string]interface{}{"task_id": "missing"})
-		ctx.TaskRunner = runner
+		ctx.Tasks = TaskAccess{Runner: runner}
 		res := NewTaskOutputTool().Execute(ctx)
 		if res.Status != "error" {
 			t.Error("expected error for missing task")
@@ -162,7 +162,7 @@ func TestTaskStopTool(t *testing.T) {
 	cfg := &types.Config{RootDir: t.TempDir(), Timeout: 10}
 	runner := &fakeTaskRunnerFull{}
 	ctx := testCtx(cfg, map[string]interface{}{"task_id": "bg-7"})
-	ctx.TaskRunner = runner
+	ctx.Tasks = TaskAccess{Runner: runner}
 	res := NewTaskStopTool().Execute(ctx)
 	if res.Status != "success" {
 		t.Fatalf("status %s err=%s", res.Status, res.Error)
@@ -178,7 +178,7 @@ func TestSendStdinTool(t *testing.T) {
 	t.Run("appends newline by default", func(t *testing.T) {
 		runner := &fakeTaskRunnerFull{}
 		ctx := testCtx(cfg, map[string]interface{}{"task_id": "bg-1", "data": "hello"})
-		ctx.TaskRunner = runner
+		ctx.Tasks = TaskAccess{Runner: runner}
 		res := NewSendStdinTool().Execute(ctx)
 		if res.Status != "success" {
 			t.Fatalf("status %s err=%s", res.Status, res.Error)
@@ -198,7 +198,7 @@ func TestSendStdinTool(t *testing.T) {
 			"data":           "raw",
 			"append_newline": false,
 		})
-		ctx.TaskRunner = runner
+		ctx.Tasks = TaskAccess{Runner: runner}
 		NewSendStdinTool().Execute(ctx)
 		if runner.stdinReceive.data != "raw" {
 			t.Errorf("expected raw data, got %q", runner.stdinReceive.data)
