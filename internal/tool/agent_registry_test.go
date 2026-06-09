@@ -328,9 +328,9 @@ func TestSpawnAgentAllowsShallowWorkerCaller(t *testing.T) {
 
 	spawn := NewSpawnAgentTool()
 	ctx := &Context{
-		Args:           map[string]interface{}{"task": "t", "description": "d"},
-		Agents:         r,
-		SourceClientID: "worker-c",
+		Args:   map[string]interface{}{"task": "t", "description": "d"},
+		Agents: r,
+		Client: ClientIO{SourceClientID: "worker-c"},
 	}
 	res := spawn.Execute(ctx)
 	if strContains(res.Error, "depth limit") {

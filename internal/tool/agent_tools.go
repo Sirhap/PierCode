@@ -80,24 +80,24 @@ func NewSpawnAgentTool() Tool {
 			desc := strings.TrimSpace(stringArg(ctx.Args, "description"))
 			platform := strings.TrimSpace(stringArg(ctx.Args, "platform"))
 			if platform == "" {
-				platform = defaultPlatformFor(ctx.SourceClientID)
+				platform = defaultPlatformFor(ctx.Client.SourceClientID)
 			}
 
 			// If the caller is itself a worker (a sub-agent spawning a sub-agent),
 			// its source client id maps back to its own agent record — that agent
 			// is the parent. A main-agent (ai-page) caller has no such mapping:
 			// parentAgentID stays empty for a root agent.
-			parentAgentID := ctx.Agents.AgentIDByWorkerClient(ctx.SourceClientID)
+			parentAgentID := ctx.Agents.AgentIDByWorkerClient(ctx.Client.SourceClientID)
 
 			// Warn (don't block) if the coordinator already has a live worker on the
 			// same task — it has no cross-turn memory of prior spawns and otherwise
 			// fans out duplicates.
 			dupWarn := ""
-			if ctx.Agents.HasActiveWithDescription(ctx.SourceClientID, desc) {
+			if ctx.Agents.HasActiveWithDescription(ctx.Client.SourceClientID, desc) {
 				dupWarn = fmt.Sprintf("\n⚠️ 你已有一个在跑的 worker 描述同为 %q —— 确认不是重复派发，别开多个。", desc)
 			}
 
-			rec := ctx.Agents.CreateInProject(ctx.SourceClientID, ctx.ConversationURL, platform, "", desc, task, parentAgentID)
+			rec := ctx.Agents.CreateInProject(ctx.Client.SourceClientID, ctx.Client.ConversationURL, platform, "", desc, task, parentAgentID)
 
 			workerURL, err := resolvePlatformURL(platform, rec.AgentID)
 			if err != nil {
@@ -118,7 +118,7 @@ func NewSpawnAgentTool() Tool {
 
 			return fmt.Sprintf(
 				"Dispatched worker %s on %s (tab %d): %s\nThe worker will run autonomously and report back as a <task-notification>. Do not poll or read its tab — end your turn and wait for the callback.%s%s\n\n✅ 已启用自动确认机制（4秒后发送跟进消息确保任务执行）",
-				rec.AgentID, platform, tab.TabID, desc, dupWarn, activeRosterSuffix(ctx.Agents, ctx.SourceClientID),
+				rec.AgentID, platform, tab.TabID, desc, dupWarn, activeRosterSuffix(ctx.Agents, ctx.Client.SourceClientID),
 			), nil
 		},
 	}
@@ -301,7 +301,7 @@ func (t *agentTool) Execute(ctx *Context) *Result {
 	// worker's source client id maps back to its own agent record; that agent is
 	// the parent of whatever it spawns, so its depth + 1 is the child's depth.
 	if t.name == "spawn_agent" {
-		if parentID := ctx.Agents.AgentIDByWorkerClient(ctx.SourceClientID); parentID != "" {
+		if parentID := ctx.Agents.AgentIDByWorkerClient(ctx.Client.SourceClientID); parentID != "" {
 			// The main/coordinator AI page has no registry record, so the first
 			// worker it spawns is stored with ParentAgentID="" and reports
 			// Depth()==0 even though it conceptually sits one level below the
