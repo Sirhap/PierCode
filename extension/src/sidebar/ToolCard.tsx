@@ -99,7 +99,7 @@ export default function ToolCard({ tool, result, streams }: {
               {open ? (
                 <pre
                   className="whitespace-pre-wrap break-all flex-1"
-                  style={{ color: result.success ? 'var(--txt)' : 'var(--red, #e06c75)' }}
+                  style={{ color: result.success ? 'var(--txt)' : 'var(--red, #e06c75)', lineHeight: 1.35, margin: 0 }}
                 >
                   {output}
                 </pre>
