@@ -5,6 +5,7 @@ import { filterUserVisibleSkills, SkillSummary } from '../skills';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, sendAgentResult, injectToolResult } from './ws-linker';
 import { isConversationURLForCurrentPage, observeConversationURL, getConversationKey } from './conversation-scope';
 import { maybeTruncate } from './result-truncate';
+import { isBalancedJson } from './json-complete';
 import { visualIndicator } from './visual-indicator';
 import { statusPanel, type ControlledTabInfo } from './status-panel';
 import { computeMeter } from './token-meter';
@@ -2636,7 +2637,7 @@ function startDOMObserver(_responseSelector: string) {
 
         // 流式渲染中：内容可能不完整，跳过本次解析。安排一次兜底重扫，
         // 防止工具块是响应最后一段、后续无变动时永久漏掉。
-        if (!codeText.trim().endsWith('}')) {
+        if (!isBalancedJson(codeText)) {
           if (sourceEl) scheduleSettleRetry(sourceEl);
           continue;
         }
@@ -2688,7 +2689,7 @@ function startDOMObserver(_responseSelector: string) {
         const codeText = lines.join('\n').replace(/\u00A0/g, ' ').trim();
 
         // 流式渲染中：内容可能不完整，跳过本次解析并安排兜底重扫。
-        if (!codeText.trim().endsWith('}')) {
+        if (!isBalancedJson(codeText)) {
           if (sourceEl) scheduleSettleRetry(sourceEl);
           continue;
         }
