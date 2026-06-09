@@ -2239,6 +2239,10 @@ function startDOMObserver(_responseSelector: string) {
   // 重新生成并激活会话。
   const preInitTextLen = new WeakMap<Element, number>();
   let preInitMarked = false;
+  // Response containers seen before the backend connected. Replayed on
+  // PIERCODE_BACKEND_CONNECTED instead of being dropped, so the first assistant
+  // answer's tool calls aren't silently lost to the session gate.
+  const preConnectionBuffer = new Set<Element>();
   const markCurrentResponsesAsHistory = () => {
     document.querySelectorAll(responseContainerSelector()).forEach(el => {
       ignoredPreSessionContainers.add(el);
@@ -2252,7 +2256,10 @@ function startDOMObserver(_responseSelector: string) {
   const activateIfFreshResponse = (container: Element): boolean => {
     if (isResponseSessionActive()) return true;
     // 快照尚未建立时不能判断"新旧"，保守地不激活（交给 markCurrentResponsesAsHistory）。
-    if (!preInitMarked) return false;
+    if (!preInitMarked) {
+      preConnectionBuffer.add(container);
+      return false;
+    }
     if (preInitContainers.has(container)) {
       // 原地重新生成检测：文本相对初始快照显著变化（被清空重写）。
       const baseline = preInitTextLen.get(container) ?? 0;
@@ -2272,6 +2279,17 @@ function startDOMObserver(_responseSelector: string) {
     // first assistant answer is marked as history and never scanned.
     if (!isResponseSessionActive()) {
       markCurrentResponsesAsHistory();
+    }
+    // Any response container seen before the backend connected was the genuine
+    // first answer (the gate dropped it because the snapshot wasn't ready yet).
+    // Activate the session, then replay-scan the buffered containers via the
+    // fresh-response path so their tool calls aren't lost. scheduleActiveScan
+    // un-ignores each container before scheduling, so containers added to
+    // ignoredPreSessionContainers when the gate returned false are recovered.
+    if (preConnectionBuffer.size > 0) {
+      activateResponseSession();
+      for (const el of preConnectionBuffer) scheduleActiveScan(el);
+      preConnectionBuffer.clear();
     }
   });
   let autoExecute: boolean | null = null;
