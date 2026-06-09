@@ -23,12 +23,16 @@ export function getDestructiveWarning(args: Record<string, unknown>): string | n
   return null
 }
 
-const TOOL_ICON: Record<string, string> = {
-  list_dir: 'ls', read_file: 'cat', write_file: 'wr', edit: 'ed',
-  exec_cmd: 'sh', grep: 're', glob: 'gl', web_fetch: 'net',
-  skill: 'sk', apply_patch: 'patch', question: '?',
+function argSummary(args: Record<string, unknown>): string {
+  const val =
+    args.path ?? args.pattern ?? args.command ?? args.query ?? args.cmd ?? args.url ?? null
+  if (val == null) return ''
+  const s = String(val)
+  const truncated = s.length > 40 ? s.slice(0, 37) + '…' : s
+  // find the key we matched
+  const key = ['path', 'pattern', 'command', 'query', 'cmd', 'url'].find(k => args[k] != null) ?? ''
+  return `(${key}:${truncated})`
 }
-function toolTag(name: string): string { return TOOL_ICON[name] || 'fn' }
 
 export default function ToolCard({ tool, result, streams }: {
   tool: ToolCall; result?: ToolResult; streams?: string[]
@@ -37,65 +41,104 @@ export default function ToolCard({ tool, result, streams }: {
   const warning = getDestructiveWarning(tool.args)
   const output = result?.output || ''
   const outLines = output ? output.split('\n') : []
-  const preview = outLines.slice(0, 5).join('\n')
-  const truncated = outLines.length > 5 || output.length > 500
+  const firstLine = outLines[0] || ''
+  const lineCount = outLines.length
+  const truncated = lineCount > 1 || output.length > 500
 
-  const status = result ? (result.success ? '[done]' : '[fail]') : '[run]'
-  const statusCls = result ? (result.success ? 'glow-text' : 'text-red-400') : 'text-amber-400'
+  // Determine ⏺ color
+  const running = !result
+  const dotColor = running
+    ? 'var(--glow)'
+    : result!.success
+      ? 'var(--dim)'
+      : 'var(--red, #e06c75)'
+
+  const summary = argSummary(tool.args)
+  const hasContent = (result && output) || (streams && streams.length > 0)
 
   return (
-    <div className="my-1.5 text-[12px]">
+    <div className="cc-tool my-1 text-[12px]" style={{ fontFamily: 'inherit' }}>
       {warning && (
-        <div className="text-[10px] text-red-300 flex items-center gap-1 mb-1 px-2 py-1 border border-red-800/50 rounded-sm" style={{ background: 'rgba(120,20,20,.15)' }}>
-          <span>⚠</span><span>危险操作: {warning}</span>
+        <div className="text-[11px] mb-0.5" style={{ color: 'var(--red, #e06c75)' }}>
+          ⚠ 危险操作: {warning}
         </div>
       )}
+
+      {/* Header row: ⏺ tool_name(arg) */}
       <div
-        className="flex items-center gap-2 px-2.5 py-1.5 rounded-sm cursor-pointer border"
-        style={{ background: 'var(--panel-2)', borderColor: 'var(--line)' }}
+        className="flex items-baseline gap-1 cursor-pointer select-none"
         onClick={() => setOpen(o => !o)}
       >
-        <span className="glow-text">◆</span>
-        <span style={{ color: 'var(--dim)' }}>{toolTag(tool.name)}</span>
+        <span
+          className={running ? 'animate-pulse-dot' : ''}
+          style={{ color: dotColor, fontSize: '0.85em', lineHeight: 1 }}
+        >⏺</span>
         <span className="font-medium" style={{ color: 'var(--txt)' }}>{tool.name}</span>
-        <span className={`${statusCls} ml-1`}>{status}</span>
-        {!result && <span className="cursor-blink glow-text">▌</span>}
-        <span className="ml-auto" style={{ color: 'var(--dim)' }}>{open ? '▾' : '▸'}</span>
+        {summary && (
+          <span style={{ color: 'var(--dim)' }}>{summary}</span>
+        )}
       </div>
 
-      {open && (
-        <div className="mt-1 ml-2 pl-2.5 space-y-1.5 border-l" style={{ borderColor: 'var(--line)' }}>
-          {Object.keys(tool.args).length > 0 && (
-            <div>
-              <div className="text-[10px] mb-0.5" style={{ color: 'var(--dim)' }}>args</div>
-              <pre className="text-[11px] rounded-sm px-2 py-1 overflow-x-auto whitespace-pre-wrap break-all" style={{ background: '#161615', color: 'var(--txt)' }}>
+      {/* Result / stream tree rows — always shown (collapsed = 1-line summary) */}
+      {hasContent && (
+        <div className="cc-result-tree">
+          {/* Streams */}
+          {streams && streams.length > 0 && (
+            <div className="cc-result-row">
+              <span className="cc-corner" style={{ color: 'var(--dim)' }}>⎿ </span>
+              <span style={{ color: 'var(--dim)' }}>
+                {open ? streams.join('') : streams.join('').split('\n')[0]}
+              </span>
+            </div>
+          )}
+
+          {/* Result */}
+          {result && output && (
+            <div className="cc-result-row">
+              <span className="cc-corner" style={{ color: 'var(--dim)' }}>⎿ </span>
+              {open ? (
+                <pre
+                  className="whitespace-pre-wrap break-all flex-1"
+                  style={{ color: result.success ? 'var(--txt)' : 'var(--red, #e06c75)' }}
+                >
+                  {output}
+                </pre>
+              ) : (
+                <span style={{ color: result.success ? 'var(--dim)' : 'var(--red, #e06c75)' }}>
+                  {firstLine}{truncated ? ` … (${lineCount} 行)` : ''}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Expanded: args sub-row */}
+          {open && Object.keys(tool.args).length > 0 && (
+            <div className="cc-result-row">
+              <span className="cc-corner" style={{ color: 'var(--dim)' }}>⎿ </span>
+              <span style={{ color: 'var(--dim)' }}>args</span>
+              <pre
+                className="text-[11px] rounded-sm px-2 py-1 overflow-x-auto whitespace-pre-wrap break-all mt-0.5 ml-4"
+                style={{ background: '#161615', color: 'var(--txt)' }}
+              >
                 {JSON.stringify(tool.args, null, 2)}
               </pre>
             </div>
           )}
-          {streams && streams.length > 0 && (
-            <div>
-              <div className="text-[10px] mb-0.5" style={{ color: 'var(--dim)' }}>stdout</div>
-              <pre className="text-[11px] rounded-sm px-2 py-1 max-h-32 overflow-y-auto whitespace-pre-wrap glow-text" style={{ background: '#161615' }}>
-                {streams.join('')}
-              </pre>
-            </div>
-          )}
-          {result && (
-            <div>
-              <div className="text-[10px] mb-0.5" style={{ color: 'var(--dim)' }}>result</div>
-              <pre className={`text-[11px] rounded-sm px-2 py-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all ${result.success ? '' : 'text-red-300'}`} style={{ background: '#161615', color: result.success ? 'var(--txt)' : undefined }}>
-                {output}
-              </pre>
-            </div>
-          )}
         </div>
       )}
 
-      {!open && result && (
-        <div className="mt-0.5 ml-2 pl-2.5 border-l" style={{ borderColor: 'var(--line)' }}>
-          <pre className={`text-[11px] whitespace-pre-wrap break-all max-h-16 overflow-hidden ${result.success ? '' : 'text-red-400/70'}`} style={{ color: result.success ? 'var(--dim)' : undefined }}>
-            {truncated ? preview + ' …' : output}
+      {/* Expanded without any result yet: show args */}
+      {open && !hasContent && Object.keys(tool.args).length > 0 && (
+        <div className="cc-result-tree">
+          <div className="cc-result-row">
+            <span className="cc-corner" style={{ color: 'var(--dim)' }}>⎿ </span>
+            <span style={{ color: 'var(--dim)' }}>args</span>
+          </div>
+          <pre
+            className="text-[11px] rounded-sm px-2 py-1 overflow-x-auto whitespace-pre-wrap break-all ml-6 mt-0.5"
+            style={{ background: '#161615', color: 'var(--txt)' }}
+          >
+            {JSON.stringify(tool.args, null, 2)}
           </pre>
         </div>
       )}

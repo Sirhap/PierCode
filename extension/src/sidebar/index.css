@@ -30,3 +30,19 @@
 .msg-content table { border-collapse: collapse; margin: 8px 0; font-size: 0.9em; width: 100%; }
 .msg-content th, .msg-content td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
 .msg-content th { background: var(--glow-soft); font-weight: 500; }
+
+/* ── Claude Code tool-tree layout ───────────────────────────────────────── */
+/* .cc-tool: wraps one tool call (header + result rows)                      */
+.cc-tool { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+
+/* .cc-result-tree: the indented block under the ⏺ header row               */
+.cc-result-tree { margin-left: 1.25em; margin-top: 1px; }
+
+/* .cc-result-row: one ⎿ row — flex baseline so the corner glyph aligns     */
+.cc-result-row { display: flex; align-items: baseline; gap: 0.25em; line-height: 1.5; }
+
+/* .cc-corner: the ⎿ glyph cell — fixed width so text always starts same col */
+.cc-corner { flex-shrink: 0; user-select: none; }
+
+/* ActionBtn hover brightens to --glow */
+.cc-action-btn:hover { color: var(--glow) !important; }

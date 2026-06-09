@@ -89,11 +89,15 @@ function ThinkingBlock({ steps, streaming }: { steps: ThinkingStep[]; streaming?
   const last = steps[steps.length - 1]
   return (
     <div className="mb-1.5 text-[11px]">
-      <div className="flex items-center gap-1.5 cursor-pointer" style={{ color: 'var(--dim)' }} onClick={() => setOpen(o => !o)}>
-        <span>≡</span>
-        <span className="italic truncate flex-1">{last.title || '思考中…'}</span>
+      <div
+        className="flex items-center gap-1.5 cursor-pointer select-none"
+        style={{ color: 'var(--dim)' }}
+        onClick={() => setOpen(o => !o)}
+      >
+        <span>✻</span>
+        <span className="italic truncate flex-1">{open ? '思考中…' : (last.title || '思考中…')}</span>
         {streaming && <span className="animate-pulse-dot">·</span>}
-        <span>{open ? '▾' : `${steps.length} 步 ▸`}</span>
+        <span style={{ color: 'var(--dim)' }}>{open ? '▾' : `${steps.length} 步 ▸`}</span>
       </div>
       {open && (
         <div className="mt-1 pl-4 border-l space-y-1.5" style={{ borderColor: 'var(--line)' }}>
@@ -111,9 +115,12 @@ function ThinkingBlock({ steps, streaming }: { steps: ThinkingStep[]; streaming?
 
 function ActionBtn({ icon, title, onClick, active }: { icon: string; title: string; onClick: () => void; active?: boolean }) {
   return (
-    <button onClick={onClick} title={title}
-      className={`px-1 rounded-sm text-[11px] cursor-pointer ${active ? 'glow-text' : ''}`}
-      style={{ color: active ? undefined : 'var(--dim)' }}>
+    <button
+      onClick={onClick}
+      title={title}
+      className="px-1 rounded-sm text-[11px] cursor-pointer cc-action-btn"
+      style={{ color: active ? 'var(--glow)' : 'var(--dim)' }}
+    >
       {icon}
     </button>
   )
@@ -126,28 +133,44 @@ export default function MessageView({ msg, onRegenerate, onTogglePin }: {
 }) {
   const isUser = msg.role === 'user'
   const isTool = msg.role === 'tool_result'
+  // Hooks must run unconditionally on every render (Rules of Hooks) — declare the
+  // tool_result expand state before any early return, even for non-tool messages.
+  const [expanded, setExpanded] = useState(false)
 
+  // tool_result: dim tree row ⎿ content
   if (isTool) {
+    const preview = msg.content.slice(0, 500)
+    const needsExpand = msg.content.length > 500
     return (
-      <div className="msg-row px-4 py-1">
-        <div className="rounded-sm border p-2.5 text-xs" style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--dim)' }}>
-          <div className="flex items-center gap-1.5 mb-1"><span>»</span><span>tool result</span></div>
-          <pre className="whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
-            {msg.content.slice(0, 500)}{msg.content.length > 500 ? '...' : ''}
-          </pre>
+      <div className="msg-row px-4 py-0.5">
+        <div
+          className="cc-result-row text-[11px] cursor-pointer select-none"
+          style={{ color: 'var(--dim)' }}
+          onClick={() => needsExpand && setExpanded(e => !e)}
+        >
+          <span className="cc-corner">⎿  </span>
+          <span>
+            {expanded ? msg.content : preview}
+            {needsExpand && !expanded ? '…' : ''}
+          </span>
         </div>
       </div>
     )
   }
 
   return (
-    <div className={`msg-row px-4 py-1.5 ${isUser ? 'flex justify-end' : ''}`}>
-      <div className="relative group max-w-[94%] w-full">
-        <div className="flex items-start gap-1.5">
-          <span className="select-none mt-0.5" style={{ color: isUser ? 'var(--dim)' : 'var(--glow)' }}>
-            {isUser ? '◂' : '▸'}
-          </span>
-          <div className="flex-1 min-w-0 text-sm leading-relaxed" style={{ color: 'var(--txt)' }}>
+    <div className="msg-row px-4 py-2">
+      <div className="relative group w-full">
+        {isUser ? (
+          /* User message: dim > prefix, plain left-aligned text */
+          <div className="flex items-baseline gap-1.5 text-sm leading-relaxed">
+            <span className="select-none shrink-0" style={{ color: 'var(--dim)', fontSize: '0.85em' }}>{'>'}</span>
+            <div style={{ color: 'var(--txt)' }}
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+          </div>
+        ) : (
+          /* Assistant message: thinking → tool cards → markdown content, no prefix, flowing */
+          <div className="text-sm leading-relaxed" style={{ color: 'var(--txt)' }}>
             {msg.thinking && msg.thinking.length > 0 && (
               <ThinkingBlock steps={msg.thinking} streaming={msg.streaming && !msg.content} />
             )}
@@ -160,16 +183,23 @@ export default function MessageView({ msg, onRegenerate, onTogglePin }: {
               const displayText = msg.toolCalls?.length ? stripToolBlocks(msg.content) : msg.content
               if (!displayText) return null
               return (
-                <div className={`msg-content ${msg.toolCalls?.length ? 'mt-2' : ''} ${msg.streaming ? 'afterglow' : ''}`}
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(displayText) }} />
+                <div
+                  className={`msg-content${msg.toolCalls?.length ? ' mt-2' : ''}`}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(displayText) }}
+                />
               )
             })()}
-            {msg.streaming && <span className="cursor-blink glow-text ml-0.5">▌</span>}
+            {msg.streaming && (
+              <span className="animate-pulse-dot ml-0.5" style={{ color: 'var(--dim)' }}>▍</span>
+            )}
           </div>
-        </div>
+        )}
 
-        <div className={`flex items-center gap-1 mt-1 pl-4 ${isUser ? 'justify-end' : ''}`}>
-          {msg.ts && <span className="text-[10px] mr-1" style={{ color: 'var(--dim)' }}>{formatTime(msg.ts)}</span>}
+        {/* Footer: timestamp + action buttons */}
+        <div className={`flex items-center gap-1 mt-1 ${isUser ? 'justify-end' : ''}`}>
+          {msg.ts && (
+            <span className="text-[10px] mr-1" style={{ color: 'var(--dim)' }}>{formatTime(msg.ts)}</span>
+          )}
           <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
             {msg.content && !msg.streaming && (
               <ActionBtn icon="copy" title="复制" onClick={() => copyToClipboard(msg.content)} />
