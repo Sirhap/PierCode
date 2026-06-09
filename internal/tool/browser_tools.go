@@ -13,6 +13,7 @@ type browserTool struct {
 	name        string
 	description string
 	parameters  map[string]string
+	readOnly    bool
 	validate    func(map[string]interface{}) error
 	execute     func(*Context) (string, error)
 }
@@ -20,6 +21,7 @@ type browserTool struct {
 func (t *browserTool) Name() string                               { return t.name }
 func (t *browserTool) Description() string                        { return t.description }
 func (t *browserTool) Parameters() interface{}                    { return t.parameters }
+func (t *browserTool) Metadata() ToolMetadata                     { return ToolMetadata{ReadOnly: t.readOnly} }
 func (t *browserTool) Validate(args map[string]interface{}) error { return t.validate(args) }
 func (t *browserTool) Execute(ctx *Context) *Result {
 	result := &Result{StartTime: time.Now()}
@@ -43,6 +45,7 @@ func (t *browserTool) Execute(ctx *Context) *Result {
 func NewBrowserTabsTool() Tool {
 	return &browserTool{
 		name:        "browser_tabs",
+		readOnly:    true,
 		description: "List browser tabs available to PierCode and show which tab is currently controlled",
 		parameters: map[string]string{
 			"includeAiPages": "boolean (optional, default false) - include AI conversation pages in the listing",
@@ -166,6 +169,7 @@ func NewBrowserNavigateTool() Tool {
 func NewBrowserSnapshotTool() Tool {
 	return &browserTool{
 		name:        "browser_snapshot",
+		readOnly:    true,
 		description: "Get a compact accessibility tree snapshot of the controlled page with e0/e1 refs for later browser_click/browser_type",
 		parameters: map[string]string{
 			"tabId":    "number (optional) - controlled tab id",
@@ -280,6 +284,7 @@ func NewBrowserTypeTool() Tool {
 func NewBrowserScreenshotTool() Tool {
 	return &browserTool{
 		name:        "browser_screenshot",
+		readOnly:    true,
 		description: "Capture a screenshot of the controlled browser tab and save it under .piercode/screenshots.",
 		parameters: map[string]string{
 			"tabId":    "number (optional) - controlled tab id",
