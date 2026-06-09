@@ -281,6 +281,26 @@ func TestExecCmdBackgroundDefaultsToNoTimeout(t *testing.T) {
 			t.Errorf("expected timeout=0 when arg=0, got %v", runner.lastSpec.Timeout)
 		}
 	})
+
+	// Background tasks stream through TaskManager's own SubscribeChunks, NOT
+	// through ctx.Client.Streamer. Wiring the live Streamer into spec.OnChunk
+	// would double-broadcast every chunk. Guard the invariant: even when a
+	// Streamer is present, a background handoff must leave OnChunk nil.
+	t.Run("background does not wire Streamer into spec.OnChunk", func(t *testing.T) {
+		runner := &fakeTaskRunner{}
+		ctx := testCtx(cfg, map[string]interface{}{
+			"command":    "sleep 9999",
+			"background": true,
+		})
+		ctx.Tasks.Runner = runner
+		ctx.Client.Streamer = func(stream, text string) {}
+		if res := tool.Execute(ctx); res.Status != "running" {
+			t.Fatalf("expected running, got %s", res.Status)
+		}
+		if runner.lastSpec.OnChunk != nil {
+			t.Error("background handoff must not wire Streamer into spec.OnChunk (would double-broadcast)")
+		}
+	})
 }
 
 func TestSplitOnUTF8BoundaryToolPkg(t *testing.T) {
