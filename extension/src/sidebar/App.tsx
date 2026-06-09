@@ -23,7 +23,7 @@ import {
   getActiveSessionId, setActiveSessionId,
   type SessionMeta, type StoredSession,
 } from './session-store'
-import { buildAgentSummary, AGENT_FADE_DELAY_MS, AGENT_FADE_DURATION_MS } from './subagent-ui'
+import { accumulateBatch, AGENT_FADE_DELAY_MS, AGENT_FADE_DURATION_MS } from './subagent-ui'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -507,19 +507,13 @@ export default function App() {
         // is complete. This survives a fast sibling already removed (Bug1) and never
         // commingles a prior batch's agents (Bug2). delete-on-emit = emit-once.
         setSubAgents(prev => {
-          const finished = prev.find(a => a.id === agentId)
-          if (finished) {
-            const bId = finished.batchId || ''
-            const acc = batchDone.current.get(bId) || []
-            const snap = { ...finished, status: (isErr ? 'error' : 'done') as SubAgent['status'] }
-            if (!acc.some(a => a.id === finished.id)) acc.push(snap)
-            batchDone.current.set(bId, acc)
-            const expected = batchExpected.current.get(bId) || acc.length
-            if (acc.length >= expected) {
-              const summary = buildAgentSummary(acc)
+          const live = prev.find(a => a.id === agentId)
+          if (live) {
+            // Snapshot with the just-applied terminal status before accumulating.
+            const snap = { ...live, status: (isErr ? 'error' : 'done') as SubAgent['status'] }
+            const summary = accumulateBatch(batchDone.current, batchExpected.current, snap)
+            if (summary) {
               setMessages(m => [...m, { role: 'assistant', content: '', agentSummary: summary, ts: Date.now() }])
-              batchDone.current.delete(bId)
-              batchExpected.current.delete(bId)
             }
           }
           return prev
