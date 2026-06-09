@@ -912,12 +912,17 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
         broadcast({ type: 'CHAT_TOOL_DONE', result })
       }
 
-      // spawn_agent → recursive sub-conversation (no tabs).
-      for (const tc of spawns) {
-        if (currentAbort.signal.aborted) break
-        const result = await runSubAgent(tc, platform, modelOverride, depth)
-        results.push(result)
-        broadcast({ type: 'CHAT_TOOL_DONE', result })
+      // spawn_agent → parallel sub-conversations (no tabs). Each runSubAgent
+      // catches its own failures into a failed ToolResult, so Promise.all never
+      // rejects on a single worker error. Order preserved → summary card stable.
+      if (spawns.length > 0 && !currentAbort.signal.aborted) {
+        const spawnResults = await Promise.all(
+          spawns.map(tc => runSubAgent(tc, platform, modelOverride, depth)),
+        )
+        for (const r of spawnResults) {
+          results.push(r)
+          broadcast({ type: 'CHAT_TOOL_DONE', result: r })
+        }
       }
 
       const toolResultContent = results.map(r =>
@@ -1121,6 +1126,12 @@ export function registerChatApiHandler() {
         currentAbort.abort()
         currentAbort = null
       }
+      sendResponse({ ok: true })
+      return false
+    }
+
+    if (msg.type === 'CHAT_AGENT_ABORT') {
+      agentAborts.get(String(msg.agentId || ''))?.abort()
       sendResponse({ ok: true })
       return false
     }
