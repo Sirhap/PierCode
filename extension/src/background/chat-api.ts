@@ -937,7 +937,7 @@ async function runSubAgent(
     return shapeSubAgentResult(call, '(spawn_agent 缺少 task 参数)')
   }
 
-  broadcast({ type: 'CHAT_AGENT_SPAWN', agentId, label, task, batchId })
+  broadcastAgentLifecycle({ type: 'CHAT_AGENT_SPAWN', agentId, label, task, batchId })
 
   const workerPrompt = await fetchWorkerPrompt()
   const message = buildSubAgentMessage(workerPrompt, task)
@@ -954,14 +954,14 @@ async function runSubAgent(
     })
     const cancelled = signal.aborted
     const output = cancelled ? `${finalText}\n\n(已取消)`.trim() : finalText
-    broadcast({ type: 'CHAT_AGENT_DONE', agentId, status: cancelled ? 'error' : 'done' })
+    broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: cancelled ? 'error' : 'done' })
     return cancelled
       ? { call_id: call.call_id, name: call.name, output: output || '(已取消)', success: false }
       : shapeSubAgentResult(call, finalText)
   } catch (err) {
     const cancelled = signal.aborted
     const msg = cancelled ? '(已取消)' : `子 agent 失败: ${err instanceof Error ? err.message : String(err)}`
-    broadcast({ type: 'CHAT_AGENT_DONE', agentId, status: 'error' })
+    broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: 'error' })
     return { call_id: call.call_id, name: call.name, output: msg, success: false }
   } finally {
     cleanup()
@@ -1061,6 +1061,24 @@ function broadcast(msg: Record<string, unknown>) {
   chrome.runtime.sendMessage(msg).catch(() => {
     // No listeners (sidebar closed) — silent
   })
+}
+
+// broadcastAgentLifecycle fans a sub-agent SPAWN/DONE event to BOTH the sidebar
+// (runtime.sendMessage, like broadcast) AND every page tab (tabs.sendMessage).
+// runtime.sendMessage does not reach content scripts, so the content-script
+// StatusPanel would otherwise never see these. Only lifecycle events are fanned
+// out to tabs — high-frequency stream events stay sidebar-only via broadcast().
+function broadcastAgentLifecycle(msg: Record<string, unknown>) {
+  broadcast(msg)
+  try {
+    chrome.tabs.query({}, (tabs) => {
+      for (const t of tabs) {
+        if (t.id != null) chrome.tabs.sendMessage(t.id, msg).catch(() => {})
+      }
+    })
+  } catch {
+    // tabs API unavailable — silent
+  }
 }
 
 // ── Message Handler Registration ───────────────────────────────────────────

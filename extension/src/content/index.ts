@@ -1401,6 +1401,23 @@ function bootstrapContentScript() {
       console.warn('[PierCode] 状态面板初始化失败:', err);
     }
   });
+
+  // 后台子 agent（API 路由）生命周期广播 → 状态面板行。background 的 broadcast()
+  // 用 runtime.sendMessage 只到 sidebar；CHAT_AGENT_SPAWN/DONE 另经 tabs.sendMessage
+  // 转发到本内容脚本（见 chat-api.ts broadcastAgentLifecycle）。✕ 取消复用既有
+  // CHAT_AGENT_ABORT 路径（StatusPanel.renderAgents 内发出）。
+  try {
+    chrome.runtime?.onMessage?.addListener((msg) => {
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'CHAT_AGENT_SPAWN' && msg.agentId) {
+        statusPanel.addAgent(String(msg.agentId), String(msg.label || 'agent'));
+      } else if (msg.type === 'CHAT_AGENT_DONE' && msg.agentId) {
+        statusPanel.setAgentDone(String(msg.agentId), String(msg.status || 'done'));
+      }
+    });
+  } catch {
+    // runtime.onMessage 不可用时静默（不阻塞后续初始化）。
+  }
   // Register WS dispatchers (tool_stream/done + question_ask/cancel) up
   // front so question popups can appear even before any ToolCard renders.
   ensureStreamDispatchers();
