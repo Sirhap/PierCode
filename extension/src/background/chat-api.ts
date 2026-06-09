@@ -432,7 +432,25 @@ async function getAuth(platform: string): Promise<AuthResult | { error: string }
     return { error: '无法获取 Claude 组织信息，请确认已登录' }
   }
 
-  // Qwen / ChatGPT：cookie 认证
+  // ChatGPT：web 端已弃用 __Secure-next-auth.session-token cookie；现走 NextAuth
+  // /api/auth/session，从中取 accessToken（JWT）作 Bearer 调 backend API。session
+  // 端点用 chatgpt.com 的登录 cookie（background fetch 携带，需 host 权限），所以
+  // 这里不读 cookie 名，直接 fetch session。
+  if (platform === 'chatgpt') {
+    try {
+      const res = await fetch('https://chatgpt.com/api/auth/session', { credentials: 'include' })
+      if (res.ok) {
+        const session = await res.json()
+        const accessToken = session?.accessToken
+        if (typeof accessToken === 'string' && accessToken) {
+          return { token: accessToken }
+        }
+      }
+    } catch {}
+    return { error: '未找到 ChatGPT 的登录会话，请先登录 chatgpt.com' }
+  }
+
+  // Qwen：cookie 认证
   const token = await getCookieToken(config.cookieDomain, config.cookieName)
   if (!token) {
     return { error: `未找到 ${config.name} 的认证 cookie，请先登录 ${config.cookieDomain}` }
