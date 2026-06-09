@@ -188,14 +188,14 @@ func NewSendToAgentTool() Tool {
 			if rec.WorkerClientID == "" {
 				return "", fmt.Errorf("worker %s has not connected yet; wait for it to start before sending follow-ups", agentID)
 			}
-			if ctx.BroadcastToClient == nil {
+			if ctx.Client.BroadcastToClient == nil {
 				return "", fmt.Errorf("worker messaging is not available in this session")
 			}
 			payload, err := json.Marshal(map[string]any{"type": "inject", "text": message})
 			if err != nil {
 				return "", err
 			}
-			if !ctx.BroadcastToClient(rec.WorkerClientID, payload) {
+			if !ctx.Client.BroadcastToClient(rec.WorkerClientID, payload) {
 				return "", fmt.Errorf("worker %s is not reachable (tab may be closed)", agentID)
 			}
 			ctx.Agents.SetStatus(agentID, AgentRunning)
@@ -232,7 +232,7 @@ func NewStopAgentTool() Tool {
 // the worker's seed task was properly submitted. This mitigates SPA hydration
 // races where the initial inject may have filled the input but failed to click send.
 func scheduleAutoConfirmSpawn(ctx *Context, agentID, task string) {
-	if ctx.BroadcastToClient == nil {
+	if ctx.Client.BroadcastToClient == nil {
 		return
 	}
 	go func() {
@@ -263,7 +263,7 @@ func scheduleAutoConfirmSpawn(ctx *Context, agentID, task string) {
 		if err != nil {
 			return
 		}
-		ctx.BroadcastToClient(rec.WorkerClientID, payload)
+		ctx.Client.BroadcastToClient(rec.WorkerClientID, payload)
 	}()
 }
 
