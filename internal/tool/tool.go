@@ -46,47 +46,17 @@ type Context struct {
 	AdditionalAllowedDirs []string
 	PermissionMode        string
 
-	// Streamer, if set, receives incremental stdout/stderr chunks from a
-	// long-running tool (currently only exec_cmd). stream is "stdout" or
-	// "stderr". Nil callback means the caller does not care about live output.
-	Streamer func(stream, text string)
-
-	// TaskRunner, if set, allows a tool to hand the actual work off to an
-	// out-of-band background task and return immediately. Currently only
-	// exec_cmd uses this, for background:true requests. Nil means background
-	// mode is not available in this invocation.
-	TaskRunner TaskRunner
-
-	// Broadcast, if set, sends an arbitrary JSON payload to every connected
-	// WebSocket client (browser extension + TUI). The `question` tool uses
-	// this to push a question_ask event and then wait for question_answer.
-	// Nil means broadcast is not available in this invocation.
-	Broadcast func(payload []byte)
-
-	// BroadcastToClient, if set, sends a JSON payload to one WebSocket client.
-	// Browser-page side effects such as uploading a screenshot attachment use
-	// this so multi-tab sessions do not receive the same attachment event.
-	BroadcastToClient func(clientID string, payload []byte) bool
-
-	// SourceClientID is the WebSocket client id of the AI page that initiated
-	// this tool call, when the call came through the browser extension.
-	SourceClientID  string
-	ConversationURL string
-
 	// Agents, if set, is the registry of dispatched worker agents. The
 	// spawn_agent / send_to_agent / stop_agent tools use it to track and
 	// address workers. Nil means multi-agent dispatch is not available in this
 	// invocation.
 	Agents *AgentRegistry
 
-	// Client groups WebSocket-client IO + identity. During migration its
-	// fields are populated alongside the legacy top-level fields below; the
-	// legacy fields are removed in the final task once all consumers read
-	// through Client.
+	// Client groups WebSocket-client IO + identity: Streamer, Broadcast,
+	// BroadcastToClient, SourceClientID, ConversationURL.
 	Client ClientIO
 
-	// Tasks groups background-task handoff. Populated alongside the legacy
-	// TaskRunner field during migration.
+	// Tasks groups background-task handoff.
 	Tasks TaskAccess
 }
 
