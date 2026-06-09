@@ -241,7 +241,11 @@ export default function App() {
   // ── Sub-agent + session state ─────────────────────────────────────────
   const [subAgents, setSubAgents] = useState<SubAgent[]>([])
   const agentTimers = useRef<Set<number>>(new Set())
-  const agentSummaryEmitted = useRef(false)
+  // Per-batch summary accumulation: batchExpected = spawned count per batchId,
+  // batchDone = final snapshots captured at finish time (independent of live-array
+  // fade removal). Emit ONE summary card when accumulated >= expected, then clear.
+  const batchExpected = useRef<Map<string, number>>(new Map())
+  const batchDone = useRef<Map<string, SubAgent[]>>(new Map())
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const sessionIdRef = useRef<string>(genId())
 
@@ -264,6 +268,8 @@ export default function App() {
   useEffect(() => () => {
     agentTimers.current.forEach(id => window.clearTimeout(id))
     agentTimers.current.clear()
+    batchDone.current.clear()
+    batchExpected.current.clear()
   }, [])
 
   // ── Lifted token meter (computed once, shared by TokenPanel + StatusHUD) ─
@@ -473,8 +479,8 @@ export default function App() {
         })
         setStreaming(false)
       } else if (msg.type === 'CHAT_AGENT_SPAWN') {
-        agentSummaryEmitted.current = false
-        setSubAgents(prev => [...prev, { id: msg.agentId, label: msg.label, task: msg.task, status: 'running', messages: [] }])
+        batchExpected.current.set(msg.batchId, (batchExpected.current.get(msg.batchId) || 0) + 1)
+        setSubAgents(prev => [...prev, { id: msg.agentId, label: msg.label, task: msg.task, status: 'running', messages: [], batchId: msg.batchId }])
       } else if (msg.type === 'CHAT_AGENT_STREAM') {
         setSubAgents(prev => prev.map(a => a.id === msg.agentId
           ? { ...a, messages: appendAgentChunk(a.messages, msg.chunk || '') }
@@ -496,15 +502,25 @@ export default function App() {
           }, AGENT_FADE_DELAY_MS)
           agentTimers.current.add(fadeAt)
         }
-        // When the whole batch is terminal, append ONE summary card to the chat.
-        // Use the setSubAgents callback to read the freshest snapshot. emit-once
-        // guard reset on each new CHAT_AGENT_SPAWN (new batch).
+        // Accumulate the finished agent's FINAL snapshot per batch (independent of
+        // the live array's fade removal), and emit ONE summary card when the batch
+        // is complete. This survives a fast sibling already removed (Bug1) and never
+        // commingles a prior batch's agents (Bug2). delete-on-emit = emit-once.
         setSubAgents(prev => {
-          const allTerminal = prev.length > 0 && prev.every(a => a.status !== 'running')
-          if (allTerminal && !agentSummaryEmitted.current) {
-            agentSummaryEmitted.current = true
-            const summary = buildAgentSummary(prev)
-            setMessages(m => [...m, { role: 'assistant', content: '', agentSummary: summary, ts: Date.now() }])
+          const finished = prev.find(a => a.id === agentId)
+          if (finished) {
+            const bId = finished.batchId || ''
+            const acc = batchDone.current.get(bId) || []
+            const snap = { ...finished, status: (isErr ? 'error' : 'done') as SubAgent['status'] }
+            if (!acc.some(a => a.id === finished.id)) acc.push(snap)
+            batchDone.current.set(bId, acc)
+            const expected = batchExpected.current.get(bId) || acc.length
+            if (acc.length >= expected) {
+              const summary = buildAgentSummary(acc)
+              setMessages(m => [...m, { role: 'assistant', content: '', agentSummary: summary, ts: Date.now() }])
+              batchDone.current.delete(bId)
+              batchExpected.current.delete(bId)
+            }
           }
           return prev
         })

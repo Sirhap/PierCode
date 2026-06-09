@@ -611,13 +611,6 @@ export function shapeSubAgentResult(call: ToolCall, finalText: string): ToolResu
   }
 }
 
-// firstLine returns the first non-empty line of a string, trimmed to ~60 chars,
-// for the sub-agent summary card.
-export function firstLine(text: string): string {
-  const line = (text || '').split('\n').map(s => s.trim()).find(Boolean) || ''
-  return line.length > 60 ? line.slice(0, 57) + '…' : line
-}
-
 // Worker prompt cache (fetched once from the PierCode server).
 let workerPromptCache: string | null = null
 
@@ -914,10 +907,12 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
 
       // spawn_agent → parallel sub-conversations (no tabs). Each runSubAgent
       // catches its own failures into a failed ToolResult, so Promise.all never
-      // rejects on a single worker error. Order preserved → summary card stable.
+      // rejects on a single worker error. One batchId tags this whole batch so
+      // the sidebar can build the summary card from exactly these agents.
       if (spawns.length > 0 && !currentAbort.signal.aborted) {
+        const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
         const spawnResults = await Promise.all(
-          spawns.map(tc => runSubAgent(tc, platform, modelOverride, depth)),
+          spawns.map(tc => runSubAgent(tc, platform, modelOverride, depth, batchId)),
         )
         for (const r of spawnResults) {
           results.push(r)
@@ -969,6 +964,7 @@ async function runSubAgent(
   platform: string,
   model: string | undefined,
   parentDepth: number,
+  batchId: string,
 ): Promise<ToolResult> {
   const agentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   const label = String(call.args.label || 'agent')
@@ -981,7 +977,7 @@ async function runSubAgent(
     return shapeSubAgentResult(call, '(spawn_agent 缺少 task 参数)')
   }
 
-  broadcast({ type: 'CHAT_AGENT_SPAWN', agentId, label, task })
+  broadcast({ type: 'CHAT_AGENT_SPAWN', agentId, label, task, batchId })
 
   const workerPrompt = await fetchWorkerPrompt()
   const message = buildSubAgentMessage(workerPrompt, task)
@@ -998,21 +994,14 @@ async function runSubAgent(
     })
     const cancelled = signal.aborted
     const output = cancelled ? `${finalText}\n\n(已取消)`.trim() : finalText
-    broadcast({
-      type: 'CHAT_AGENT_DONE',
-      agentId,
-      status: cancelled ? 'error' : 'done',
-      label,
-      summary: firstLine(output),
-      output,
-    })
+    broadcast({ type: 'CHAT_AGENT_DONE', agentId, status: cancelled ? 'error' : 'done' })
     return cancelled
       ? { call_id: call.call_id, name: call.name, output: output || '(已取消)', success: false }
       : shapeSubAgentResult(call, finalText)
   } catch (err) {
     const cancelled = signal.aborted
     const msg = cancelled ? '(已取消)' : `子 agent 失败: ${err instanceof Error ? err.message : String(err)}`
-    broadcast({ type: 'CHAT_AGENT_DONE', agentId, status: 'error', label, summary: msg, output: msg })
+    broadcast({ type: 'CHAT_AGENT_DONE', agentId, status: 'error' })
     return { call_id: call.call_id, name: call.name, output: msg, success: false }
   } finally {
     cleanup()

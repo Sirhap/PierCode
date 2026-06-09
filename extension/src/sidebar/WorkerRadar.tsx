@@ -7,6 +7,7 @@ export interface SubAgent {
   status: 'running' | 'done' | 'error'
   messages: ChatMessage[]
   fading?: boolean
+  batchId?: string
 }
 
 const STATUS_MARK: Record<SubAgent['status'], { mark: string; cls: string }> = {
