@@ -2818,7 +2818,7 @@ function startDOMObserver(_responseSelector: string) {
     // packet already sent; the sessionStorage key survives both within the tab
     // session. Keying off the parsed content (not the raw fence/body source) also
     // de-dupes the generic-fence and Qwen-Monaco paths against each other.
-    const contentKey = `${reportedId} ${packet.status} ${packet.summary} ${packet.result}`;
+    const contentKey = `${reportedId}${packet.status}${packet.summary}${packet.result}`;
     const key = `agent-result:${reportedId}:${hashStr(contentKey)}`;
     if (processed.has(key) || agentResultAlreadySent(key)) return true;
     processed.add(key);
