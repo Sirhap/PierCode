@@ -11,7 +11,9 @@ import (
 // It records the actions PierCode would perform in a way that reflects what a
 // real operator cares about: pages, clicks, typing, screenshots, downloads,
 // rather than low-level Chrome tab IDs.
+// Un-exercised methods fall through to noopBrowserController.
 type userJourneyRecorder struct {
+	noopBrowserController
 	listTabsIncludeAI bool
 	navigations       []string
 	clicks            []BrowserClickRequest
@@ -92,62 +94,14 @@ func (r *userJourneyRecorder) Wait(_ context.Context, req BrowserWaitRequest) (s
 	return "wait satisfied", nil
 }
 
-func (r *userJourneyRecorder) WaitForFunction(_ context.Context, _ BrowserWaitForFunctionRequest) (string, error) {
-	return "condition satisfied", nil
-}
-
-func (r *userJourneyRecorder) Hover(_ context.Context, _ BrowserHoverRequest) (string, error) {
-	return "hovered", nil
-}
-
 func (r *userJourneyRecorder) Scroll(_ context.Context, req BrowserScrollRequest) (string, error) {
 	r.scrolls = append(r.scrolls, req)
 	return "scrolled", nil
 }
 
-func (r *userJourneyRecorder) Evaluate(_ context.Context, _ BrowserEvaluateRequest) (BrowserEvaluateResponse, error) {
-	return BrowserEvaluateResponse{Tab: BrowserTab{TabID: 1}, Type: "string", Value: "ok"}, nil
-}
-
-func (r *userJourneyRecorder) GetContent(_ context.Context, _ BrowserGetContentRequest) (string, error) {
-	return "page text", nil
-}
-
 func (r *userJourneyRecorder) Select(_ context.Context, req BrowserSelectRequest) (string, error) {
 	r.selects = append(r.selects, req)
 	return "selected option", nil
-}
-
-func (r *userJourneyRecorder) GoBack(_ context.Context, _ *int, _ string) (BrowserTab, error) {
-	return BrowserTab{TabID: 1, URL: "https://example.com/back", Title: "Back"}, nil
-}
-
-func (r *userJourneyRecorder) GoForward(_ context.Context, _ *int, _ string) (BrowserTab, error) {
-	return BrowserTab{TabID: 1, URL: "https://example.com/forward", Title: "Forward"}, nil
-}
-
-func (r *userJourneyRecorder) Reload(_ context.Context, _ BrowserReloadRequest) (BrowserTab, error) {
-	return BrowserTab{TabID: 1, URL: "https://example.com/reloaded", Title: "Reloaded"}, nil
-}
-
-func (r *userJourneyRecorder) Focus(_ context.Context, _ BrowserFocusRequest) (string, error) {
-	return "focused", nil
-}
-
-func (r *userJourneyRecorder) PressKey(_ context.Context, _ BrowserPressKeyRequest) (string, error) {
-	return "pressed key", nil
-}
-
-func (r *userJourneyRecorder) Drag(_ context.Context, _ BrowserDragRequest) (string, error) {
-	return "dragged", nil
-}
-
-func (r *userJourneyRecorder) PDF(_ context.Context, _ BrowserPDFRequest) (BrowserPDFResponse, error) {
-	return BrowserPDFResponse{Tab: BrowserTab{TabID: 1}, FilePath: "/tmp/out.pdf", Bytes: 10}, nil
-}
-
-func (r *userJourneyRecorder) Upload(_ context.Context, _ BrowserUploadRequest) (string, error) {
-	return "uploaded file", nil
 }
 
 func (r *userJourneyRecorder) HandleDialog(_ context.Context, req BrowserHandleDialogRequest) (string, error) {
@@ -162,41 +116,9 @@ func (r *userJourneyRecorder) Find(_ context.Context, req BrowserFindRequest) ([
 	}, nil
 }
 
-func (r *userJourneyRecorder) Zoom(_ context.Context, _ BrowserZoomRequest) (BrowserZoomResponse, error) {
-	return BrowserZoomResponse{Tab: BrowserTab{TabID: 1}, FilePath: "/tmp/zoom.jpg", Bytes: 8}, nil
-}
-
-func (r *userJourneyRecorder) Resize(_ context.Context, _ BrowserResizeRequest) (string, error) {
-	return "resized", nil
-}
-
 func (r *userJourneyRecorder) FormInput(_ context.Context, req BrowserFormInputRequest) (string, error) {
 	r.formInputs = append(r.formInputs, req)
 	return "form input set", nil
-}
-
-func (r *userJourneyRecorder) ReadConsole(_ context.Context, _ BrowserConsoleRequest) (string, error) {
-	return "no console messages", nil
-}
-
-func (r *userJourneyRecorder) ReadNetwork(_ context.Context, _ BrowserNetworkLogRequest) (string, error) {
-	return "no network requests", nil
-}
-
-func (r *userJourneyRecorder) Cookies(_ context.Context, _ BrowserCookiesRequest) (BrowserCookiesResponse, error) {
-	return BrowserCookiesResponse{}, nil
-}
-
-func (r *userJourneyRecorder) FinalizeTabs(_ context.Context, req BrowserFinalizeTabsRequest) (BrowserFinalizeTabsResponse, error) {
-	r.finalizes = append(r.finalizes, req)
-	return BrowserFinalizeTabsResponse{
-		Closed:   req.CloseTabIDs,
-		Released: req.ReleaseTabIDs,
-	}, nil
-}
-
-func (r *userJourneyRecorder) Viewport(_ context.Context, _ BrowserViewportRequest) (string, error) {
-	return "viewport set", nil
 }
 
 func (r *userJourneyRecorder) Downloads(_ context.Context, req BrowserDownloadsRequest) (BrowserDownloadsResponse, error) {
@@ -208,24 +130,12 @@ func (r *userJourneyRecorder) Downloads(_ context.Context, req BrowserDownloadsR
 	}, nil
 }
 
-func (r *userJourneyRecorder) Storage(_ context.Context, _ BrowserStorageRequest) (string, error) {
-	return "ok", nil
-}
-
-func (r *userJourneyRecorder) SetCookie(_ context.Context, _ BrowserSetCookieRequest) (string, error) {
-	return "ok", nil
-}
-
-func (r *userJourneyRecorder) WaitForNavigation(_ context.Context, _ BrowserWaitForNavigationRequest) (string, error) {
-	return "ok", nil
-}
-
-func (r *userJourneyRecorder) Emulate(_ context.Context, _ BrowserEmulateRequest) (string, error) {
-	return "ok", nil
-}
-
-func (r *userJourneyRecorder) GetAttributes(_ context.Context, _ BrowserGetAttributesRequest) (string, error) {
-	return "ok", nil
+func (r *userJourneyRecorder) FinalizeTabs(_ context.Context, req BrowserFinalizeTabsRequest) (BrowserFinalizeTabsResponse, error) {
+	r.finalizes = append(r.finalizes, req)
+	return BrowserFinalizeTabsResponse{
+		Closed:   req.CloseTabIDs,
+		Released: req.ReleaseTabIDs,
+	}, nil
 }
 
 func TestUserBrowserListTabsWithoutManualTabId(t *testing.T) {
