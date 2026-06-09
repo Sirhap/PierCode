@@ -611,6 +611,13 @@ export function shapeSubAgentResult(call: ToolCall, finalText: string): ToolResu
   }
 }
 
+// firstLine returns the first non-empty line of a string, trimmed to ~60 chars,
+// for the sub-agent summary card.
+export function firstLine(text: string): string {
+  const line = (text || '').split('\n').map(s => s.trim()).find(Boolean) || ''
+  return line.length > 60 ? line.slice(0, 57) + '…' : line
+}
+
 // Worker prompt cache (fetched once from the PierCode server).
 let workerPromptCache: string | null = null
 
@@ -973,6 +980,7 @@ async function runSubAgent(
 
   const workerPrompt = await fetchWorkerPrompt()
   const message = buildSubAgentMessage(workerPrompt, task)
+  const { signal, cleanup } = mergedAgentSignal(agentId, currentAbort?.signal)
 
   try {
     const finalText = await runIsolatedConversation({
@@ -981,18 +989,28 @@ async function runSubAgent(
       model,
       depth: parentDepth + 1,
       agentId,
-      abortSignal: currentAbort?.signal,
+      abortSignal: signal,
     })
-    broadcast({ type: 'CHAT_AGENT_DONE', agentId, status: 'done' })
-    return shapeSubAgentResult(call, finalText)
+    const cancelled = signal.aborted
+    const output = cancelled ? `${finalText}\n\n(已取消)`.trim() : finalText
+    broadcast({
+      type: 'CHAT_AGENT_DONE',
+      agentId,
+      status: cancelled ? 'error' : 'done',
+      label,
+      summary: firstLine(output),
+      output,
+    })
+    return cancelled
+      ? { call_id: call.call_id, name: call.name, output: output || '(已取消)', success: false }
+      : shapeSubAgentResult(call, finalText)
   } catch (err) {
-    broadcast({ type: 'CHAT_AGENT_DONE', agentId, status: 'error' })
-    return {
-      call_id: call.call_id,
-      name: call.name,
-      output: `子 agent 失败: ${err instanceof Error ? err.message : String(err)}`,
-      success: false,
-    }
+    const cancelled = signal.aborted
+    const msg = cancelled ? '(已取消)' : `子 agent 失败: ${err instanceof Error ? err.message : String(err)}`
+    broadcast({ type: 'CHAT_AGENT_DONE', agentId, status: 'error', label, summary: msg, output: msg })
+    return { call_id: call.call_id, name: call.name, output: msg, success: false }
+  } finally {
+    cleanup()
   }
 }
 
