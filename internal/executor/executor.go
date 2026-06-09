@@ -248,17 +248,28 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 		TaskRunner:            e.tasks,
 		Agents:                e.agents,
 	}
+	// New capability groups carry identical values; consumers migrate onto
+	// these group-by-group, then the legacy fields above are removed.
+	toolCtx.Tasks = tool.TaskAccess{Runner: e.tasks}
+	toolCtx.Client = tool.ClientIO{
+		SourceClientID:  req.SourceClientID,
+		ConversationURL: req.ConversationURL,
+	}
 	e.browserMu.RLock()
 	toolCtx.Browser = e.browser
 	e.browserMu.RUnlock()
 	if streamer != nil {
-		toolCtx.Streamer = func(stream, text string) { streamer(stream, text) }
+		s := func(stream, text string) { streamer(stream, text) }
+		toolCtx.Streamer = s
+		toolCtx.Client.Streamer = s
 	}
 	if bp := e.broadcast.Load(); bp != nil {
 		toolCtx.Broadcast = *bp
+		toolCtx.Client.Broadcast = *bp
 	}
 	if bp := e.broadcastToClient.Load(); bp != nil {
 		toolCtx.BroadcastToClient = *bp
+		toolCtx.Client.BroadcastToClient = *bp
 	}
 	toolCtx.SourceClientID = req.SourceClientID
 	toolCtx.ConversationURL = req.ConversationURL

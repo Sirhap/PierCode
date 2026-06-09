@@ -78,6 +78,16 @@ type Context struct {
 	// address workers. Nil means multi-agent dispatch is not available in this
 	// invocation.
 	Agents *AgentRegistry
+
+	// Client groups WebSocket-client IO + identity. During migration its
+	// fields are populated alongside the legacy top-level fields below; the
+	// legacy fields are removed in the final task once all consumers read
+	// through Client.
+	Client ClientIO
+
+	// Tasks groups background-task handoff. Populated alongside the legacy
+	// TaskRunner field during migration.
+	Tasks TaskAccess
 }
 
 type sourceClientIDContextKey struct{}
