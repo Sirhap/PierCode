@@ -35,6 +35,14 @@ interface PlatformConfig {
   buildHeaders(token: string): Record<string, string>
   buildBody(message: string, parentId: string | null, ctx?: BuildCtx): string
   parseChunk(data: any): string | null
+  /** Optional: extract a thinking-summary step from a delta (Qwen's
+   *  thinking_summary phase). Returned steps are shown in a collapsible
+   *  "thinking" block, Claude-Code style. Platforms without reasoning return
+   *  nothing / omit this. */
+  parseThinking?(data: any): { title: string; thought: string } | null
+  /** Optional: the per-delta response_id, so processSSEStream can pin to the
+   *  primary branch (response_index 0) and drop parallel branches. */
+  deltaResponseId?(data: any): string | null
   /** When true, parseChunk returns the cumulative full-text-so-far snapshot on
    *  each event (e.g. ChatGPT's content.parts[0]), not an incremental delta.
    *  processSSEStream then diffs against what it already has instead of
@@ -137,12 +145,13 @@ const PLATFORMS: Record<string, PlatformConfig> = {
         models: [model],
         chat_type: 't2t',
         feature_config: {
-          thinking_enabled: true,
+          // Sidebar: disable deep thinking to avoid verbose reasoning loops.
+          // The model should output tool calls directly, not analyze for pages.
+          thinking_enabled: false,
           output_schema: 'phase',
           research_mode: 'normal',
-          auto_thinking: true,
-          thinking_mode: 'Auto',
-          thinking_format: 'summary',
+          auto_thinking: false,
+          thinking_mode: 'Fast',
           auto_search: true,
         },
         extra: { meta: { subChatType: 't2t' } },
@@ -162,16 +171,30 @@ const PLATFORMS: Record<string, PlatformConfig> = {
       })
     },
     parseChunk(data) {
-      // Qwen SSE: extract content only from "answer" phase (skip "thinking_summary")
-      const choices = data.choices
-      if (!Array.isArray(choices) || choices.length === 0) return null
-      const delta = choices[0].delta
+      // Qwen SSE: only the "answer" phase carries the real reply. Skip
+      // thinking_summary (→ parseThinking) and code_interpreter (the model's
+      // internal "preview" of a tool call, display_position:"think" — not a real
+      // piercode-tool call; the real one is re-emitted in the answer phase).
+      const delta = data.choices?.[0]?.delta
       if (!delta) return null
-      // Only return content from the answer phase
       if (delta.phase === 'answer' && typeof delta.content === 'string') {
         return delta.content
       }
       return null
+    },
+    parseThinking(data) {
+      const delta = data.choices?.[0]?.delta
+      if (!delta || delta.phase !== 'thinking_summary') return null
+      // summary_title / summary_thought accumulate as arrays; take the latest.
+      const titles = delta.extra?.summary_title?.content
+      const thoughts = delta.extra?.summary_thought?.content
+      const title = Array.isArray(titles) ? String(titles[titles.length - 1] || '') : ''
+      const thought = Array.isArray(thoughts) ? String(thoughts[thoughts.length - 1] || '') : ''
+      if (!title && !thought) return null
+      return { title, thought }
+    },
+    deltaResponseId(data) {
+      return typeof data.response_id === 'string' ? data.response_id : null
     },
   },
 
@@ -341,8 +364,8 @@ async function getAuth(platform: string): Promise<AuthResult | { error: string }
 
 // ── PierCode Server Exec ───────────────────────────────────────────────────
 
-async function execTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
-  const callId = `sidebar-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+async function execTool(name: string, args: Record<string, unknown>, callId?: string): Promise<ToolResult> {
+  callId = callId || `sidebar-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   try {
     const { apiUrl, authToken } = await chrome.storage.local.get(['apiUrl', 'authToken'])
     if (!apiUrl || !authToken) {
@@ -380,26 +403,101 @@ async function execTool(name: string, args: Record<string, unknown>): Promise<To
   }
 }
 
+// ── Question Tool (user interaction) ───────────────────────────────────────
+
+const pendingQuestions = new Map<string, { resolve: (answer: string) => void }>()
+
+/** Ask the user a question via the sidebar. Returns a ToolResult with the answer. */
+function askQuestion(tc: ToolCall): Promise<ToolResult> {
+  const question = String(tc.args.question || '')
+  const options = Array.isArray(tc.args.options) ? tc.args.options.map(String) : []
+
+  return new Promise(resolve => {
+    pendingQuestions.set(tc.call_id, {
+      resolve: (answer: string) => {
+        // Build the same format the server would return
+        let output = `Q: ${question}`
+        if (options.length > 0) {
+          output += '\n选项：' + options.map((o, i) => `\n  ${i + 1}. ${o}`).join('')
+        }
+        output += `\n\nA: ${answer}`
+        resolve({ call_id: tc.call_id, name: 'question', output, success: true })
+      },
+    })
+
+    // Broadcast to sidebar
+    broadcast({
+      type: 'CHAT_QUESTION',
+      call_id: tc.call_id,
+      question,
+      options,
+    })
+
+    // Timeout after 5 minutes
+    setTimeout(() => {
+      if (pendingQuestions.has(tc.call_id)) {
+        pendingQuestions.delete(tc.call_id)
+        resolve({
+          call_id: tc.call_id,
+          name: 'question',
+          output: `Q: ${question}\n\n[超时未收到回答]`,
+          success: false,
+        })
+      }
+    }, 5 * 60 * 1000)
+  })
+}
+
 // ── Tool Detection ─────────────────────────────────────────────────────────
 
-const FENCE_RE = /```piercode-tool\s*\n([\s\S]*?)\n```/gi
+// Fence detection. The newline after the `piercode-tool` tag is OPTIONAL — models
+// frequently emit ```piercode-tool{"name":...}``` with no leading newline. The
+// `tool` alias is also accepted. Body is captured up to the closing ```.
+const FENCE_RE = /```(?:piercode-tool|tool)\b[ \t]*\r?\n?([\s\S]*?)```/gi
 
-function extractToolCalls(content: string): ToolCall[] {
+// Pull every top-level {...} JSON object out of a fence body. Models often pack
+// several tool calls into ONE fence as concatenated objects ({...}{...}{...}),
+// which a single JSON.parse rejects. Brace-match each object and parse it alone.
+function splitJsonObjects(body: string): string[] {
+  const objs: string[] = []
+  let depth = 0, start = -1, inStr = false, esc = false
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (ch === '\\') esc = true
+      else if (ch === '"') inStr = false
+      continue
+    }
+    if (ch === '"') { inStr = true; continue }
+    if (ch === '{') { if (depth === 0) start = i; depth++ }
+    else if (ch === '}') { depth--; if (depth === 0 && start >= 0) { objs.push(body.slice(start, i + 1)); start = -1 } }
+  }
+  return objs
+}
+
+export function extractToolCalls(content: string): ToolCall[] {
   const calls: ToolCall[] = []
   let match: RegExpExecArray | null
   FENCE_RE.lastIndex = 0
   while ((match = FENCE_RE.exec(content)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1])
-      if (parsed.name && typeof parsed.name === 'string') {
-        calls.push({
-          name: parsed.name,
-          args: parsed.args || {},
-          call_id: parsed.call_id || `detected-${match.index}`,
-        })
+    const body = match[1].trim()
+    // Try the whole body as one object first; fall back to multi-object split.
+    const segments = splitJsonObjects(body)
+    const candidates = segments.length > 0 ? segments : [body]
+    for (const seg of candidates) {
+      try {
+        const parsed = JSON.parse(seg)
+        if (parsed && parsed.name && typeof parsed.name === 'string') {
+          calls.push({
+            name: parsed.name,
+            args: parsed.args || {},
+            call_id: parsed.call_id || `detected-${match.index}-${calls.length}`,
+          })
+        }
+      } catch {
+        // Invalid JSON segment — skip
       }
-    } catch {
-      // Invalid JSON in tool block — skip
     }
   }
   return calls
@@ -474,10 +572,16 @@ async function processSSEStream(
   config: PlatformConfig,
   onChunk: (text: string) => void,
   abortSignal?: AbortSignal,
+  onThinking?: (step: { title: string; thought: string }) => void,
 ): Promise<SSEResult> {
   const reader = response.body!.getReader()
   const decoder = new TextDecoder()
   let fullContent = ''
+  // Primary-branch anchor: Qwen can open parallel assistant branches
+  // (response_index 0 and 1+). We pin to the index-0 response_id from the first
+  // response.created and drop deltas from any other branch, so content/thinking
+  // from a parallel branch doesn't interleave and responseId isn't clobbered.
+  let primaryResponseId: string | null = null
 
   // For snapshot platforms (ChatGPT) parseChunk returns the cumulative
   // full-text-so-far; emit only the newly-appended suffix as the delta and set
@@ -521,13 +625,28 @@ async function processSSEStream(
 
         try {
           const json = JSON.parse(dataStr)
-          // Extract response_id from response.created event
-          if (json['response.created']?.response_id) {
-            responseId = json['response.created'].response_id
+          // Pin the primary branch from response.created (response_index "0").
+          const created = json['response.created']
+          if (created?.response_id) {
+            const idx = String(created.response_index ?? '0')
+            if (idx === '0' && !primaryResponseId) primaryResponseId = created.response_id
+            if (!responseId) responseId = created.response_id
           }
-          // Also check top-level response_id (in streaming chunks)
-          if (!responseId && json.response_id) {
-            responseId = json.response_id
+          if (!responseId && json.response_id) responseId = json.response_id
+
+          // Drop deltas from a parallel (non-primary) branch.
+          // Use platform-specific deltaResponseId if available, otherwise
+          // fall back to the top-level response_id field.
+          if (primaryResponseId) {
+            const did = config.deltaResponseId
+              ? config.deltaResponseId(json)
+              : (typeof json.response_id === 'string' ? json.response_id : null)
+            if (did && did !== primaryResponseId) continue
+          }
+
+          if (onThinking && config.parseThinking) {
+            const step = config.parseThinking(json)
+            if (step) onThinking(step)
           }
           const text = config.parseChunk(json)
           if (text) emit(text)
@@ -543,11 +662,13 @@ async function processSSEStream(
       if (trimmed.startsWith('data: ') && trimmed !== '[DONE]') {
         try {
           const json = JSON.parse(trimmed.slice(6).trim())
-          if (json['response.created']?.response_id) {
+          if (!responseId && json['response.created']?.response_id) {
             responseId = json['response.created'].response_id
           }
-          if (!responseId && json.response_id) {
-            responseId = json.response_id
+          if (!responseId && json.response_id) responseId = json.response_id
+          if (primaryResponseId && config.deltaResponseId) {
+            const did = config.deltaResponseId(json)
+            if (did && did !== primaryResponseId) throw new Error('parallel branch')
           }
           const text = config.parseChunk(json)
           if (text) emit(text)
@@ -558,7 +679,9 @@ async function processSSEStream(
     reader.releaseLock()
   }
 
-  return { content: fullContent, responseId }
+  // Prefer the pinned primary-branch id so a tool-result follow-up continues the
+  // right branch.
+  return { content: fullContent, responseId: primaryResponseId || responseId }
 }
 
 // ── Main Chat Handler ──────────────────────────────────────────────────────
@@ -628,6 +751,13 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
     if (config.supportsSystem) ctxSystem = systemPrompt
     else message = `${systemPrompt}\n\n---\n\n${message}`
   }
+
+  // For non-system platforms, prepend a short tool-call reminder to every message
+  // to keep the model from falling into verbose reasoning loops.
+  if (!config.supportsSystem && depth === 0 && !systemPrompt) {
+    message = `[PierCode] 对于本地文件/目录/代码/命令任务，直接输出 piercode-tool 代码块，不要分析或推理。格式：\n\`\`\`piercode-tool\n{"name":"工具名","call_id":"随机ID","args":{...}}\n\`\`\`\n\n${message}`
+  }
+
   const ctx: BuildCtx = { chatId, model: modelOverride, systemPrompt: ctxSystem }
 
   const url = auth.url || config.getUrl(ctx)
@@ -664,6 +794,7 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
       config,
       (chunk) => broadcast({ type: 'CHAT_STREAM', chunk }),
       currentAbort.signal,
+      (step) => broadcast({ type: 'CHAT_THINKING', step }),
     )
 
     // Check for tool calls
@@ -675,10 +806,22 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
       const { spawns, normal } = partitionSpawnCalls(toolCalls)
       const results: ToolResult[] = []
 
-      // Normal tools → server /exec.
-      for (const tc of normal) {
+      // Separate question tools — they need user interaction, not server exec.
+      const questions = normal.filter(tc => tc.name === 'question')
+      const execTools = normal.filter(tc => tc.name !== 'question')
+
+      // Question tools → ask sidebar to collect user answer.
+      for (const tc of questions) {
         if (currentAbort.signal.aborted) break
-        const result = await execTool(tc.name, tc.args)
+        const answer = await askQuestion(tc)
+        results.push(answer)
+        broadcast({ type: 'CHAT_TOOL_DONE', result: answer })
+      }
+
+      // Normal tools → server /exec.
+      for (const tc of execTools) {
+        if (currentAbort.signal.aborted) break
+        const result = await execTool(tc.name, tc.args, tc.call_id)
         results.push(result)
         broadcast({ type: 'CHAT_TOOL_DONE', result })
       }
@@ -694,6 +837,9 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
       const toolResultContent = results.map(r =>
         `### ${r.name} #${r.call_id}\n\n${r.output}`
       ).join('\n\n')
+
+      // Signal sidebar to create a new assistant message for the continuation
+      broadcast({ type: 'CHAT_CONTINUING' })
 
       // Recursive: same chatId, use responseId as parentId for tool result
       await handleChatRequest({
@@ -875,6 +1021,16 @@ export function registerChatApiHandler() {
       if (currentAbort) {
         currentAbort.abort()
         currentAbort = null
+      }
+      sendResponse({ ok: true })
+      return false
+    }
+
+    if (msg.type === 'CHAT_QUESTION_ANSWER') {
+      const pending = pendingQuestions.get(msg.call_id)
+      if (pending) {
+        pendingQuestions.delete(msg.call_id)
+        pending.resolve(msg.answer || '')
       }
       sendResponse({ ok: true })
       return false
