@@ -10,6 +10,8 @@
  * 6. 将工具结果注入对话，递归调用让 AI 继续
  */
 
+import { FENCE_RE, parseFenceToolCalls, formatToolResults } from '../parser'
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface ToolCall {
@@ -526,54 +528,17 @@ function askQuestion(tc: ToolCall): Promise<ToolResult> {
 
 // ── Tool Detection ─────────────────────────────────────────────────────────
 
-// Fence detection. The newline after the `piercode-tool` tag is OPTIONAL — models
-// frequently emit ```piercode-tool{"name":...}``` with no leading newline. The
-// `tool` alias is also accepted. Body is captured up to the closing ```.
-const FENCE_RE = /```(?:piercode-tool|tool)\b[ \t]*\r?\n?([\s\S]*?)```/gi
-
-// Pull every top-level {...} JSON object out of a fence body. Models often pack
-// several tool calls into ONE fence as concatenated objects ({...}{...}{...}),
-// which a single JSON.parse rejects. Brace-match each object and parse it alone.
-function splitJsonObjects(body: string): string[] {
-  const objs: string[] = []
-  let depth = 0, start = -1, inStr = false, esc = false
-  for (let i = 0; i < body.length; i++) {
-    const ch = body[i]
-    if (inStr) {
-      if (esc) esc = false
-      else if (ch === '\\') esc = true
-      else if (ch === '"') inStr = false
-      continue
-    }
-    if (ch === '"') { inStr = true; continue }
-    if (ch === '{') { if (depth === 0) start = i; depth++ }
-    else if (ch === '}') { depth--; if (depth === 0 && start >= 0) { objs.push(body.slice(start, i + 1)); start = -1 } }
-  }
-  return objs
-}
-
 export function extractToolCalls(content: string): ToolCall[] {
   const calls: ToolCall[] = []
   let match: RegExpExecArray | null
   FENCE_RE.lastIndex = 0
   while ((match = FENCE_RE.exec(content)) !== null) {
-    const body = match[1].trim()
-    // Try the whole body as one object first; fall back to multi-object split.
-    const segments = splitJsonObjects(body)
-    const candidates = segments.length > 0 ? segments : [body]
-    for (const seg of candidates) {
-      try {
-        const parsed = JSON.parse(seg)
-        if (parsed && parsed.name && typeof parsed.name === 'string') {
-          calls.push({
-            name: parsed.name,
-            args: parsed.args || {},
-            call_id: parsed.call_id || `detected-${match.index}-${calls.length}`,
-          })
-        }
-      } catch {
-        // Invalid JSON segment — skip
-      }
+    for (const tc of parseFenceToolCalls(match[1])) {
+      calls.push({
+        name: tc.name,
+        args: tc.args,
+        call_id: tc.callId || `detected-${match.index}-${calls.length}`,
+      })
     }
   }
   return calls
@@ -920,9 +885,7 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
         }
       }
 
-      const toolResultContent = results.map(r =>
-        `### ${r.name} #${r.call_id}\n\n${r.output}`
-      ).join('\n\n')
+      const toolResultContent = formatToolResults(results)
 
       // Signal sidebar to create a new assistant message for the continuation
       broadcast({ type: 'CHAT_CONTINUING' })
