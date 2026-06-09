@@ -113,7 +113,7 @@ func TestExecCmdExecute(t *testing.T) {
 			chunks []string
 		)
 		ctx := testCtx(cfg, map[string]interface{}{"command": "echo streamed"})
-		ctx.Streamer = func(stream, text string) {
+		ctx.Client.Streamer = func(stream, text string) {
 			mu.Lock()
 			defer mu.Unlock()
 			chunks = append(chunks, text)
@@ -141,7 +141,7 @@ func TestExecCmdExecute(t *testing.T) {
 			"command":    "sleep 30",
 			"background": true,
 		})
-		ctx.TaskRunner = runner
+		ctx.Tasks.Runner = runner
 		res := tool.Execute(ctx)
 		if res.Status != "running" {
 			t.Fatalf("expected status=running, got %s", res.Status)
@@ -243,7 +243,7 @@ func TestExecCmdBackgroundDefaultsToNoTimeout(t *testing.T) {
 			"command":    "sleep 9999",
 			"background": true,
 		})
-		ctx.TaskRunner = runner
+		ctx.Tasks.Runner = runner
 		if res := tool.Execute(ctx); res.Status != "running" {
 			t.Fatalf("expected running, got %s", res.Status)
 		}
@@ -259,7 +259,7 @@ func TestExecCmdBackgroundDefaultsToNoTimeout(t *testing.T) {
 			"background": true,
 			"timeout":    float64(45), // JSON numbers decode as float64
 		})
-		ctx.TaskRunner = runner
+		ctx.Tasks.Runner = runner
 		if res := tool.Execute(ctx); res.Status != "running" {
 			t.Fatalf("expected running, got %s", res.Status)
 		}
@@ -275,7 +275,7 @@ func TestExecCmdBackgroundDefaultsToNoTimeout(t *testing.T) {
 			"background": true,
 			"timeout":    float64(0),
 		})
-		ctx.TaskRunner = runner
+		ctx.Tasks.Runner = runner
 		tool.Execute(ctx)
 		if runner.lastSpec.Timeout != 0 {
 			t.Errorf("expected timeout=0 when arg=0, got %v", runner.lastSpec.Timeout)
