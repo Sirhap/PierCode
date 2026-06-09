@@ -2295,7 +2295,7 @@ function startDOMObserver(_responseSelector: string) {
     }
   });
   let autoExecute: boolean | null = null;
-  const pendingAutoExecute = new Map<string, { data: any; key: string }>();
+  const pendingAutoExecute = new Map<string, { data: any; key: string; container: Element }>();
   // Worker pages run unattended in a background tab — no human is there to click
   // 执行. Force auto-execute on for them regardless of the user's global setting,
   // otherwise the worker's tools never run until the tab is brought to the front.
@@ -2381,10 +2381,10 @@ function startDOMObserver(_responseSelector: string) {
     }, quietMs);
   }
 
-  function scheduleToBatch(toolCall: any, key: string) {
+  function scheduleToBatch(toolCall: any, key: string, container: Element) {
     clearSubmitTimer();
     lastAutoToolSeenAt = Date.now();
-    pendingBatch.push({ data: ensureToolCallId(toolCall, key), key });
+    pendingBatch.push({ data: ensureToolCallId(toolCall, key), key, container });
     // 每来一个新工具就重置静默计时，确保同一响应里的多个工具聚成一批。
     scheduleBatchExecution();
   }
@@ -2508,12 +2508,12 @@ function startDOMObserver(_responseSelector: string) {
     scheduleFinalSubmit();
   }
 
-  function maybeScheduleAutoExecute(toolCall: any, key: string) {
+  function maybeScheduleAutoExecute(toolCall: any, key: string, container: Element) {
     if (isExecuted(key)) return;
     if (autoExecute === true) {
-      scheduleToBatch(toolCall, key);
+      scheduleToBatch(toolCall, key, container);
     } else if (autoExecute === null) {
-      pendingAutoExecute.set(key, { data: toolCall, key });
+      pendingAutoExecute.set(key, { data: toolCall, key, container });
     }
   }
 
@@ -2525,7 +2525,7 @@ function startDOMObserver(_responseSelector: string) {
     const pending = [...pendingAutoExecute.values()];
     pendingAutoExecute.clear();
     for (const item of pending) {
-      if (!isExecuted(item.key)) scheduleToBatch(item.data, item.key);
+      if (!isExecuted(item.key)) scheduleToBatch(item.data, item.key, item.container);
     }
   }
   // ─────────────────────────────────────────────────────────────────────────
@@ -2622,7 +2622,7 @@ function startDOMObserver(_responseSelector: string) {
           processed.add(key);
           parsedQwenTool = true;
           renderToolCard(data, codeText, sourceEl, key, processed);
-          maybeScheduleAutoExecute(data, key);
+          maybeScheduleAutoExecute(data, key, sourceEl ?? document.body);
         }
       }
       // 更新 Qwen 上下文追踪 (assistant 响应)
@@ -2669,7 +2669,7 @@ function startDOMObserver(_responseSelector: string) {
         if (sourceEl) {
           processed.add(key);
           renderToolCard(data, codeText, sourceEl, key, processed);
-          maybeScheduleAutoExecute(data, key);
+          maybeScheduleAutoExecute(data, key, sourceEl ?? document.body);
         }
       }
       scheduleAIResponseLog(sourceEl, text);
@@ -2705,11 +2705,11 @@ function startDOMObserver(_responseSelector: string) {
         if (sourceEl) {
           processed.add(key);
           renderToolCard(data, fenceMatch[0], sourceEl, key, processed);
-          maybeScheduleAutoExecute(data, key);
+          maybeScheduleAutoExecute(data, key, sourceEl ?? document.body);
         } else {
           if (isExecuted(key)) continue;
           processed.add(key);
-          scheduleToBatch(data, key);
+          scheduleToBatch(data, key, document.body);
         }
       }
     }
@@ -2736,11 +2736,11 @@ function startDOMObserver(_responseSelector: string) {
         if (sourceEl) {
           processed.add(key);
           renderToolCard(data, full, sourceEl, key, processed);
-          maybeScheduleAutoExecute(data, key);
+          maybeScheduleAutoExecute(data, key, sourceEl ?? document.body);
         } else {
           if (isExecuted(key)) continue;
           processed.add(key);
-          scheduleToBatch(data, key);
+          scheduleToBatch(data, key, document.body);
         }
       }
     }
