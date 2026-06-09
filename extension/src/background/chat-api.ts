@@ -875,10 +875,7 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
       // rejects on a single worker error. One batchId tags this whole batch so
       // the sidebar can build the summary card from exactly these agents.
       if (spawns.length > 0 && !currentAbort.signal.aborted) {
-        const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-        const spawnResults = await Promise.all(
-          spawns.map(tc => runSubAgent(tc, platform, modelOverride, depth, batchId)),
-        )
+        const spawnResults = await runSubAgentBatch(spawns, platform, modelOverride, depth)
         for (const r of spawnResults) {
           results.push(r)
           broadcast({ type: 'CHAT_TOOL_DONE', result: r })
@@ -969,6 +966,22 @@ async function runSubAgent(
   } finally {
     cleanup()
   }
+}
+
+// runSubAgentBatch runs N spawn_agent calls as parallel in-memory sub-conversations
+// (no tabs). One batchId tags the whole batch so UIs can group the summary. Each
+// runSubAgent catches its own failure into a failed ToolResult, so Promise.all
+// never rejects on a single worker error. Used by both the sidebar turn loop and
+// the content-script CONTENT_SPAWN_AGENT route.
+export async function runSubAgentBatch(
+  spawns: ToolCall[],
+  platform: string,
+  model: string | undefined,
+  depth: number,
+): Promise<ToolResult[]> {
+  if (spawns.length === 0) return []
+  const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  return Promise.all(spawns.map(tc => runSubAgent(tc, platform, model, depth, batchId)))
 }
 
 // runIsolatedConversation drives one sub-agent turn loop: it streams the model,
