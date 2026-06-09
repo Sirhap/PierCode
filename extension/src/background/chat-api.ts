@@ -1101,6 +1101,16 @@ export function registerChatApiHandler() {
       return false
     }
 
+    if (msg.type === 'CONTENT_SPAWN_AGENT') {
+      const spawns = (msg.spawns || []) as ToolCall[]
+      const platform = String(msg.platform || '')
+      const model = msg.model ? String(msg.model) : undefined
+      runSubAgentBatch(spawns, platform, model, 0)
+        .then(results => sendResponse({ ok: true, results }))
+        .catch(err => sendResponse({ ok: false, error: String(err?.message || err) }))
+      return true // keep the message channel open for async sendResponse
+    }
+
     if (msg.type === 'CHAT_QUESTION_ANSWER') {
       const pending = pendingQuestions.get(msg.call_id)
       if (pending) {
