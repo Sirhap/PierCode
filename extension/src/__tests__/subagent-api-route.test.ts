@@ -29,10 +29,11 @@ describe('runSubAgentBatch', () => {
 
 describe('hasApiClient', () => {
   it('true for cookie-session platforms', () => {
-    for (const p of ['qwen', 'chatgpt', 'claude']) expect(hasApiClient(p)).toBe(true)
+    for (const p of ['qwen', 'claude']) expect(hasApiClient(p)).toBe(true)
   })
-  it('false for platforms without an API client', () => {
-    for (const p of ['gemini', 'kimi', 'z', 'mimo']) expect(hasApiClient(p)).toBe(false)
+  it('false for platforms without a usable API client', () => {
+    // chatgpt: token obtainable but turnstile blocks /conversation → tab-worker
+    for (const p of ['chatgpt', 'gemini', 'kimi', 'z', 'mimo']) expect(hasApiClient(p)).toBe(false)
   })
   it('false for unknown platform', () => {
     expect(hasApiClient('unknown')).toBe(false)
