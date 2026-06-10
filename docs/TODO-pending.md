@@ -80,5 +80,9 @@ PR body 概括本轮：子agent API迁移、DOM脆弱债结构化收敛、只读
 ## 关键认知（避免重走弯路）
 
 - **ChatGPT API 反爬是架构性硬墙**：accessToken 能拿（background host_permissions 让 fetch same-site，cookie 自动带 —— 不是 SameSite 死结）；但 `/conversation` 要 sentinel turnstile token，由页面 `window.SentinelSDK`（事件驱动状态机，要真实会话行为指纹）生成，**外部脚本驱动不了**（pending 状态空）。**不要再试 proxy-through-content / 手动拼 Cookie header / 逆向 SentinelSDK** —— 都验证过走不通。ChatGPT 务实走 tab-worker。
+  - **2026-06-10 复调研（社区一手源）精确化机制**：`/backend-api/sentinel/chat-requirements` 返回**两个独立字段** —— `proofofwork{required,seed,difficulty}` 和 `turnstile{}`。两关分开：
+    - **PoW（proofofwork）**：纯 JS/Node 可解（sha3_512/FNV-1a + seed + 浏览器配置数组如 screen/timezone/cpu cores 迭代哈希），**不需要 SentinelSDK**。即「sentinel = 不可解」是误诊 —— PoW 这层本身可解。逆向库（leetanshaj/openai-sentinel、gin337/ChatGPTReversed）证实。
+    - **turnstile 才是真硬墙**：当前态（buchodi.com 2026-03-29 解密一手）「**Every ChatGPT message triggers Cloudflare Turnstile**」，读 **React 内部状态** `__reactRouterContext`/`loaderData`/`clientBootstrap`（55 项指纹），**这些只在 chatgpt.com 页面真实 hydrate 后存在**，外部脚本/headless 拿不到。结论不变：background accessToken 调用过不了 turnstile。
+    - **现状**：逆向库 2025-12-30 起因 OpenAI 改前端流而集体失效（ChatGPTReversed 自述 broken）。**结论 = chatgpt 维持 tab-worker 不变**，但「不可解」原因要改口为「turnstile 绑死页面 React 态」而非「sentinel 整体不可解」。哪天 OpenAI 把 turnstile 退回纯 PoW（empty turnstile{}），background API 路立刻可行。
 - **Qwen 能走 API 因为**：cookie `token` 值直接当 `Authorization: Bearer`（普通 header，JS 能设），无反爬。ChatGPT 靠 `Cookie` header（forbidden，JS 设不了）+ turnstile，所以不行。
 - **Chrome MCP type 丢 ASCII**：ChatGPT ProseMirror 编辑器吞英文/数字字符，验证时用纯中文 prompt 或换 qwen。

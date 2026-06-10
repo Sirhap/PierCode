@@ -234,11 +234,15 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
       // reasoning_type:"reasoning" + thinking_efforts (standard|extended), and
       // /settings/user.last_used_model_config stores the effort as a "juice".
       // 'think' → a thinking slug; 'auto' (default) → the auto-routing model.
-      // TODO(reasoning): the whole ChatGPT send path is currently NON-FUNCTIONAL
-      // — chatgpt.com gates /conversation behind sentinel + turnstile
-      // (/backend-api/sentinel/chat-requirements/prepare) which this bare POST
-      // does not satisfy. Slug/juice mapping below is unverified end-to-end and
-      // only takes effect once the send path is fixed.
+      // TODO(reasoning): the whole ChatGPT send path is currently NON-FUNCTIONAL.
+      // /backend-api/sentinel/chat-requirements returns two separate gates:
+      // proofofwork{seed,difficulty} — solvable in pure JS — and turnstile,
+      // whose token Cloudflare derives from the live page's React state
+      // (__reactRouterContext/loaderData/clientBootstrap) that only exists after
+      // chatgpt.com hydrates, so a background fetch cannot produce it. spawn_agent
+      // routes ChatGPT to the tab-worker instead (hasApiClient excludes it). This
+      // API path only becomes viable if OpenAI drops the turnstile gate; the
+      // slug/juice mapping below is unverified end-to-end until then.
       const slug = ctx?.reasoning === 'think' ? 'gpt-5-5-thinking' : 'auto'
       return JSON.stringify({
         action: 'next',
