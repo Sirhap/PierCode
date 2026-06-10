@@ -933,6 +933,27 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
   }
 }
 
+// AgentCheckpoint is the per-turn resume state of one sub-agent conversation.
+// The transcript itself lives server-side on the AI platform (chatId/parentId),
+// so this is all a restarted service worker needs to re-enter the turn loop.
+// `message` is the next user-role message to send (initial task or the last
+// turn's tool results); `turn` is the loop index to resume from.
+interface AgentCheckpoint {
+  chatId: string
+  parentId: string | null
+  message: string
+  turn: number
+}
+
+// SubAgentRecovery threads recoverable-batch state into runSubAgent: a stable
+// agentId (so abort ✕ and StatusPanel rows survive a SW restart), the last
+// checkpoint to resume from, and a callback that persists new checkpoints.
+interface SubAgentRecovery {
+  agentId: string
+  checkpoint?: AgentCheckpoint
+  onCheckpoint: (cp: AgentCheckpoint) => Promise<void> | void
+}
+
 // runSubAgent runs a spawn_agent call as an isolated sub-conversation: fresh
 // chatId, worker prompt + task, its own abort. The sub-agent can itself execute
 // tools (recursively through runIsolatedConversation), bounded by MAX_AGENT_DEPTH
@@ -944,8 +965,9 @@ async function runSubAgent(
   parentDepth: number,
   batchId: string,
   originTabId?: number,
+  recovery?: SubAgentRecovery,
 ): Promise<ToolResult> {
-  const agentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  const agentId = recovery?.agentId ?? `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   const label = String(call.args.label || 'agent')
   const task = String(call.args.task || call.args.prompt || '')
 
@@ -958,8 +980,10 @@ async function runSubAgent(
 
   broadcastAgentLifecycle({ type: 'CHAT_AGENT_SPAWN', agentId, label, task, batchId }, originTabId)
 
-  const workerPrompt = await fetchWorkerPrompt()
-  const message = buildSubAgentMessage(workerPrompt, task)
+  // Resuming from a checkpoint skips the worker-prompt build: the prompt is
+  // already the first message of the server-side conversation.
+  const resume = recovery?.checkpoint
+  const message = resume ? '' : buildSubAgentMessage(await fetchWorkerPrompt(), task)
   const { signal, cleanup } = mergedAgentSignal(agentId, currentAbort?.signal)
 
   try {
@@ -970,6 +994,8 @@ async function runSubAgent(
       depth: parentDepth + 1,
       agentId,
       abortSignal: signal,
+      resume,
+      onCheckpoint: recovery?.onCheckpoint,
     })
     const cancelled = signal.aborted
     const output = cancelled ? `${finalText}\n\n(已取消)`.trim() : finalText
@@ -1004,6 +1030,225 @@ export async function runSubAgentBatch(
   return Promise.all(spawns.map(tc => runSubAgent(tc, platform, model, depth, batchId, originTabId)))
 }
 
+// ── Recoverable Spawn Batches ──────────────────────────────────────────────
+// MV3 kills the service worker (30s idle / 5-min cap on an open message
+// channel). The legacy CONTENT_SPAWN_AGENT path held the sendResponse channel
+// open for the whole batch, so a SW death rejected the content-side promise
+// and lost every in-flight sub-agent. Recoverable mode instead:
+//   1. acks the start message synchronously (no long-lived channel),
+//   2. persists batch + per-turn agent checkpoints to chrome.storage.session
+//      (survives SW restarts, cleared with the browser),
+//   3. keeps the SW alive during a live batch via a cheap-API heartbeat,
+//   4. on any SW wake (registerChatApiHandler / content status poll), resumes
+//      undone batches from their checkpoints,
+//   5. delivers results by pushing CONTENT_SPAWN_RESULT to the origin tab,
+//      with the content-side CONTENT_SPAWN_STATUS poll as fallback + waker.
+
+interface SpawnAgentRecord {
+  call: ToolCall
+  agentId: string
+  status: 'pending' | 'done'
+  result?: ToolResult
+  checkpoint?: AgentCheckpoint
+}
+
+interface SpawnBatchRecord {
+  batchKey: string
+  batchId: string
+  platform: string
+  model?: string
+  depth: number
+  originTabId?: number
+  createdAt: number
+  done: boolean
+  agents: SpawnAgentRecord[]
+}
+
+const SPAWN_BATCH_PREFIX = 'spawnBatch:'
+const SPAWN_BATCH_TTL_MS = 2 * 60 * 60 * 1000
+const SPAWN_KEEPALIVE_MS = 20_000
+
+// Batches currently running in THIS service-worker life. A record in storage
+// but not in this set is an orphan from a killed SW → resume it.
+const liveSpawnBatches = new Set<string>()
+// Completed results kept in memory so the status poll works even when
+// chrome.storage.session is unavailable (tests / restricted contexts).
+const finishedSpawnBatches = new Map<string, ToolResult[]>()
+let spawnKeepAliveTimer: ReturnType<typeof setInterval> | null = null
+
+function sessionStore(): chrome.storage.StorageArea | null {
+  try {
+    return (typeof chrome !== 'undefined' && chrome.storage?.session) || null
+  } catch {
+    return null
+  }
+}
+
+async function saveSpawnBatch(rec: SpawnBatchRecord): Promise<void> {
+  try {
+    await sessionStore()?.set({ [SPAWN_BATCH_PREFIX + rec.batchKey]: rec })
+  } catch {
+    // Quota/availability failures degrade to in-memory-only operation.
+  }
+}
+
+async function loadSpawnBatch(batchKey: string): Promise<SpawnBatchRecord | null> {
+  const store = sessionStore()
+  if (!store) return null
+  try {
+    const key = SPAWN_BATCH_PREFIX + batchKey
+    const got = await store.get(key)
+    return (got?.[key] as SpawnBatchRecord) || null
+  } catch {
+    return null
+  }
+}
+
+// sweepSpawnBatches deletes expired records and returns the undone survivors.
+async function sweepSpawnBatches(): Promise<SpawnBatchRecord[]> {
+  const store = sessionStore()
+  if (!store) return []
+  try {
+    const all = await store.get(null)
+    const now = Date.now()
+    const undone: SpawnBatchRecord[] = []
+    const drop: string[] = []
+    for (const [k, v] of Object.entries(all || {})) {
+      if (!k.startsWith(SPAWN_BATCH_PREFIX)) continue
+      const rec = v as SpawnBatchRecord
+      if (!rec || typeof rec.createdAt !== 'number' || now - rec.createdAt > SPAWN_BATCH_TTL_MS) {
+        drop.push(k)
+      } else if (!rec.done) {
+        undone.push(rec)
+      }
+    }
+    if (drop.length) await store.remove(drop)
+    return undone
+  } catch {
+    return []
+  }
+}
+
+// While any batch is live, ping a cheap extension API every 20s: each call
+// resets the SW idle timer (Chrome ≥110), so the worker survives long batches.
+function updateSpawnKeepAlive(): void {
+  const want = liveSpawnBatches.size > 0
+  if (want && !spawnKeepAliveTimer) {
+    spawnKeepAliveTimer = setInterval(() => {
+      try {
+        chrome.runtime?.getPlatformInfo?.(() => void chrome.runtime.lastError)
+      } catch {
+        // API unavailable — keep-alive is best-effort.
+      }
+    }, SPAWN_KEEPALIVE_MS)
+  } else if (!want && spawnKeepAliveTimer) {
+    clearInterval(spawnKeepAliveTimer)
+    spawnKeepAliveTimer = null
+  }
+}
+
+// startRecoverableSpawnBatch persists a fresh batch record, then runs it.
+// Exported for tests; production entry is the CONTENT_SPAWN_AGENT handler.
+export async function startRecoverableSpawnBatch(
+  batchKey: string,
+  spawns: ToolCall[],
+  platform: string,
+  model: string | undefined,
+  originTabId?: number,
+): Promise<void> {
+  const stamp = Date.now()
+  const rec: SpawnBatchRecord = {
+    batchKey,
+    batchId: `batch-${stamp}-${Math.random().toString(36).slice(2, 6)}`,
+    platform,
+    model,
+    depth: 0,
+    originTabId,
+    createdAt: stamp,
+    done: false,
+    agents: spawns.map((call, i) => ({
+      call,
+      agentId: `agent-${stamp}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+      status: 'pending' as const,
+    })),
+  }
+  await saveSpawnBatch(rec)
+  await runSpawnBatchRecord(rec)
+}
+
+// runSpawnBatchRecord runs/resumes one batch: already-done agents return their
+// saved result untouched (partial salvage), pending ones run from their last
+// checkpoint. Results are pushed to the origin tab when finished.
+async function runSpawnBatchRecord(rec: SpawnBatchRecord): Promise<void> {
+  if (liveSpawnBatches.has(rec.batchKey)) return
+  liveSpawnBatches.add(rec.batchKey)
+  updateSpawnKeepAlive()
+  try {
+    const results = await Promise.all(rec.agents.map(async (a) => {
+      if (a.status === 'done' && a.result) return a.result
+      const result = await runSubAgent(a.call, rec.platform, rec.model, rec.depth, rec.batchId, rec.originTabId, {
+        agentId: a.agentId,
+        checkpoint: a.checkpoint,
+        onCheckpoint: async (cp) => {
+          a.checkpoint = cp
+          await saveSpawnBatch(rec)
+        },
+      })
+      a.status = 'done'
+      a.result = result
+      delete a.checkpoint
+      await saveSpawnBatch(rec)
+      return result
+    }))
+    rec.done = true
+    finishedSpawnBatches.set(rec.batchKey, results)
+    await saveSpawnBatch(rec)
+    if (rec.originTabId != null) {
+      try {
+        chrome.tabs?.sendMessage?.(rec.originTabId, {
+          type: 'CONTENT_SPAWN_RESULT',
+          batchKey: rec.batchKey,
+          results,
+        })?.catch?.(() => {})
+      } catch {
+        // Tab gone — content poll (if any) still sees the stored record.
+      }
+    }
+  } finally {
+    liveSpawnBatches.delete(rec.batchKey)
+    updateSpawnKeepAlive()
+  }
+}
+
+// resumeOrphanedSpawnBatches re-launches batches a killed SW left undone.
+// Called on every SW start (registerChatApiHandler) and is cheap when idle.
+export async function resumeOrphanedSpawnBatches(): Promise<void> {
+  const undone = await sweepSpawnBatches()
+  for (const rec of undone) {
+    if (!liveSpawnBatches.has(rec.batchKey)) void runSpawnBatchRecord(rec)
+  }
+}
+
+// Test-only: reset module state between cases.
+export function __spawnBatchStateForTest(): {
+  live: Set<string>
+  finished: Map<string, ToolResult[]>
+  reset: () => void
+} {
+  return {
+    live: liveSpawnBatches,
+    finished: finishedSpawnBatches,
+    reset: () => {
+      liveSpawnBatches.clear()
+      finishedSpawnBatches.clear()
+      if (spawnKeepAliveTimer) {
+        clearInterval(spawnKeepAliveTimer)
+        spawnKeepAliveTimer = null
+      }
+    },
+  }
+}
+
 // runIsolatedConversation drives one sub-agent turn loop: it streams the model,
 // executes any non-spawn tools, recurses on its own tool output, and returns the
 // accumulated assistant text. It deliberately does NOT spawn further agents
@@ -1015,17 +1260,21 @@ async function runIsolatedConversation(params: {
   depth: number
   agentId: string
   abortSignal?: AbortSignal
+  /** Resume state from a previous service-worker life (recoverable batches). */
+  resume?: AgentCheckpoint
+  /** Called after each completed turn with the state needed to resume it. */
+  onCheckpoint?: (cp: AgentCheckpoint) => Promise<void> | void
 }): Promise<string> {
   const { platform, agentId, abortSignal } = params
-  let { message } = params
   const config = PLATFORMS[platform]
   if (!config) throw new Error(`未知平台: ${platform}`)
 
-  let chatId: string | null = null
-  let parentId: string | null = null
+  let chatId: string | null = params.resume?.chatId || null
+  let parentId: string | null = params.resume ? params.resume.parentId : null
+  let message = params.resume ? params.resume.message : params.message
   let lastText = ''
 
-  for (let turn = 0; turn < MAX_TOOL_DEPTH; turn++) {
+  for (let turn = params.resume?.turn ?? 0; turn < MAX_TOOL_DEPTH; turn++) {
     if (abortSignal?.aborted) break
 
     const auth = await getAuth(platform)
@@ -1070,6 +1319,16 @@ async function runIsolatedConversation(params: {
       results.push(await execTool(tc.name, tc.args))
     }
     message = results.map(r => `### ${r.name} #${r.call_id}\n\n${r.output}`).join('\n\n')
+
+    // Checkpoint AFTER the turn's tools ran and the next message is built: a
+    // SW death between checkpoints redoes at most one turn (its tools rerun).
+    if (chatId && params.onCheckpoint) {
+      try {
+        await params.onCheckpoint({ chatId, parentId, message, turn: turn + 1 })
+      } catch {
+        // Persistence failure must not kill the conversation.
+      }
+    }
   }
 
   return lastText
@@ -1099,6 +1358,10 @@ function broadcastAgentLifecycle(msg: Record<string, unknown>, originTabId?: num
 // ── Message Handler Registration ───────────────────────────────────────────
 
 export function registerChatApiHandler() {
+  // Runs at every SW start (background/index.ts top level): any wake — content
+  // status poll, user message, WS traffic — resumes batches a killed SW left.
+  void resumeOrphanedSpawnBatches()
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'CHAT_REQUEST') {
       handleChatRequest({
@@ -1139,10 +1402,49 @@ export function registerChatApiHandler() {
       const platform = String(msg.platform || '')
       const model = msg.model ? String(msg.model) : undefined
       const originTabId = sender.tab?.id
+      if (msg.batchKey) {
+        // Recoverable mode: ack synchronously and run detached. A long-open
+        // sendResponse channel is what triggered the MV3 5-min SW kill; the
+        // result is delivered by push (CONTENT_SPAWN_RESULT) + status poll.
+        void startRecoverableSpawnBatch(String(msg.batchKey), spawns, platform, model, originTabId)
+        sendResponse({ ok: true, accepted: true })
+        return false
+      }
+      // Legacy single-channel mode (no batchKey): kept for old content scripts.
       runSubAgentBatch(spawns, platform, model, 0, originTabId)
         .then(results => sendResponse({ ok: true, results }))
         .catch(err => sendResponse({ ok: false, error: String(err?.message || err) }))
       return true // keep the message channel open for async sendResponse
+    }
+
+    if (msg.type === 'CONTENT_SPAWN_STATUS') {
+      const batchKey = String(msg.batchKey || '')
+      const mem = finishedSpawnBatches.get(batchKey)
+      if (mem) {
+        sendResponse({ state: 'done', results: mem })
+        return false
+      }
+      if (liveSpawnBatches.has(batchKey)) {
+        sendResponse({ state: 'running' })
+        return false
+      }
+      loadSpawnBatch(batchKey)
+        .then(rec => {
+          if (!rec) {
+            sendResponse({ state: 'unknown' })
+            return
+          }
+          if (rec.done) {
+            const results = rec.agents.map(a => a.result).filter((r): r is ToolResult => !!r)
+            sendResponse({ state: 'done', results })
+            return
+          }
+          // Orphan found by the poll (SW restarted between polls): resume now.
+          void runSpawnBatchRecord(rec)
+          sendResponse({ state: 'running' })
+        })
+        .catch(() => sendResponse({ state: 'unknown' }))
+      return true
     }
 
     if (msg.type === 'CHAT_QUESTION_ANSWER') {

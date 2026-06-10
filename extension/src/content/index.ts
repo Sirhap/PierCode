@@ -1683,6 +1683,98 @@ async function executeToolCallRaw(toolCall: any): Promise<string | null> {
   return name ? `### ${name} #${callId}\n${output}` : output;
 }
 
+// ── Recoverable spawn-agent batch ───────────────────────────────────────────
+// Chrome can kill the background service worker mid-batch (30s idle / 5-min
+// cap), which used to reject the single long-lived sendMessage and lose all
+// sub-agent work. Recoverable mode: background acks the start immediately and
+// persists progress; we resolve on a pushed CONTENT_SPAWN_RESULT, with a 20s
+// status poll as fallback — each poll also wakes a killed SW, which then
+// resumes the batch from its checkpoints.
+const SPAWN_POLL_INTERVAL_MS = 20 * 1000;
+const SPAWN_BATCH_TIMEOUT_MS = 30 * 60 * 1000;
+
+function runSpawnBatchRecoverable(spawns: any[]): Promise<any[]> {
+  const batchKey = `cbatch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let unknownStreak = 0;
+    const deadline = Date.now() + SPAWN_BATCH_TIMEOUT_MS;
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer) clearInterval(pollTimer);
+      try { chrome.runtime?.onMessage?.removeListener(onPush); } catch {}
+      fn();
+    };
+
+    const onPush = (msg: any) => {
+      if (msg?.type === 'CONTENT_SPAWN_RESULT' && msg.batchKey === batchKey) {
+        finish(() => resolve(msg.results || []));
+      }
+    };
+    try { chrome.runtime?.onMessage?.addListener(onPush); } catch {}
+
+    const poll = async () => {
+      if (settled) return;
+      if (Date.now() > deadline) {
+        finish(() => reject(new Error('子 agent 批次超时')));
+        return;
+      }
+      try {
+        const st = await chrome.runtime.sendMessage({ type: 'CONTENT_SPAWN_STATUS', batchKey });
+        if (settled) return;
+        if (st?.state === 'done') {
+          finish(() => resolve(st.results || []));
+        } else if (st?.state === 'unknown') {
+          // Record gone AND batch not live: storage.session lost (browser
+          // restart) or record swept. Tolerate transient races, then give up.
+          unknownStreak++;
+          if (unknownStreak >= 3) finish(() => reject(new Error('后台子 agent 批次状态丢失')));
+        } else {
+          unknownStreak = 0;
+        }
+      } catch {
+        // SW mid-restart — this sendMessage already woke it; next tick reads state.
+      }
+    };
+
+    void (async () => {
+      const start = { type: 'CONTENT_SPAWN_AGENT', spawns, platform: platformProfile, batchKey };
+      try {
+        const resp = await chrome.runtime.sendMessage(start);
+        if (!resp?.ok) {
+          finish(() => reject(new Error(String(resp?.error || '未知错误'))));
+          return;
+        }
+        // Old background without recoverable mode answers with results inline.
+        if (!resp.accepted && resp.results) {
+          finish(() => resolve(resp.results));
+          return;
+        }
+      } catch (err) {
+        // SW died during kickoff; the failed sendMessage restarts it — retry once.
+        try {
+          const retry = await chrome.runtime.sendMessage(start);
+          if (!retry?.ok) {
+            finish(() => reject(new Error(String(retry?.error || err))));
+            return;
+          }
+          if (!retry.accepted && retry.results) {
+            finish(() => resolve(retry.results));
+            return;
+          }
+        } catch (err2) {
+          finish(() => reject(err2 instanceof Error ? err2 : new Error(String(err2))));
+          return;
+        }
+      }
+      if (!settled) pollTimer = setInterval(() => { void poll(); }, SPAWN_POLL_INTERVAL_MS);
+    })();
+  });
+}
+
 async function executeToolCallReturn(toolCall: any, withGuidance = true): Promise<ToolExecutionResult> {
   if (!checkContext(true)) return { output: '', stopStream: false, sendable: false };
   if (toolCall.name === 'question') {
@@ -1704,18 +1796,10 @@ async function executeToolCallReturn(toolCall: any, withGuidance = true): Promis
       call_id: getToolCallId(toolCall),
     };
     try {
-      const resp = await chrome.runtime.sendMessage({
-        type: 'CONTENT_SPAWN_AGENT',
-        spawns: [spawn],
-        platform: platformProfile,
-      });
-      if (resp?.ok) {
-        injectToolResult(maybeTruncate(formatToolResults(resp.results || [])));
-      } else {
-        injectToolResult(`子 agent 失败: ${resp?.error || '未知错误'}`);
-      }
+      const results = await runSpawnBatchRecoverable([spawn]);
+      injectToolResult(maybeTruncate(formatToolResults(results)));
     } catch (error) {
-      injectToolResult(`子 agent 失败: ${error}`);
+      injectToolResult(`子 agent 失败: ${error instanceof Error ? error.message : error}`);
     }
     // Result already filled + submitted via injectToolResult; mark executed but
     // don't let the batch loop accumulate it per-container / submit it again.
