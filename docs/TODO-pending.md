@@ -8,7 +8,7 @@
 
 ## P0 — 一致性 bug（live 验证暴露，值得先修）
 
-### [ ] 1. `hasApiClient` 去掉 chatgpt（spawn_agent 白试一次失败）
+### [x] 1. `hasApiClient` 去掉 chatgpt（spawn_agent 白试一次失败）— 已修（fc4cc2b）
 
 **背景**：官网 `spawn_agent` 在「有 API client 的平台」走内存 API 子对话，没有的回退 tab-worker。`extension/src/content/platform-caps.ts` 的 `hasApiClient` 当前含 `chatgpt`。但 **live 验证证明 ChatGPT API 路走不通**：拿到 accessToken 后，`/backend-api/conversation` 被 OpenAI 的 sentinel **turnstile** 挡死（turnstile 由页面 `window.SentinelSDK` 事件驱动生成，外部脚本驱动不了，是架构性反爬）。所以 chatgpt 走 API → 必失败 → 才降级 tab-worker = 每次 spawn_agent 白做一次失败往返。
 
@@ -22,7 +22,9 @@
 
 ## P1 — 验证缺口（功能已写，没真验）
 
-### [ ] 2. E（batch 容器隔离）多响应隔离 live 验证
+### [x] 2. E（batch 容器隔离）多响应隔离 live 验证 — PASS（2026-06-10）
+
+**结果**：qwen 同对话构造重叠窗口：慢工具响应 D（`sleep 12`）执行期间发出新消息产生响应 E（快 `echo`）。DOM 文档序证实 E 的 fence/执行发生在 D 提交之前（窗口真实重叠）；D 提交只含 `SLOW_D_RESULT`，E 提交只含 `FAST_E_RESULT`，两次独立提交零混串。`call_id` 各恰好出现一次（无双执行）。
 
 **背景**：E 修复 = 不同 AI 响应的工具结果按响应容器隔离，不再混进同一次提交（`extension/src/content/index.ts` 的 `outputsByContainer: WeakMap<Element,string[]>` + `scheduleFinalSubmit` 按容器循环提交）。**单响应多工具路径已 live 验证 PASS**（一次合并提交）。但**多响应隔离（修复目标本身）没验** —— 需要两个 AI 响应在重叠窗口各产工具。
 
@@ -37,7 +39,9 @@
 
 ## P2 — 低优先（投资报告里标的）
 
-### [ ] 3. B 双执行 race 的 settle-retry 窄缝
+### [x] 3. B 双执行 race 的 settle-retry 窄缝 — 已修（c1acd26）
+
+Phase 0 遇未平衡 JSON 时置 `pendingQwenTool` 并 early-return，不再同 scan fallthrough 到 Phase 1（无 callId 时两 phase fallback key 不同，processed 兜不住）。settle retry 600ms 后全量重扫接管。
 
 **背景**：`extension/src/content/index.ts` 工具检测有 `processed` Set 去重（跨 Phase 0/0b/1 有效）。唯一窄缝：Phase 0 遇未平衡 JSON（`!isBalancedJson`）→ `scheduleSettleRetry` 但**不**加 `processed`，600ms 后重扫前 Phase 1 可能已对同 key 命中。实际多被 `processed.has` 兜住，未观测稳定复现，低优先。详见 [投资报告](investigation-batch-state-race.md) §问题B。
 
@@ -47,19 +51,22 @@
 
 ## P3 — 杂物清理（非本轮工作，顺带发现）
 
-### [ ] 4. 检查 2 个 stale worktree-agent 分支
+### [x] 4. 检查 2 个 stale worktree-agent 分支 — 已清理（2026-06-10）
+
+两分支独有 commit 经 `git cherry` + 文件级 diff 确认内容已全部并入 dev（Context ClientIO/TaskAccess 重构终态在 dev），worktree unlock + remove + branch -D 完成。
 
 `git branch` 列出 `worktree-agent-a8ac4aa7b386a4734` / `worktree-agent-af877ffa47cc74da1`（别的 agent 留的 worktree 分支）。确认无用后 `git worktree list` 看路径，`git worktree remove <path>` + `git branch -D <name>` 清理。**别误删有未合并工作的**，先 `git log <branch> --not dev` 看有没有独有 commit。
 
-### [ ] 5. 其它未合分支（非我的）
+### [x] 5. 其它未合分支（非我的）— 已处理（2026-06-10）
 
-`codex/claude-web-ai-mcp`、`fix/bug-audit-20260607` —— 不是本轮工作，按需各自处理。
+`fix/bug-audit-20260607`：零独有 commit（已全并入 dev，remote 分支仍在）→ 本地已删。
+`codex/claude-web-ai-mcp`：1 个独有 WIP commit（web-ai impersonation + MCP bridge，进行中）→ 保留。
 
 ---
 
 ## 收尾动作
 
-### [ ] 6. 推 dev + 开 PR
+### [x] 6. 推 dev + 开 PR — 完成（2026-06-10）
 
 dev 领先 origin/dev **72 commits**（本轮全部工作 + 历史）。攒太多，该推。
 ```bash
