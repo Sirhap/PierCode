@@ -2585,6 +2585,11 @@ function startDOMObserver(_responseSelector: string) {
     // ── Phase 0: 直接从 DOM 提取 tool 代码块（Qwen Monaco Editor 专用） ──
     if (sourceEl && platformAdapter.name === 'qwen') {
       let parsedQwenTool = false;
+      // 流式中遇到未平衡 JSON 时置位：本次 scan 不再 fallthrough 到 Phase 1。
+      // 否则同一 fence 可能被 Phase 1 文本路径先解析执行，而无 callId 时两条
+      // 路径的 fallback key 不同（hashStr(codeText) vs hashStr(fence全文)），
+      // processed 去重兜不住 → 双执行。settle retry 600ms 后全量重扫接管。
+      let pendingQwenTool = false;
       const toolPres = sourceEl.querySelectorAll(DOM_EXTRACT.qwenToolBlock);
       for (const pre of toolPres) {
         const block = findQwenPierCodeBody(pre);
@@ -2625,6 +2630,7 @@ function startDOMObserver(_responseSelector: string) {
         // 流式渲染中：内容可能不完整，跳过本次解析。安排一次兜底重扫，
         // 防止工具块是响应最后一段、后续无变动时永久漏掉。
         if (!isBalancedJson(codeText)) {
+          pendingQwenTool = true;
           if (sourceEl) scheduleSettleRetry(sourceEl);
           continue;
         }
@@ -2656,9 +2662,10 @@ function startDOMObserver(_responseSelector: string) {
         updateQwenContext('assistant', text, aiResponseLogKey(sourceEl), sourceEl);
       }
       scheduleAIResponseLog(sourceEl, text);
-      // 只有 Qwen DOM 专用路径真正解析到工具时才结束；否则继续走通用
-      // fence/XML 兜底，避免新版 DOM 结构让工具块静默漏掉。
-      if (parsedQwenTool) return;
+      // Qwen DOM 专用路径解析到工具、或检测到仍在流式的工具块（settle retry
+      // 已排程）时结束；否则继续走通用 fence/XML 兜底，避免新版 DOM 结构让
+      // 工具块静默漏掉。
+      if (parsedQwenTool || pendingQwenTool) return;
     }
 
     // ── Phase 0b: 直接从 DOM 提取 tool 代码块（Chat Z CodeMirror6 专用） ──
