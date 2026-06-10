@@ -1641,8 +1641,12 @@ function isExecuted(key: string): boolean {
   try {
 		const scopedKey = scopedExecutionKey(key);
     const store: Record<string, number> = JSON.parse(localStorage.getItem('piercode_executed') || '{}');
-		if (store[scopedKey]) return true;
-		return Object.keys(store).some(k => k.endsWith(`:${key}`));
+		// Exact match only. The old `endsWith(':'+key)` legacy fallback could
+		// cross-match a different conversation's entry when `key` is a bare
+		// numeric hash (no call_id) that happens to equal another key's call_id
+		// suffix, silently skipping a never-executed tool. Legacy-format entries
+		// age out via the 7-day TTL in markExecuted.
+		return !!store[scopedKey];
   } catch { return false; }
 }
 
@@ -2810,7 +2814,10 @@ function startDOMObserver(_responseSelector: string) {
     if (delay === 0) {
       send();
     } else {
-      aiLogTimers.set(sourceEl, setTimeout(send, delay));
+      aiLogTimers.set(sourceEl, setTimeout(() => {
+        // Skip logging for containers removed while the debounce was pending.
+        if (sourceEl.isConnected) send();
+      }, delay));
     }
   }
 
@@ -3009,6 +3016,10 @@ function startDOMObserver(_responseSelector: string) {
     if (settleRetryTimers.has(container)) return;
     const t = setTimeout(() => {
       settleRetryTimers.delete(container);
+      // Container removed from DOM (regenerate / delete) before the retry
+      // fired: scanning the detached subtree could auto-execute a tool from a
+      // response the user already regenerated away.
+      if (!container.isConnected) return;
       if (!isResponseSessionActive()) return;
       if (ignoredPreSessionContainers.has(container)) return;
       scanText(getCleanText(container), container);
