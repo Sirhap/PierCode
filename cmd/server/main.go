@@ -12,6 +12,7 @@ import (
 	"github.com/sirhap/piercode/internal/portutil"
 	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/server"
+	"github.com/sirhap/piercode/internal/subproc"
 	"github.com/sirhap/piercode/internal/types"
 	"github.com/sirhap/piercode/internal/version"
 	"github.com/sirhap/piercode/prompts"
@@ -52,6 +53,8 @@ func main() {
 	fixedToken := flag.String("token", "", "使用固定的认证 token（而非随机生成），方便扩展重启后自动重连")
 	ephemeralToken := flag.Bool("ephemeral-token", false, "每次启动都随机生成 token（旧行为）。默认会把 token 持久化到 ~/.piercode/token，扩展无需每次重连")
 	showVersion := flag.Bool("version", false, "打印版本号并退出")
+	noChatGPTProxy := flag.Bool("no-chatgpt-proxy", false, "不启动内置 ChatGPT 代理子进程（默认会启动，供 ChatGPT 子代理走 API 而非浏览器标签）")
+	chatGPTProxyPort := flag.Int("chatgpt-proxy-port", subproc.DefaultPort, "内置 ChatGPT 代理监听端口")
 	flag.Parse()
 
 	if *showVersion {
@@ -156,6 +159,17 @@ func main() {
 		fmt.Printf("如需重新授权浏览器插件，请重启并显示认证 URL。\n")
 	}
 	fmt.Printf("PierCode %s 监听 http://127.0.0.1:%d\n\n", version.Version, *port)
+
+	// 内置 ChatGPT 代理：默认启动一个子进程（PyInstaller 打包的 chatgpt-proxy），
+	// 让 ChatGPT 子代理走本地 OpenAI 兼容 API 而非浏览器标签。--no-chatgpt-proxy
+	// 关闭。未内置二进制的平台为 no-op。代理生命周期绑主进程：退出时杀子进程。
+	if !*noChatGPTProxy {
+		proxy := subproc.NewChatGPTProxy(*chatGPTProxyPort)
+		if err := proxy.Start(); err != nil {
+			fmt.Printf("⚠️  ChatGPT 代理启动失败（继续运行，ChatGPT 子代理不可用）: %v\n", err)
+		}
+		defer proxy.Stop()
+	}
 
 	srv := server.New(config)
 

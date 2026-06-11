@@ -50,12 +50,17 @@ describe('claude buildBody reasoning → thinking (unverified web protocol)', ()
   })
 })
 
-describe('chatgpt buildBody reasoning → model slug (send path unverified)', () => {
-  it('auto/default uses the auto-routing model', () => {
-    expect(body('chatgpt', {}).model).toBe('auto')
-    expect(body('chatgpt', { reasoning: 'auto' }).model).toBe('auto')
+describe('chatgpt buildBody reasoning → model slug (via chatgpt-proxy, OpenAI shape)', () => {
+  it('default uses gpt-5', () => {
+    expect(body('chatgpt', {}).model).toBe('gpt-5')
   })
   it('think picks a thinking slug', () => {
-    expect(body('chatgpt', { reasoning: 'think' }).model).toBe('gpt-5-5-thinking')
+    expect(body('chatgpt', { reasoning: 'think' }).model).toBe('gpt-5-thinking')
+  })
+  it('emits OpenAI-shaped messages, not the legacy parts envelope', () => {
+    const b = body('chatgpt', {})
+    expect(Array.isArray(b.messages)).toBe(true)
+    expect(b.messages[b.messages.length - 1]).toMatchObject({ role: 'user', content: 'hi' })
+    expect(b).not.toHaveProperty('action')
   })
 })

@@ -31,9 +31,13 @@ describe('hasApiClient', () => {
   it('true for cookie-session platforms', () => {
     for (const p of ['qwen', 'claude']) expect(hasApiClient(p)).toBe(true)
   })
+  it('true for chatgpt (routes through local chatgpt-proxy)', () => {
+    // chatgpt: turnstile solved server-side by chatgpt-proxy, exposed as an
+    // OpenAI-compatible endpoint; getAuth probes /health and errors if down.
+    expect(hasApiClient('chatgpt')).toBe(true)
+  })
   it('false for platforms without a usable API client', () => {
-    // chatgpt: token obtainable but turnstile blocks /conversation → tab-worker
-    for (const p of ['chatgpt', 'gemini', 'kimi', 'z', 'mimo']) expect(hasApiClient(p)).toBe(false)
+    for (const p of ['gemini', 'kimi', 'z', 'mimo']) expect(hasApiClient(p)).toBe(false)
   })
   it('false for unknown platform', () => {
     expect(hasApiClient('unknown')).toBe(false)

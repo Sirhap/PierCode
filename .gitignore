@@ -57,3 +57,13 @@ dist/
 # Landing page build output
 site/dist/
 site/node_modules/
+
+# ChatGPT reverse-engineering proxy — never commit (ToS + token logic)
+chatgpt-proxy/
+
+# PyInstaller-built proxy binaries (embedded at release build, not committed)
+internal/subproc/proxybin/
+chatgpt-proxy/.pyi-build/
+chatgpt-proxy/build/
+chatgpt-proxy/dist/
+*.spec
