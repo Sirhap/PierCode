@@ -13,6 +13,8 @@
 import { extractFenceToolCalls, formatToolResults } from '../parser'
 import { qwenPageFetch } from './qwen-page-fetch'
 import { installApiListenReceiver } from './api-listen'
+import { createBxUaBroker, type BxUaCreds } from './qwen-bxua-broker'
+import { genSsxmod } from './qwen-ssxmod'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -86,7 +88,59 @@ async function platformFetch(
   if (config.usePageFetch) {
     return qwenPageFetch(url, { ...init, stream }, signal)
   }
+  // qwen direct path: detect RGV587 risk control on the response; on hit,
+  // invalidate the cached bx-ua, re-borrow, rebuild headers, and retry once.
+  if (config.name === 'Qwen') {
+    return qwenDirectFetch(config, url, init, signal)
+  }
   return fetch(url, { method: init.method, headers: init.headers, body: init.body, signal })
+}
+
+/** Swap the bx-ua / ssxmod risk headers on a header set to whatever the broker
+ *  now holds (after an invalidate, this re-borrows; if borrow fails it lands on
+ *  ssxmod). Other headers (auth, origin, etc.) are preserved. */
+async function refreshQwenRiskHeaders(headers: Record<string, string>): Promise<Record<string, string>> {
+  const next = { ...headers }
+  delete next['bx-ua']
+  delete next['bx-umidtoken']
+  delete next['Cookie']
+  await applyQwenRiskHeaders(next)
+  return next
+}
+
+/** qwen direct send with one RGV587-aware retry. A successful completions call
+ *  returns a `text/event-stream`; risk control instead returns JSON containing
+ *  RGV587/punish. We only consume (and thus burn) the body when it is NOT an
+ *  event-stream, so the SSE body stays intact for processSSEStream on success. */
+async function qwenDirectFetch(
+  _config: PlatformConfig,
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: string },
+  signal?: AbortSignal,
+): Promise<FetchLike> {
+  const send = (headers: Record<string, string>): Promise<Response> =>
+    fetch(url, { method: init.method, headers, body: init.body, credentials: 'include', signal })
+
+  const isStream = (r: Response) => (r.headers.get('content-type') || '').includes('event-stream')
+  const isPunish = (t: string) => t.includes('RGV587') || t.includes('punish') || t.includes('aliyun_waf')
+
+  let res = await send(init.headers)
+  if (isStream(res)) return res
+
+  // Non-stream: peek the body to tell risk control apart from a business error.
+  const text = await res.text()
+  if (!isPunish(text)) {
+    // Business error / non-stream JSON — surface as-is (body already consumed).
+    return { ok: res.ok, status: res.status, text: async () => text, body: null }
+  }
+
+  // RGV587 → re-borrow bx-ua + retry once.
+  qwenBxUaBroker.invalidate()
+  const retryHeaders = await refreshQwenRiskHeaders(init.headers)
+  res = await send(retryHeaders)
+  if (isStream(res)) return res
+  const t2 = await res.text()
+  return { ok: false, status: res.status, text: async () => t2, body: null }
 }
 
 interface BuildCtx {
@@ -109,6 +163,52 @@ interface BuildCtx {
  *  when the AI keeps emitting piercode-tool blocks (prompt injection / bugs). */
 const MAX_TOOL_DEPTH = 10
 
+// ── Qwen bx-ua borrow ────────────────────────────────────────────────────────
+// Borrow a baxia bx-ua from an open qwen tab via the content↔page-bridge relay
+// (piercode-bxua port). Returns null if no qwen tab is open or capture fails.
+const QWEN_TAB_URLS_BXUA = ['*://chat.qwen.ai/*', '*://qwen.ai/*', '*://*.qwen.ai/*']
+let bxuaSeq = 0
+
+async function borrowBxUaFromTab(): Promise<BxUaCreds | null> {
+  const tabs = await chrome.tabs.query({ url: QWEN_TAB_URLS_BXUA })
+  const tab = tabs.find(t => t.active && typeof t.id === 'number') ?? tabs.find(t => typeof t.id === 'number')
+  if (!tab?.id) return null
+  const requestId = `bxua-${Date.now()}-${++bxuaSeq}`
+  const port = chrome.tabs.connect(tab.id, { name: `piercode-bxua:${requestId}` })
+  return new Promise<BxUaCreds | null>(resolve => {
+    let settled = false
+    const done = (v: BxUaCreds | null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { port.disconnect() } catch { /* gone */ }
+      resolve(v)
+    }
+    const timer = setTimeout(() => done(null), 10_000)
+    port.onMessage.addListener((msg: { ok?: boolean; bxUa?: string; umid?: string }) => {
+      if (msg?.ok && msg.bxUa) done({ bxUa: msg.bxUa, umid: msg.umid || '' })
+      else done(null)
+    })
+    port.onDisconnect.addListener(() => done(null))
+  })
+}
+
+const qwenBxUaBroker = createBxUaBroker(borrowBxUaFromTab)
+
+// Attach the primary bx-ua signature (replayed from the borrow cache) onto a
+// qwen request's headers. If no tab is available to borrow from, fall back to
+// locally generated ssxmod cookies. Shared by createConversation + buildHeaders.
+async function applyQwenRiskHeaders(headers: Record<string, string>): Promise<void> {
+  const creds = await qwenBxUaBroker.getBxUa()
+  if (creds) {
+    headers['bx-ua'] = creds.bxUa
+    if (creds.umid) headers['bx-umidtoken'] = creds.umid
+  } else {
+    const { ssxmod_itna, ssxmod_itna2 } = genSsxmod()
+    headers['Cookie'] = `ssxmod_itna=${ssxmod_itna};ssxmod_itna2=${ssxmod_itna2}`
+  }
+}
+
 // ── Platform Configs ───────────────────────────────────────────────────────
 // Note: `getUrl()` is a function, not a mutable field, to avoid module-level
 // state mutation that would cause races if two requests run concurrently.
@@ -124,23 +224,26 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
       // header. Without it Aliyun risk control (RGV587_ERROR) walls the request
       // behind a captcha ("哎哟喂,被挤爆啦").
       const xsrf = await getCookieToken('chat.qwen.ai', 'xsrf-token')
-      // Route through the qwen page context (baxia bx-ua) like the completions
-      // call — /chats/new is behind the same risk control, so a SW fetch here
-      // would hit the captcha wall too.
-      const res = await qwenPageFetch('https://chat.qwen.ai/api/v2/chats/new', {
+      // /chats/new clears risk control without bx-ua (verified), but we attach
+      // it anyway (harmless) so a single code path covers both endpoints. Clean
+      // SW fetch — cookies sent via credentials:'include'.
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'Origin': 'https://chat.qwen.ai',
+        'Referer': 'https://chat.qwen.ai/',
+        'version': '0.2.63',
+        'source': 'web',
+        'x-request-id': crypto.randomUUID(),
+        'timezone': Intl.DateTimeFormat().resolvedOptions().timeZone,
+        'bx-v': '2.5.36',
+        ...(xsrf ? { 'x-xsrf-token': xsrf } : {}),
+      }
+      await applyQwenRiskHeaders(headers)
+      const res = await fetch('https://chat.qwen.ai/api/v2/chats/new', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'Origin': 'https://chat.qwen.ai',
-          'Referer': 'https://chat.qwen.ai/',
-          'version': '0.2.63',
-          'source': 'web',
-          'x-request-id': crypto.randomUUID(),
-          'timezone': Intl.DateTimeFormat().resolvedOptions().timeZone,
-          'bx-v': '2.5.36',
-          ...(xsrf ? { 'x-xsrf-token': xsrf } : {}),
-        },
+        headers,
+        credentials: 'include',
         body: JSON.stringify({
           title: '新建对话',
           models: [model],
@@ -149,7 +252,6 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
           timestamp: Math.floor(Date.now() / 1000),
           project_id: '',
         }),
-        stream: false,
       })
       const text = await res.text()
       if (!res.ok) {
@@ -167,10 +269,11 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
       return `https://chat.qwen.ai/api/v2/chat/completions?chat_id=${chatId}`
     },
     async buildHeaders(token) {
-      // See createConversation: the x-xsrf-token header (mirrored from the
-      // xsrf-token cookie) is required to clear Aliyun risk control.
+      // Primary path: replay a borrowed baxia bx-ua so a clean SW fetch clears
+      // risk control; no tab to borrow from → ssxmod cookie fallback. The
+      // x-xsrf-token (mirrored from the cookie) is still sent when present.
       const xsrf = await getCookieToken('chat.qwen.ai', 'xsrf-token')
-      return {
+      const base: Record<string, string> = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
         'Origin': 'https://chat.qwen.ai',
@@ -182,6 +285,8 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
         'bx-v': '2.5.36',
         ...(xsrf ? { 'x-xsrf-token': xsrf } : {}),
       }
+      await applyQwenRiskHeaders(base)
+      return base
     },
     buildBody(message, parentId, ctx) {
       const chatId = ctx?.chatId || crypto.randomUUID()
@@ -258,59 +363,46 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
     deltaResponseId(data) {
       return typeof data.response_id === 'string' ? data.response_id : null
     },
-    // qwen endpoints sit behind Aliyun baxia risk control; route every request
-    // through the real qwen page so the bx-ua header is signed (see usePageFetch).
-    usePageFetch: true,
+    // qwen sends direct from the SW with a borrowed bx-ua (see qwenDirectFetch);
+    // no page-fetch proxy. RGV587 → re-borrow + retry once → ssxmod fallback.
   },
 
   chatgpt: {
     name: 'ChatGPT',
     cookieName: '__Secure-next-auth.session-token',
     cookieDomain: 'chatgpt.com',
-    // content.parts[0] is a cumulative snapshot per in_progress event, not a delta.
-    isSnapshot: true,
-    getUrl() { return 'https://chatgpt.com/backend-api/conversation' },
+    supportsSystem: true,
+    // ChatGPT's web backend gates every message behind a Cloudflare Turnstile
+    // token that only the live page can mint, so a background fetch can't drive
+    // /backend-api/conversation directly. Instead we go through the local
+    // chatgpt-proxy (see piercode/chatgpt-proxy/), which solves the sentinel
+    // (PoW + Turnstile) chain server-side and exposes an OpenAI-compatible
+    // /v1/chat/completions. getAuth('chatgpt') resolves the proxy URL + a dummy
+    // token; the proxy reads the user's chatgpt.com cookies itself. The request
+    // and SSE shape below are therefore plain OpenAI, identical to the 'openai'
+    // platform. If the proxy isn't running, getAuth returns an error and the
+    // sub-agent fails fast (no tab-worker fallback by design).
+    getUrl() {
+      // Resolved per-request from storage via getAuth().
+      return ''
+    },
     buildHeaders(token) {
       return {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
-        'Origin': 'https://chatgpt.com',
-        'Referer': 'https://chatgpt.com/',
       }
     },
     buildBody(message, _parentId, ctx) {
-      // ChatGPT picks reasoning by MODEL SLUG, not a separate flag: from the
-      // captured /backend-api/models response, thinking models carry
-      // reasoning_type:"reasoning" + thinking_efforts (standard|extended), and
-      // /settings/user.last_used_model_config stores the effort as a "juice".
-      // 'think' → a thinking slug; 'auto' (default) → the auto-routing model.
-      // TODO(reasoning): the whole ChatGPT send path is currently NON-FUNCTIONAL.
-      // /backend-api/sentinel/chat-requirements returns two separate gates:
-      // proofofwork{seed,difficulty} — solvable in pure JS — and turnstile,
-      // whose token Cloudflare derives from the live page's React state
-      // (__reactRouterContext/loaderData/clientBootstrap) that only exists after
-      // chatgpt.com hydrates, so a background fetch cannot produce it. spawn_agent
-      // routes ChatGPT to the tab-worker instead (hasApiClient excludes it). This
-      // API path only becomes viable if OpenAI drops the turnstile gate; the
-      // slug/juice mapping below is unverified end-to-end until then.
-      const slug = ctx?.reasoning === 'think' ? 'gpt-5-5-thinking' : 'auto'
-      return JSON.stringify({
-        action: 'next',
-        messages: [{ author: { role: 'user' }, content: { content_type: 'text', parts: [message] } }],
-        model: slug,
-        stream: true,
-      })
+      const messages: Array<{ role: string; content: string }> = []
+      if (ctx?.systemPrompt) messages.push({ role: 'system', content: ctx.systemPrompt })
+      messages.push({ role: 'user', content: message })
+      // 'think' selects a thinking slug; otherwise let the proxy/ChatGPT
+      // auto-route. The proxy maps these to ChatGPT web model slugs.
+      const model = ctx?.reasoning === 'think' ? 'gpt-5-thinking' : (ctx?.model || 'gpt-5')
+      return JSON.stringify({ model, messages, stream: true })
     },
     parseChunk(data) {
-      const msg = data.message
-      if (!msg) return null
-      if (msg.content?.parts?.length > 0) {
-        return msg.status === 'in_progress' ? msg.content.parts[0] : null
-      }
-      if (msg.delta?.content?.parts?.length > 0) {
-        return msg.delta.content.parts[0]
-      }
-      return null
+      return data.choices?.[0]?.delta?.content || null
     },
   },
 
@@ -486,22 +578,21 @@ async function getAuth(platform: string): Promise<AuthResult | { error: string }
     return { error: '无法获取 Claude 组织信息，请确认已登录' }
   }
 
-  // ChatGPT：web 端已弃用 __Secure-next-auth.session-token cookie；现走 NextAuth
-  // /api/auth/session，从中取 accessToken（JWT）作 Bearer 调 backend API。session
-  // 端点用 chatgpt.com 的登录 cookie（background fetch 携带，需 host 权限），所以
-  // 这里不读 cookie 名，直接 fetch session。
+  // ChatGPT：走本地 chatgpt-proxy（piercode/chatgpt-proxy/），它在 server 端解
+  // 完整 sentinel（PoW + Turnstile）链并暴露 OpenAI 兼容 /v1/chat/completions。
+  // proxy 自己从 chatgpt.com cookie 取 accessToken，所以这里不需要 token，给个
+  // 占位即可；URL 指向 proxy。proxy 未启动则探测失败、明确报错（按设计不回退
+  // tab-worker）。地址来自 storage chatgptProxyUrl，默认 127.0.0.1:8765。
   if (platform === 'chatgpt') {
+    const stored = await chrome.storage.local.get(['chatgptProxyUrl'])
+    const base = (stored.chatgptProxyUrl || 'http://127.0.0.1:8765').replace(/\/+$/, '')
     try {
-      const res = await fetch('https://chatgpt.com/api/auth/session', { credentials: 'include' })
-      if (res.ok) {
-        const session = await res.json()
-        const accessToken = session?.accessToken
-        if (typeof accessToken === 'string' && accessToken) {
-          return { token: accessToken }
-        }
-      }
-    } catch {}
-    return { error: '未找到 ChatGPT 的登录会话，请先登录 chatgpt.com' }
+      const ping = await fetch(`${base}/health`, { method: 'GET' })
+      if (!ping.ok) throw new Error(`health ${ping.status}`)
+    } catch {
+      return { error: `ChatGPT 代理未运行（${base}）。请先启动 chatgpt-proxy（见 chatgpt-proxy/README.md）` }
+    }
+    return { token: 'chatgpt-proxy', url: `${base}/v1/chat/completions` }
   }
 
   // Qwen：cookie 认证
@@ -872,7 +963,7 @@ export function setListenSendHook(hook: ListenSendHook): void {
   listenSendHook = hook
 }
 
-const LISTEN_PLATFORMS = new Set(['qwen', 'chatgpt'])
+const LISTEN_PLATFORMS = new Set(['chatgpt'])
 export function isListenPlatform(platform: string): boolean {
   return LISTEN_PLATFORMS.has(platform)
 }

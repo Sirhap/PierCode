@@ -10,11 +10,11 @@ const sent: Array<Record<string, unknown>> = []
 const { isListenPlatform, continueListenTurn } = await import('../background/chat-api')
 
 describe('isListenPlatform', () => {
-  it('routes qwen + chatgpt through the listen channel', () => {
-    expect(isListenPlatform('qwen')).toBe(true)
+  it('routes chatgpt through the listen channel', () => {
     expect(isListenPlatform('chatgpt')).toBe(true)
   })
-  it('leaves direct-fetch platforms alone', () => {
+  it('leaves direct-fetch platforms alone (qwen now sends direct with borrowed bx-ua)', () => {
+    expect(isListenPlatform('qwen')).toBe(false)
     expect(isListenPlatform('claude')).toBe(false)
     expect(isListenPlatform('openai')).toBe(false)
     expect(isListenPlatform('nope')).toBe(false)
@@ -25,7 +25,7 @@ describe('continueListenTurn', () => {
   beforeEach(() => { sent.length = 0 })
 
   it('ends the turn with CHAT_DONE when the assistant emitted no tool calls', async () => {
-    await continueListenTurn('qwen', 'just prose, no piercode-tool fence here')
+    await continueListenTurn('chatgpt', 'just prose, no piercode-tool fence here')
     expect(sent.some(m => m.type === 'CHAT_DONE')).toBe(true)
     expect(sent.some(m => m.type === 'CHAT_TOOLS')).toBe(false)
   })
