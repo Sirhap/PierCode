@@ -1,4 +1,4 @@
-import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket, formatToolResults, toolDedupHash } from '../parser';
+import { TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket, formatToolResults, toolDedupHash, extractFenceToolCalls, hasIncompleteToolFence } from '../parser';
 import { hasApiClient } from './platform-caps';
 import { extractMonacoText, findQwenPierCodeBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
@@ -2936,23 +2936,13 @@ function startDOMObserver(_responseSelector: string) {
 
     // ── Phase 1: JSON 围栏格式（优先） ──
     if (lower.includes('```piercode-tool') || lower.includes('```tool')) {
-      FENCE_RE.lastIndex = 0;
-      let fenceMatch;
-      while ((fenceMatch = FENCE_RE.exec(text)) !== null) {
-        const jsonStr = fenceMatch[1];
-        // 清理 fence 内容：去除不可见字符和非断空格，去除首尾空白
-        const cleanedJsonStr = jsonStr.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, ' ').trim();
-        // 流式渲染中：内容可能不完整，跳过本次解析并安排兜底重扫。
-        if (!isBalancedJson(cleanedJsonStr)) {
-          if (sourceEl) scheduleSettleRetry(sourceEl);
-          continue;
-        }
-        const data = parseJsonFenceToolCall(cleanedJsonStr) || tryParseToolJSON(cleanedJsonStr);
-        if (!data) {
-          console.warn('[PierCode] JSON 围栏解析失败:', cleanedJsonStr);
-          showToast('工具调用格式错误，请检查 AI 输出是否正确', 5000);
-          continue;
-        }
+      // 花括号配对提取（extractFenceToolCalls）取代 FENCE_RE 整段匹配：FENCE_RE
+      // 的非贪婪 body 在 args 字符串里的第一个 ``` 处截断（write_file 写 markdown
+      // /代码文件必现），截断残尾还会被再匹配成"幽灵 fence"、解析成另一个工具。
+      // 配对提取把字符串内的 ``` 当普通内容；一个 fence 打包多个对象也全部解析。
+      // 流式未完成（fence/对象未闭合）：本轮跳过该 fence，安排兜底重扫。
+      if (hasIncompleteToolFence(text) && sourceEl) scheduleSettleRetry(sourceEl);
+      for (const data of extractFenceToolCalls(text)) {
         const convId = getConversationId();
         const callId = getToolCallId(data);
         // Conversation-scoped fallback hash — see the Qwen DOM path above.
@@ -2962,7 +2952,7 @@ function startDOMObserver(_responseSelector: string) {
 
         if (sourceEl) {
           processed.add(key);
-          renderToolCard(data, fenceMatch[0], sourceEl, key, processed);
+          renderToolCard(data, '', sourceEl, key, processed);
           maybeScheduleAutoExecute(data, key, sourceEl ?? document.body);
         } else {
           if (isExecuted(key)) continue;

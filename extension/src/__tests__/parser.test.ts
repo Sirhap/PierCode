@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket, splitFenceObjects, parseFenceToolCalls } from '../parser';
+import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket, splitFenceObjects, parseFenceToolCalls, extractFenceToolCalls, hasIncompleteToolFence } from '../parser';
 
 // ── multi-object fence handling (content/injected path hardening) ───────────
 
@@ -27,6 +27,84 @@ describe('parseFenceToolCalls', () => {
   });
   it('skips invalid segments, keeps valid siblings', () => {
     expect(parseFenceToolCalls('{"name":"glob","args":{}}{garbage}').map(c => c.name)).toEqual(['glob']);
+  });
+});
+
+// ── extractFenceToolCalls: brace-balanced full-text extractor ────────────────
+// FENCE_RE's non-greedy body stops at the FIRST ``` it sees, so a tool whose
+// args contain a markdown code fence (write_file of a .md / code file) gets its
+// JSON truncated mid-string; the leftover tail then re-matches as a phantom
+// "fence" and parses into a DIFFERENT tool. These tests pin the fixed behavior.
+
+describe('extractFenceToolCalls', () => {
+  it('survives a markdown code fence inside a string arg (the truncation bug)', () => {
+    const text = 'here:\n```piercode-tool\n{"name":"write_file","call_id":"w1","args":{"path":"a.md","content":"# Doc\\n```js\\nconsole.log(1)\\n```\\n"}}\n```\nthen:\n```piercode-tool\n{"name":"list_dir","call_id":"l1","args":{"path":"."}}\n```';
+    const calls = extractFenceToolCalls(text);
+    expect(calls.map(c => c.name)).toEqual(['write_file', 'list_dir']);
+    expect(calls[0].args.content).toContain('```js');
+    expect(calls[0].callId).toBe('w1');
+  });
+
+  it('extracts a plain single fence', () => {
+    const calls = extractFenceToolCalls('```piercode-tool\n{"name":"read_file","call_id":"r1","args":{"path":"X"}}\n```');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ name: 'read_file', callId: 'r1' });
+  });
+
+  it('extracts multiple separate fences in order', () => {
+    const text = '```tool\n{"name":"exec_cmd","call_id":"a","args":{"command":"ls"}}\n```\ntext\n```piercode-tool\n{"name":"grep","call_id":"b","args":{"pattern":"TODO"}}\n```';
+    expect(extractFenceToolCalls(text).map(c => c.name)).toEqual(['exec_cmd', 'grep']);
+  });
+
+  it('extracts multiple objects packed in ONE fence', () => {
+    const text = '```piercode-tool\n{"name":"read_file","call_id":"a","args":{"path":"X"}}{"name":"grep","call_id":"b","args":{"pattern":"T"}}\n```';
+    expect(extractFenceToolCalls(text).map(c => c.name)).toEqual(['read_file', 'grep']);
+  });
+
+  it('tolerates the no-newline one-liner form', () => {
+    const calls = extractFenceToolCalls('```piercode-tool{"name":"list_dir","args":{"path":"."}}```');
+    expect(calls.map(c => c.name)).toEqual(['list_dir']);
+  });
+
+  it('returns [] when a fence body is incomplete (still streaming)', () => {
+    expect(extractFenceToolCalls('```piercode-tool\n{"name":"write_file","args":{"path":"a.md","content":"# Doc')).toEqual([]);
+  });
+
+  it('does not extract from non-tool fences', () => {
+    expect(extractFenceToolCalls('```json\n{"name":"exec_cmd","args":{}}\n```')).toEqual([]);
+  });
+
+  it('does not produce a phantom tool from the truncated tail', () => {
+    // Single write_file whose content has an inner fence; NOTHING else in text.
+    const text = '```piercode-tool\n{"name":"write_file","call_id":"w2","args":{"path":"b.md","content":"x\\n```sh\\necho hi\\n```\\n"}}\n```';
+    const calls = extractFenceToolCalls(text);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe('write_file');
+  });
+
+  it('normalizes zero-width chars and NBSP before parsing', () => {
+    const text = '```piercode-tool\n{"name": "list_dir",​"call_id":"n1","args":{"path":"src"}}\n```';
+    const calls = extractFenceToolCalls(text);
+    expect(calls.map(c => c.name)).toEqual(['list_dir']);
+  });
+});
+
+describe('hasIncompleteToolFence', () => {
+  it('true when the fence has no closing ``` yet (streaming)', () => {
+    expect(hasIncompleteToolFence('```piercode-tool\n{"name":"write_file","args":{"path":"a.md","content":"# Doc')).toBe(true);
+  });
+  it('true when the object inside a closed-looking text never closes', () => {
+    expect(hasIncompleteToolFence('```tool\n{"name":"exec_cmd","args":{')).toBe(true);
+  });
+  it('false for a complete fence', () => {
+    expect(hasIncompleteToolFence('```piercode-tool\n{"name":"list_dir","args":{"path":"."}}\n```')).toBe(false);
+  });
+  it('false when no tool fence present', () => {
+    expect(hasIncompleteToolFence('plain text ```json\n{}\n```')).toBe(false);
+  });
+  it('true when first fence complete but a second is still streaming', () => {
+    const text = '```tool\n{"name":"a_tool","args":{}}\n```\n```piercode-tool\n{"name":"write_file","args":{"content":"x';
+    expect(hasIncompleteToolFence(text)).toBe(true);
   });
 });
 

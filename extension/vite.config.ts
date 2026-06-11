@@ -67,12 +67,20 @@ export default defineConfig({
         const chunk = bundle[`assets/${chunkFile}`]
         if (!chunk || chunk.type !== 'chunk') return
 
+        // Specifiers come as `X as Y` or bare `X` (when minified internal name
+        // happens to equal the export alias, Rollup drops the `as`).
+        const splitSpec = (part: string): [string, string] | null => {
+          const t = part.trim()
+          // Minified identifiers can contain `$`, so match [\w$]+, not \w+.
+          const mm = t.match(/^([\w$]+)\s+as\s+([\w$]+)$/)
+          if (mm) return [mm[1], mm[2]]
+          return /^[\w$]+$/.test(t) ? [t, t] : null
+        }
         // content import: `p as ht, t as Qe, …` → local var ← chunk export alias
         const localByAlias: Record<string, string> = {}
         for (const part of specifiers.split(',')) {
-          // Minified identifiers can contain `$`, so match [\w$]+, not \w+.
-          const mm = part.trim().match(/^([\w$]+)\s+as\s+([\w$]+)$/)
-          if (mm) localByAlias[mm[1]] = mm[2]
+          const s = splitSpec(part)
+          if (s) localByAlias[s[0]] = s[1]
         }
         // chunk export: `export{h as F, d as T, …};` → export alias ← internal name
         const exportRe = /export\s*\{([^}]*)\};?\s*$/
@@ -80,8 +88,8 @@ export default defineConfig({
         if (!em) return
         const internalByAlias: Record<string, string> = {}
         for (const part of em[1].split(',')) {
-          const mm = part.trim().match(/^([\w$]+)\s+as\s+([\w$]+)$/)
-          if (mm) internalByAlias[mm[2]] = mm[1]
+          const s = splitSpec(part)
+          if (s) internalByAlias[s[1]] = s[0]
         }
 
         // For each binding content imported, resolve the chunk's INTERNAL name.

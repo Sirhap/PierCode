@@ -37,6 +37,101 @@ export function parseFenceToolCalls(body: string): Array<{ name: string; callId:
   return out;
 }
 
+// matchObjectEnd returns the index of the `}` closing the object that starts at
+// `start` (which must be a `{`), or -1 when the object never closes (incomplete
+// stream). String-aware: braces and backticks inside JSON string values are
+// consumed as string content, never as structure.
+function matchObjectEnd(s: string, start: number): number {
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+// FENCE_OPEN_RE matches only the fence OPENER. The body is then consumed by
+// brace matching instead of a non-greedy regex.
+const FENCE_OPEN_RE = /```(?:piercode-tool|tool)\b[ \t]*\r?\n?/gi;
+
+// extractFenceToolCalls scans full text for ```piercode-tool / ```tool fences
+// and returns every complete tool call inside them.
+//
+// Why not FENCE_RE over the whole fence? Its non-greedy body stops at the FIRST
+// ``` — a tool whose args contain a markdown code fence (write_file of a .md or
+// code file) gets its JSON truncated mid-string, and the leftover tail can then
+// re-match as a phantom "fence" that parses into a DIFFERENT tool. Here each
+// `{` starts a string-aware brace match, so ``` inside JSON strings is plain
+// content; multiple concatenated objects in one fence all parse. A fence whose
+// object never closes or that has no closing ``` yet is still streaming —
+// nothing is emitted for it (the next scan retries).
+export function extractFenceToolCalls(text: string): Array<{ name: string; callId: string | null; args: Record<string, unknown> }> {
+  const out: Array<{ name: string; callId: string | null; args: Record<string, unknown> }> = [];
+  FENCE_OPEN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = FENCE_OPEN_RE.exec(text)) !== null) {
+    let i = m.index + m[0].length;
+    let closed = false;
+    const segs: string[] = [];
+    while (i < text.length) {
+      if (text.startsWith('```', i)) { closed = true; break; }
+      if (text[i] === '{') {
+        const end = matchObjectEnd(text, i);
+        if (end === -1) break; // incomplete object — still streaming
+        segs.push(text.slice(i, end + 1));
+        i = end + 1;
+        continue;
+      }
+      i++;
+    }
+    if (!closed) continue; // no closing fence yet — still streaming
+    for (const seg of segs) {
+      const cleaned = seg.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, ' ').trim();
+      const tc = parseJsonFenceToolCall(cleaned);
+      if (tc) out.push(tc);
+    }
+    // Skip past the closing ``` so text inside this fence (which may itself
+    // contain a literal "```piercode-tool" within a string arg) is never
+    // re-scanned as a new opener.
+    FENCE_OPEN_RE.lastIndex = i + 3;
+  }
+  return out;
+}
+
+// hasIncompleteToolFence reports whether ANY tool fence in the text is still
+// streaming: its closing ``` is missing, or an object inside it never closes.
+// Content scans use this to schedule a settle-retry instead of dropping the
+// fence forever when it happens to be the response's final segment.
+export function hasIncompleteToolFence(text: string): boolean {
+  FENCE_OPEN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = FENCE_OPEN_RE.exec(text)) !== null) {
+    let i = m.index + m[0].length;
+    let closed = false;
+    while (i < text.length) {
+      if (text.startsWith('```', i)) { closed = true; break; }
+      if (text[i] === '{') {
+        const end = matchObjectEnd(text, i);
+        if (end === -1) return true; // object never closes
+        i = end + 1;
+        continue;
+      }
+      i++;
+    }
+    if (!closed) return true; // opener with no closing fence
+    FENCE_OPEN_RE.lastIndex = i + 3;
+  }
+  return false;
+}
+
 export const TOOL_RE = /<tool(?:\s[^>]*)?>[\s\S]*?<\/(?:tool|function)(?:_call)?>/gi;
 
 // stableStringify serializes a value with object keys sorted recursively, so two

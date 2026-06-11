@@ -10,7 +10,7 @@
  * 6. 将工具结果注入对话，递归调用让 AI 继续
  */
 
-import { FENCE_RE, parseFenceToolCalls, formatToolResults } from '../parser'
+import { extractFenceToolCalls, formatToolResults } from '../parser'
 import { qwenPageFetch } from './qwen-page-fetch'
 import { installApiListenReceiver } from './api-listen'
 
@@ -601,19 +601,14 @@ function askQuestion(tc: ToolCall): Promise<ToolResult> {
 // ── Tool Detection ─────────────────────────────────────────────────────────
 
 export function extractToolCalls(content: string): ToolCall[] {
-  const calls: ToolCall[] = []
-  let match: RegExpExecArray | null
-  FENCE_RE.lastIndex = 0
-  while ((match = FENCE_RE.exec(content)) !== null) {
-    for (const tc of parseFenceToolCalls(match[1])) {
-      calls.push({
-        name: tc.name,
-        args: tc.args,
-        call_id: tc.callId || `detected-${match.index}-${calls.length}`,
-      })
-    }
-  }
-  return calls
+  // extractFenceToolCalls 用花括号配对消费 fence body，而不是 FENCE_RE 的非贪婪
+  // 匹配 —— 后者在 args 字符串里的第一个 ``` 处截断 JSON（write_file 写 markdown
+  // /代码文件必现），截断残尾还可能再被匹配成"幽灵 fence"解析出错误工具。
+  return extractFenceToolCalls(content).map((tc, i) => ({
+    name: tc.name,
+    args: tc.args,
+    call_id: tc.callId || `detected-${i}`,
+  }))
 }
 
 // ── Sub-agent orchestration ──────────────────────────────────────────────────
