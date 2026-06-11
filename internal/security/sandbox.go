@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -34,7 +35,18 @@ func realPathForSandbox(path string) (string, error) {
 }
 
 func isWithinRoot(path, root string) bool {
-	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+	if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		// Windows paths are case-insensitive: a drive-letter or path-casing
+		// mismatch (C:\Work vs c:\work) must not reject a legitimately in-root
+		// path. Loosening is windows-only so case-sensitive filesystems keep the
+		// exact comparison.
+		p, r := strings.ToLower(path), strings.ToLower(root)
+		return p == r || strings.HasPrefix(p, r+string(filepath.Separator))
+	}
+	return false
 }
 
 // SafePath joins rootDir+targetPath and validates the result stays within rootDir.

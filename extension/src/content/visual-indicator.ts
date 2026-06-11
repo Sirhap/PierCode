@@ -4,7 +4,14 @@
  * 提供：脉冲边框、停止按钮、状态徽章
  */
 
-import { T_GLOW, T_RED } from './terminal-theme';
+import { T_RED } from './terminal-theme';
+
+// PierCode 主题色（与 popup/sidebar theme.css 的 --glow/--bg/--txt 一致），
+// 同 background/phantom-cursor.ts 用的蓝色系。
+const GLOW = '#5b8cff';
+const BG = '#0e1116';
+const BG_HOVER = '#1b212b';
+const TXT = '#e6e9ef';
 
 interface VisualIndicatorState {
   isPulsingActive: boolean;
@@ -126,13 +133,13 @@ function createPulseStyles(root: ShadowRoot): void {
     @keyframes piercode-agent-pulse {
       0%, 100% {
         box-shadow:
-          inset 0 0 4px rgba(215, 119, 87, 0.5),
-          inset 0 0 8px rgba(215, 119, 87, 0.25);
+          inset 0 0 4px rgba(91, 140, 255, 0.5),
+          inset 0 0 8px rgba(91, 140, 255, 0.25);
       }
       50% {
         box-shadow:
-          inset 0 0 6px rgba(215, 119, 87, 0.7),
-          inset 0 0 12px rgba(215, 119, 87, 0.35);
+          inset 0 0 6px rgba(91, 140, 255, 0.7),
+          inset 0 0 12px rgba(91, 140, 255, 0.35);
       }
     }
 
@@ -187,8 +194,8 @@ function showPulsingBorder(): void {
       transition: opacity 0.3s ease-in-out;
       animation: piercode-agent-pulse 2s ease-in-out infinite;
       box-shadow:
-        inset 0 0 4px rgba(215, 119, 87, 0.5),
-        inset 0 0 8px rgba(215, 119, 87, 0.25);
+        inset 0 0 4px rgba(91, 140, 255, 0.5),
+        inset 0 0 8px rgba(91, 140, 255, 0.25);
     `;
     root.appendChild(glowBorder);
   }
@@ -251,9 +258,9 @@ function createStopButton(): HTMLDivElement {
   button.style.cssText = `
     position: relative;
     padding: 12px 16px;
-    background: #FAF9F5;
-    color: #141413;
-    border: 0.5px solid rgba(31, 30, 29, 0.4);
+    background: ${BG};
+    color: ${TXT};
+    border: 0.5px solid rgba(91, 140, 255, 0.4);
     border-radius: 12px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 14px;
@@ -263,18 +270,18 @@ function createStopButton(): HTMLDivElement {
     align-items: center;
     justify-content: center;
     box-shadow:
-      0 40px 80px rgba(215, 119, 87, 0.24),
-      0 4px 14px rgba(215, 119, 87, 0.24);
+      0 40px 80px rgba(91, 140, 255, 0.24),
+      0 4px 14px rgba(91, 140, 255, 0.24);
     transition: all 0.2s ease;
     pointer-events: auto;
   `;
 
   button.addEventListener('mouseenter', () => {
-    if (state.isPulsingActive) button.style.background = '#F5F4F0';
+    if (state.isPulsingActive) button.style.background = BG_HOVER;
   });
 
   button.addEventListener('mouseleave', () => {
-    if (state.isPulsingActive) button.style.background = '#FAF9F5';
+    if (state.isPulsingActive) button.style.background = BG;
   });
 
   button.addEventListener('click', async () => {
@@ -301,8 +308,8 @@ function createStopButton(): HTMLDivElement {
 }
 
 const DOT_COLORS: Record<string, string> = {
-  loading: T_GLOW,
-  completed: T_GLOW,
+  loading: GLOW,
+  completed: GLOW,
   error: T_RED,
 };
 
@@ -373,8 +380,8 @@ function showStatusBadge(status: 'loading' | 'completed' | 'error'): void {
   };
 
   const colorMap: Record<string, string> = {
-    loading: T_GLOW,
-    completed: T_GLOW,
+    loading: GLOW,
+    completed: GLOW,
     error: T_RED,
   };
 

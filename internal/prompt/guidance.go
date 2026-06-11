@@ -8,7 +8,7 @@ import "strings"
 // increments it once. n starts at 1.
 const (
 	fullPromptReinjectEvery = 0 // full-prompt reinjection disabled (was 20; bloated long sessions)
-	operatingReminderEvery  = 3 // operating reminder on turn 1, then every 3rd turn
+	operatingReminderEvery  = 1 // operating reminder on every guidance-bearing turn
 	taskCheckpointEvery     = 5
 )
 
@@ -24,6 +24,12 @@ const (
 	// the result packet the coordinator is waiting on.
 	workerResultPacketReminder = "\n\n[Worker 结果回传提示] 你是 PierCode worker，只负责手头这一个自包含任务。任务完成、失败或受阻时，只输出一个 ```piercode-agent-result fenced JSON block（字段：version、agent_id、status=completed|failed|blocked、summary、result、evidence、files_changed）；不要套 `piercode-tool`，不要输出多个 block，不要在 packet 前后加解释；输出后停止。coordinator 看不到你的会话，result/evidence 要自包含。"
 )
+
+// OperatingReminder exposes the per-turn operating reminder so the extension
+// can append the same text to user-typed messages at send time (GET /guidance).
+func OperatingReminder() string {
+	return operatingReminder
+}
 
 // GuidanceFor returns the guidance text to append to the n-th AI-originated tool
 // result for this profile. renderFull is invoked only when a full-prompt
@@ -41,8 +47,6 @@ func (p Profile) GuidanceFor(n int64, renderFull func() []byte) string {
 		b.WriteString("\n\n[系统重新注入提示词]\n")
 		b.Write(renderFull())
 	} else if (n-1)%operatingReminderEvery == 0 {
-		// Turn 1, 4, 7, … — first turn always primes the protocol, then a light
-		// refresh every few turns instead of on every single turn.
 		b.WriteString(operatingReminder)
 	}
 	if n%taskCheckpointEvery == 0 {

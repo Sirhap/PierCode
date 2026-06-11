@@ -154,7 +154,7 @@ Currently supported platforms (from manifest + adapters):
 
 - Server binds `127.0.0.1` only; all requests require Bearer token (generated per-launch, stored in `~/.piercode/token`)
 - File paths resolved via `filepath.EvalSymlinks` then validated against RootDir
-- `/cwd` cannot escape the initial startup directory
+- `/cwd` cannot escape the initial startup directory or explicitly added allowed dirs — except in `auto` permission mode, which also allows the startup directory's PARENT (sibling projects become reachable; deliberate relaxation in `handleCwd`). `unrestricted` mode skips the check entirely
 - Dangerous commands blocked: `rm -rf`, `sudo`, `curl`, `wget`, `dd`, `mkfs`, etc. The blacklist is a backstop, not a sandbox — it can be bypassed via variable expansion / quote splitting
 - **`exec_cmd` (shell) is enabled by default** (`--allow-shell` defaults to `true`). Start with `--no-shell` to disable shell execution in untrusted environments
 - Command timeout: default 60s, configurable via `-timeout`

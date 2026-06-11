@@ -1,5 +1,6 @@
 import { browserRelayWsUrl, isAiPageUrl } from './browser-relay-utils';
-import { registerChatApiHandler } from './chat-api';
+import { registerChatApiHandler, setListenSendHook } from './chat-api';
+import { syncPhantomCursor } from './phantom-cursor';
 import {
   DOWNLOAD_STORAGE_KEY,
   MAX_DOWNLOAD_RECORDS,
@@ -406,6 +407,9 @@ async function handleBrowserCommand(msg: BrowserCommand): Promise<unknown> {
   await ensureAttached(msg.tabId);
   if (msg.domain === 'Input') {
     await activateTabForInput(msg.tabId);
+    if (msg.method === 'dispatchMouseEvent') {
+      await syncPhantomCursor(msg.tabId, params);
+    }
   }
   // 给 CDP 命令加超时，防止扩展 relay 卡死
   const cmdTimeout = Math.max(msg.timeoutMs || 30000, 10000);
@@ -425,7 +429,7 @@ async function handleNativeBrowserCommand(method: string, params: Record<string,
     case 'listTabs':
       return listBrowserTabs(params.includeAiPages === true);
     case 'createTab':
-      return createControlledTab(typeof params.url === 'string' ? params.url : 'about:blank');
+      return createControlledTab(typeof params.url === 'string' ? params.url : 'about:blank', params.controlled !== false);
     case 'getTab':
       return tabToDTO(await chrome.tabs.get(Number(params.tabId)));
     case 'resolveSelectorRect':
@@ -925,10 +929,13 @@ function parsePiercodeAgentId(url: string): string {
   }
 }
 
-async function createControlledTab(url: string) {
+async function createControlledTab(url: string, controlled = true) {
   const tab = await chrome.tabs.create({ url: url || 'about:blank', active: false });
   if (!tab.id) throw new Error('created tab has no id');
-  controlledTabId = tab.id;
+  // spawn_agent worker tabs pass controlled=false: they must not become the
+  // "controlled tab" the popup/status surfaces (and must never be the implicit
+  // target of tabID-less browser tools — the Go side enforces that part).
+  if (controlled) controlledTabId = tab.id;
   const agentId = parsePiercodeAgentId(url);
   if (agentId) workerAgentIdByTabId.set(tab.id, agentId);
   await waitForTabComplete(tab.id, 30000).catch(() => undefined);
@@ -1103,6 +1110,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ agentId });
     return true;
   }
+  if (msg.type === 'RELEASE_WORKER_AGENT') {
+    // The worker tab was reclaimed by the user for their own conversation;
+    // forget the tabId -> agentId mapping so GET_WORKER_AGENT_ID cannot
+    // re-teach the page its old worker identity.
+    const tabId = _sender?.tab?.id;
+    if (typeof tabId === 'number') workerAgentIdByTabId.delete(tabId);
+    sendResponse({ ok: true });
+    return true;
+  }
   if (msg.type === 'GET_CONTROLLED_TAB') {
     if (controlledTabId == null) {
       sendResponse({ type: 'PIERCODE_CONTROLLED_TAB', info: null });
@@ -1220,6 +1236,69 @@ connectBrowserRelay();
 
 // Register the sidebar chat API handler (SSE streaming + tool auto-exec)
 registerChatApiHandler();
+
+// ── Listen-mode tab driver ───────────────────────────────────────────────────
+//
+// Listen platforms (qwen/chatgpt) don't fetch from the SW. The sidebar drives a
+// background AI tab: we find or open one for the platform, then ask its content
+// script to enable the listen relay and DOM-submit the message. The page sends
+// its own authenticated request; the teed response flows back through the listen
+// receiver. One tab is reused per platform across a conversation's turns.
+const LISTEN_TAB_URLS: Record<string, { match: string[]; open: string }> = {
+  qwen: { match: ['*://chat.qwen.ai/*', '*://qwen.ai/*', '*://*.qwen.ai/*', '*://*.qwenlm.ai/*'], open: 'https://chat.qwen.ai/' },
+  chatgpt: { match: ['*://chatgpt.com/*', '*://*.chatgpt.com/*', '*://chat.openai.com/*'], open: 'https://chatgpt.com/' },
+};
+const listenTabByPlatform = new Map<string, number>();
+
+async function findListenTab(platform: string): Promise<number | null> {
+  const cfg = LISTEN_TAB_URLS[platform];
+  if (!cfg) return null;
+  // Reuse the tab pinned for this platform if it's still open.
+  const pinned = listenTabByPlatform.get(platform);
+  if (pinned != null) {
+    const alive = await chrome.tabs.get(pinned).catch(() => null);
+    if (alive) return pinned;
+    listenTabByPlatform.delete(platform);
+  }
+  const tabs = await chrome.tabs.query({ url: cfg.match });
+  const tab = tabs.find(t => typeof t.id === 'number');
+  if (tab?.id != null) { listenTabByPlatform.set(platform, tab.id); return tab.id; }
+  return null;
+}
+
+async function ensureListenTab(platform: string): Promise<number | null> {
+  const existing = await findListenTab(platform);
+  if (existing != null) return existing;
+  const cfg = LISTEN_TAB_URLS[platform];
+  if (!cfg) return null;
+  // Open a background tab (active:false → user stays in the sidebar). The
+  // keep-alive shim (page-bridge) keeps the background tab streaming.
+  const tab = await chrome.tabs.create({ url: cfg.open, active: false });
+  if (tab.id == null) return null;
+  listenTabByPlatform.set(platform, tab.id);
+  await waitForTabComplete(tab.id, 30000).catch(() => undefined);
+  return tab.id;
+}
+
+setListenSendHook(async (platform, text) => {
+  const tabId = await ensureListenTab(platform);
+  if (tabId == null) return { ok: false, error: `无法为 ${platform} 找到或打开页面` };
+  // Poll-send: the content script may not be ready right after a fresh open.
+  const deadline = Date.now() + 30000;
+  let lastError = 'content script not ready';
+  while (Date.now() < deadline) {
+    try {
+      const resp = await chrome.tabs.sendMessage(tabId, { type: 'CHAT_LISTEN_SEND', text });
+      if (resp?.ok === true) return { ok: true };
+      lastError = resp?.error || 'page did not accept the message';
+      if (resp && resp.ok === false && lastError !== 'content script not ready') break;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return { ok: false, error: lastError };
+});
 
 async function focusSenderTab(sender: chrome.runtime.MessageSender, options?: { forceFocus?: boolean }): Promise<{ ok: boolean }> {
   // Default: do NOT steal window focus. Only activate tab if explicitly requested.

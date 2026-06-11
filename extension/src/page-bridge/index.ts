@@ -1,7 +1,25 @@
-import { installApiIntercept } from './api-intercept';
+import { installApiListen } from './api-listen';
 
 const MONACO_REQUEST = 'PIERCODE_MONACO_TEXT_REQUEST';
 const MONACO_RESPONSE = 'PIERCODE_MONACO_TEXT_RESPONSE';
+
+// Passive listen channel: page-context fetch interceptor (tees chat-API SSE
+// responses back to the SW). The relay gate __PIERCODE_API_LISTEN_ON__ is
+// flipped by content via the message below; installing it is always safe (no
+// relay until the flag is on).
+const API_LISTEN_SET = 'PIERCODE_API_LISTEN_SET';
+
+// Qwen page-context fetch proxy. The service worker can't carry baxia's dynamic
+// bx-ua/bx-umidtoken anti-bot headers (the SDK monkey-patches XHR/fetch only in
+// the real qwen page). So the SW forwards qwen API requests here, where calling
+// window.fetch runs through baxia's patch and gets signed automatically. We
+// stream the response back chunk-by-chunk to content (→ port → SW).
+const PAGE_FETCH_REQUEST = 'PIERCODE_PAGE_FETCH_EXEC';        // content → page-bridge
+const PAGE_FETCH_HEAD = 'PIERCODE_PAGE_FETCH_EXEC_HEAD';      // page-bridge → content
+const PAGE_FETCH_CHUNK = 'PIERCODE_PAGE_FETCH_EXEC_CHUNK';
+const PAGE_FETCH_DONE = 'PIERCODE_PAGE_FETCH_EXEC_DONE';
+const PAGE_FETCH_ERROR = 'PIERCODE_PAGE_FETCH_EXEC_ERROR';
+const PAGE_FETCH_ABORT = 'PIERCODE_PAGE_FETCH_EXEC_ABORT';
 
 // Keep-alive visibility shim. Chrome heavily throttles background tabs and —
 // worse — AI sites themselves listen for `visibilitychange` / `document.hidden`
@@ -85,7 +103,19 @@ function installKeepAliveVisibilityShim(): void {
 }
 
 installKeepAliveVisibilityShim();
-installApiIntercept();
+
+// Install the passive fetch interceptor at document_start (must beat the site's
+// own fetch calls). Relay stays off until content flips the flag.
+try { installApiListen(); } catch {}
+
+// content → page-bridge: toggle the listen relay flag.
+window.addEventListener('message', event => {
+  if (event.source !== window) return;
+  const d = event.data;
+  if (d && d.type === API_LISTEN_SET) {
+    (window as any).__PIERCODE_API_LISTEN_ON__ = d.on === true;
+  }
+});
 
 function normalize(text: string): string {
   return text.replace(/\u00A0/g, ' ').trim();
@@ -125,6 +155,107 @@ function readModelByVisibleText(visibleText: string): string | null {
   if (candidates.length === 0) return null;
   return candidates.sort((a, b) => b.length - a.length)[0];
 }
+
+// ── Qwen page-context fetch proxy ───────────────────────────────────────────
+
+// Active proxied fetches, keyed by requestId, so an ABORT can cancel the stream.
+const pageFetchAborts = new Map<string, AbortController>();
+
+/** Uint8Array → base64. The content↔SW port is JSON-only, so chunk bytes must be
+ *  base64-encoded for transit. */
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  // Chunked to avoid String.fromCharCode arg-count limits on large frames.
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH) as unknown as number[]);
+  }
+  return btoa(bin);
+}
+
+function post(msg: Record<string, unknown>): void {
+  window.postMessage(msg, '*');
+}
+
+async function execPageFetch(req: {
+  requestId: string;
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body: string;
+  stream: boolean;
+}): Promise<void> {
+  const { requestId } = req;
+  const controller = new AbortController();
+  pageFetchAborts.set(requestId, controller);
+  try {
+    // window.fetch here runs in page context → baxia's fetch/XHR patch injects
+    // bx-ua/bx-umidtoken automatically. Same-origin to chat.qwen.ai → cookies sent.
+    const res = await fetch(req.url, {
+      method: req.method,
+      headers: req.headers,
+      body: req.body,
+      credentials: 'include',
+      signal: controller.signal,
+    });
+    post({ type: PAGE_FETCH_HEAD, requestId, ok: res.ok, status: res.status });
+
+    if (!res.ok) {
+      // Surface the error body so the SW can show the 风控/auth message.
+      const text = await res.text().catch(() => '');
+      post({ type: PAGE_FETCH_CHUNK, requestId, b64: btoa(unescape(encodeURIComponent(text))) });
+      post({ type: PAGE_FETCH_DONE, requestId });
+      return;
+    }
+
+    if (!res.body) {
+      // No stream (shouldn't happen for these endpoints) — fall back to full text.
+      const text = await res.text().catch(() => '');
+      post({ type: PAGE_FETCH_CHUNK, requestId, b64: btoa(unescape(encodeURIComponent(text))) });
+      post({ type: PAGE_FETCH_DONE, requestId });
+      return;
+    }
+
+    const reader = res.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value && value.length) post({ type: PAGE_FETCH_CHUNK, requestId, b64: bytesToBase64(value) });
+    }
+    post({ type: PAGE_FETCH_DONE, requestId });
+  } catch (err) {
+    const aborted = (err as { name?: string })?.name === 'AbortError';
+    if (!aborted) {
+      post({ type: PAGE_FETCH_ERROR, requestId, error: err instanceof Error ? err.message : String(err) });
+    } else {
+      post({ type: PAGE_FETCH_DONE, requestId });
+    }
+  } finally {
+    pageFetchAborts.delete(requestId);
+  }
+}
+
+window.addEventListener('message', event => {
+  if (event.source !== window) return;
+  const d = event.data;
+  if (d && typeof d.requestId === 'string') {
+    if (d.type === PAGE_FETCH_REQUEST) {
+      void execPageFetch({
+        requestId: d.requestId,
+        url: String(d.url),
+        method: String(d.method || 'POST'),
+        headers: (d.headers && typeof d.headers === 'object') ? d.headers : {},
+        body: typeof d.body === 'string' ? d.body : '',
+        stream: d.stream === true,
+      });
+      return;
+    }
+    if (d.type === PAGE_FETCH_ABORT) {
+      pageFetchAborts.get(d.requestId)?.abort();
+      return;
+    }
+  }
+});
 
 window.addEventListener('message', event => {
   if (event.source !== window) return;

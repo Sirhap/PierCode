@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { DEFAULT_API_INTERCEPT_ENABLED, DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, DEFAULT_BATCH_QUIET_MS, DEFAULT_PERMISSION_MODE, DEFAULT_PLATFORM_THRESHOLDS, DEFAULT_STEALTH_MODE, MAX_BATCH_QUIET_MS, MIN_BATCH_QUIET_MS, type ContextCompressionConfig, type PermissionMode, resolveApiInterceptEnabled, resolveAutoApproveBrowserActions, resolveAutoExecute, resolveBatchQuietMs, resolveContextCompressionConfig, resolvePermissionMode, resolveStealthMode } from '../settings'
+import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, DEFAULT_BATCH_QUIET_MS, DEFAULT_PERMISSION_MODE, DEFAULT_PLATFORM_THRESHOLDS, DEFAULT_STEALTH_MODE, MAX_BATCH_QUIET_MS, MIN_BATCH_QUIET_MS, type ContextCompressionConfig, type PermissionMode, resolveAutoApproveBrowserActions, resolveAutoExecute, resolveBatchQuietMs, resolveContextCompressionConfig, resolvePermissionMode, resolveStealthMode } from '../settings'
 
 const DEFAULT_PORT = 39527
 
@@ -175,7 +175,8 @@ export default function App() {
   const [browserRelay, setBrowserRelay] = useState<BrowserRelayStatus>({})
   const [hasStoredAuth, setHasStoredAuth] = useState(false)
   const [stealthMode, setStealthMode] = useState(DEFAULT_STEALTH_MODE)
-  const [apiIntercept, setApiIntercept] = useState(DEFAULT_API_INTERCEPT_ENABLED)
+  const [appendUserSendReminder, setAppendUserSendReminder] = useState(true)
+  const [systemReminderEnabled, setSystemReminderEnabled] = useState(true)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(DEFAULT_PERMISSION_MODE)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [compression, setCompression] = useState<ContextCompressionConfig>(() => resolveContextCompressionConfig(undefined))
@@ -195,7 +196,7 @@ export default function App() {
   }, [toast])
 
   useEffect(() => {
-    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'batchQuietMs', 'stealthMode', 'apiInterceptEnabled', 'contextCompressionConfig', 'qwenCompressionConfig'], (result) => {
+    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'batchQuietMs', 'stealthMode', 'appendUserSendReminder', 'systemReminderEnabled', 'contextCompressionConfig', 'qwenCompressionConfig'], (result) => {
       const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
       if (result.authToken && savedUrl) {
         setHasStoredAuth(true)
@@ -219,10 +220,10 @@ export default function App() {
       if (result.batchQuietMs === undefined) chrome.storage.local.set({ batchQuietMs: nextBatchQuietMs })
       const nextStealthMode = resolveStealthMode(result.stealthMode)
       setStealthMode(nextStealthMode)
+      // 缺省 = 开；显式 false 才关（与 content 侧 appendUserSendReminder !== false 一致）。
+      setAppendUserSendReminder(result.appendUserSendReminder !== false)
+      setSystemReminderEnabled(result.systemReminderEnabled !== false)
       if (result.stealthMode === undefined) chrome.storage.local.set({ stealthMode: nextStealthMode })
-      const nextApiIntercept = resolveApiInterceptEnabled(result.apiInterceptEnabled)
-      setApiIntercept(nextApiIntercept)
-      if (result.apiInterceptEnabled === undefined) chrome.storage.local.set({ apiInterceptEnabled: nextApiIntercept })
       // 上下文压缩配置：新键缺失时从旧 qwenCompressionConfig 迁移。
       setCompression(resolveContextCompressionConfig(result.contextCompressionConfig, result.qwenCompressionConfig))
     })
@@ -441,9 +442,14 @@ export default function App() {
     chrome.storage.local.set({ stealthMode: val })
   }
 
-  const handleApiInterceptChange = (val: boolean) => {
-    setApiIntercept(val)
-    chrome.storage.local.set({ apiInterceptEnabled: val })
+  const handleAppendUserSendReminderChange = (val: boolean) => {
+    setAppendUserSendReminder(val)
+    chrome.storage.local.set({ appendUserSendReminder: val })
+  }
+
+  const handleSystemReminderEnabledChange = (val: boolean) => {
+    setSystemReminderEnabled(val)
+    chrome.storage.local.set({ systemReminderEnabled: val })
   }
 
   // 持久化压缩配置：写回后 content 侧的 storage.onChanged 监听会失效缓存并按新值重算。
@@ -704,6 +710,21 @@ export default function App() {
           />
 
           <Toggle
+            label="系统提示注入（总开关）"
+            desc="关闭后工具结果与用户消息都不再追加 [系统提示] 等提醒"
+            checked={systemReminderEnabled}
+            onChange={handleSystemReminderEnabledChange}
+          />
+          {systemReminderEnabled && (
+            <Toggle
+              label="用户消息追加系统提示"
+              desc="手动发送的消息末尾自动追加 [系统提示] 运行提醒"
+              checked={appendUserSendReminder}
+              onChange={handleAppendUserSendReminderChange}
+            />
+          )}
+
+          <Toggle
             label="自动审批浏览器操作"
             desc="点击 / 输入 / 导航等审批自动允许"
             checked={autoApproveBrowserActions}
@@ -713,13 +734,6 @@ export default function App() {
           {autoApproveBrowserActions && (
             <RiskNote>浏览器操作将自动允许、不再弹审批。请只在可信页面使用。</RiskNote>
           )}
-
-          <Toggle
-            label="API 工具拦截"
-            desc="拦截 code_interpreter 调用并翻译为 PierCode 工具（目前支持 Qwen）"
-            checked={apiIntercept}
-            onChange={handleApiInterceptChange}
-          />
         </Section>
 
         {/* 高级选项（默认折叠，减少首屏干扰） */}

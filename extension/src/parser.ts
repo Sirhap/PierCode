@@ -39,6 +39,33 @@ export function parseFenceToolCalls(body: string): Array<{ name: string; callId:
 
 export const TOOL_RE = /<tool(?:\s[^>]*)?>[\s\S]*?<\/(?:tool|function)(?:_call)?>/gi;
 
+// stableStringify serializes a value with object keys sorted recursively, so two
+// structurally-equal payloads always produce the identical string regardless of
+// key insertion order. Used to key exec-dedup on the tool's *semantics*.
+export function stableStringify(value: any): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+}
+
+function djb31Hash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = Math.imul(31, h) + s.charCodeAt(i) | 0;
+  return h >>> 0;
+}
+
+// toolDedupHash hashes the *parsed* tool semantics ({name, args}) rather than the
+// raw rendered fence text. Qwen renders finished tool blocks through Monaco,
+// which virtualizes view-lines: after a refresh the same block extracts to a
+// DIFFERENT string (only visible lines, varying whitespace) than at generation
+// time, so a codeText hash drifted and `isExecuted` missed → every history tool
+// re-ran on refresh. The parsed semantics are render-independent, so the dedup
+// key is stable across the refresh.
+export function toolDedupHash(data: any): number {
+  return djb31Hash(stableStringify({ name: data?.name, args: data?.args ?? data?.arguments ?? {} }));
+}
+
 export function parseJsonFenceToolCall(jsonStr: string): any | null {
   // Share tryParseToolJSON's repair chain (unescaped quotes, trailing commas)
   // so a fenced block with a common LLM JSON slip still parses instead of being

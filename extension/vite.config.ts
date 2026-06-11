@@ -27,7 +27,9 @@ export default defineConfig({
       // module) still resolves the tiktoken chunk at runtime.
       name: 'inline-content-preload-helper',
       generateBundle(_options, bundle) {
-        const importRe = /import\s*\{\s*_\s+as\s+(\w+)\s*\}\s*from\s*["']\.\/assets\/preload-helper[^"']*["'];?/
+        // The minified binding alias can contain `$` (a valid JS identifier
+        // char Rollup uses), so match [\w$]+, not just \w+.
+        const importRe = /import\s*\{\s*_\s+as\s+([\w$]+)\s*\}\s*from\s*["']\.\/assets\/preload-helper[^"']*["'];?/
         for (const [fileName, chunk] of Object.entries(bundle)) {
           if (chunk.type !== 'chunk') continue
           if (fileName !== 'content.js' && fileName !== 'injected.js' && fileName !== 'page-bridge.js') continue
@@ -68,7 +70,8 @@ export default defineConfig({
         // content import: `p as ht, t as Qe, …` → local var ← chunk export alias
         const localByAlias: Record<string, string> = {}
         for (const part of specifiers.split(',')) {
-          const mm = part.trim().match(/^(\w+)\s+as\s+(\w+)$/)
+          // Minified identifiers can contain `$`, so match [\w$]+, not \w+.
+          const mm = part.trim().match(/^([\w$]+)\s+as\s+([\w$]+)$/)
           if (mm) localByAlias[mm[1]] = mm[2]
         }
         // chunk export: `export{h as F, d as T, …};` → export alias ← internal name
@@ -77,7 +80,7 @@ export default defineConfig({
         if (!em) return
         const internalByAlias: Record<string, string> = {}
         for (const part of em[1].split(',')) {
-          const mm = part.trim().match(/^(\w+)\s+as\s+(\w+)$/)
+          const mm = part.trim().match(/^([\w$]+)\s+as\s+([\w$]+)$/)
           if (mm) internalByAlias[mm[2]] = mm[1]
         }
 

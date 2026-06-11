@@ -1,8 +1,8 @@
-import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket, formatToolResults } from '../parser';
+import { FENCE_RE, TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket, formatToolResults, toolDedupHash } from '../parser';
 import { hasApiClient } from './platform-caps';
 import { extractMonacoText, findQwenPierCodeBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
 import { filterUserVisibleSkills, SkillSummary } from '../skills';
-import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, sendAgentResult, injectToolResult } from './ws-linker';
+import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, isWorkerStopped, sendAgentResult, injectToolResult } from './ws-linker';
 import { isConversationURLForCurrentPage, observeConversationURL, getConversationKey } from './conversation-scope';
 import { maybeTruncate } from './result-truncate';
 import { isBalancedJson } from './json-complete';
@@ -58,6 +58,172 @@ const platformProfile = getAdapterProfileName(platformAdapter);
 const MONACO_ID_ATTR = 'data-piercode-monaco-id';
 const MONACO_REQUEST = 'PIERCODE_MONACO_TEXT_REQUEST';
 const MONACO_RESPONSE = 'PIERCODE_MONACO_TEXT_RESPONSE';
+
+// Qwen page-context fetch proxy relay. The SW opens a port (name
+// `piercode-page-fetch:<id>`) to this content script to forward a qwen API
+// request; we relay it into the page world (page-bridge), where window.fetch
+// runs through baxia's anti-bot patch and gets a valid bx-ua header. Response
+// chunks stream back the reverse way. See background/qwen-page-fetch.ts.
+const PAGE_FETCH_PORT_PREFIX = 'piercode-page-fetch:';
+// SW ↔ content port message types:
+const PF_REQUEST = 'PIERCODE_PAGE_FETCH';
+const PF_ABORT = 'PIERCODE_PAGE_FETCH_ABORT';
+const PF_HEAD = 'PIERCODE_PAGE_FETCH_HEAD';
+const PF_CHUNK = 'PIERCODE_PAGE_FETCH_CHUNK';
+const PF_DONE = 'PIERCODE_PAGE_FETCH_DONE';
+const PF_ERROR = 'PIERCODE_PAGE_FETCH_ERROR';
+// content ↔ page-bridge window.postMessage types:
+const PF_EXEC = 'PIERCODE_PAGE_FETCH_EXEC';
+const PF_EXEC_ABORT = 'PIERCODE_PAGE_FETCH_EXEC_ABORT';
+const PF_EXEC_HEAD = 'PIERCODE_PAGE_FETCH_EXEC_HEAD';
+const PF_EXEC_CHUNK = 'PIERCODE_PAGE_FETCH_EXEC_CHUNK';
+const PF_EXEC_DONE = 'PIERCODE_PAGE_FETCH_EXEC_DONE';
+const PF_EXEC_ERROR = 'PIERCODE_PAGE_FETCH_EXEC_ERROR';
+
+// Passive listen channel relay. page-bridge tees the page's own chat-API SSE
+// response and posts frames here (window.postMessage); content opens a fresh
+// `piercode-api-listen:<requestId>` port to the SW per intercepted stream and
+// forwards them. Opposite direction from page-fetch (page initiates here).
+const AL_LISTEN_PORT_PREFIX = 'piercode-api-listen:';
+const AL_SET = 'PIERCODE_API_LISTEN_SET';      // content → page-bridge: toggle relay
+const AL_HEAD = 'PIERCODE_API_LISTEN_HEAD';
+const AL_CHUNK = 'PIERCODE_API_LISTEN_CHUNK';
+const AL_DONE = 'PIERCODE_API_LISTEN_DONE';
+const AL_ERROR = 'PIERCODE_API_LISTEN_ERROR';
+
+if (typeof chrome !== 'undefined' && chrome.runtime?.onConnect) {
+  chrome.runtime.onConnect.addListener(port => {
+    if (!port.name.startsWith(PAGE_FETCH_PORT_PREFIX)) return;
+    const requestId = port.name.slice(PAGE_FETCH_PORT_PREFIX.length);
+    let disconnected = false;
+
+    // page-bridge → content → SW. Forward only this request's frames.
+    const onWindowMessage = (event: MessageEvent) => {
+      if (event.source !== window) return;
+      const d = event.data;
+      if (!d || d.requestId !== requestId) return;
+      try {
+        if (d.type === PF_EXEC_HEAD) port.postMessage({ type: PF_HEAD, requestId, ok: d.ok, status: d.status });
+        else if (d.type === PF_EXEC_CHUNK) port.postMessage({ type: PF_CHUNK, requestId, b64: d.b64 });
+        else if (d.type === PF_EXEC_DONE) port.postMessage({ type: PF_DONE, requestId });
+        else if (d.type === PF_EXEC_ERROR) port.postMessage({ type: PF_ERROR, requestId, error: d.error });
+      } catch {
+        // port closed mid-stream — stop relaying.
+      }
+    };
+    window.addEventListener('message', onWindowMessage);
+
+    // SW → content → page-bridge.
+    port.onMessage.addListener((msg: { type?: string; [k: string]: unknown }) => {
+      if (!msg) return;
+      if (msg.type === PF_REQUEST) {
+        injectPageBridge();
+        window.postMessage({
+          type: PF_EXEC,
+          requestId,
+          url: msg.url,
+          method: msg.method,
+          headers: msg.headers,
+          body: msg.body,
+          stream: msg.stream,
+        }, '*');
+      } else if (msg.type === PF_ABORT) {
+        window.postMessage({ type: PF_EXEC_ABORT, requestId }, '*');
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (disconnected) return;
+      disconnected = true;
+      window.removeEventListener('message', onWindowMessage);
+      // Tell the page world to cancel the in-flight fetch if any.
+      window.postMessage({ type: PF_EXEC_ABORT, requestId }, '*');
+    });
+  });
+}
+
+// Passive listen relay: page-bridge tees the page's own chat-API SSE response
+// and posts AL_* frames. For each intercepted stream we open a fresh port to the
+// SW (keyed by the page-generated requestId) and forward HEAD/CHUNK/DONE/ERROR.
+// The page only emits these when listen mode is on (flag set via AL_SET below).
+if (typeof chrome !== 'undefined' && chrome.runtime?.connect) {
+  const listenPorts = new Map<string, chrome.runtime.Port>();
+  window.addEventListener('message', event => {
+    if (event.source !== window) return;
+    const d = event.data;
+    if (!d || typeof d.requestId !== 'string') return;
+    const rid = d.requestId as string;
+    try {
+      if (d.type === AL_HEAD) {
+        const port = chrome.runtime.connect({ name: AL_LISTEN_PORT_PREFIX + rid });
+        listenPorts.set(rid, port);
+        port.onDisconnect.addListener(() => listenPorts.delete(rid));
+        port.postMessage({ type: AL_HEAD, platform: d.platform, ok: d.ok, status: d.status });
+      } else if (d.type === AL_CHUNK) {
+        listenPorts.get(rid)?.postMessage({ type: AL_CHUNK, b64: d.b64 });
+      } else if (d.type === AL_DONE) {
+        const port = listenPorts.get(rid);
+        if (port) { try { port.postMessage({ type: AL_DONE }); } catch {} port.disconnect(); listenPorts.delete(rid); }
+      } else if (d.type === AL_ERROR) {
+        const port = listenPorts.get(rid);
+        if (port) { try { port.postMessage({ type: AL_ERROR, error: d.error }); } catch {} port.disconnect(); listenPorts.delete(rid); }
+      }
+    } catch {
+      // port closed mid-stream — drop it.
+      listenPorts.delete(rid);
+    }
+  });
+}
+
+// SW/sidebar → content → page-bridge: turn the listen relay on/off for this tab.
+// When listen mode is on, the SW listen channel (consumeListenStream →
+// continueListenTurn) owns tool execution + send-back. The content DOM observer
+// must NOT also execute the same fence (it would double-execute — the exact
+// double-source hazard). So this flag gates the DOM auto-exec path: cards still
+// render for inspection, but content does not run them.
+let listenModeActive = false;
+function isListenModeActive(): boolean {
+  return listenModeActive;
+}
+
+function setApiListen(on: boolean): void {
+  listenModeActive = on;
+  injectPageBridge();
+  window.postMessage({ type: AL_SET, on }, '*');
+}
+
+// runListenSend: enable the relay, then drive the page to DOM-submit `text`.
+// Used by both the CHAT_LISTEN_SEND runtime message (production send-back from
+// the SW) and a window-message diagnostic trigger (below). Leaves a DOM
+// breadcrumb (data-piercode-listen-send) so the result is observable from the
+// page MAIN world even though content runs in the isolated world.
+async function runListenSend(text: string): Promise<{ ok: boolean; error?: string }> {
+  const mark = (state: string) => {
+    try { document.documentElement.setAttribute('data-piercode-listen-send', state); } catch {}
+  };
+  if (!text.trim()) { mark('empty'); return { ok: false, error: 'empty text' }; }
+  mark('start');
+  setApiListen(true);
+  try {
+    const sent = await fillAndSend(text, true, { forceSend: true, immediate: true });
+    mark(sent ? 'sent' : 'fill-returned-false');
+    return { ok: sent === true, error: sent ? '' : 'fillAndSend returned false' };
+  } catch (error) {
+    mark('threw:' + String(error).slice(0, 60));
+    return { ok: false, error: String(error) };
+  }
+}
+
+// Diagnostic trigger: drive runListenSend from the page MAIN world. Lets a CDP
+// Runtime.evaluate exercise the send-back leg without the sidebar/SW. Harmless
+// in production (no page emits this message).
+window.addEventListener('message', event => {
+  if (event.source !== window) return;
+  const d = event.data;
+  if (d && d.type === 'PIERCODE_TEST_LISTEN_SEND' && typeof d.text === 'string') {
+    void runListenSend(d.text);
+  }
+});
 
 let pageBridgeInjected = false;
 
@@ -1345,6 +1511,14 @@ function bootstrapContentScript() {
       console.warn('[PierCode] 状态面板初始化失败:', err);
     }
   });
+  // 用户手动发送消息时追加 operating reminder（同样经 queueMicrotask 绕开 TDZ）。
+  queueMicrotask(() => {
+    try {
+      installUserSendReminder();
+    } catch (err) {
+      console.warn('[PierCode] 用户发送提醒初始化失败:', err);
+    }
+  });
 
   // 后台子 agent（API 路由）生命周期广播 → 状态面板行。background 的 broadcast()
   // 用 runtime.sendMessage 只到 sidebar；CHAT_AGENT_SPAWN/DONE 另经 tabs.sendMessage
@@ -1383,97 +1557,6 @@ function bootstrapContentScript() {
   if (document.body) injectInitButton();
   else document.addEventListener('DOMContentLoaded', injectInitButton);
 
-  // ── API Intercept: translated code_interpreter tool calls from page-bridge ──
-  let apiInterceptEnabled = false;
-  try {
-    chrome.storage?.local?.get('apiInterceptEnabled', (r) => {
-      apiInterceptEnabled = !!r?.apiInterceptEnabled;
-    });
-    chrome.storage?.onChanged?.addListener((changes) => {
-      if (changes.apiInterceptEnabled) {
-        apiInterceptEnabled = !!changes.apiInterceptEnabled.newValue;
-      }
-    });
-  } catch {}
-
-  window.addEventListener('piercode-api-tool-call', ((e: CustomEvent) => {
-    const { name, args, source } = e.detail || {};
-    if (!name || !args) return;
-    // Only the code_interpreter translation path reaches here, gated by the
-    // apiInterceptEnabled toggle. piercode-tool blocks on the live AI page are
-    // executed by the DOM observer below (single source of truth) — the SSE
-    // interceptor no longer dispatches them, which previously caused the same
-    // tool call to run twice (once via SSE, once via DOM).
-    if (!apiInterceptEnabled) {
-      console.log(`[PierCode API] 收到 code_interpreter 事件但开关关闭，忽略: ${name}`);
-      return;
-    }
-    console.log(`[PierCode API] 检测到 ${source || 'unknown'} → ${name}`, args);
-    void executeApiInterceptToolCall(name, args, source);
-  }) as EventListener);
-
-  async function executeApiInterceptToolCall(
-    name: string,
-    toolArgs: Record<string, unknown>,
-    source: string,
-  ): Promise<void> {
-    try {
-      if (!checkContext(true)) return;
-      const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
-      if (!apiUrl) {
-        console.warn('[PierCode API] 未配置 API 地址');
-        return;
-      }
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-
-      const callId = `api-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const request = {
-        name,
-        call_id: callId,
-        args: toolArgs,
-        source: source || 'api-intercept',
-      };
-
-      // Use chrome.runtime.sendMessage to proxy through background (avoids CORS).
-      const response = await new Promise<{ ok: boolean; status: number; body: string }>((resolve) => {
-        try {
-          chrome.runtime.sendMessage(
-            { type: 'FETCH', url: `${apiUrl}/exec`, options: { method: 'POST', headers, body: JSON.stringify(request) } },
-            (result) => {
-              if (chrome.runtime.lastError) {
-                resolve({ ok: false, status: 0, body: chrome.runtime.lastError.message || '' });
-                return;
-              }
-              resolve(result || { ok: false, status: 0, body: '' });
-            },
-          );
-        } catch (err) {
-          resolve({ ok: false, status: 0, body: String(err) });
-        }
-      });
-
-      if (response.status === 401) {
-        console.warn('[PierCode API] 认证失败');
-        return;
-      }
-      if (!response.ok) {
-        console.warn(`[PierCode API] 工具执行失败: HTTP ${response.status}`, response.body);
-        return;
-      }
-
-      const result = JSON.parse(response.body);
-      const output = result.output || result.error || '[PierCode API] 空响应';
-      const resultText = `### ${name} #${callId}\n${output}`;
-
-      // Inject result back into the conversation.
-      injectToolResult(resultText);
-      console.log(`[PierCode API] 工具结果已注入: ${name}`);
-    } catch (error) {
-      console.error('[PierCode API] 工具执行异常:', error);
-    }
-  }
-
   function mountInputListener() {
     const attachCurrentEditor = () => {
       const editorEl = querySelectorFirst(getSiteConfig().editor);
@@ -1504,6 +1587,24 @@ function bootstrapContentScript() {
     if (msg.type === 'HIDE_INDICATORS') {
       visualIndicator.hideAllIndicators();
       return false;
+    }
+
+    // Toggle the passive listen relay for this tab (sidebar listen mode).
+    if (msg.type === 'CHAT_LISTEN_SET') {
+      setApiListen(msg.on === true);
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    // Listen-mode send: enable the relay, then drive the page to send `text`.
+    // The page's own fetch is teed back to the SW (see api-listen). The relay
+    // flag is set before fillAndSend submits, so the request is intercepted.
+    if (msg.type === 'CHAT_LISTEN_SEND') {
+      const text = String(msg.text || '');
+      runListenSend(text)
+        .then(r => sendResponse(r))
+        .catch(error => sendResponse({ ok: false, error: String(error) }));
+      return true;
     }
 
     if (msg.type === 'PIERCODE_FILL_COMPRESSED_CONTEXT') {
@@ -2409,6 +2510,20 @@ function startDOMObserver(_responseSelector: string) {
     isWorkerPage = true;
     applyWorkerBehavior();
   });
+  // The user reclaimed this worker tab for their own conversation (ws-linker
+  // released the worker identity): forced auto-execute must drop back to the
+  // user's own setting, or their chat keeps running tools unattended.
+  window.addEventListener('PIERCODE_WORKER_AGENT_RELEASED', () => {
+    if (!isWorkerPage) return;
+    isWorkerPage = false;
+    chrome.storage.local.get(['autoExecute']).then(r => {
+      autoExecute = resolveAutoExecute(r.autoExecute);
+      flushPendingAutoExecute();
+    }).catch(() => {
+      autoExecute = false;
+      flushPendingAutoExecute();
+    });
+  });
   chrome.storage.local.get(['autoExecute']).then(r => {
     autoExecute = isWorkerPage ? true : resolveAutoExecute(r.autoExecute);
     flushPendingAutoExecute();
@@ -2624,6 +2739,14 @@ function startDOMObserver(_responseSelector: string) {
 
   function maybeScheduleAutoExecute(toolCall: any, key: string, container: Element) {
     if (isExecuted(key)) return;
+    // Listen mode: the SW listen channel owns tool execution + send-back. The DOM
+    // observer renders the card but must not also run the tool (single source).
+    if (isListenModeActive()) return;
+    // A worker the coordinator stopped (stop_agent → agent_control "stop") must
+    // not keep auto-running tools. The card still renders for inspection; the
+    // unattended tool loop halts here, so the model starves of results and the
+    // run ends with the current turn. send_to_agent's "resume" re-arms it.
+    if (isWorkerPage && isWorkerStopped()) return;
     if (autoExecute === true) {
       scheduleToBatch(toolCall, key, container);
     } else if (autoExecute === null) {
@@ -2674,9 +2797,9 @@ function startDOMObserver(_responseSelector: string) {
     if (sourceEl && platformAdapter.name === 'qwen') {
       let parsedQwenTool = false;
       // 流式中遇到未平衡 JSON 时置位：本次 scan 不再 fallthrough 到 Phase 1。
-      // 否则同一 fence 可能被 Phase 1 文本路径先解析执行，而无 callId 时两条
-      // 路径的 fallback key 不同（hashStr(codeText) vs hashStr(fence全文)），
-      // processed 去重兜不住 → 双执行。settle retry 600ms 后全量重扫接管。
+      // 两路径现在都对解析后的 {name,args} 取 toolDedupHash，无 callId 时 fallback
+      // key 一致，processed 去重兜得住；置位仍保留以省一次重复解析，并让 settle
+      // retry 600ms 后全量重扫接管未流完的块。
       let pendingQwenTool = false;
       const toolPres = sourceEl.querySelectorAll(DOM_EXTRACT.qwenToolBlock);
       for (const pre of toolPres) {
@@ -2734,7 +2857,13 @@ function startDOMObserver(_responseSelector: string) {
         }
         const convId = getConversationId();
         const callId = getToolCallId(data);
-        const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(codeText));
+        // The no-call_id fallback hash must still be conversation-scoped:
+        // identical command text (e.g. the same `go test ./...` fence) in two
+        // conversations would otherwise share one dedup key, and a repeat in
+        // conversation B got silently skipped because A had run it within TTL.
+        // Hash the parsed semantics, NOT codeText — Monaco virtualizes finished
+        // blocks, so codeText drifts across a refresh and re-ran every tool.
+        const key = callId ? `${convId}:${data.name}:${callId}` : `${convId}:${toolDedupHash(data)}`;
         if (processed.has(key)) continue;
         console.log('[PierCode] 提取到工具调用(Qwen DOM):', data);
 
@@ -2783,7 +2912,13 @@ function startDOMObserver(_responseSelector: string) {
         }
         const convId = getConversationId();
         const callId = getToolCallId(data);
-        const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(codeText));
+        // The no-call_id fallback hash must still be conversation-scoped:
+        // identical command text (e.g. the same `go test ./...` fence) in two
+        // conversations would otherwise share one dedup key, and a repeat in
+        // conversation B got silently skipped because A had run it within TTL.
+        // Hash the parsed semantics, NOT codeText — DOM-rendered code drifts
+        // across a refresh and re-ran every tool.
+        const key = callId ? `${convId}:${data.name}:${callId}` : `${convId}:${toolDedupHash(data)}`;
         if (processed.has(key)) continue;
         console.log('[PierCode] 提取到工具调用(Chat Z DOM):', data);
 
@@ -2819,7 +2954,8 @@ function startDOMObserver(_responseSelector: string) {
         }
         const convId = getConversationId();
         const callId = getToolCallId(data);
-        const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(fenceMatch[0]));
+        // Conversation-scoped fallback hash — see the Qwen DOM path above.
+        const key = callId ? `${convId}:${data.name}:${callId}` : `${convId}:${toolDedupHash(data)}`;
         if (processed.has(key)) continue;
         console.log('[PierCode] 提取到工具调用(JSON):', data);
 
@@ -2850,7 +2986,8 @@ function startDOMObserver(_responseSelector: string) {
         }
         const convId = getConversationId();
         const callId = getToolCallId(data);
-        const key = callId ? `${convId}:${data.name}:${callId}` : String(hashStr(full));
+        // Conversation-scoped fallback hash — see the Qwen DOM path above.
+        const key = callId ? `${convId}:${data.name}:${callId}` : `${convId}:${toolDedupHash(data)}`;
         if (processed.has(key)) continue;
         console.log('[PierCode] 提取到工具调用(XML):', data);
 
@@ -3234,7 +3371,8 @@ function withPlatformProfile(toolCall: any, withGuidance = true): any {
   // call. In an auto-executed batch we only want it on ONE tool of the turn, so
   // the AI sees the reminder once, not once per tool. Mark the others false;
   // omit the field when enabled so older servers default to the prior behavior.
-  if (!withGuidance) request.with_guidance = false;
+  // 总开关关闭时所有调用一律不带 guidance（覆盖批量"最后一个带"的逻辑）。
+  if (!withGuidance || !systemReminderMasterEnabled) request.with_guidance = false;
   return request;
 }
 
@@ -3484,12 +3622,128 @@ function isSendBlockedByRunningResponse(siteConfig: SiteConfig): boolean {
   return !!findStopElement(siteConfig);
 }
 
+// ── 用户消息系统提示追加 ──────────────────────────────────────────────────────
+// 工具结果的 operating reminder 由服务端追加（executor.appendPromptGuidance）；
+// 用户手动输入的消息不经过 /exec，这里在“点击发送 / 回车”那一刻同步把同一段
+// 提醒文字（GET /guidance）追加进编辑器，使每条用户消息也携带协议提醒。
+// 程序化发送（工具结果回填、worker 自动提交）通过 markProgrammaticSend 跳过。
+let userSendReminder = '';
+let userSendReminderEnabled = true;
+// 总开关：关掉后既不给用户消息追加提醒，也把所有工具调用标记 with_guidance=false
+// （服务端 GuidanceEnabled() 为假即不追加任何 [系统提示]/[任务状态快照提示]）。
+let systemReminderMasterEnabled = true;
+let suppressUserSendAppendUntil = 0;
+
+function markProgrammaticSend(windowMs = 3000): void {
+  suppressUserSendAppendUntil = Date.now() + windowMs;
+}
+
+async function refreshUserSendReminder(): Promise<void> {
+  if (!checkContext()) return;
+  try {
+    const { authToken, apiUrl, appendUserSendReminder, systemReminderEnabled } = await chrome.storage.local.get(['authToken', 'apiUrl', 'appendUserSendReminder', 'systemReminderEnabled']);
+    systemReminderMasterEnabled = systemReminderEnabled !== false;
+    userSendReminderEnabled = appendUserSendReminder !== false && systemReminderMasterEnabled;
+    if (!apiUrl || !userSendReminderEnabled) return;
+    const headers: any = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const resp = await bgFetch(apiEndpointForProfile(apiUrl, '/guidance'), { headers });
+    if (!resp.ok) return;
+    const data = JSON.parse(resp.body);
+    if (typeof data.operating_reminder === 'string') userSendReminder = data.operating_reminder;
+    console.info('[PierCode] 用户发送提醒已就绪:', userSendReminder.length, '字符');
+  } catch (err) {
+    // 拿不到提醒文本时静默跳过追加，不影响发送。
+    console.warn('[PierCode] 用户发送提醒获取失败:', err);
+  }
+}
+
+function appendUserSendReminderIfNeeded(): void {
+  if (!userSendReminder || !userSendReminderEnabled) {
+    console.info('[PierCode] 发送提醒跳过: 文本未就绪或已禁用', { len: userSendReminder.length, enabled: userSendReminderEnabled });
+    return;
+  }
+  if (Date.now() < suppressUserSendAppendUntil) return;
+  if (workerAgentId()) return; // worker 页全部是程序化发送
+  const siteConfig = getSiteConfig();
+  const editor = querySelectorFirst(siteConfig.editor);
+  if (!editor) return;
+  const current = getEditorText(editor);
+  if (!current.trim()) return;
+  // 已带提醒（如工具结果回填后的编辑器内容）不重复追加。
+  if (current.includes('[系统提示]')) return;
+
+  const method = effectiveFillMethod(editor, siteConfig.fillMethod);
+  if (method === 'value') {
+    const ta = editor as HTMLTextAreaElement;
+    const setter = getNativeSetter();
+    const next = ta.value + userSendReminder;
+    if (setter) setter.call(ta, next);
+    else ta.value = next;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  } else if (method === 'paste') {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', userSendReminder);
+    editor.focus();
+    editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  } else if (method === 'execCommand') {
+    editor.focus();
+    const sel = window.getSelection();
+    if (sel) {
+      sel.selectAllChildren(editor);
+      sel.collapseToEnd();
+    }
+    document.execCommand('insertText', false, userSendReminder);
+  } else if (method === 'prosemirror') {
+    editor.textContent = editor.innerText + userSendReminder;
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    editor.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  console.info('[PierCode] 已向用户消息追加系统提示 (method=' + method + ')');
+}
+
+function installUserSendReminder(): void {
+  void refreshUserSendReminder();
+  try {
+    chrome.storage?.onChanged?.addListener((changes, area) => {
+      if (area === 'local' && (changes.apiUrl || changes.authToken || changes.appendUserSendReminder || changes.systemReminderEnabled)) {
+        void refreshUserSendReminder();
+      }
+    });
+  } catch {
+    // storage 监听不可用时仅用启动时的快照。
+  }
+  // 用 pointerdown/mousedown（capture）而非 click：追加发生在 click 前一个事件，
+  // 站点框架（React/Vue 异步批处理 state）有微任务窗口把 input 事件产生的状态
+  // 更新刷进内部 state，click 发送 handler 读到的才是带提醒的内容。若直接挂
+  // click capture，同一事件内 "改 value→派发 input→站点 handler 读 state" 可能
+  // 读到旧值（qwen 实测如此）。重复触发由 appendUserSendReminderIfNeeded 内的
+  // [系统提示] 去重挡住。
+  const onSendPress = (e: Event) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const hit = getSiteConfig().sendBtn.split(',').map(s => s.trim()).filter(Boolean)
+      .some(sel => { try { return !!target.closest(sel); } catch { return false; } });
+    if (hit) appendUserSendReminderIfNeeded();
+  };
+  document.addEventListener('pointerdown', onSendPress, true);
+  document.addEventListener('mousedown', onSendPress, true);
+  document.addEventListener('click', onSendPress, true);
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+    if (!findEditorFromTarget(e.target as HTMLElement | null)) return;
+    appendUserSendReminderIfNeeded();
+  }, true);
+  console.info('[PierCode] 用户发送提醒拦截已安装');
+}
+
 async function clickSendWhenReady(siteConfig: SiteConfig, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!isSendBlockedByRunningResponse(siteConfig)) {
       const sendBtn = querySelectorFirst(siteConfig.sendBtn);
       if (sendBtn) {
+        markProgrammaticSend();
         sendBtn.click();
         return true;
       }
@@ -3500,6 +3754,7 @@ async function clickSendWhenReady(siteConfig: SiteConfig, timeoutMs: number): Pr
   if (!isQwenPage() || !isSendBlockedByRunningResponse(siteConfig)) {
     const ed = querySelectorFirst(siteConfig.editor);
     if (ed) {
+      markProgrammaticSend();
       return dispatchEnterAsSendFallback(ed);
     }
   }

@@ -26,12 +26,20 @@ func TestDispatchClickRightButton(t *testing.T) {
 	if err := controller.dispatchClick(context.Background(), 1, 100, 200, "right", 1); err != nil {
 		t.Fatalf("dispatchClick returned error: %v", err)
 	}
-	if len(commands) != 2 {
-		t.Fatalf("expected 2 commands (mousePressed + mouseReleased), got %d", len(commands))
+	if len(commands) != 3 {
+		t.Fatalf("expected 3 commands (mouseMoved + mousePressed + mouseReleased), got %d", len(commands))
+	}
+
+	var moved map[string]interface{}
+	if err := json.Unmarshal(commands[0].Params, &moved); err != nil {
+		t.Fatalf("unmarshal mouseMoved params: %v", err)
+	}
+	if moved["type"] != "mouseMoved" || moved["button"] != "none" {
+		t.Fatalf("expected leading mouseMoved, got %#v", moved)
 	}
 
 	var pressed map[string]interface{}
-	if err := json.Unmarshal(commands[0].Params, &pressed); err != nil {
+	if err := json.Unmarshal(commands[1].Params, &pressed); err != nil {
 		t.Fatalf("unmarshal mousePressed params: %v", err)
 	}
 	if pressed["button"] != "right" {
@@ -45,7 +53,7 @@ func TestDispatchClickRightButton(t *testing.T) {
 	}
 
 	var released map[string]interface{}
-	if err := json.Unmarshal(commands[1].Params, &released); err != nil {
+	if err := json.Unmarshal(commands[2].Params, &released); err != nil {
 		t.Fatalf("unmarshal mouseReleased params: %v", err)
 	}
 	if released["button"] != "right" {
@@ -73,12 +81,12 @@ func TestDispatchClickDoubleClick(t *testing.T) {
 	if err := controller.dispatchClick(context.Background(), 1, 100, 200, "left", 2); err != nil {
 		t.Fatalf("dispatchClick returned error: %v", err)
 	}
-	if len(commands) != 2 {
-		t.Fatalf("expected 2 commands, got %d", len(commands))
+	if len(commands) != 3 {
+		t.Fatalf("expected 3 commands, got %d", len(commands))
 	}
 
 	var pressed map[string]interface{}
-	if err := json.Unmarshal(commands[0].Params, &pressed); err != nil {
+	if err := json.Unmarshal(commands[1].Params, &pressed); err != nil {
 		t.Fatalf("unmarshal params: %v", err)
 	}
 	if pressed["clickCount"] != float64(2) {
@@ -109,12 +117,12 @@ func TestDispatchClickTripleClick(t *testing.T) {
 	if err := controller.dispatchClick(context.Background(), 1, 100, 200, "left", 3); err != nil {
 		t.Fatalf("dispatchClick returned error: %v", err)
 	}
-	if len(commands) != 2 {
-		t.Fatalf("expected 2 commands, got %d", len(commands))
+	if len(commands) != 3 {
+		t.Fatalf("expected 3 commands, got %d", len(commands))
 	}
 
 	var pressed map[string]interface{}
-	if err := json.Unmarshal(commands[0].Params, &pressed); err != nil {
+	if err := json.Unmarshal(commands[1].Params, &pressed); err != nil {
 		t.Fatalf("unmarshal params: %v", err)
 	}
 	if pressed["clickCount"] != float64(3) {
@@ -139,12 +147,12 @@ func TestDispatchClickMiddleButton(t *testing.T) {
 	if err := controller.dispatchClick(context.Background(), 1, 100, 200, "middle", 1); err != nil {
 		t.Fatalf("dispatchClick returned error: %v", err)
 	}
-	if len(commands) != 2 {
-		t.Fatalf("expected 2 commands, got %d", len(commands))
+	if len(commands) != 3 {
+		t.Fatalf("expected 3 commands, got %d", len(commands))
 	}
 
 	var pressed map[string]interface{}
-	if err := json.Unmarshal(commands[0].Params, &pressed); err != nil {
+	if err := json.Unmarshal(commands[1].Params, &pressed); err != nil {
 		t.Fatalf("unmarshal params: %v", err)
 	}
 	if pressed["button"] != "middle" {

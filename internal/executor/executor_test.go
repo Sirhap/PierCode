@@ -272,23 +272,12 @@ func TestExecutorPromptGuidance(t *testing.T) {
 		}
 	})
 
-	t.Run("operating reminder appears on turn 1 then every third turn, not every turn", func(t *testing.T) {
+	t.Run("operating reminder appears on every guidance-bearing turn", func(t *testing.T) {
 		exec := helper()
 		const marker = "[系统提示]"
-		// Operating reminder rides turns 1, 4, 7 (n-1 divisible by 3); the
-		// turns in between stay clean.
-		got := map[int]bool{}
 		for i := 1; i <= 7; i++ {
-			got[i] = strings.Contains(exec().Output, marker)
-		}
-		for _, on := range []int{1, 4, 7} {
-			if !got[on] {
-				t.Fatalf("turn %d should carry operating reminder", on)
-			}
-		}
-		for _, off := range []int{2, 3, 6} {
-			if got[off] {
-				t.Fatalf("turn %d should NOT carry operating reminder", off)
+			if !strings.Contains(exec().Output, marker) {
+				t.Fatalf("turn %d should carry operating reminder", i)
 			}
 		}
 	})

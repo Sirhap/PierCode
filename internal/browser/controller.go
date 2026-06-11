@@ -88,12 +88,22 @@ func (c *Controller) NewTab(ctx context.Context, rawURL string) (tool.BrowserTab
 	if err := c.policy.CheckNavigate(rawURL); err != nil {
 		return tool.BrowserTab{}, err
 	}
+	// An AI conversation tab (spawn_agent's worker tab is the main case) must
+	// NOT become the default target for subsequent tabID-less browser tools:
+	// that silently re-pointed the coordinator's browser automation at the
+	// worker's chat page, and the default-tab path used to skip the AI-page
+	// approval gate entirely. Such a tab is still tracked (MarkCreated) so
+	// finalize/cleanup works, but the previous default stays in place.
+	isAIPage := c.policy.IsAIPage(rawURL)
 	var tab tool.BrowserTab
-	if err := c.sendNativeWithTimeout(ctx, "createTab", map[string]interface{}{"url": rawURL}, defaultNavigateTimeout, &tab); err != nil {
+	params := map[string]interface{}{"url": rawURL, "controlled": !isAIPage}
+	if err := c.sendNativeWithTimeout(ctx, "createTab", params, defaultNavigateTimeout, &tab); err != nil {
 		return tool.BrowserTab{}, err
 	}
-	tab.Controlled = true
-	c.tabs.SetDefault(tab)
+	if !isAIPage {
+		tab.Controlled = true
+		c.tabs.SetDefault(tab)
+	}
 	c.tabs.MarkCreated(tab.TabID)
 	tab = c.tabs.Upsert(tab)
 	return tab, nil
@@ -630,6 +640,12 @@ func (c *Controller) ensureTab(ctx context.Context, tabID *int) (tool.BrowserTab
 		return c.tabs.Upsert(tab), nil
 	}
 	if tab, ok := c.tabs.DefaultTab(); ok {
+		// Same gate as the explicit-tabID path above. Without it, the implicit
+		// default-tab route was the one place an AI conversation page could be
+		// driven without browser_use_tab approval.
+		if c.policy.IsAIPage(tab.URL) && !c.tabs.IsApproved(tab.TabID) {
+			return tool.BrowserTab{}, fmt.Errorf("refusing to control AI conversation tab by default; use browser_use_tab and approve explicitly")
+		}
 		return tab, nil
 	}
 	return c.NewTab(ctx, "about:blank")
@@ -760,6 +776,11 @@ func (c *Controller) dispatchClick(ctx context.Context, tabID int, x, y float64,
 		buttons = 2
 	case "middle":
 		buttons = 4
+	}
+	// 先发 mouseMoved:扩展端虚拟光标(phantom cursor)随之滑到目标点,页面 hover 态也先于
+	// 点击触发,更接近真实用户操作
+	if err := c.dispatchMouseMoved(ctx, tabID, x, y); err != nil {
+		return err
 	}
 	for _, typ := range []string{"mousePressed", "mouseReleased"} {
 		params, _ := json.Marshal(map[string]interface{}{

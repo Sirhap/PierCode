@@ -79,6 +79,35 @@ describe('conversation-scope', () => {
     expect(getConversationKey('https://claude.ai/chat/uuid-2')).toBe(onNew);
   });
 
+  it('reuses the original scope id when switching back to a visited conversation (A->B->A)', () => {
+    const a1 = getConversationKey('https://chat.qwen.ai/c/aaa');
+    const b = getConversationKey('https://chat.qwen.ai/c/bbb');
+    expect(b).not.toBe(a1);
+    // Switching back to A must reuse A's id — a rotated id would miss every
+    // exec-dedup entry and re-run A's already-executed tools on re-mount.
+    const a2 = getConversationKey('https://chat.qwen.ai/c/aaa');
+    expect(a2).toBe(a1);
+    // And B's identity also survives another hop.
+    expect(getConversationKey('https://chat.qwen.ai/c/bbb')).toBe(b);
+  });
+
+  it('reuses a conversation scope id on reload even when aliases were reset by visiting another conversation', () => {
+    const a1 = getConversationKey('https://claude.ai/chat/conv-a');
+    getConversationKey('https://claude.ai/chat/conv-b');
+
+    // Reload back on A: module state gone, sessionStorage (incl. scope map) kept.
+    __resetForReload();
+    const a2 = getConversationKey('https://claude.ai/chat/conv-a');
+    expect(a2).toBe(a1);
+  });
+
+  it('keeps the migration-bound stable URL mapped to the transient-born scope id across revisits', () => {
+    const born = getConversationKey('https://claude.ai/new');
+    getConversationKey('https://claude.ai/chat/uuid-m'); // migration binds uuid-m -> born id
+    getConversationKey('https://claude.ai/chat/other');  // navigate away
+    expect(getConversationKey('https://claude.ai/chat/uuid-m')).toBe(born);
+  });
+
   it('getConversationKey returns a fresh stable key for a distinct conversation', () => {
     const a = getConversationKey('https://chat.qwen.ai/c/abc');
     expect(a).toBeTruthy();
@@ -97,7 +126,9 @@ function __resetForReload(): void {
   // observeConversationURL re-seeds conversationAliasSet from sessionStorage on
   // next call, so just clearing the observed URL is enough to simulate reload.
   // We piggyback on the public reset by snapshotting/restoring sessionStorage.
-  const saved = sessionStorage.getItem('piercode_conversation_aliases');
+  const savedAliases = sessionStorage.getItem('piercode_conversation_aliases');
+  const savedScopeMap = sessionStorage.getItem('piercode_conversation_scope_map');
   __resetConversationScopeForTest();
-  if (saved !== null) sessionStorage.setItem('piercode_conversation_aliases', saved);
+  if (savedAliases !== null) sessionStorage.setItem('piercode_conversation_aliases', savedAliases);
+  if (savedScopeMap !== null) sessionStorage.setItem('piercode_conversation_scope_map', savedScopeMap);
 }

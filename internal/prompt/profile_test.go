@@ -300,14 +300,10 @@ func TestOperatingReminderCadence(t *testing.T) {
 	profile := Profile{Prompt: []byte("full prompt")}
 	renderFull := func() []byte { return nil }
 	const marker = "[系统提示]"
-	for _, on := range []int64{1, 4, 7, 10} {
+	// Cadence is 1: every guidance-bearing turn carries the operating reminder.
+	for _, on := range []int64{1, 2, 3, 4, 5, 7, 10} {
 		if !strings.Contains(profile.GuidanceFor(on, renderFull), marker) {
 			t.Fatalf("turn %d should carry operating reminder", on)
-		}
-	}
-	for _, off := range []int64{2, 3, 5, 6, 8, 9} {
-		if strings.Contains(profile.GuidanceFor(off, renderFull), marker) {
-			t.Fatalf("turn %d should NOT carry operating reminder", off)
 		}
 	}
 }

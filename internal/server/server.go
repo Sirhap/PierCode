@@ -223,6 +223,7 @@ func (s *Server) setupRoutes() {
 	s.router.POST("/inject", s.handleInject)
 	s.router.GET("/ws", s.handleWS) // WebSocket 连接端点
 	s.router.GET("/prompt", s.handlePrompt)
+	s.router.GET("/guidance", s.handleGuidance)
 	s.router.GET("/stats", s.handleStats)
 	s.router.GET("/agents", s.handleListAgents)
 	s.router.GET("/skills", s.handleListSkills)
@@ -351,6 +352,15 @@ func (s *Server) handlePrompt(c *gin.Context) {
 	content = profile.RenderWithSandbox(rootDir, s.config.GetPermissionMode(), s.config.GetAdditionalAllowedDirs(), s.executor.ListTools(), skill.LoadInfos(rootDir))
 
 	c.String(http.StatusOK, string(content))
+}
+
+// handleGuidance exposes the operating reminder text appended to tool results,
+// so the extension can append the identical reminder to user-typed messages at
+// send time without duplicating the string client-side.
+func (s *Server) handleGuidance(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"operating_reminder": prompt.OperatingReminder(),
+	})
 }
 
 func (s *Server) resolveAIProfile(c *gin.Context) prompt.Profile {
@@ -629,7 +639,11 @@ func (s *Server) bindAndSeedWorker(agentID, workerClientID string) {
 		return
 	}
 	if !s.ws.SendToID(workerClientID, payload) {
-		log.Printf("[PierCode] failed to seed worker %q (client %q gone)\n", agentID, workerClientID)
+		// Roll the one-shot seeded flag back so the worker's next reconnect
+		// re-attempts the inject; otherwise the task is lost and the worker
+		// idles forever.
+		registry.UnmarkSeeded(agentID)
+		log.Printf("[PierCode] failed to seed worker %q (client %q gone), will re-seed on reconnect\n", agentID, workerClientID)
 	}
 }
 
@@ -787,8 +801,30 @@ func (s *Server) handleWSClientMessage(sourceClientID string, payload []byte) {
 		}
 	case "agent_result":
 		s.handleAgentResult(msg.AgentID, msg.Status, msg.Summary, msg.Result)
+	case "agent_release":
+		s.handleAgentRelease(msg.AgentID, sourceClientID)
 	case "browser_ping", "browser_hello":
 		return
+	}
+}
+
+// handleAgentRelease unbinds a worker page the user reclaimed for their own
+// conversation. The page keeps its WS client id across the in-tab navigation,
+// so without the unbind the registry kept attributing that conversation's AI
+// responses to the old agent record (RecordAIResponseByWorkerClient matches by
+// client id). The record itself stays for the dispatcher; Sweep's orphan TTL
+// reclaims it if no result ever arrives.
+func (s *Server) handleAgentRelease(agentID, clientID string) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || s.executor == nil {
+		return
+	}
+	registry := s.executor.Agents()
+	if registry == nil {
+		return
+	}
+	if registry.ReleaseWorkerClient(agentID, clientID) {
+		log.Printf("[PierCode] worker tab released agent %q (tab reclaimed by user)\n", agentID)
 	}
 }
 
@@ -805,9 +841,16 @@ func (s *Server) handleAgentResult(agentID, status, summary, result string) {
 	if registry == nil {
 		return
 	}
-	rec, ok := registry.RecordResult(agentID, status, result)
+	rec, late, ok := registry.RecordResult(agentID, status, result)
 	if !ok {
 		log.Printf("[PierCode] agent_result for unknown agent_id %q\n", agentID)
+		return
+	}
+	if late {
+		// Stopped agent's late packet, or a duplicate of an already-pushed one:
+		// retained in LastResult for list_agents, but the dispatcher is not
+		// re-woken and the terminal status stands.
+		log.Printf("[PierCode] late/duplicate agent_result for %q ignored (status %s retained)\n", agentID, rec.Status)
 		return
 	}
 	if rec.DispatcherClientID == "" {

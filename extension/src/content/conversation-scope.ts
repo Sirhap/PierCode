@@ -14,6 +14,16 @@ const ALIAS_STORAGE_KEY = 'piercode_conversation_aliases';
 // transient surface and after migration, so the dedup key is stable from the
 // first message onward.
 const SCOPE_ID_STORAGE_KEY = 'piercode_conversation_scope_id';
+// Maps stable conversation URL -> scope id, so REVISITING a conversation in the
+// same tab (A -> B -> A sidebar switches) reuses A's original scope id instead of
+// minting a fresh one. Without this, every revisit rotated the scope id, all
+// exec-dedup keys (`${scopeId}:${name}:${callId}`) missed, and — because the
+// response-session gate stays open once activated — the old conversation's
+// re-mounted tool fences were re-detected as new and re-executed under
+// autoExecute. Session-scoped like the alias set: a brand-new tab is instead
+// protected by the pre-init history snapshot in content/index.ts.
+const SCOPE_MAP_STORAGE_KEY = 'piercode_conversation_scope_map';
+const SCOPE_MAP_MAX_ENTRIES = 100;
 
 let observedConversationURL = '';
 let conversationScopeId = '';
@@ -44,7 +54,7 @@ export function getCanonicalConversationURL(value?: string | URL | LocationLike)
   }
 }
 
-function isTransientConversationURL(url: string): boolean {
+export function isTransientConversationURL(url: string): boolean {
   try {
     const path = new URL(url).pathname.replace(/\/+$/, '') || '/';
     // Transient "new chat" landing paths that the SPA replaces with a stable
@@ -131,6 +141,47 @@ function persistScopeId(): void {
   }
 }
 
+function loadScopeMap(): Record<string, string> {
+  try {
+    if (typeof sessionStorage === 'undefined') return {};
+    const raw = sessionStorage.getItem(SCOPE_MAP_STORAGE_KEY);
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
+    const map: Record<string, string> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === 'string') map[k] = v;
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+// bindScopeIdToURL remembers which scope id belongs to a stable conversation
+// URL so a later revisit reuses it. Insertion-ordered with a cap so a long
+// session hopping across many conversations cannot grow the map unbounded.
+function bindScopeIdToURL(url: string, scopeId: string): void {
+  if (!url || !scopeId || isTransientConversationURL(url)) return;
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    const map = loadScopeMap();
+    if (map[url] === scopeId) return;
+    delete map[url]; // re-insert at the end so eviction drops the oldest first
+    map[url] = scopeId;
+    const keys = Object.keys(map);
+    for (let i = 0; i < keys.length - SCOPE_MAP_MAX_ENTRIES; i++) delete map[keys[i]];
+    sessionStorage.setItem(SCOPE_MAP_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // sessionStorage unavailable; revisits will mint fresh ids (pre-fix behavior).
+  }
+}
+
+function scopeIdForURL(url: string): string {
+  if (!url || isTransientConversationURL(url)) return '';
+  return loadScopeMap()[url] || '';
+}
+
 export function observeConversationURL(value?: string | URL | LocationLike): string {
   const current = getCanonicalConversationURL(value);
   if (!current) return current;
@@ -148,21 +199,35 @@ export function observeConversationURL(value?: string | URL | LocationLike): str
       // Migration: /new -> /chat/<uuid>. Keep the transient predecessor as an
       // alias of the now-stable conversation so server pushes tagged with the
       // original /new URL still resolve to this page. The scope id is unchanged
-      // (same conversation), so exec-dedup stays stable across the flip.
+      // (same conversation), so exec-dedup stays stable across the flip. Bind
+      // the now-known stable URL to it so a later revisit reuses the same id.
       conversationAliasSet.add(previous);
       conversationAliasSet.add(current);
       ensureScopeId();
+      bindScopeIdToURL(current, conversationScopeId);
     } else if (!previous && conversationAliasSet.has(current)) {
       // Fresh load (e.g. tab refresh) and the persisted alias set already knows
       // this stable URL: keep the persisted aliases so a /new predecessor still
       // matches. Reuse the persisted scope id.
       conversationAliasSet.add(current);
       ensureScopeId();
+      bindScopeIdToURL(current, conversationScopeId);
     } else {
-      // Navigated between two distinct stable conversations: reset to just the
-      // new one and mint a fresh scope id.
+      // Navigated between two distinct stable conversations (or fresh-loaded a
+      // stable URL the alias set doesn't know). Reuse the scope id this URL had
+      // earlier in the session — switching A -> B -> A must NOT rotate A's id,
+      // or A's already-executed tool fences all miss the exec-dedup store and
+      // re-run when the SPA re-mounts them. Only a URL never seen this session
+      // mints a fresh id.
       conversationAliasSet = new Set([current]);
-      resetScopeId();
+      const known = scopeIdForURL(current);
+      if (known) {
+        conversationScopeId = known;
+        persistScopeId();
+      } else {
+        resetScopeId();
+        bindScopeIdToURL(current, conversationScopeId);
+      }
     }
     persistAliasSet();
   } else if (!conversationAliasSet.has(current)) {
@@ -215,6 +280,7 @@ export function __resetConversationScopeForTest(): void {
     if (typeof sessionStorage !== 'undefined') {
       sessionStorage.removeItem(ALIAS_STORAGE_KEY);
       sessionStorage.removeItem(SCOPE_ID_STORAGE_KEY);
+      sessionStorage.removeItem(SCOPE_MAP_STORAGE_KEY);
     }
   } catch {
     // ignore

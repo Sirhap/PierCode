@@ -1,6 +1,6 @@
 // ws-linker.ts: 负责与 PierCode 后端建立 WebSocket 连接并处理输入注入
 
-import { getCanonicalConversationURL, isConversationURLForCurrentPage, observeConversationURL } from './conversation-scope';
+import { getCanonicalConversationURL, isConversationURLForCurrentPage, isTransientConversationURL, observeConversationURL } from './conversation-scope';
 
 let ws: WebSocket | null = null;
 let reconnectTimer: number | null = null;
@@ -159,7 +159,7 @@ function flushPendingInjects() {
       continue;
     }
     pendingInjects.splice(i, 1);
-    void handleInjectMessage(item.text, item.awaitReady);
+    void enqueueInjectMessage(item.text, item.awaitReady);
   }
 }
 
@@ -169,6 +169,7 @@ function startConversationURLWatcher() {
   conversationURLWatcher = window.setInterval(() => {
     const before = getCanonicalConversationURL();
     const after = observeConversationURL();
+    maybeBindOrReleaseWorkerConversation(after);
     if (before !== after || pendingInjects.length) flushPendingInjects();
   }, 500);
 }
@@ -399,6 +400,92 @@ export function workerAgentId(): string {
 // backing vars to avoid a TDZ ReferenceError at module init.
 workerAgentId();
 
+// Worker stop flag — set when the coordinator calls stop_agent (server pushes an
+// agent_control "stop"). Persisted in sessionStorage so a worker tab reload stays
+// stopped; cleared by send_to_agent's "resume" control.
+const WORKER_STOPPED_STORAGE_KEY = "__PIERCODE_WORKER_STOPPED__";
+let workerStoppedCache: boolean | null = null;
+function setWorkerStopped(stopped: boolean): void {
+  workerStoppedCache = stopped;
+  try {
+    if (stopped) window.sessionStorage.setItem(WORKER_STOPPED_STORAGE_KEY, "1");
+    else window.sessionStorage.removeItem(WORKER_STOPPED_STORAGE_KEY);
+  } catch {
+    // sessionStorage unavailable; the in-memory flag still covers this page life.
+  }
+}
+export function isWorkerStopped(): boolean {
+  if (workerStoppedCache !== null) return workerStoppedCache;
+  try {
+    workerStoppedCache = window.sessionStorage.getItem(WORKER_STOPPED_STORAGE_KEY) === "1";
+  } catch {
+    workerStoppedCache = false;
+  }
+  return workerStoppedCache;
+}
+
+// The conversation this worker tab is bound to: the first STABLE conversation
+// URL observed after the seed (the worker opens on a transient "new chat"
+// surface that migrates to it). When the tab later shows a DIFFERENT stable
+// conversation, the user has reclaimed the tab for their own chat — the worker
+// identity must be released, or forced auto-execute and agent attribution keep
+// leaking onto the user's conversation (sessionStorage survives navigation, and
+// the background's tabId->agentId map survives until tab close).
+const WORKER_CONVERSATION_STORAGE_KEY = "__PIERCODE_WORKER_CONVERSATION__";
+
+function maybeBindOrReleaseWorkerConversation(currentURL: string): void {
+  const agentId = workerAgentId();
+  if (!agentId || !currentURL || isTransientConversationURL(currentURL)) return;
+  let bound = "";
+  try {
+    bound = window.sessionStorage.getItem(WORKER_CONVERSATION_STORAGE_KEY) || "";
+  } catch {
+    return; // no storage = cannot track reliably; keep pre-fix behavior
+  }
+  if (!bound) {
+    try {
+      window.sessionStorage.setItem(WORKER_CONVERSATION_STORAGE_KEY, currentURL);
+    } catch {
+      // ignore
+    }
+    return;
+  }
+  if (bound === currentURL) return;
+  releaseWorkerIdentity(agentId);
+}
+
+function releaseWorkerIdentity(agentId: string): void {
+  cachedWorkerAgentId = "";
+  workerStoppedCache = false;
+  try {
+    window.sessionStorage.removeItem(WORKER_AGENT_STORAGE_KEY);
+    window.sessionStorage.removeItem(WORKER_CONVERSATION_STORAGE_KEY);
+    window.sessionStorage.removeItem(WORKER_STOPPED_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+  // Background keeps tabId -> agentId for late id recovery; drop it or this
+  // released page would just re-learn its old identity via GET_WORKER_AGENT_ID.
+  try {
+    void chrome.runtime.sendMessage({ type: "RELEASE_WORKER_AGENT" }).catch(() => undefined);
+  } catch {
+    // extension context gone; nothing to release there
+  }
+  // Server unbinds this WS client from the agent record so the user's AI
+  // responses stop being recorded into the old agent (it matches by client id).
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ type: "agent_release", agent_id: agentId }));
+    } catch {
+      // ignore
+    }
+  }
+  // content/index.ts listens and drops the forced autoExecute back to the
+  // user's own setting.
+  window.dispatchEvent(new CustomEvent("PIERCODE_WORKER_AGENT_RELEASED"));
+  console.log("[PierCode] worker identity released (tab reclaimed for a different conversation)");
+}
+
 // activateSelfTabForInject brings this tab to the foreground so a server-driven
 // inject can reliably fill (execCommand needs real focus) and click send. Used
 // for all inject types incl. the coordinator callback, regardless of platform.
@@ -408,19 +495,6 @@ async function activateSelfTabForInject(): Promise<void> {
     await new Promise(resolve => window.setTimeout(resolve, 150));
   } catch (error) {
     console.warn("[PierCode] inject 前激活标签页失败，继续尝试:", error);
-  }
-}
-
-async function focusCurrentTabForSend(): Promise<void> {
-  // Worker tabs live in the background; filling a contenteditable via execCommand
-  // needs document focus, so a worker must activate its own tab before the seed /
-  // follow-up inject. Qwen also needs activation for its send flow.
-  if (!isQwenPage() && !workerAgentId()) return;
-  try {
-    await chrome.runtime.sendMessage({ type: "FOCUS_SELF", forceFocus: true });
-    await new Promise(resolve => window.setTimeout(resolve, 150));
-  } catch (error) {
-    console.warn("[PierCode] 激活标签页失败，继续尝试发送:", error);
   }
 }
 
@@ -636,7 +710,15 @@ function connectWebSocket(apiUrl: string, token: string) {
             queuePendingInject(msg.text, msg.await_ready === true, msg.conversation_url);
             return;
           }
-          handleInjectMessage(msg.text, msg.await_ready === true);
+          void enqueueInjectMessage(msg.text, msg.await_ready === true);
+        } else if (msg.type === "agent_control" && typeof msg.agent_id === "string") {
+          // stop_agent / send_to_agent control for THIS worker page. "stop"
+          // halts further tool auto-execution (content/index.ts gates on
+          // isWorkerStopped), which starves the model's tool loop so the run
+          // ends with the current turn; "resume" re-arms it.
+          if (msg.agent_id === workerAgentId()) {
+            setWorkerStopped(msg.action === "stop");
+          }
         } else if (msg.type === "tool_stream" && typeof msg.text === "string") {
 		  if (!isForThisPage(msg)) return;
           for (const handler of streamHandlers.slice()) {
@@ -789,6 +871,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
+// Injects must run strictly one at a time. Two concurrent handleInjectMessage
+// runs interleave at their awaits, and the later fill (setContentEditableValue
+// clears the editor first) silently REPLACES the earlier text before its send
+// click landed — the spawn_agent auto-confirm nudge used to clobber the seed
+// task this way while the seed was still polling for an enabled send button.
+let injectQueue: Promise<void> = Promise.resolve();
+function enqueueInjectMessage(text: string, awaitReady = false): Promise<void> {
+  injectQueue = injectQueue
+    .catch(() => { /* a failed inject must not wedge the queue */ })
+    .then(() => handleInjectMessage(text, awaitReady));
+  return injectQueue;
+}
+
 function dispatchEnterAsSendFallback(targetInput: HTMLElement): boolean {
   targetInput.focus();
   const view = targetInput.ownerDocument.defaultView;
@@ -888,7 +983,6 @@ async function handleInjectMessage(text: string, awaitReady = false) {
   // of platform before injecting. Injects are deliberate and infrequent, so the
   // brief focus is acceptable.
   await activateSelfTabForInject();
-  await focusCurrentTabForSend();
   const config = getInjectConfig();
   let targetInput = querySelectorFirst(config.editor);
 
@@ -994,9 +1088,9 @@ export function sendBrowserApprovalAnswer(approvalID: string, approved: boolean,
 }
 
 // injectToolResult fills the chat input with a tool execution result and sends it.
-// Used by the API intercept feature to inject translated code_interpreter results.
+// Used by spawn_agent's API route to inject a sub-agent's result back into chat.
 export function injectToolResult(text: string): void {
-  handleInjectMessage(text);
+  void enqueueInjectMessage(text);
 }
 
 // sendAgentResult routes a worker's result packet back to the Go server, which

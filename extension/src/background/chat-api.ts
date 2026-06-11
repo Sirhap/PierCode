@@ -11,6 +11,8 @@
  */
 
 import { FENCE_RE, parseFenceToolCalls, formatToolResults } from '../parser'
+import { qwenPageFetch } from './qwen-page-fetch'
+import { installApiListenReceiver } from './api-listen'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -27,14 +29,14 @@ interface ToolResult {
   success: boolean
 }
 
-interface PlatformConfig {
+export interface PlatformConfig {
   name: string
   cookieName: string
   cookieDomain: string
   /** Create a new conversation on the server, return its ID. */
   createConversation?(token: string, model: string): Promise<string>
   getUrl(ctx?: { chatId?: string; model?: string }): string
-  buildHeaders(token: string): Record<string, string>
+  buildHeaders(token: string): Record<string, string> | Promise<Record<string, string>>
   buildBody(message: string, parentId: string | null, ctx?: BuildCtx): string
   parseChunk(data: any): string | null
   /** Optional: extract a thinking-summary step from a delta (Qwen's
@@ -54,6 +56,37 @@ interface PlatformConfig {
    *  claude do; qwen + chatgpt use a private web protocol with no system slot,
    *  so the system prompt is prepended to the first user message instead. */
   supportsSystem?: boolean
+  /** When true, all API requests for this platform are routed through a real
+   *  page tab's context (see qwen-page-fetch.ts) instead of fetched directly
+   *  from the service worker. Required for qwen: its endpoints are behind
+   *  Aliyun baxia risk control, whose dynamic bx-ua header is only produced by
+   *  the SDK running in the real qwen page. A SW fetch lacks it → captcha wall
+   *  (RGV587_ERROR). */
+  usePageFetch?: boolean
+}
+
+/** Response-like duck type that both window.fetch's Response and qwenPageFetch's
+ *  proxy result satisfy. processSSEStream only needs .ok/.status/.text()/.body. */
+export interface FetchLike {
+  ok: boolean
+  status: number
+  text(): Promise<string>
+  body: { getReader(): ReadableStreamDefaultReader<Uint8Array> } | null
+}
+
+/** Route a request either through the page-context proxy (usePageFetch) or a
+ *  direct SW fetch. `stream` selects SSE vs one-shot JSON for the proxy path. */
+async function platformFetch(
+  config: PlatformConfig,
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: string },
+  stream: boolean,
+  signal?: AbortSignal,
+): Promise<FetchLike> {
+  if (config.usePageFetch) {
+    return qwenPageFetch(url, { ...init, stream }, signal)
+  }
+  return fetch(url, { method: init.method, headers: init.headers, body: init.body, signal })
 }
 
 interface BuildCtx {
@@ -87,7 +120,14 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
     cookieName: 'token',
     cookieDomain: 'chat.qwen.ai',
     async createConversation(token, model) {
-      const res = await fetch('https://chat.qwen.ai/api/v2/chats/new', {
+      // Qwen's web client echoes the `xsrf-token` cookie back as an x-xsrf-token
+      // header. Without it Aliyun risk control (RGV587_ERROR) walls the request
+      // behind a captcha ("哎哟喂,被挤爆啦").
+      const xsrf = await getCookieToken('chat.qwen.ai', 'xsrf-token')
+      // Route through the qwen page context (baxia bx-ua) like the completions
+      // call — /chats/new is behind the same risk control, so a SW fetch here
+      // would hit the captcha wall too.
+      const res = await qwenPageFetch('https://chat.qwen.ai/api/v2/chats/new', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -99,6 +139,7 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
           'x-request-id': crypto.randomUUID(),
           'timezone': Intl.DateTimeFormat().resolvedOptions().timeZone,
           'bx-v': '2.5.36',
+          ...(xsrf ? { 'x-xsrf-token': xsrf } : {}),
         },
         body: JSON.stringify({
           title: '新建对话',
@@ -108,12 +149,14 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
           timestamp: Math.floor(Date.now() / 1000),
           project_id: '',
         }),
+        stream: false,
       })
+      const text = await res.text()
       if (!res.ok) {
-        const text = await res.text().catch(() => '')
         throw new Error(`创建会话失败 ${res.status}: ${text.slice(0, 200)}`)
       }
-      const data = await res.json()
+      let data: any
+      try { data = JSON.parse(text) } catch { throw new Error(`创建会话失败: 响应非 JSON: ${text.slice(0, 200)}`) }
       if (!data.success || !data.data?.id) {
         throw new Error(`创建会话失败: ${JSON.stringify(data)}`)
       }
@@ -123,7 +166,10 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
       const chatId = ctx?.chatId || crypto.randomUUID()
       return `https://chat.qwen.ai/api/v2/chat/completions?chat_id=${chatId}`
     },
-    buildHeaders(token) {
+    async buildHeaders(token) {
+      // See createConversation: the x-xsrf-token header (mirrored from the
+      // xsrf-token cookie) is required to clear Aliyun risk control.
+      const xsrf = await getCookieToken('chat.qwen.ai', 'xsrf-token')
       return {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
@@ -134,6 +180,7 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
         'x-request-id': crypto.randomUUID(),
         'timezone': Intl.DateTimeFormat().resolvedOptions().timeZone,
         'bx-v': '2.5.36',
+        ...(xsrf ? { 'x-xsrf-token': xsrf } : {}),
       }
     },
     buildBody(message, parentId, ctx) {
@@ -211,6 +258,9 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
     deltaResponseId(data) {
       return typeof data.response_id === 'string' ? data.response_id : null
     },
+    // qwen endpoints sit behind Aliyun baxia risk control; route every request
+    // through the real qwen page so the bx-ua header is signed (see usePageFetch).
+    usePageFetch: true,
   },
 
   chatgpt: {
@@ -625,13 +675,13 @@ async function fetchWorkerPrompt(): Promise<string> {
 
 // ── SSE Stream Processing ──────────────────────────────────────────────────
 
-interface SSEResult {
+export interface SSEResult {
   content: string
   responseId: string | null
 }
 
-async function processSSEStream(
-  response: Response,
+export async function processSSEStream(
+  response: FetchLike,
   config: PlatformConfig,
   onChunk: (text: string) => void,
   abortSignal?: AbortSignal,
@@ -765,6 +815,106 @@ interface ChatRequestParams {
   reasoning?: string
 }
 
+// Execute the tool calls extracted from one assistant turn and broadcast each
+// result. Shared by the active-fetch path (recurses with the formatted output)
+// and the listen path (injects the formatted output back into the driven tab).
+// Broadcasts CHAT_TOOLS up front and CHAT_TOOL_DONE per result, matching the UI
+// contract either way.
+async function runToolCalls(
+  toolCalls: ToolCall[],
+  platform: string,
+  modelOverride: string | undefined,
+  depth: number,
+  signal: AbortSignal,
+): Promise<ToolResult[]> {
+  // Callers broadcast CHAT_TOOLS up front (active path here; listen path in
+  // consumeListenStream), so this helper only executes and emits CHAT_TOOL_DONE.
+  const { spawns, normal } = partitionSpawnCalls(toolCalls)
+  const results: ToolResult[] = []
+
+  // Separate question tools — they need user interaction, not server exec.
+  const questions = normal.filter(tc => tc.name === 'question')
+  const execTools = normal.filter(tc => tc.name !== 'question')
+
+  for (const tc of questions) {
+    if (signal.aborted) break
+    const answer = await askQuestion(tc)
+    results.push(answer)
+    broadcast({ type: 'CHAT_TOOL_DONE', result: answer })
+  }
+
+  for (const tc of execTools) {
+    if (signal.aborted) break
+    const result = await execTool(tc.name, tc.args, tc.call_id)
+    results.push(result)
+    broadcast({ type: 'CHAT_TOOL_DONE', result })
+  }
+
+  // spawn_agent → parallel sub-conversations (no tabs). Each runSubAgent catches
+  // its own failures into a failed ToolResult, so Promise.all never rejects.
+  if (spawns.length > 0 && !signal.aborted) {
+    const spawnResults = await runSubAgentBatch(spawns, platform, modelOverride, depth)
+    for (const r of spawnResults) {
+      results.push(r)
+      broadcast({ type: 'CHAT_TOOL_DONE', result: r })
+    }
+  }
+
+  return results
+}
+
+// ── Listen-path send hook ────────────────────────────────────────────────────
+//
+// For LISTEN_PLATFORMS the sidebar no longer fetches from the SW. Instead it
+// drives a background AI tab (DOM fill + submit) — the page sends its own
+// authenticated request, and the teed response flows back through the listen
+// receiver (installApiListenReceiver → consumeListenStream → broadcast). The
+// driver lives in background/index.ts (it owns tab lifecycle); chat-api calls it
+// through this hook to keep tab logic out of the chat module.
+export type ListenSendHook = (platform: string, text: string) => Promise<{ ok: boolean; error?: string }>
+let listenSendHook: ListenSendHook | null = null
+export function setListenSendHook(hook: ListenSendHook): void {
+  listenSendHook = hook
+}
+
+const LISTEN_PLATFORMS = new Set(['qwen', 'chatgpt'])
+export function isListenPlatform(platform: string): boolean {
+  return LISTEN_PLATFORMS.has(platform)
+}
+
+// Drive the page to send `message`. The response is handled asynchronously by
+// the listen receiver, so this returns once the page has accepted the input.
+async function handleChatRequestViaListen(platform: string, message: string): Promise<void> {
+  if (!listenSendHook) {
+    broadcast({ type: 'CHAT_ERROR', error: '监听通道未初始化（缺少 tab 驱动）' })
+    return
+  }
+  const r = await listenSendHook(platform, message)
+  if (!r.ok) {
+    broadcast({ type: 'CHAT_ERROR', error: r.error || `无法驱动 ${platform} 页面发送` })
+  }
+}
+
+// Called by the listen receiver after an intercepted stream finishes. If the
+// assistant emitted tool calls, execute them and inject the formatted results
+// back into the driven tab (the page sends again → next response is intercepted).
+// No assistant tools → the turn is done.
+export async function continueListenTurn(platform: string, content: string): Promise<void> {
+  const toolCalls = extractToolCalls(content)
+  if (toolCalls.length === 0) {
+    broadcast({ type: 'CHAT_DONE', chatId: null, responseId: null })
+    return
+  }
+  const signal = (currentAbort ??= new AbortController()).signal
+  const results = await runToolCalls(toolCalls, platform, undefined, 0, signal)
+  if (signal.aborted) {
+    broadcast({ type: 'CHAT_DONE', chatId: null, responseId: null })
+    return
+  }
+  broadcast({ type: 'CHAT_CONTINUING' })
+  await handleChatRequestViaListen(platform, formatToolResults(results))
+}
+
 async function handleChatRequest(params: ChatRequestParams): Promise<void> {
   const { platform, depth = 0, systemPrompt, reasoning } = params
   let { chatId, parentId, model: modelOverride, message } = params
@@ -772,6 +922,16 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
   const config = PLATFORMS[platform]
   if (!config) {
     broadcast({ type: 'CHAT_ERROR', error: `未知平台: ${platform}` })
+    return
+  }
+
+  // Listen platforms: drive the page to send instead of fetching from the SW.
+  // The init/system prompt is prepended on the first turn (depth 0) since the
+  // page-driven send has no system slot.
+  if (isListenPlatform(platform) && depth === 0) {
+    let outbound = message
+    if (systemPrompt) outbound = `${systemPrompt}\n\n---\n\n${outbound}`
+    await handleChatRequestViaListen(platform, outbound)
     return
   }
 
@@ -833,18 +993,19 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
   }
 
   // Build request
-  const headers = config.buildHeaders(auth.token)
+  const headers = await config.buildHeaders(auth.token)
   const body = config.buildBody(message, parentId, ctx)
 
   currentAbort = new AbortController()
 
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body,
-      signal: currentAbort.signal,
-    })
+    const response = await platformFetch(
+      config,
+      url,
+      { method: 'POST', headers, body },
+      true,
+      currentAbort.signal,
+    )
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
@@ -868,42 +1029,7 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
 
     if (toolCalls.length > 0) {
       broadcast({ type: 'CHAT_TOOLS', tools: toolCalls })
-
-      const { spawns, normal } = partitionSpawnCalls(toolCalls)
-      const results: ToolResult[] = []
-
-      // Separate question tools — they need user interaction, not server exec.
-      const questions = normal.filter(tc => tc.name === 'question')
-      const execTools = normal.filter(tc => tc.name !== 'question')
-
-      // Question tools → ask sidebar to collect user answer.
-      for (const tc of questions) {
-        if (currentAbort.signal.aborted) break
-        const answer = await askQuestion(tc)
-        results.push(answer)
-        broadcast({ type: 'CHAT_TOOL_DONE', result: answer })
-      }
-
-      // Normal tools → server /exec.
-      for (const tc of execTools) {
-        if (currentAbort.signal.aborted) break
-        const result = await execTool(tc.name, tc.args, tc.call_id)
-        results.push(result)
-        broadcast({ type: 'CHAT_TOOL_DONE', result })
-      }
-
-      // spawn_agent → parallel sub-conversations (no tabs). Each runSubAgent
-      // catches its own failures into a failed ToolResult, so Promise.all never
-      // rejects on a single worker error. One batchId tags this whole batch so
-      // the sidebar can build the summary card from exactly these agents.
-      if (spawns.length > 0 && !currentAbort.signal.aborted) {
-        const spawnResults = await runSubAgentBatch(spawns, platform, modelOverride, depth)
-        for (const r of spawnResults) {
-          results.push(r)
-          broadcast({ type: 'CHAT_TOOL_DONE', result: r })
-        }
-      }
-
+      const results = await runToolCalls(toolCalls, platform, modelOverride, depth, currentAbort.signal)
       const toolResultContent = formatToolResults(results)
 
       // Signal sidebar to create a new assistant message for the continuation
@@ -1206,6 +1332,16 @@ async function runSpawnBatchRecord(rec: SpawnBatchRecord): Promise<void> {
     }))
     rec.done = true
     finishedSpawnBatches.set(rec.batchKey, results)
+    // Cap the in-memory finished store: it only exists so the status poll works
+    // without chrome.storage.session, and a long SW life would otherwise retain
+    // every batch's full results forever. Map preserves insertion order, so the
+    // first key is the oldest. The storage copy (with its own TTL) still serves
+    // evicted batches.
+    while (finishedSpawnBatches.size > 20) {
+      const oldest = finishedSpawnBatches.keys().next().value
+      if (oldest === undefined) break
+      finishedSpawnBatches.delete(oldest)
+    }
     await saveSpawnBatch(rec)
     if (rec.originTabId != null) {
       try {
@@ -1293,12 +1429,13 @@ async function runIsolatedConversation(params: {
     const url = auth.url || config.getUrl(ctx)
     if (!url) throw new Error(`${config.name} API URL 未配置`)
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: config.buildHeaders(auth.token),
-      body: config.buildBody(message, parentId, ctx),
-      signal: abortSignal,
-    })
+    const response = await platformFetch(
+      config,
+      url,
+      { method: 'POST', headers: await config.buildHeaders(auth.token), body: config.buildBody(message, parentId, ctx) },
+      true,
+      abortSignal,
+    )
     if (!response.ok) {
       const t = await response.text().catch(() => '')
       throw new Error(`${config.name} ${response.status}: ${t.slice(0, 120)}`)
@@ -1365,6 +1502,13 @@ export function registerChatApiHandler() {
   // Runs at every SW start (background/index.ts top level): any wake — content
   // status poll, user message, WS traffic — resumes batches a killed SW left.
   void resumeOrphanedSpawnBatches()
+
+  // Passive listen channel: receive teed chat-API SSE streams from content and
+  // feed them through the same processSSEStream/broadcast pipeline as the active
+  // fetch path. Shares this module's broadcast() so sidebar messages match. On
+  // each completed stream, continueListenTurn runs any tool calls and injects
+  // the results back into the driven tab (closing the loop).
+  installApiListenReceiver(broadcast, (platform, result) => continueListenTurn(platform, result.content))
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'CHAT_REQUEST') {

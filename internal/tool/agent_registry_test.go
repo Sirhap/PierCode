@@ -33,9 +33,9 @@ func TestAgentRegistryCreateBindAndResult(t *testing.T) {
 		t.Fatalf("after bind expected worker-9/running, got %+v", got)
 	}
 
-	final, ok := r.RecordResult(rec.AgentID, "completed", "done text")
-	if !ok || final.Status != AgentCompleted || final.LastResult != "done text" {
-		t.Fatalf("RecordResult should mark completed, got %+v", final)
+	final, late, ok := r.RecordResult(rec.AgentID, "completed", "done text")
+	if !ok || late || final.Status != AgentCompleted || final.LastResult != "done text" {
+		t.Fatalf("RecordResult should mark completed, got late=%v %+v", late, final)
 	}
 	if final.EndedAt.IsZero() {
 		t.Fatal("RecordResult should set EndedAt")
@@ -52,10 +52,83 @@ func TestAgentRegistryResultStatusMapping(t *testing.T) {
 	for packetStatus, want := range cases {
 		r := NewAgentRegistry()
 		rec := r.Create("d", "", "qwen", "", "x", "y")
-		got, ok := r.RecordResult(rec.AgentID, packetStatus, "r")
-		if !ok || got.Status != want {
-			t.Errorf("status %q -> %s, want %s", packetStatus, got.Status, want)
+		got, late, ok := r.RecordResult(rec.AgentID, packetStatus, "r")
+		if !ok || late || got.Status != want {
+			t.Errorf("status %q -> %s (late=%v), want %s", packetStatus, got.Status, late, want)
 		}
+	}
+}
+
+// TestAgentRegistryRecordResultTerminalGuard locks stop_agent's semantics: a
+// result packet arriving after the agent was stopped must not flip the status
+// back to completed (and must report late=true so the server skips the
+// dispatcher push); a duplicate of an already-recorded packet is also late.
+func TestAgentRegistryRecordResultTerminalGuard(t *testing.T) {
+	r := NewAgentRegistry()
+	rec := r.Create("d", "", "qwen", "", "x", "y")
+	r.BindWorker(rec.AgentID, "w")
+	r.SetStatus(rec.AgentID, AgentStopped)
+
+	got, late, ok := r.RecordResult(rec.AgentID, "completed", "late text")
+	if !ok || !late {
+		t.Fatalf("result after stop should be late, got late=%v ok=%v", late, ok)
+	}
+	if got.Status != AgentStopped {
+		t.Fatalf("stopped status must stand, got %s", got.Status)
+	}
+	if got.LastResult != "late text" {
+		t.Fatalf("late result text should still be retained, got %q", got.LastResult)
+	}
+
+	// Duplicate of an already-recorded packet on a completed agent.
+	r2 := NewAgentRegistry()
+	rec2 := r2.Create("d", "", "qwen", "", "x", "y")
+	if _, late, _ := r2.RecordResult(rec2.AgentID, "completed", "answer"); late {
+		t.Fatal("first packet must not be late")
+	}
+	if _, late, _ := r2.RecordResult(rec2.AgentID, "completed", "answer"); !late {
+		t.Fatal("identical second packet must be late")
+	}
+	// A genuinely different follow-up packet still records.
+	got2, late2, _ := r2.RecordResult(rec2.AgentID, "failed", "new info")
+	if late2 || got2.Status != AgentFailed || got2.LastResult != "new info" {
+		t.Fatalf("new packet should record, got late=%v %+v", late2, got2)
+	}
+}
+
+func TestAgentRegistryReleaseWorkerClient(t *testing.T) {
+	r := NewAgentRegistry()
+	rec := r.Create("d", "", "qwen", "", "x", "y")
+	r.BindWorker(rec.AgentID, "w-1")
+
+	if r.ReleaseWorkerClient(rec.AgentID, "w-other") {
+		t.Fatal("a non-matching client must not release the binding")
+	}
+	if !r.ReleaseWorkerClient(rec.AgentID, "w-1") {
+		t.Fatal("the bound client should release successfully")
+	}
+	got, _ := r.Get(rec.AgentID)
+	if got.WorkerClientID != "" {
+		t.Fatalf("binding should be cleared, got %q", got.WorkerClientID)
+	}
+	if r.ReleaseWorkerClient(rec.AgentID, "w-1") {
+		t.Fatal("double release must report false")
+	}
+}
+
+func TestAgentRegistryUnmarkSeeded(t *testing.T) {
+	r := NewAgentRegistry()
+	rec := r.Create("d", "", "qwen", "", "x", "y")
+	if !r.MarkSeeded(rec.AgentID) {
+		t.Fatal("first MarkSeeded should win")
+	}
+	if r.MarkSeeded(rec.AgentID) {
+		t.Fatal("second MarkSeeded should lose")
+	}
+	// Failed delivery rolls back; the next (re)connect must be able to seed again.
+	r.UnmarkSeeded(rec.AgentID)
+	if !r.MarkSeeded(rec.AgentID) {
+		t.Fatal("MarkSeeded should win again after UnmarkSeeded")
 	}
 }
 
@@ -67,7 +140,7 @@ func TestAgentRegistryUnknownAgent(t *testing.T) {
 	if _, ok := r.Get("nope"); ok {
 		t.Error("Get should fail for unknown agent")
 	}
-	if _, ok := r.RecordResult("nope", "completed", ""); ok {
+	if _, _, ok := r.RecordResult("nope", "completed", ""); ok {
 		t.Error("RecordResult should fail for unknown agent")
 	}
 	if r.SetStatus("nope", AgentStopped) {

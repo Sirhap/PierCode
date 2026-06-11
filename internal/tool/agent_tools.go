@@ -191,6 +191,12 @@ func NewSendToAgentTool() Tool {
 			if ctx.Client.BroadcastToClient == nil {
 				return "", fmt.Errorf("worker messaging is not available in this session")
 			}
+			// Re-arm a worker that was halted by stop_agent before delivering the
+			// follow-up, or its page-side stop flag keeps blocking auto-execution
+			// and the "continued" worker silently never runs a tool again.
+			if resume, err := json.Marshal(map[string]any{"type": "agent_control", "action": "resume", "agent_id": agentID}); err == nil {
+				ctx.Client.BroadcastToClient(rec.WorkerClientID, resume)
+			}
 			payload, err := json.Marshal(map[string]any{"type": "inject", "text": message})
 			if err != nil {
 				return "", err
@@ -219,14 +225,36 @@ func NewStopAgentTool() Tool {
 		},
 		execute: func(ctx *Context) (string, error) {
 			agentID := strings.TrimSpace(stringArg(ctx.Args, "agent_id"))
-			if _, ok := ctx.Agents.Get(agentID); !ok {
+			rec, ok := ctx.Agents.Get(agentID)
+			if !ok {
 				return "", fmt.Errorf("unknown agent_id %q", agentID)
 			}
 			ctx.Agents.SetStatus(agentID, AgentStopped)
-			return fmt.Sprintf("Stopped worker %s. Continue it with send_to_agent if you want to redirect it.", agentID), nil
+			// Tell the worker page itself to halt tool auto-execution; without
+			// this, "stopped" was registry-only and the worker kept generating
+			// and running tools to completion. Best-effort: even unreachable,
+			// the registry's terminal status makes any late result a no-op.
+			notified := false
+			if rec.WorkerClientID != "" && ctx.Client.BroadcastToClient != nil {
+				if payload, err := json.Marshal(map[string]any{"type": "agent_control", "action": "stop", "agent_id": agentID}); err == nil {
+					notified = ctx.Client.BroadcastToClient(rec.WorkerClientID, payload)
+				}
+			}
+			if notified {
+				return fmt.Sprintf("Stopped worker %s; its page was told to halt tool auto-execution. Continue it with send_to_agent if you want to redirect it.", agentID), nil
+			}
+			return fmt.Sprintf("Marked worker %s stopped (page unreachable to halt; any late result will be ignored). Continue it with send_to_agent if you want to redirect it.", agentID), nil
 		},
 	}
 }
+
+// autoConfirmSpawnDelay is how long after spawn the confirmation nudge fires.
+// It must comfortably exceed the worker's whole seed-inject window (waitForEditor
+// polls up to 30s, then the send-button poll runs while the SPA enables it).
+// The old 4s delay landed mid-seed; even though the content script now also
+// serializes injects (so the nudge can no longer clobber the seed text), firing
+// during a healthy seed just injects a useless extra message.
+const autoConfirmSpawnDelay = 90 * time.Second
 
 // scheduleAutoConfirmSpawn schedules a delayed confirmation inject to ensure
 // the worker's seed task was properly submitted. This mitigates SPA hydration
@@ -236,9 +264,7 @@ func scheduleAutoConfirmSpawn(ctx *Context, agentID, task string) {
 		return
 	}
 	go func() {
-		// Wait for the worker to connect and hydrate (4 seconds is usually enough
-		// for most AI SPAs to mount their input components and register handlers).
-		time.Sleep(4 * time.Second)
+		time.Sleep(autoConfirmSpawnDelay)
 
 		rec, ok := ctx.Agents.Get(agentID)
 		if !ok || rec.WorkerClientID == "" {
@@ -253,6 +279,13 @@ func scheduleAutoConfirmSpawn(ctx *Context, agentID, task string) {
 			return
 		}
 		if rec.LastAIResponse != "" || rec.LastResult != "" {
+			return
+		}
+		// The worker content script reports its inject progress as debug packets
+		// (ws-linker sendInjectDebug → RecordDebug). A reported successful send
+		// means the seed went out — the model just hasn't answered yet; nudging
+		// now would only queue a second user message on top of a healthy run.
+		if strings.Contains(rec.LastDebug, `"stage":"send_reported_success"`) {
 			return
 		}
 

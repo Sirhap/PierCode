@@ -264,6 +264,10 @@ func TestUploadFallsBackToPageEventsWhenFileInputMissing(t *testing.T) {
 	})
 	controller = newApprovedController(relay)
 	controller.tabs.SetDefault(tab)
+	// The default tab here is an AI page (gemini.google.com); ensureTab now
+	// enforces the browser_use_tab approval gate on the default-tab path too,
+	// so mirror UseTab's SetDefault+MarkApproved pairing.
+	controller.tabs.MarkApproved(tab.TabID)
 
 	out, err := controller.Upload(context.Background(), tool.BrowserUploadRequest{
 		Selector: "input[type='file']",
@@ -539,5 +543,74 @@ func TestWaitForFunctionExpressionNoDeadFetchXHRCode(t *testing.T) {
 	}
 	if strings.Contains(expr, "XMLHttpRequest") {
 		t.Fatal("waitForFunctionExpression should not reference XMLHttpRequest")
+	}
+}
+
+// TestEnsureTabRefusesUnapprovedAIDefault locks the regression: the implicit
+// default-tab path must apply the same AI-page approval gate as the explicit
+// tabID path, instead of silently driving an AI conversation page.
+func TestEnsureTabRefusesUnapprovedAIDefault(t *testing.T) {
+	relay := NewRelayManager(func(payload []byte) bool { return true })
+	controller := newApprovedController(relay)
+	tab := tool.BrowserTab{TabID: 91, URL: "https://chat.qwen.ai/c/worker", Title: "Worker"}
+	controller.tabs.SetDefault(tab)
+
+	_, err := controller.ensureTab(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "browser_use_tab") {
+		t.Fatalf("expected unapproved AI default tab to be refused, got err=%v", err)
+	}
+
+	controller.tabs.MarkApproved(tab.TabID)
+	got, err := controller.ensureTab(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("approved AI default tab should be usable: %v", err)
+	}
+	if got.TabID != tab.TabID {
+		t.Fatalf("ensureTab returned tab %d, want %d", got.TabID, tab.TabID)
+	}
+}
+
+// TestNewTabAIPageDoesNotBecomeDefault locks the spawn_agent side: opening a
+// worker tab on an AI host must not hijack the default browser-tool target.
+func TestNewTabAIPageDoesNotBecomeDefault(t *testing.T) {
+	var relay *RelayManager
+	relay = NewRelayManager(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			return false
+		}
+		if cmd.Domain == "PierCode" && cmd.Method == "createTab" {
+			var params struct {
+				URL        string `json:"url"`
+				Controlled *bool  `json:"controlled"`
+			}
+			_ = json.Unmarshal(cmd.Params, &params)
+			if params.Controlled == nil || *params.Controlled {
+				// AI-page tabs must tell the background not to mark them controlled.
+				go relay.DeliverResult(Result{ID: cmd.ID, Success: false, Error: "expected controlled=false for AI page"})
+				return true
+			}
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"tabId":77,"url":"` + params.URL + `","title":"Worker"}`)})
+			return true
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	prev := tool.BrowserTab{TabID: 5, URL: "https://example.com/", Title: "Prev"}
+	controller.tabs.SetDefault(prev)
+
+	tab, err := controller.NewTab(context.Background(), "https://chat.qwen.ai/?piercode_agent=agent-x")
+	if err != nil {
+		t.Fatalf("NewTab returned error: %v", err)
+	}
+	if tab.Controlled {
+		t.Fatalf("AI worker tab must not be marked controlled")
+	}
+	def, ok := controller.tabs.DefaultTab()
+	if !ok || def.TabID != prev.TabID {
+		t.Fatalf("default tab changed to %+v, want previous tab %d", def, prev.TabID)
+	}
+	if controller.tabs.TrackingSource(tab.TabID) != "created" {
+		t.Fatalf("worker tab should still be tracked as created for finalize/cleanup")
 	}
 }

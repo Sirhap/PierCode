@@ -215,6 +215,34 @@ func (r *AgentRegistry) MarkSeeded(agentID string) bool {
 	return true
 }
 
+// ReleaseWorkerClient detaches a worker-client binding when the worker page
+// reports the user reclaimed its tab. Only the currently bound client may
+// release (a stale page cannot unbind a newer rebind). Returns false if the
+// agent is unknown or the client does not match.
+func (r *AgentRegistry) ReleaseWorkerClient(agentID, workerClientID string) bool {
+	workerClientID = strings.TrimSpace(workerClientID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.agents[agentID]
+	if !ok || workerClientID == "" || rec.WorkerClientID != workerClientID {
+		return false
+	}
+	rec.WorkerClientID = ""
+	return true
+}
+
+// UnmarkSeeded rolls the seeded flag back after a failed seed delivery, so the
+// next worker (re)connect attempts the inject again. Without it, a SendToID
+// failure (worker WS gone between bind and seed) consumed the one-shot flag and
+// the task was never injected — the worker tab sat idle forever.
+func (r *AgentRegistry) UnmarkSeeded(agentID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rec, ok := r.agents[agentID]; ok {
+		rec.seeded = false
+	}
+}
+
 // RecordDebug stores the latest worker-side inject debug event for diagnosis.
 func (r *AgentRegistry) RecordDebug(agentID, debug string) bool {
 	r.mu.Lock()
@@ -280,25 +308,46 @@ func (r *AgentRegistry) Get(agentID string) (AgentRecord, bool) {
 }
 
 // RecordResult stores the worker's result packet and final status. The status
-// string comes from the packet ("completed"/"failed"/"blocked").
-func (r *AgentRegistry) RecordResult(agentID, status, result string) (AgentRecord, bool) {
+// string comes from the packet ("completed"/"failed"/"blocked"). late is true
+// when the record was already terminal and its status was deliberately NOT
+// overwritten: a packet landing after stop_agent (or a duplicate of an
+// already-recorded packet) must not flip a stopped/finished agent back to
+// completed and re-wake the dispatcher.
+func (r *AgentRegistry) RecordResult(agentID, status, result string) (rec AgentRecord, late bool, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	rec, ok := r.agents[agentID]
-	if !ok {
-		return AgentRecord{}, false
+	cur, found := r.agents[agentID]
+	if !found {
+		return AgentRecord{}, false, false
 	}
-	rec.LastResult = result
-	rec.EndedAt = time.Now()
+	switch cur.Status {
+	case AgentStopped:
+		// Keep the text for list_agents diagnosis, keep the stopped status.
+		cur.LastResult = result
+		if cur.EndedAt.IsZero() {
+			cur.EndedAt = time.Now()
+		}
+		return *cur, true, true
+	case AgentCompleted, AgentFailed, AgentBlocked:
+		if cur.LastResult == result {
+			// Duplicate packet (e.g. the worker page re-scanned the same fence
+			// after a refresh): already recorded and pushed once.
+			return *cur, true, true
+		}
+		// A genuinely new packet from a finished worker (e.g. a follow-up the
+		// worker volunteered) still records below — new information.
+	}
+	cur.LastResult = result
+	cur.EndedAt = time.Now()
 	switch status {
 	case "failed":
-		rec.Status = AgentFailed
+		cur.Status = AgentFailed
 	case "blocked":
-		rec.Status = AgentBlocked
+		cur.Status = AgentBlocked
 	default:
-		rec.Status = AgentCompleted
+		cur.Status = AgentCompleted
 	}
-	return *rec, true
+	return *cur, false, true
 }
 
 // SetStatus updates an agent's lifecycle state.
