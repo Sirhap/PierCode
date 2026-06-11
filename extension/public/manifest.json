@@ -39,7 +39,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["injected.js", "page-bridge.js", "assets/*.js"],
+      "resources": ["page-bridge.js", "assets/*.js"],
       "matches": ["*://gemini.google.com/*", "*://*.gemini.google.com/*", "*://aistudio.google.com/*", "*://*.aistudio.google.com/*", "*://qwen.ai/*", "*://chat.qwen.ai/*", "*://*.chat.qwen.ai/*", "*://*.qwen.ai/*", "*://qwenlm.ai/*", "*://*.qwenlm.ai/*", "*://chat.z.ai/*", "*://*.chat.z.ai/*", "*://kimi.com/*", "*://*.kimi.com/*", "*://claude.ai/*", "*://*.claude.ai/*", "*://free.easychat.top/*", "*://*.free.easychat.top/*", "*://aistudio.xiaomimimo.com/*", "*://*.aistudio.xiaomimimo.com/*", "*://chatgpt.com/*", "*://*.chatgpt.com/*", "*://chat.openai.com/*", "*://*.chat.openai.com/*"]
     }
   ]

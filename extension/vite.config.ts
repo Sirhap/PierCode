@@ -143,7 +143,6 @@ export default defineConfig({
         popup: resolve(__dirname, 'src/popup/index.html'),
         sidebar: resolve(__dirname, 'src/sidebar/index.html'),
         content: resolve(__dirname, 'src/content/index.ts'),
-        injected: resolve(__dirname, 'src/injected/index.ts'),
         pageBridge: resolve(__dirname, 'src/page-bridge/index.ts'),
         background: resolve(__dirname, 'src/background/index.ts')
       },
