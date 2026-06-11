@@ -21,6 +21,11 @@ const PAGE_FETCH_DONE = 'PIERCODE_PAGE_FETCH_EXEC_DONE';
 const PAGE_FETCH_ERROR = 'PIERCODE_PAGE_FETCH_EXEC_ERROR';
 const PAGE_FETCH_ABORT = 'PIERCODE_PAGE_FETCH_EXEC_ABORT';
 
+// content → page-bridge: borrow a baxia bx-ua by sending a blink request.
+const BXUA_BORROW = 'PIERCODE_BXUA_BORROW';
+// page-bridge → content: result of the borrow.
+const BXUA_RESULT = 'PIERCODE_BXUA_RESULT';
+
 // Keep-alive visibility shim. Chrome heavily throttles background tabs and —
 // worse — AI sites themselves listen for `visibilitychange` / `document.hidden`
 // to pause their streaming (SSE) response rendering when the tab is not focused.
@@ -235,6 +240,65 @@ async function execPageFetch(req: {
   }
 }
 
+// Borrow a baxia bx-ua/bx-umidtoken by firing a minimal chats/new "blink"
+// request through the page's own (baxia-patched) window.fetch, while a temporary
+// wrapper captures the headers baxia injects on it. The request result is
+// discarded — we only want the signature headers. Our wrapper sits OUTSIDE
+// baxia's patch (it calls the real fetch), so by the time realFetch runs,
+// init.headers carries baxia's injected bx-ua/bx-umidtoken.
+async function borrowBxUa(requestId: string): Promise<void> {
+  const realFetch = window.fetch;
+  let bxUa: string | null = null;
+  let umid: string | null = null;
+  const wrapped = function (this: unknown, _input: RequestInfo | URL, init?: RequestInit) {
+    try {
+      const h = init?.headers;
+      const get = (k: string): string | null => {
+        if (!h) return null;
+        if (h instanceof Headers) return h.get(k);
+        const rec = h as Record<string, string>;
+        return rec[k] ?? rec[k.toLowerCase()] ?? null;
+      };
+      const bx = get('bx-ua');
+      const um = get('bx-umidtoken');
+      if (bx) bxUa = bx;
+      if (um) umid = um;
+    } catch { /* ignore capture errors */ }
+    // eslint-disable-next-line prefer-rest-params
+    return realFetch.apply(this, arguments as unknown as [RequestInfo | URL, RequestInit?]);
+  };
+  try {
+    (window as Window & typeof globalThis).fetch = wrapped as typeof fetch;
+    const ts = Math.floor(Date.now() / 1000);
+    const res = await wrapped('https://chat.qwen.ai/api/v2/chats/new', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        source: 'web',
+        'bx-v': '2.5.36',
+        'x-request-id': crypto.randomUUID(),
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        title: 'New Chat', models: ['qwen3-max'], chat_mode: 'normal',
+        chat_type: 't2t', timestamp: ts, project_id: '',
+      }),
+    } as RequestInit);
+    // Drain the body so the connection closes cleanly; result is unused.
+    await (res as Response).text().catch(() => {});
+  } catch (e) {
+    (window as Window & typeof globalThis).fetch = realFetch;
+    post({ type: BXUA_RESULT, requestId, error: e instanceof Error ? e.message : String(e) });
+    return;
+  }
+  (window as Window & typeof globalThis).fetch = realFetch;
+  if (bxUa) {
+    post({ type: BXUA_RESULT, requestId, bxUa, umid: umid || '' });
+  } else {
+    post({ type: BXUA_RESULT, requestId, error: 'bx-ua not captured (account may be in punish state)' });
+  }
+}
+
 window.addEventListener('message', event => {
   if (event.source !== window) return;
   const d = event.data;
@@ -252,6 +316,10 @@ window.addEventListener('message', event => {
     }
     if (d.type === PAGE_FETCH_ABORT) {
       pageFetchAborts.get(d.requestId)?.abort();
+      return;
+    }
+    if (d.type === BXUA_BORROW) {
+      void borrowBxUa(d.requestId);
       return;
     }
   }
