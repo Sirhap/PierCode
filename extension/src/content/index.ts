@@ -92,6 +92,12 @@ const AL_CHUNK = 'PIERCODE_API_LISTEN_CHUNK';
 const AL_DONE = 'PIERCODE_API_LISTEN_DONE';
 const AL_ERROR = 'PIERCODE_API_LISTEN_ERROR';
 
+// bx-ua borrow relay. SW opens a `piercode-bxua:<id>` port; content kicks the
+// page-bridge to fire a blink request, capture baxia's bx-ua, and post it back.
+const BXUA_PORT_PREFIX = 'piercode-bxua:';
+const BXUA_BORROW = 'PIERCODE_BXUA_BORROW';   // content → page-bridge
+const BXUA_RESULT = 'PIERCODE_BXUA_RESULT';   // page-bridge → content
+
 if (typeof chrome !== 'undefined' && chrome.runtime?.onConnect) {
   chrome.runtime.onConnect.addListener(port => {
     if (!port.name.startsWith(PAGE_FETCH_PORT_PREFIX)) return;
@@ -140,6 +146,36 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onConnect) {
       // Tell the page world to cancel the in-flight fetch if any.
       window.postMessage({ type: PF_EXEC_ABORT, requestId }, '*');
     });
+  });
+}
+
+// bx-ua borrow relay: SW opens a `piercode-bxua:<id>` port to ask the page to
+// produce a baxia bx-ua. content kicks page-bridge (BXUA_BORROW), waits for the
+// single BXUA_RESULT frame, forwards it to the SW, and closes the port.
+if (typeof chrome !== 'undefined' && chrome.runtime?.onConnect) {
+  chrome.runtime.onConnect.addListener(port => {
+    if (!port.name.startsWith(BXUA_PORT_PREFIX)) return;
+    const requestId = port.name.slice(BXUA_PORT_PREFIX.length);
+
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== window) return;
+      const d = event.data;
+      if (!d || d.type !== BXUA_RESULT || d.requestId !== requestId) return;
+      window.removeEventListener('message', onMessage);
+      try {
+        if (d.bxUa) port.postMessage({ ok: true, bxUa: d.bxUa, umid: d.umid || '' });
+        else port.postMessage({ ok: false, error: d.error || 'bx-ua borrow failed' });
+      } catch {
+        // port closed
+      }
+      try { port.disconnect(); } catch { /* already gone */ }
+    };
+    window.addEventListener('message', onMessage);
+    port.onDisconnect.addListener(() => window.removeEventListener('message', onMessage));
+
+    // Ensure the page-bridge is present, then kick the borrow.
+    injectPageBridge();
+    window.postMessage({ type: BXUA_BORROW, requestId }, '*');
   });
 }
 
@@ -909,7 +945,6 @@ interface SiteConfig {
   // over stopBtn when set.
   stopBtnMatch?: () => HTMLElement | null;
   fillMethod: FillMethod;
-  useObserver: boolean;
   responseSelector?: string;
 }
 
@@ -1455,7 +1490,6 @@ function getSiteConfig(): SiteConfig {
     // attach the text-content callback instead.
     ...(base.stopBtn === null ? { stopBtnMatch: aiStudioStopBtnMatch } : {}),
     fillMethod: base.fillMethod,
-    useObserver: true,
     responseSelector: adapterSelector || base.responseSelector
   };
 }
@@ -1545,9 +1579,7 @@ function bootstrapContentScript() {
   // 暴露无障碍树 API
   exposeAccessibilityTree();
 
-  if (!cfg.useObserver) {
-    injectPageScript('injected.js');
-  } else if (cfg.responseSelector) {
+  if (cfg.responseSelector) {
     const sel = cfg.responseSelector;
     // Safe to start directly: bootstrapContentScript runs at EOF, after every
     // module-level binding the render path touches is initialized (no TDZ window).
