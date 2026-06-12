@@ -240,62 +240,38 @@ async function execPageFetch(req: {
   }
 }
 
-// Borrow a baxia bx-ua/bx-umidtoken by firing a minimal chats/new "blink"
-// request through the page's own (baxia-patched) window.fetch, while a temporary
-// wrapper captures the headers baxia injects on it. The request result is
-// discarded — we only want the signature headers. Our wrapper sits OUTSIDE
-// baxia's patch (it calls the real fetch), so by the time realFetch runs,
-// init.headers carries baxia's injected bx-ua/bx-umidtoken.
+// Borrow a baxia bx-ua by calling the SDK's own getUA() synchronously. baxia
+// exposes window.baxiaCommon.getUA() which computes a fresh, full-length bx-ua
+// (~1560 chars on a healthy session) — the same signature it injects on real
+// chat/completions requests. Empirically this bx-ua clears completions risk
+// control when replayed on a clean SW fetch, so the SW caches it and replays.
+//
+// This needs NO blink request: no extra traffic, no garbage chat message, no
+// side effects. (An earlier version fired a chats/new "blink" request and tried
+// to capture the injected header — that failed because baxia only injects on
+// completions, and wrapping window.fetch bypassed baxia's own patch entirely.)
+//
+// Caveat: getUA() on an account already in the punish/滑块 state returns a
+// shorter (~1312 char) truncated value that is rejected. We can't detect that
+// here; the SW's RGV587 retry handles it (invalidate → re-borrow once).
 async function borrowBxUa(requestId: string): Promise<void> {
-  const realFetch = window.fetch;
-  let bxUa: string | null = null;
-  let umid: string | null = null;
-  const wrapped = function (this: unknown, _input: RequestInfo | URL, init?: RequestInit) {
-    try {
-      const h = init?.headers;
-      const get = (k: string): string | null => {
-        if (!h) return null;
-        if (h instanceof Headers) return h.get(k);
-        const rec = h as Record<string, string>;
-        return rec[k] ?? rec[k.toLowerCase()] ?? null;
-      };
-      const bx = get('bx-ua');
-      const um = get('bx-umidtoken');
-      if (bx) bxUa = bx;
-      if (um) umid = um;
-    } catch { /* ignore capture errors */ }
-    // eslint-disable-next-line prefer-rest-params
-    return realFetch.apply(this, arguments as unknown as [RequestInfo | URL, RequestInit?]);
-  };
   try {
-    (window as Window & typeof globalThis).fetch = wrapped as typeof fetch;
-    const ts = Math.floor(Date.now() / 1000);
-    const res = await wrapped('https://chat.qwen.ai/api/v2/chats/new', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        source: 'web',
-        'bx-v': '2.5.36',
-        'x-request-id': crypto.randomUUID(),
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        title: 'New Chat', models: ['qwen3-max'], chat_mode: 'normal',
-        chat_type: 't2t', timestamp: ts, project_id: '',
-      }),
-    } as RequestInit);
-    // Drain the body so the connection closes cleanly; result is unused.
-    await (res as Response).text().catch(() => {});
+    const baxia = (window as unknown as { baxiaCommon?: { getUA?: () => string } }).baxiaCommon;
+    const getUA = baxia?.getUA;
+    if (typeof getUA !== 'function') {
+      post({ type: BXUA_RESULT, requestId, error: 'baxiaCommon.getUA unavailable (SDK not loaded)' });
+      return;
+    }
+    const bxUa = getUA.call(baxia);
+    if (typeof bxUa === 'string' && bxUa.length > 0) {
+      // umid is not produced by getUA and is not required (completions accepts
+      // bx-ua alone), so it is intentionally left empty.
+      post({ type: BXUA_RESULT, requestId, bxUa, umid: '' });
+    } else {
+      post({ type: BXUA_RESULT, requestId, error: 'getUA returned empty bx-ua' });
+    }
   } catch (e) {
-    (window as Window & typeof globalThis).fetch = realFetch;
     post({ type: BXUA_RESULT, requestId, error: e instanceof Error ? e.message : String(e) });
-    return;
-  }
-  (window as Window & typeof globalThis).fetch = realFetch;
-  if (bxUa) {
-    post({ type: BXUA_RESULT, requestId, bxUa, umid: umid || '' });
-  } else {
-    post({ type: BXUA_RESULT, requestId, error: 'bx-ua not captured (account may be in punish state)' });
   }
 }
 
