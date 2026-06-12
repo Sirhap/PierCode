@@ -318,6 +318,13 @@ func (c *Controller) ReadNetwork(ctx context.Context, req tool.BrowserNetworkLog
 	if err != nil {
 		return "", err
 	}
+	if req.RequestID != "" {
+		body, err := c.FetchResponseBody(ctx, tab.TabID, req.RequestID, req.MaxBodyBytes)
+		if err != nil {
+			return "", fmt.Errorf("could not fetch response body for %s (request may have left the cache): %w", req.RequestID, err)
+		}
+		return fmt.Sprintf("Response body for %s:\n%s", req.RequestID, body), nil
+	}
 	if !c.events.IsDomainEnabled(tab.TabID, "Network") {
 		if _, err := c.relay.SendCommand(ctx, Command{
 			TabID:  &tab.TabID,
@@ -352,16 +359,49 @@ func (c *Controller) ReadNetwork(ctx context.Context, req tool.BrowserNetworkLog
 
 	for _, r := range requests {
 		status := "pending"
-		if r.StatusCode > 0 {
+		switch {
+		case r.StatusCode > 0:
 			status = fmt.Sprintf("%d", r.StatusCode)
+		case r.StatusCode < 0:
+			status = "ERR"
 		}
 		duration := ""
 		if r.Duration > 0 {
 			duration = fmt.Sprintf(" %dms", int(r.Duration))
 		}
-		sb.WriteString(fmt.Sprintf("%-4s %3s %-12s [%-10s] %s%s\n", r.Method, status, r.StatusText, r.Type, r.URL, duration))
+		sb.WriteString(fmt.Sprintf("%-4s %3s %-20s [%-10s] %s%s [id=%s]\n", r.Method, status, r.StatusText, r.Type, r.URL, duration, r.RequestID))
 	}
+	sb.WriteString("\nFetch a response body with browser_network requestId=<id>.\n")
 	return sb.String(), nil
+}
+
+// FetchResponseBody returns the response body for a recorded request via CDP
+// Network.getResponseBody, size-capped to 1 MiB. The request must still be in
+// the page's resource cache (recent requests only).
+func (c *Controller) FetchResponseBody(ctx context.Context, tabID int, requestID string, maxBytes int) (string, error) {
+	if maxBytes <= 0 || maxBytes > 1<<20 {
+		maxBytes = 1 << 20
+	}
+	params, _ := json.Marshal(map[string]string{"requestId": requestID})
+	raw, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Network", Method: "getResponseBody", Params: params}, defaultReadTimeout)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Body          string `json:"body"`
+		Base64Encoded bool   `json:"base64Encoded"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", err
+	}
+	body := out.Body
+	if out.Base64Encoded {
+		body = "(base64-encoded binary body) " + body
+	}
+	if len(body) > maxBytes {
+		body = body[:maxBytes] + "\n…(truncated)"
+	}
+	return body, nil
 }
 
 func (c *Controller) Cookies(ctx context.Context, req tool.BrowserCookiesRequest) (tool.BrowserCookiesResponse, error) {

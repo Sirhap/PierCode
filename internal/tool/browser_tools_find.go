@@ -167,7 +167,7 @@ func NewBrowserConsoleTool() Tool {
 	return &browserTool{
 		name:        "browser_console",
 		readOnly:    true,
-		description: "Read browser console messages (log, error, warn, etc.) from the controlled tab. Supports pattern filtering.",
+		description: "Read browser console messages (log, error, warn, etc.) from the controlled tab, captured from page load via eager enable. Always pass a regex pattern when you know what you are looking for — without one a busy page can return an overwhelming, mostly-irrelevant log.",
 		parameters: map[string]string{
 			"pattern":    "string (optional) - regex pattern to filter messages",
 			"onlyErrors": "boolean (optional, default false) - only return error/exception messages",
@@ -200,20 +200,24 @@ func NewBrowserNetworkTool() Tool {
 	return &browserTool{
 		name:        "browser_network",
 		readOnly:    true,
-		description: "Read HTTP network requests from the controlled tab. Supports URL pattern filtering.",
+		description: "Read HTTP network requests from the controlled tab (recorded from page load via eager capture, including failed requests shown with status ERR). Filter by URL substring, or pass requestId to fetch one request's response body.",
 		parameters: map[string]string{
-			"urlPattern": "string (optional) - URL substring to filter requests",
-			"clear":      "boolean (optional, default false) - clear buffer after reading",
-			"limit":      "number (optional, default 100) - max requests to return",
-			"tabId":      "number (optional) - controlled tab id",
+			"urlPattern":   "string (optional, recommended) - URL substring to filter requests; without it you may get a large, noisy list",
+			"clear":        "boolean (optional, default false) - clear buffer after reading",
+			"limit":        "number (optional, default 100) - max requests to return",
+			"requestId":    "string (optional) - fetch this request's response body instead of listing (id comes from the [id=…] column)",
+			"maxBodyBytes": "number (optional, default/max 1048576) - cap on returned body size",
+			"tabId":        "number (optional) - controlled tab id",
 		},
 		validate: func(args map[string]interface{}) error { return nil },
 		execute: func(ctx *Context) (string, error) {
 			return ctx.Browser.ReadNetwork(ctx.Context, BrowserNetworkLogRequest{
-				TabID:      optionalInt(ctx.Args, "tabId"),
-				URLPattern: stringArg(ctx.Args, "urlPattern"),
-				Clear:      boolArg(ctx.Args, "clear"),
-				Limit:      intArgDefault(ctx.Args, "limit", 100),
+				TabID:        optionalInt(ctx.Args, "tabId"),
+				URLPattern:   stringArg(ctx.Args, "urlPattern"),
+				Clear:        boolArg(ctx.Args, "clear"),
+				Limit:        intArgDefault(ctx.Args, "limit", 100),
+				RequestID:    stringArg(ctx.Args, "requestId"),
+				MaxBodyBytes: intArgDefault(ctx.Args, "maxBodyBytes", 0),
 			})
 		},
 	}

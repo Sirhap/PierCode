@@ -534,6 +534,10 @@ type BrowserNetworkLogRequest struct {
 	URLPattern string
 	Clear      bool
 	Limit      int
+	// RequestID, when set, fetches that one request's response body instead of
+	// listing requests. The id comes from the [id=…] column of a prior list.
+	RequestID    string
+	MaxBodyBytes int
 }
 
 type BrowserCookiesRequest struct {
