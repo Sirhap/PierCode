@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sirhap/piercode/internal/tool"
 )
@@ -180,37 +181,75 @@ func TestGetAttributesSelector(t *testing.T) {
 	}
 }
 
-func TestWaitForNavigationMatchesURL(t *testing.T) {
-	tab := tool.BrowserTab{TabID: 206, URL: "https://example.com", Title: "Nav"}
-	var capturedExpr string
+func TestWaitForNavigationResolvesOnLifecycleEvent(t *testing.T) {
+	// The rewritten WaitForNavigation is event-driven (CDP Page lifecycle/load),
+	// not in-page polling, so it survives JS-context destruction. The mock only
+	// answers PierCode.getTab (final-URL lookup); the resolving signal arrives as
+	// a Page.loadEventFired event injected into the controller's EventBus.
+	tab := tool.BrowserTab{TabID: 206, URL: "https://example.com/done", Title: "Nav"}
 	var relay *RelayManager
 	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		_ = json.Unmarshal(payload, &cmd)
-		var params struct {
-			Expression string `json:"expression"`
+		if cmd.Domain+"."+cmd.Method == "PierCode.getTab" {
+			data, _ := json.Marshal(tab)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		} else {
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
 		}
-		_ = json.Unmarshal(cmd.Params, &params)
-		capturedExpr = params.Expression
-		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"string","value":"https://example.com/done"}}`)})
 		return true
 	})
 	controller := newApprovedController(relay)
 	controller.tabs.SetDefault(tab)
 
+	// Fire the load event shortly after the wait begins.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		controller.HandleEvent(Event{Event: "Page.loadEventFired", TabID: tab.TabID})
+	}()
+
 	out, err := controller.WaitForNavigation(context.Background(), tool.BrowserWaitForNavigationRequest{
-		URLPattern:     "/done",
 		WaitUntil:      "load",
 		TimeoutSeconds: 5,
 	})
 	if err != nil {
 		t.Fatalf("WaitForNavigation returned error: %v", err)
 	}
-	if !strings.Contains(capturedExpr, "/done") {
-		t.Fatalf("expected urlPattern in expression, got %q", capturedExpr)
-	}
 	if !strings.Contains(out, "example.com/done") {
 		t.Fatalf("expected final url in output, got %q", out)
+	}
+	if !strings.Contains(out, "load") {
+		t.Fatalf("expected the lifecycle kind in output, got %q", out)
+	}
+}
+
+func TestWaitForNavigationTimesOut(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 209, URL: "https://example.com", Title: "Nav"}
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		if cmd.Domain+"."+cmd.Method == "PierCode.getTab" {
+			data, _ := json.Marshal(tab)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		} else {
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	// No nav event is ever fired → must time out, not hang past the deadline.
+	_, err := controller.WaitForNavigation(context.Background(), tool.BrowserWaitForNavigationRequest{
+		WaitUntil:      "load",
+		TimeoutSeconds: 1,
+	})
+	if err == nil {
+		t.Fatal("expected timeout error when no navigation event fires")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got %v", err)
 	}
 }
 

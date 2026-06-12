@@ -75,7 +75,10 @@ func TestBrowserWaitForNavigationValidation(t *testing.T) {
 	if err := tool.Validate(map[string]interface{}{"waitUntil": "load"}); err != nil {
 		t.Errorf("load should pass: %v", err)
 	}
-	if err := tool.Validate(map[string]interface{}{"waitUntil": "networkidle"}); err == nil {
+	if err := tool.Validate(map[string]interface{}{"waitUntil": "networkidle"}); err != nil {
+		t.Errorf("networkidle should pass: %v", err)
+	}
+	if err := tool.Validate(map[string]interface{}{"waitUntil": "bogus"}); err == nil {
 		t.Error("bad waitUntil should fail")
 	}
 	if err := tool.Validate(map[string]interface{}{"timeout": float64(120)}); err == nil {

@@ -124,14 +124,14 @@ func NewBrowserWaitForNavigationTool() Tool {
 		description: "Wait for the controlled tab to navigate (URL change) and reach a load state. Use after triggering a click that causes navigation.",
 		parameters: map[string]string{
 			"urlPattern": "string (optional) - substring or regex the new URL must match",
-			"waitUntil":  "string (optional, load|domcontentloaded, default load)",
+			"waitUntil":  "string (optional, load|domcontentloaded|networkidle, default load) - event-driven, survives real navigation",
 			"timeout":    "number (optional, default 10, max 60) - seconds",
 			"tabId":      "number (optional) - controlled tab id",
 		},
 		validate: func(args map[string]interface{}) error {
 			waitUntil := strings.ToLower(stringArg(args, "waitUntil"))
-			if waitUntil != "" && waitUntil != "load" && waitUntil != "domcontentloaded" {
-				return fmt.Errorf("waitUntil must be load or domcontentloaded")
+			if waitUntil != "" && waitUntil != "load" && waitUntil != "domcontentloaded" && waitUntil != "networkidle" {
+				return fmt.Errorf("waitUntil must be load, domcontentloaded, or networkidle")
 			}
 			if t := intArgDefault(args, "timeout", 10); t > 60 {
 				return fmt.Errorf("timeout must be <= 60")
@@ -144,6 +144,7 @@ func NewBrowserWaitForNavigationTool() Tool {
 				URLPattern:     stringArg(ctx.Args, "urlPattern"),
 				WaitUntil:      stringArg(ctx.Args, "waitUntil"),
 				TimeoutSeconds: intArgDefault(ctx.Args, "timeout", 10),
+				CallID:         stringArg(ctx.Args, "call_id"),
 			})
 		},
 	}

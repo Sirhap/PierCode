@@ -6,7 +6,44 @@ import (
 	"strings"
 
 	"github.com/sirhap/piercode/internal/tool"
+	"golang.org/x/net/publicsuffix"
 )
+
+// sameRegistrableHost reports whether two URLs share the same registrable
+// domain (eTLD+1), so a benign in-site redirect (www.x.com → x.com, or a path
+// change) is treated as the same site while a cross-site navigation
+// (x.com → evil.com) is not. An unparseable/empty side is treated as "changed"
+// (return false) so the cross-domain guard fails safe. Two empty URLs match.
+func sameRegistrableHost(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	if a == b {
+		return true
+	}
+	ra, oka := registrableDomain(a)
+	rb, okb := registrableDomain(b)
+	if !oka || !okb {
+		return false
+	}
+	return ra == rb
+}
+
+func registrableDomain(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return "", false
+	}
+	d, err := publicsuffix.EffectiveTLDPlusOne(host)
+	if err != nil {
+		// IP literals / single-label hosts (localhost) have no eTLD+1; compare
+		// the bare host instead so they still match themselves.
+		return host, true
+	}
+	return d, true
+}
 
 var aiPageHosts = []string{
 	"gemini.google.com",

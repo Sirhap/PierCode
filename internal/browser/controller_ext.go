@@ -130,14 +130,29 @@ func (c *Controller) Scroll(ctx context.Context, req tool.BrowserScrollRequest) 
 	dx, dy := scrollDelta(req.Direction, req.Amount)
 	method := strings.ToLower(strings.TrimSpace(req.Method))
 	if method == "" || method == "auto" || method == "scrollby" {
-		expression := fmt.Sprintf(`window.scrollBy({top: %g, left: %g, behavior: 'instant'}); ({x: window.scrollX, y: window.scrollY})`, dy, dx)
-		if _, err := c.runtimeEvaluate(ctx, tab.TabID, expression, false, defaultActionTimeout, true); err != nil {
+		// scrollBy on window, but VERIFY the position actually changed (a fixed
+		// container, an already-at-edge page, or a scroll trapped inside a nested
+		// scroller leaves window.scrollX/Y unmoved). If it didn't move, fall back
+		// to a mouse-wheel event over the page, which scrolls the element under
+		// the pointer. Only "scrollby" (explicit) skips the wheel fallback.
+		expression := fmt.Sprintf(`(function(){var bx=window.scrollX,by=window.scrollY;window.scrollBy({top: %g, left: %g, behavior:'instant'});return {moved: Math.abs(window.scrollX-bx)>5||Math.abs(window.scrollY-by)>5, x:window.scrollX, y:window.scrollY};})()`, dy, dx)
+		out, err := c.runtimeEvaluate(ctx, tab.TabID, expression, false, defaultActionTimeout, true)
+		if err != nil {
 			if method == "scrollby" {
 				return "", err
 			}
 		} else {
-			c.tabs.MarkStale(tab.TabID)
-			return fmt.Sprintf("scrolled %s by %dpx in tabId=%d", normalizedDirection(req.Direction), normalizedAmount(req.Amount), tab.TabID), nil
+			var res struct {
+				Moved bool `json:"moved"`
+			}
+			if out != nil {
+				_ = json.Unmarshal(out.Result.Value, &res)
+			}
+			if res.Moved || method == "scrollby" {
+				c.tabs.MarkStale(tab.TabID)
+				return fmt.Sprintf("scrolled %s by %dpx in tabId=%d", normalizedDirection(req.Direction), normalizedAmount(req.Amount), tab.TabID), nil
+			}
+			// No movement: drop to the mouse-wheel fallback below.
 		}
 	}
 	if err := c.dispatchMouseWheel(ctx, tab.TabID, dx, dy); err != nil {

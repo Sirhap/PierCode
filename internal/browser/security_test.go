@@ -137,3 +137,26 @@ func TestReloadOrchestration(t *testing.T) {
 		t.Fatalf("unexpected reload result: %+v", got)
 	}
 }
+
+func TestSameRegistrableHost(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"https://x.com/a", "https://x.com/b", true},
+		{"https://www.x.com", "https://x.com", true},
+		{"https://app.x.com", "https://api.x.com", true},
+		{"https://x.com", "https://evil.com", false},
+		{"https://x.co.uk", "https://x.co.uk/page", true},
+		{"https://a.x.co.uk", "https://b.x.co.uk", true},
+		{"https://x.co.uk", "https://y.co.uk", false},
+		{"http://localhost:3000/a", "http://localhost:3000/b", true},
+		{"", "", true},
+		{"https://x.com", "", false},
+	}
+	for _, c := range cases {
+		if got := sameRegistrableHost(c.a, c.b); got != c.want {
+			t.Errorf("sameRegistrableHost(%q,%q)=%v want %v", c.a, c.b, got, c.want)
+		}
+	}
+}

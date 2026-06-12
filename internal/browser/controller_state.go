@@ -96,50 +96,48 @@ func (c *Controller) WaitForNavigation(ctx context.Context, req tool.BrowserWait
 		timeout = 60 * time.Second
 	}
 	waitUntil := strings.ToLower(strings.TrimSpace(req.WaitUntil))
-	if waitUntil != "domcontentloaded" {
+	switch waitUntil {
+	case "domcontentloaded", "networkidle":
+		// keep as-is
+	default:
 		waitUntil = "load"
 	}
-	expression := waitForNavigationExpression(req.URLPattern, waitUntil, timeout)
-	out, err := c.runtimeEvaluate(ctx, tab.TabID, expression, true, timeout+2*time.Second, true)
-	if err != nil {
-		return "", err
+	// Map the requested condition to the CDP lifecycle/load event kinds that
+	// satisfy it. Event-driven (not in-page polling) so it survives the JS
+	// context being destroyed by a real document navigation.
+	var want map[string]bool
+	switch waitUntil {
+	case "domcontentloaded":
+		want = map[string]bool{"DOMContentLoaded": true}
+	case "networkidle":
+		want = map[string]bool{"networkIdle": true, "networkAlmostIdle": true}
+	default:
+		want = map[string]bool{"load": true}
 	}
-	c.tabs.MarkStale(tab.TabID)
-	return fmt.Sprintf("navigation complete tabId=%d url=%s", tab.TabID, runtimeValueString(out)), nil
-}
-
-func waitForNavigationExpression(urlPattern, waitUntil string, timeout time.Duration) string {
-	readyTarget := "complete"
-	if waitUntil == "domcontentloaded" {
-		readyTarget = "interactive"
+	callID := req.CallID
+	if callID == "" {
+		callID = fmt.Sprintf("nav_%d", tab.TabID)
 	}
-	return `(function(){
-  "use strict";
-  var pattern = ` + jsString(urlPattern) + `;
-  var readyTarget = ` + jsString(readyTarget) + `;
-  var re = null;
-  if (pattern) { try { re = new RegExp(pattern); } catch(e) { re = null; } }
-  function urlOk() {
-    if (!pattern) return true;
-    if (re && re.test(location.href)) return true;
-    return location.href.indexOf(pattern) >= 0;
-  }
-  function readyOk() {
-    if (readyTarget === 'interactive') {
-      return document.readyState === 'interactive' || document.readyState === 'complete';
-    }
-    return document.readyState === 'complete';
-  }
-  return new Promise((resolve, reject) => {
-    var deadline = Date.now() + ` + fmt.Sprintf("%d", timeout.Milliseconds()) + `;
-    var check = () => {
-      if (urlOk() && readyOk()) resolve(location.href);
-      else if (Date.now() > deadline) reject(new Error('Timeout waiting for navigation; current url=' + location.href + ' readyState=' + document.readyState));
-      else setTimeout(check, 100);
-    };
-    check();
-  });
-})()`
+	ch := c.events.WaitForNavigationEvent(callID, tab.TabID, timeout)
+	defer c.events.RemoveNav(callID)
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case nav := <-ch:
+			if want[nav.Kind] {
+				c.tabs.MarkStale(tab.TabID)
+				next, _ := c.getTab(ctx, tab.TabID)
+				return fmt.Sprintf("navigation complete (%s) tabId=%d url=%s", nav.Kind, tab.TabID, next.URL), nil
+			}
+		case <-deadline.C:
+			c.tabs.MarkStale(tab.TabID)
+			next, _ := c.getTab(ctx, tab.TabID)
+			return "", fmt.Errorf("timed out after %s waiting for %s on tabId=%d (current url=%s)", timeout, waitUntil, tab.TabID, next.URL)
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 }
 
 func (c *Controller) Emulate(ctx context.Context, req tool.BrowserEmulateRequest) (string, error) {

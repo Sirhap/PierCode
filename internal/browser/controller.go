@@ -436,6 +436,9 @@ func (c *Controller) Click(ctx context.Context, req tool.BrowserClickRequest) (s
 	if clickCount == 3 {
 		action = "triple-clicked"
 	}
+	if err := c.assertPointActionable(ctx, tab.TabID, x, y); err != nil {
+		return "", err
+	}
 	if err := c.ask(ctx, req.CallID, action+" 页面元素", tab, target, action+" 可能触发页面操作。"); err != nil {
 		return "", err
 	}
@@ -456,6 +459,9 @@ func (c *Controller) Type(ctx context.Context, req tool.BrowserTypeRequest) (str
 	}
 	if c.policy.IsSensitive(tab) {
 		return "", fmt.Errorf("browser_type refused on sensitive payment/financial page")
+	}
+	if err := c.assertPointActionable(ctx, tab.TabID, x, y); err != nil {
+		return "", err
 	}
 	if err := c.ask(ctx, req.CallID, "输入文本", tab, target, "输入会修改网页表单内容。"); err != nil {
 		return "", err
@@ -859,7 +865,17 @@ func (c *Controller) resolvePoint(ctx context.Context, tabID *int, ref, selector
 		if err != nil {
 			return tool.BrowserTab{}, 0, 0, "", err
 		}
-		if target.Bounds == nil && target.BackendID > 0 {
+		// Scroll the element into view BEFORE reading bounds so the click point
+		// reflects the post-scroll viewport position — otherwise a ref below the
+		// fold resolves to off-screen coordinates and the dispatched mouse event
+		// silently misses.
+		if target.BackendID > 0 {
+			if err := c.scrollBackendNodeIntoView(ctx, tab.TabID, target.BackendID); err != nil {
+				c.tabs.MarkStale(tab.TabID)
+				return tool.BrowserTab{}, 0, 0, "", fmt.Errorf("snapshot is stale; call browser_snapshot again: %w", err)
+			}
+			// Always re-read bounds after scrolling (cached snapshot bounds are
+			// pre-scroll and now wrong).
 			bounds, err := c.boxModelBounds(ctx, tab.TabID, target.BackendID)
 			if err != nil {
 				c.tabs.MarkStale(tab.TabID)
@@ -913,6 +929,40 @@ func (c *Controller) boxModelBounds(ctx context.Context, tabID int, backendID in
 		maxY = math.Max(maxY, out.Model.Border[i+1])
 	}
 	return &Bounds{X: minX, Y: minY, Width: maxX - minX, Height: maxY - minY}, nil
+}
+
+// assertPointActionable verifies, in page context, that the click point (x,y) is
+// inside the viewport and that the topmost element there is hittable (not zero-
+// size and not buried under a different overlay). It returns a descriptive error
+// instead of letting a click land on empty space or get eaten by a modal/toast,
+// which previously produced a false "clicked" success. It is intentionally
+// lenient: it only fails when the point is off-screen or no element is hit, so a
+// legitimately-styled target is never blocked.
+func (c *Controller) assertPointActionable(ctx context.Context, tabID int, x, y float64) error {
+	expr := fmt.Sprintf(`(function(){
+  var x=%[1]f, y=%[2]f;
+  var vw=window.innerWidth, vh=window.innerHeight;
+  if(x<0||y<0||x>vw||y>vh) return {ok:false, reason:'point ('+Math.round(x)+','+Math.round(y)+') is outside the '+vw+'x'+vh+' viewport — scroll the element into view first'};
+  var el=document.elementFromPoint(x,y);
+  if(!el) return {ok:false, reason:'no element at the click point — it may be covered or off-screen'};
+  return {ok:true};
+})()`, x, y)
+	out, err := c.runtimeEvaluate(ctx, tabID, expr, false, defaultActionTimeout, true)
+	if err != nil {
+		// A failed hit-test eval must not block the action (e.g. CSP); fall through.
+		return nil
+	}
+	var res struct {
+		OK     bool   `json:"ok"`
+		Reason string `json:"reason"`
+	}
+	if out != nil {
+		_ = json.Unmarshal(out.Result.Value, &res)
+	}
+	if out != nil && len(out.Result.Value) > 0 && !res.OK {
+		return fmt.Errorf("target not actionable: %s", res.Reason)
+	}
+	return nil
 }
 
 func (c *Controller) dispatchClick(ctx context.Context, tabID int, x, y float64, button string, clickCount int) error {

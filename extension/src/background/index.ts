@@ -97,10 +97,14 @@ const attachedTabs = new Set<number>();
 const perTabQueues = new Map<number, Promise<unknown>>();
 const DEBUGGER_EVENTS_TO_RELAY = new Set([
   'Page.javascriptDialogOpening',
+  'Page.frameNavigated',
+  'Page.loadEventFired',
+  'Page.lifecycleEvent',
   'Runtime.consoleAPICalled',
   'Runtime.exceptionThrown',
   'Network.requestWillBeSent',
   'Network.responseReceived',
+  'Network.loadingFailed',
 ]);
 
 async function probeBridge(tabId: number): Promise<BridgeProbe> {
@@ -809,6 +813,25 @@ async function sendCompressedContextToTab(tabId: number, text: string): Promise<
   return { ok: false, error: lastError };
 }
 
+// enableDebuggerDomains turns on the CDP domains whose events we relay. Each
+// enable is best-effort: a domain that fails to enable (e.g. on a restricted
+// page) must not abort the attach. Network.enable bounds captured POST data.
+async function enableDebuggerDomains(tabId: number): Promise<void> {
+  const enables: Array<[string, Record<string, unknown>]> = [
+    ['Page.enable', {}],
+    ['Page.setLifecycleEventsEnabled', { enabled: true }],
+    ['Runtime.enable', {}],
+    ['Network.enable', { maxPostDataSize: 65536 }],
+  ];
+  for (const [method, params] of enables) {
+    try {
+      await chrome.debugger.sendCommand({ tabId }, method, params);
+    } catch {
+      // best-effort: ignore per-domain enable failure
+    }
+  }
+}
+
 async function ensureAttached(tabId: number) {
   if (attachedTabs.has(tabId)) return;
   // chrome-extension:// 和某些特殊页面无法 attach debugger，加超时避免卡死
@@ -819,6 +842,10 @@ async function ensureAttached(tabId: number) {
   try {
     await Promise.race([attachPromise, timeoutPromise]);
     attachedTabs.add(tabId);
+    // Eagerly enable the domains whose events we relay, so navigation lifecycle
+    // and load-time console/network events are captured from attach onward
+    // (lazy enable used to lose everything before the first read call).
+    await enableDebuggerDomains(tabId);
   } catch (error) {
     if (errorMessage(error).includes('Another debugger is already attached')) {
       attachedTabs.delete(tabId);

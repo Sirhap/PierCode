@@ -51,12 +51,28 @@ type dialogWaiter struct {
 	ch    chan DialogEvent
 }
 
+// navWaiter is notified when a navigation lifecycle event fires for its tab.
+// kind identifies which CDP event arrived ("load", "frameNavigated",
+// or a lifecycle name like "networkIdle"/"DOMContentLoaded").
+type navWaiter struct {
+	tabID int
+	ch    chan NavEvent
+}
+
+// NavEvent carries the navigation lifecycle signal a waiter is interested in.
+type NavEvent struct {
+	TabID int
+	Kind  string
+	URL   string
+}
+
 const maxConsolePerTab = 1000
 const maxNetworkPerTab = 500
 
 type EventBus struct {
 	mu             sync.RWMutex
 	dialogs        map[string]dialogWaiter
+	navs           map[string]navWaiter
 	console        map[int][]ConsoleMessage
 	network        map[int][]NetworkRequest
 	enabledDomains map[int]map[string]bool // tabID → domain → enabled
@@ -65,6 +81,7 @@ type EventBus struct {
 func NewEventBus() *EventBus {
 	return &EventBus{
 		dialogs:        make(map[string]dialogWaiter),
+		navs:           make(map[string]navWaiter),
 		console:        make(map[int][]ConsoleMessage),
 		network:        make(map[int][]NetworkRequest),
 		enabledDomains: make(map[int]map[string]bool),
@@ -108,6 +125,8 @@ func (b *EventBus) HandleEvent(event Event) {
 	switch event.Event {
 	case "Page.javascriptDialogOpening":
 		b.handleDialogEvent(event)
+	case "Page.loadEventFired", "Page.frameNavigated", "Page.lifecycleEvent":
+		b.handleNavigationEvent(event)
 	case "Runtime.consoleAPICalled":
 		b.handleConsoleEvent(event)
 	case "Runtime.exceptionThrown":
@@ -116,6 +135,8 @@ func (b *EventBus) HandleEvent(event Event) {
 		b.handleRequestWillBeSent(event)
 	case "Network.responseReceived":
 		b.handleResponseReceived(event)
+	case "Network.loadingFailed":
+		b.handleLoadingFailed(event)
 	}
 }
 
@@ -143,6 +164,54 @@ func (b *EventBus) handleDialogEvent(event Event) {
 		}
 		select {
 		case waiter.ch <- dialog:
+		default:
+		}
+	}
+}
+
+// handleNavigationEvent fans a Page navigation lifecycle event out to any
+// registered nav waiters for the tab. Survives JS-context destruction because
+// it is driven by CDP events rather than in-page polling.
+func (b *EventBus) handleNavigationEvent(event Event) {
+	nav := NavEvent{TabID: event.TabID}
+	switch event.Event {
+	case "Page.loadEventFired":
+		nav.Kind = "load"
+	case "Page.frameNavigated":
+		var p struct {
+			Frame struct {
+				URL          string `json:"url"`
+				ParentID     string `json:"parentId"`
+			} `json:"frame"`
+		}
+		if len(event.Params) > 0 {
+			_ = json.Unmarshal(event.Params, &p)
+		}
+		if p.Frame.ParentID != "" {
+			return // only the main frame's navigation counts
+		}
+		nav.Kind = "frameNavigated"
+		nav.URL = p.Frame.URL
+	case "Page.lifecycleEvent":
+		var p struct {
+			Name string `json:"name"`
+		}
+		if len(event.Params) > 0 {
+			_ = json.Unmarshal(event.Params, &p)
+		}
+		nav.Kind = p.Name // e.g. "DOMContentLoaded", "load", "networkIdle"
+	}
+	if nav.Kind == "" {
+		return
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, waiter := range b.navs {
+		if waiter.tabID > 0 && waiter.tabID != event.TabID {
+			continue
+		}
+		select {
+		case waiter.ch <- nav:
 		default:
 		}
 	}
@@ -280,6 +349,34 @@ func (b *EventBus) handleResponseReceived(event Event) {
 	b.mu.Unlock()
 }
 
+// handleLoadingFailed marks a request that errored (blocked, aborted, DNS/TLS
+// failure, etc.) so browser_network surfaces failures, not just completed
+// responses. The error text is stored in StatusText with StatusCode -1.
+func (b *EventBus) handleLoadingFailed(event Event) {
+	var params struct {
+		RequestID string `json:"requestId"`
+		ErrorText string `json:"errorText"`
+		Canceled  bool   `json:"canceled"`
+	}
+	if len(event.Params) > 0 {
+		_ = json.Unmarshal(event.Params, &params)
+	}
+	b.mu.Lock()
+	requests := b.network[event.TabID]
+	for i := len(requests) - 1; i >= 0; i-- {
+		if requests[i].RequestID == params.RequestID && requests[i].StatusCode == 0 {
+			requests[i].StatusCode = -1
+			msg := params.ErrorText
+			if msg == "" && params.Canceled {
+				msg = "canceled"
+			}
+			requests[i].StatusText = "failed: " + msg
+			break
+		}
+	}
+	b.mu.Unlock()
+}
+
 func (b *EventBus) GetConsoleMessages(tabID int, filter ConsoleFilter) []ConsoleMessage {
 	b.mu.RLock()
 	messages := append([]ConsoleMessage(nil), b.console[tabID]...)
@@ -390,4 +487,30 @@ func (b *EventBus) HasDialogWaiter(tabID int) bool {
 		}
 	}
 	return false
+}
+
+// WaitForNavigationEvent registers a waiter for navigation lifecycle events on a
+// tab. The returned channel receives every NavEvent for the tab until RemoveNav
+// (or the timeout) clears it. Because it is driven by CDP Page events, it
+// survives the JS-context destruction that breaks in-page polling.
+func (b *EventBus) WaitForNavigationEvent(callID string, tabID int, timeout time.Duration) <-chan NavEvent {
+	ch := make(chan NavEvent, 8)
+	if b == nil {
+		close(ch)
+		return ch
+	}
+	b.mu.Lock()
+	b.navs[callID] = navWaiter{tabID: tabID, ch: ch}
+	b.mu.Unlock()
+	time.AfterFunc(timeout, func() { b.RemoveNav(callID) })
+	return ch
+}
+
+func (b *EventBus) RemoveNav(callID string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	delete(b.navs, callID)
+	b.mu.Unlock()
 }

@@ -633,8 +633,9 @@ type BrowserSetCookieRequest struct {
 type BrowserWaitForNavigationRequest struct {
 	TabID          *int
 	URLPattern     string
-	WaitUntil      string // load|domcontentloaded
+	WaitUntil      string // load|domcontentloaded|networkidle
 	TimeoutSeconds int
+	CallID         string
 }
 
 type BrowserEmulateRequest struct {

@@ -227,6 +227,18 @@ func TestBrowserTypeVerifiesTextLanded(t *testing.T) {
 			sawInsert = true
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
 		case "Runtime.evaluate":
+			// Two distinct evals share this method: the pre-action actionability
+			// hit-test (elementFromPoint/viewport) and the post-insert text
+			// verification. Route by expression so the ordering assertion only
+			// applies to the verification eval.
+			var p struct {
+				Expression string `json:"expression"`
+			}
+			_ = json.Unmarshal(cmd.Params, &p)
+			if strings.Contains(p.Expression, "elementFromPoint") {
+				go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"object","value":{"ok":true}}}`)})
+				break
+			}
 			if !sawInsert {
 				t.Fatal("verification ran before Input.insertText")
 			}
