@@ -255,6 +255,7 @@ func NewBrowserTypeTool() Tool {
 			"selector":   "string (optional) - CSS selector fallback",
 			"clear":      "boolean (optional, default false) - clear existing input first",
 			"submit":     "boolean (optional, default false) - press Enter after typing",
+			"mode":       "string (optional, default insert) - 'insert' is fast but fires no key events; 'keys' sends a keydown/keyup per character so editors (Monaco/CodeMirror), autocomplete, and key-listening widgets react",
 			"tabId":      "number (optional) - controlled tab id",
 		},
 		validate: func(args map[string]interface{}) error {
@@ -269,6 +270,9 @@ func NewBrowserTypeTool() Tool {
 			if ref != "" && stringArg(args, "snapshotId") == "" {
 				return fmt.Errorf("snapshotId is required when using ref")
 			}
+			if m := stringArg(args, "mode"); m != "" && m != "insert" && m != "keys" {
+				return fmt.Errorf("mode must be 'insert' or 'keys'")
+			}
 			return nil
 		},
 		execute: func(ctx *Context) (string, error) {
@@ -280,8 +284,46 @@ func NewBrowserTypeTool() Tool {
 				SnapshotID: stringArg(ctx.Args, "snapshotId"),
 				Clear:      boolArg(ctx.Args, "clear"),
 				Submit:     boolArg(ctx.Args, "submit"),
+				Mode:       stringArg(ctx.Args, "mode"),
 				CallID:     stringArg(ctx.Args, "call_id"),
 			})
+		},
+	}
+}
+
+func NewBrowserClipboardTool() Tool {
+	return &browserTool{
+		name:        "browser_clipboard",
+		description: "Read or write the page clipboard after user approval. Pairs with typing/paste flows. Reading exposes system clipboard contents; writing changes shared clipboard state.",
+		parameters: map[string]string{
+			"action": "string (required) - 'read' returns clipboard text, 'write' sets it",
+			"text":   "string (required for write) - text to place on the clipboard",
+			"tabId":  "number (optional) - controlled tab id",
+		},
+		validate: func(args map[string]interface{}) error {
+			action := stringArg(args, "action")
+			if action != "read" && action != "write" {
+				return fmt.Errorf("action must be 'read' or 'write'")
+			}
+			if action == "write" && stringArg(args, "text") == "" {
+				return fmt.Errorf("text is required for write")
+			}
+			return nil
+		},
+		execute: func(ctx *Context) (string, error) {
+			resp, err := ctx.Browser.Clipboard(ctx.Context, BrowserClipboardRequest{
+				TabID:  optionalInt(ctx.Args, "tabId"),
+				Action: stringArg(ctx.Args, "action"),
+				Text:   stringArg(ctx.Args, "text"),
+				CallID: stringArg(ctx.Args, "call_id"),
+			})
+			if err != nil {
+				return "", err
+			}
+			if stringArg(ctx.Args, "action") == "read" {
+				return fmt.Sprintf("clipboard (%d chars):\n%s", len([]rune(resp.Text)), resp.Text), nil
+			}
+			return fmt.Sprintf("wrote %d characters to clipboard in tabId=%d", len([]rune(stringArg(ctx.Args, "text"))), resp.Tab.TabID), nil
 		},
 	}
 }

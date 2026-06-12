@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -519,5 +520,75 @@ func TestNavigateWithBeforeunloadNone(t *testing.T) {
 		if cmd.Domain == "Page" && cmd.Method == "handleJavaScriptDialog" {
 			t.Fatal("expected no Page.handleJavaScriptDialog command for 'none' policy")
 		}
+	}
+}
+
+func TestBrowserTypeKeysModeFiresPerCharKeyEvents(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 71, URL: "https://example.com/editor", Title: "Editor", Controlled: true}
+	var keyDownChars []string
+	var sawInsert bool
+	var controller *Controller
+	var relay *RelayManager
+
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			t.Fatalf("invalid command payload: %v", err)
+		}
+		switch cmd.Domain + "." + cmd.Method {
+		case "PierCode.getTab":
+			data, _ := json.Marshal(tab)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		case "PierCode.resolveSelectorRect":
+			data, _ := json.Marshal(Bounds{X: 10, Y: 20, Width: 100, Height: 30})
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		case "Input.dispatchMouseEvent":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		case "Input.dispatchKeyEvent":
+			var p struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(cmd.Params, &p)
+			if p.Type == "keyDown" && p.Text != "" {
+				keyDownChars = append(keyDownChars, p.Text)
+			}
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		case "Input.insertText":
+			sawInsert = true
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		case "Runtime.evaluate":
+			data := json.RawMessage(`{"result":{"type":"object","value":{"ok":true,"changed":true,"before":"","after":"hi","type":"input"}}}`)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+
+	controller = NewController(relay, func(payload []byte) {
+		var ask ApprovalAsk
+		if err := json.Unmarshal(payload, &ask); err != nil {
+			t.Fatalf("invalid approval payload: %v", err)
+		}
+		go controller.DeliverApproval(ApprovalAnswer{ApprovalID: ask.ApprovalID, Approved: true})
+	})
+	controller.tabs.SetDefault(tab)
+
+	_, err := controller.Type(context.Background(), tool.BrowserTypeRequest{
+		TabID:    intPtr(tab.TabID),
+		Selector: "#code",
+		Text:     "hi",
+		Mode:     "keys",
+		CallID:   "type-keys",
+	})
+	if err != nil {
+		t.Fatalf("Type(keys) returned error: %v", err)
+	}
+	if sawInsert {
+		t.Fatal("keys mode should not use Input.insertText for ASCII text")
+	}
+	if got := strings.Join(keyDownChars, ""); got != "hi" {
+		t.Fatalf("expected per-char keyDown text 'hi', got %q", got)
 	}
 }

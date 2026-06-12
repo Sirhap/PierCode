@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"mime"
 	"os"
 	"path/filepath"
@@ -382,8 +381,16 @@ func (c *Controller) Drag(ctx context.Context, req tool.BrowserDragRequest) (str
 	if err := c.ask(ctx, req.CallID, "拖拽页面元素", fromTab, fromTarget+" -> "+toTarget, "拖拽会改变页面状态或触发网页操作。"); err != nil {
 		return "", err
 	}
-	if err := c.dispatchDrag(ctx, fromTab.TabID, Point{X: fromX, Y: fromY}, Point{X: toX, Y: toY}); err != nil {
-		return "", err
+	if req.Mode == "mouse" {
+		if err := c.dispatchDrag(ctx, fromTab.TabID, Point{X: fromX, Y: fromY}, Point{X: toX, Y: toY}); err != nil {
+			return "", err
+		}
+	} else {
+		// Default: synthesize HTML5 DnD so react-dnd / SortableJS react. Falls
+		// back to the raw-mouse path if no draggable element sits at the source.
+		if err := c.dispatchHTML5Drag(ctx, fromTab.TabID, Point{X: fromX, Y: fromY}, Point{X: toX, Y: toY}); err != nil {
+			return "", err
+		}
 	}
 	c.tabs.MarkStale(fromTab.TabID)
 	return fmt.Sprintf("dragged %s to %s in tabId=%d", fromTarget, toTarget, fromTab.TabID), nil
@@ -974,6 +981,54 @@ func (c *Controller) dispatchDrag(ctx context.Context, tabID int, from, to Point
 	return nil
 }
 
+// dispatchHTML5Drag synthesizes the HTML5 drag-and-drop event sequence in the
+// page so DnD libraries that listen for dragstart/dragover/drop (react-dnd,
+// SortableJS, native draggable=true) react. A single shared DataTransfer is
+// threaded through every event, matching real browser behavior. If no element
+// sits at the source point it returns {ok:false}, and the caller's expectation
+// is that html5 mode is a no-op there; callers wanting pointer-drag use "mouse".
+func (c *Controller) dispatchHTML5Drag(ctx context.Context, tabID int, from, to Point) error {
+	expr := html5DragScript(from.X, from.Y, to.X, to.Y)
+	out, err := c.runtimeEvaluate(ctx, tabID, expr, false, defaultActionTimeout, true)
+	if err != nil {
+		return err
+	}
+	// If the page had no element at the source, fall back to raw mouse drag so
+	// the gesture still does something for pointer-based UIs.
+	if out != nil && strings.Contains(string(out.Result.Value), `"ok":false`) {
+		return c.dispatchDrag(ctx, tabID, from, to)
+	}
+	return nil
+}
+
+// html5DragScript builds a self-contained IIFE that fires the full DnD sequence
+// at the given client coordinates. Returns {ok:true} on success, {ok:false}
+// when no source element is present.
+func html5DragScript(fromX, fromY, toX, toY float64) string {
+	return fmt.Sprintf(`(function(){
+  var fx=%[1]f, fy=%[2]f, tx=%[3]f, ty=%[4]f;
+  var src=document.elementFromPoint(fx,fy);
+  if(!src) return {ok:false};
+  var tgt=document.elementFromPoint(tx,ty)||src;
+  var dt=new DataTransfer();
+  function fire(type,el,x,y){
+    var ev;
+    try{ ev=new DragEvent(type,{bubbles:true,cancelable:true,composed:true,clientX:x,clientY:y,dataTransfer:dt}); }
+    catch(e){
+      ev=document.createEvent('Event'); ev.initEvent(type,true,true);
+      ev.clientX=x; ev.clientY=y; try{Object.defineProperty(ev,'dataTransfer',{value:dt});}catch(_){}
+    }
+    el.dispatchEvent(ev);
+  }
+  fire('dragstart',src,fx,fy);
+  fire('dragenter',tgt,tx,ty);
+  fire('dragover',tgt,tx,ty);
+  fire('drop',tgt,tx,ty);
+  fire('dragend',src,tx,ty);
+  return {ok:true};
+})()`, fromX, fromY, toX, toY)
+}
+
 type keyChord struct {
 	Key       string
 	Mods      []string
@@ -1235,21 +1290,6 @@ func truncate(s string, max int) string {
 	return string(r[:max-1]) + "…"
 }
 
-func interpolate(from, to Point, steps int) []Point {
-	if steps <= 0 {
-		return nil
-	}
-	points := make([]Point, steps)
-	for i := 0; i < steps; i++ {
-		t := float64(i+1) / float64(steps+1)
-		points[i] = Point{
-			X: from.X + (to.X-from.X)*t,
-			Y: from.Y + (to.Y-from.Y)*t,
-		}
-	}
-	return points
-}
-
 func parseKeyChord(raw string) (keyChord, error) {
 	parts := strings.Split(raw, "+")
 	var chord keyChord
@@ -1382,6 +1422,3 @@ func resolvePDFOutputPath(path string) (string, error) {
 	return filepath.Join(path, fmt.Sprintf("page-%d.pdf", time.Now().UnixNano())), nil
 }
 
-func distance(a, b Point) float64 {
-	return math.Hypot(a.X-b.X, a.Y-b.Y)
-}

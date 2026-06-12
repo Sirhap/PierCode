@@ -35,6 +35,18 @@ export function resolveStealthMode(value: unknown): boolean {
   return typeof value === 'boolean' ? value : DEFAULT_STEALTH_MODE;
 }
 
+// When true (default), CDP Input.* commands dispatch WITHOUT first raising the
+// tab's window and switching it active. CDP input reaches a tab's renderer by
+// tabId regardless of foreground state, so a background worker tab can be driven
+// without stealing the user's foreground — matching the keep-alive background
+// philosophy. Set false to restore activate-before-input for sites/inputs that
+// genuinely need focus.
+export const DEFAULT_BACKGROUND_INPUT = true;
+
+export function resolveBackgroundInput(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : DEFAULT_BACKGROUND_INPUT;
+}
+
 export function resolvePermissionMode(value: unknown): PermissionMode {
   return value === 'default' || value === 'auto' || value === 'unrestricted'
     ? value

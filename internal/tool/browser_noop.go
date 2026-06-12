@@ -46,6 +46,10 @@ func (noopBrowserController) Type(_ context.Context, _ BrowserTypeRequest) (stri
 	return "", errNoopBrowser
 }
 
+func (noopBrowserController) Clipboard(_ context.Context, _ BrowserClipboardRequest) (BrowserClipboardResponse, error) {
+	return BrowserClipboardResponse{}, errNoopBrowser
+}
+
 func (noopBrowserController) Screenshot(_ context.Context, _ BrowserScreenshotRequest) (BrowserScreenshot, error) {
 	return BrowserScreenshot{}, errNoopBrowser
 }

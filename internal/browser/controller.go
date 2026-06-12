@@ -476,14 +476,23 @@ func (c *Controller) Type(ctx context.Context, req tool.BrowserTypeRequest) (str
 			return "", err
 		}
 	}
-	params, _ := json.Marshal(map[string]string{"text": req.Text})
-	if _, err := c.relay.SendCommand(ctx, Command{
-		TabID:  &tab.TabID,
-		Domain: "Input",
-		Method: "insertText",
-		Params: params,
-	}, defaultActionTimeout); err != nil {
-		return "", err
+	if req.Mode == "keys" {
+		// Per-character keyDown/keyUp so editors, autocomplete, and key-listening
+		// widgets fire their handlers. Falls back to insertText per character for
+		// runes CDP can't express as a key event (CJK, emoji, etc.).
+		if err := c.dispatchTypedKeys(ctx, tab.TabID, req.Text); err != nil {
+			return "", err
+		}
+	} else {
+		params, _ := json.Marshal(map[string]string{"text": req.Text})
+		if _, err := c.relay.SendCommand(ctx, Command{
+			TabID:  &tab.TabID,
+			Domain: "Input",
+			Method: "insertText",
+			Params: params,
+		}, defaultActionTimeout); err != nil {
+			return "", err
+		}
 	}
 	if err := c.ensureTypedTextLanded(ctx, tab.TabID, req.Ref, req.Selector, req.SnapshotID, req.Text, req.Clear); err != nil {
 		return "", err
@@ -495,6 +504,54 @@ func (c *Controller) Type(ctx context.Context, req tool.BrowserTypeRequest) (str
 	}
 	c.tabs.MarkStale(tab.TabID)
 	return fmt.Sprintf("typed %d characters into %s in tabId=%d", len([]rune(req.Text)), target, tab.TabID), nil
+}
+
+// Clipboard reads or writes the page's clipboard via the async Clipboard API in
+// page context. Reading exposes potentially sensitive host clipboard data and
+// writing changes shared system state, so both require approval. The async
+// Clipboard API can be blocked by the page's permission policy; when that
+// happens the error is surfaced rather than silently swallowed.
+func (c *Controller) Clipboard(ctx context.Context, req tool.BrowserClipboardRequest) (tool.BrowserClipboardResponse, error) {
+	tab, err := c.ensureTab(ctx, req.TabID)
+	if err != nil {
+		return tool.BrowserClipboardResponse{}, err
+	}
+	if c.policy.IsSensitive(tab) {
+		return tool.BrowserClipboardResponse{}, fmt.Errorf("browser_clipboard refused on sensitive payment/financial page")
+	}
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	var expr, askWhat, askWhy string
+	switch action {
+	case "read":
+		askWhat, askWhy = "读取剪贴板", "读取剪贴板会暴露系统剪贴板中的内容。"
+		expr = `(async function(){ try { return {ok:true, text: await navigator.clipboard.readText()}; } catch(e){ return {ok:false, error:String(e&&e.message||e)}; } })()`
+	case "write":
+		askWhat, askWhy = "写入剪贴板", "写入剪贴板会修改系统剪贴板内容。"
+		expr = `(async function(){ try { await navigator.clipboard.writeText(` + jsString(req.Text) + `); return {ok:true}; } catch(e){ return {ok:false, error:String(e&&e.message||e)}; } })()`
+	default:
+		return tool.BrowserClipboardResponse{}, fmt.Errorf("action must be 'read' or 'write'")
+	}
+	if err := c.ask(ctx, req.CallID, askWhat, tab, action, askWhy); err != nil {
+		return tool.BrowserClipboardResponse{}, err
+	}
+	out, err := c.runtimeEvaluate(ctx, tab.TabID, expr, true, defaultActionTimeout, true)
+	if err != nil {
+		return tool.BrowserClipboardResponse{}, err
+	}
+	var result struct {
+		OK    bool   `json:"ok"`
+		Text  string `json:"text"`
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(out.Result.Value, &result)
+	if !result.OK {
+		msg := result.Error
+		if msg == "" {
+			msg = "clipboard access blocked by the page (focus the tab or check clipboard permission policy)"
+		}
+		return tool.BrowserClipboardResponse{}, fmt.Errorf("clipboard %s failed: %s", action, msg)
+	}
+	return tool.BrowserClipboardResponse{Tab: tab, Text: result.Text}, nil
 }
 
 type typedTextEnsureResult struct {
@@ -906,6 +963,62 @@ func (c *Controller) sendKey(ctx context.Context, tabID int, key string) error {
 		if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: params}, defaultActionTimeout); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// dispatchTypedKeys types text one character at a time as keyDown/keyUp pairs so
+// the page's keydown/keypress/keyup/input handlers all fire (Monaco, CodeMirror,
+// autocomplete, games). For a printable character, a single keyDown carrying the
+// "text" field both fires the key events and inserts the character; a paired
+// keyUp completes the stroke. "\n" is sent as Enter. Characters that have no
+// usable key event (e.g. CJK, emoji) fall back to Input.insertText so they still
+// land, just without per-key events.
+func (c *Controller) dispatchTypedKeys(ctx context.Context, tabID int, text string) error {
+	for _, r := range text {
+		if r == '\n' || r == '\r' {
+			if err := c.sendNamedKey(ctx, tabID, "Enter", "\r"); err != nil {
+				return err
+			}
+			continue
+		}
+		if r == '\t' {
+			if err := c.sendNamedKey(ctx, tabID, "Tab", "\t"); err != nil {
+				return err
+			}
+			continue
+		}
+		// Printable ASCII (and Latin-1) map cleanly to a key event with text.
+		if r >= 0x20 && r < 0x7f {
+			s := string(r)
+			down, _ := json.Marshal(map[string]interface{}{"type": "keyDown", "text": s, "key": s, "unmodifiedText": s})
+			if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: down}, defaultActionTimeout); err != nil {
+				return err
+			}
+			up, _ := json.Marshal(map[string]interface{}{"type": "keyUp", "key": s})
+			if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: up}, defaultActionTimeout); err != nil {
+				return err
+			}
+			continue
+		}
+		// Non-ASCII rune: no reliable key event — insert it so it still lands.
+		ins, _ := json.Marshal(map[string]string{"text": string(r)})
+		if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "insertText", Params: ins}, defaultActionTimeout); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendNamedKey sends a named key (Enter/Tab/…) as a keyDown(text)/keyUp pair.
+func (c *Controller) sendNamedKey(ctx context.Context, tabID int, key, text string) error {
+	down, _ := json.Marshal(map[string]interface{}{"type": "keyDown", "key": key, "text": text})
+	if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: down}, defaultActionTimeout); err != nil {
+		return err
+	}
+	up, _ := json.Marshal(map[string]interface{}{"type": "keyUp", "key": key})
+	if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: up}, defaultActionTimeout); err != nil {
+		return err
 	}
 	return nil
 }

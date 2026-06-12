@@ -10,6 +10,15 @@ import {
   filterDownloadRecords,
   upsertDownloadRecord,
 } from './downloads';
+import { resolveBackgroundInput } from '../settings';
+
+// Cached `backgroundInput` setting (default true): when true, CDP Input.* is
+// dispatched without raising/activating the tab, so a background worker tab is
+// driven without stealing the user's foreground. Refreshed on storage change.
+let backgroundInputEnabled = true;
+chrome.storage.local.get(['backgroundInput'], result => {
+  backgroundInputEnabled = resolveBackgroundInput(result.backgroundInput);
+});
 
 const AI_PAGE_URLS = [
   '*://*.gemini.google.com/*',
@@ -406,7 +415,12 @@ async function handleBrowserCommand(msg: BrowserCommand): Promise<unknown> {
   }
   await ensureAttached(msg.tabId);
   if (msg.domain === 'Input') {
-    await activateTabForInput(msg.tabId);
+    // CDP input is delivered to the renderer by tabId regardless of foreground
+    // state, so by default we do NOT raise/activate the tab (keeps a background
+    // worker from stealing the user's foreground). Opt back in via backgroundInput=false.
+    if (!backgroundInputEnabled) {
+      await activateTabForInput(msg.tabId);
+    }
     if (msg.method === 'dispatchMouseEvent') {
       await syncPhantomCursor(msg.tabId, params);
     }
@@ -1049,6 +1063,9 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
       if (info) connectBrowserRelay();
       else disconnectBrowserRelay('not_configured');
     });
+  }
+  if (namespace === 'local' && changes.backgroundInput) {
+    backgroundInputEnabled = resolveBackgroundInput(changes.backgroundInput.newValue);
   }
 });
 

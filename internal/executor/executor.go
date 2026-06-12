@@ -143,6 +143,7 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserSnapshotTool())
 	e.registry.Register(tool.NewBrowserClickTool())
 	e.registry.Register(tool.NewBrowserTypeTool())
+	e.registry.Register(tool.NewBrowserClipboardTool())
 	e.registry.Register(tool.NewBrowserScreenshotTool())
 	e.registry.Register(tool.NewBrowserWaitTool())
 	e.registry.Register(tool.NewBrowserWaitForFunctionTool())

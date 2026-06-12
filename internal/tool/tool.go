@@ -220,6 +220,7 @@ type BrowserController interface {
 	Snapshot(ctx context.Context, tabID *int, maxNodes int) (BrowserSnapshot, error)
 	Click(ctx context.Context, req BrowserClickRequest) (string, error)
 	Type(ctx context.Context, req BrowserTypeRequest) (string, error)
+	Clipboard(ctx context.Context, req BrowserClipboardRequest) (BrowserClipboardResponse, error)
 	Screenshot(ctx context.Context, req BrowserScreenshotRequest) (BrowserScreenshot, error)
 	Wait(ctx context.Context, req BrowserWaitRequest) (string, error)
 	WaitForFunction(ctx context.Context, req BrowserWaitForFunctionRequest) (string, error)
@@ -301,7 +302,24 @@ type BrowserTypeRequest struct {
 	SnapshotID string
 	Clear      bool
 	Submit     bool
-	CallID     string
+	// Mode selects the text-entry mechanism. "insert" (default) uses CDP
+	// Input.insertText — fast, but fires no keydown/keypress/keyup events.
+	// "keys" sends a keyDown/keyUp pair per character so editors, autocomplete,
+	// and key-listening widgets (Monaco, CodeMirror, games) react.
+	Mode   string
+	CallID string
+}
+
+type BrowserClipboardRequest struct {
+	TabID  *int
+	Action string // "read" or "write"
+	Text   string // text to write (write action)
+	CallID string
+}
+
+type BrowserClipboardResponse struct {
+	Tab  BrowserTab
+	Text string // clipboard contents (read action)
 }
 
 type BrowserScreenshotRequest struct {
@@ -417,7 +435,13 @@ type BrowserDragRequest struct {
 	ToX          *float64
 	ToY          *float64
 	SnapshotID   string
-	CallID       string
+	// Mode selects the drag mechanism. "html5" (default) synthesizes the full
+	// dragstart→dragover→drop→dragend DragEvent sequence with a shared
+	// DataTransfer, which is what modern DnD libraries (react-dnd, SortableJS)
+	// listen for. "mouse" sends raw mousedown→move→mouseup, for native
+	// pointer-drag UIs (canvas, sliders, map panning) that ignore HTML5 DnD.
+	Mode   string
+	CallID string
 }
 
 type BrowserPDFRequest struct {

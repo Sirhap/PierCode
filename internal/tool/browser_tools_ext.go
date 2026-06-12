@@ -342,6 +342,7 @@ func NewBrowserDragTool() Tool {
 			"toX":          "number (optional) - drop target x coordinate",
 			"toY":          "number (optional) - drop target y coordinate",
 			"snapshotId":   "string (required with refs) - snapshot id from browser_snapshot",
+			"mode":         "string (optional, default html5) - 'html5' fires dragstart/dragover/drop events for DnD libraries (react-dnd, SortableJS); 'mouse' sends raw mouse drag for native pointer UIs (canvas, sliders, map panning)",
 			"tabId":        "number (optional) - controlled tab id",
 		},
 		validate: validateBrowserDrag,
@@ -357,6 +358,7 @@ func NewBrowserDragTool() Tool {
 				ToX:          optionalFloat(ctx.Args, "toX"),
 				ToY:          optionalFloat(ctx.Args, "toY"),
 				SnapshotID:   stringArg(ctx.Args, "snapshotId"),
+				Mode:         stringArg(ctx.Args, "mode"),
 				CallID:       stringArg(ctx.Args, "call_id"),
 			})
 		},
