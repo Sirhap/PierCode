@@ -9,6 +9,8 @@ export interface SubAgent {
   messages: ChatMessage[]
   fading?: boolean
   batchId?: string
+  /** Failure reason from CHAT_AGENT_DONE (risk wall / network / timeout). */
+  error?: string
 }
 
 export interface AgentSummaryItem {

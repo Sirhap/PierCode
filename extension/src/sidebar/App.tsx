@@ -213,6 +213,8 @@ export default function App() {
   // ── Sub-agent + session state ─────────────────────────────────────────
   const [subAgents, setSubAgents] = useState<SubAgent[]>([])
   const agentTimers = useRef<Set<number>>(new Set())
+  // 见 CHAT_AGENT_SPAWN 去重：记录见过的 agentId，挡住 SW 续跑的重播。
+  const seenAgentIds = useRef<Set<string>>(new Set())
   // Per-batch summary accumulation: batchExpected = spawned count per batchId,
   // batchDone = final snapshots captured at finish time (independent of live-array
   // fade removal). Emit ONE summary card when accumulated >= expected, then clear.
@@ -242,7 +244,21 @@ export default function App() {
     agentTimers.current.clear()
     batchDone.current.clear()
     batchExpected.current.clear()
+    seenAgentIds.current.clear()
   }, [])
+
+  // ── SW waker：有 agent 在跑时周期性 sendMessage 叫醒 service worker ─────
+  // batch 的 checkpoint 续跑（resumeOrphanedSpawnBatches）只在 SW 启动时执行；
+  // MV3 把 SW 杀掉后若无人发消息，batch 会一直瘫着（看起来像子 agent 断链）。
+  // content 路线有状态轮询当 waker，sidebar 路线靠这里。消息本身可以无人应答
+  // —— 投递动作就会拉起 SW 并触发 registerChatApiHandler 的 resume。
+  useEffect(() => {
+    if (!subAgents.some(a => a.status === 'running')) return
+    const t = window.setInterval(() => {
+      chrome.runtime.sendMessage({ type: 'PIERCODE_SW_WAKE' }).catch(() => {})
+    }, 20_000)
+    return () => window.clearInterval(t)
+  }, [subAgents])
 
   // ── Lifted token meter (computed once, shared by TokenPanel + StatusHUD) ─
   const meter = useMemo<TokenMeter>(() => {
@@ -457,8 +473,16 @@ export default function App() {
         })
         setStreaming(false)
       } else if (msg.type === 'CHAT_AGENT_SPAWN') {
-        batchExpected.current.set(msg.batchId, (batchExpected.current.get(msg.batchId) || 0) + 1)
-        setSubAgents(prev => [...prev, { id: msg.agentId, label: msg.label, task: msg.task, status: 'running', messages: [], batchId: msg.batchId }])
+        // 去重：SW 被杀后 batch 续跑会对同 agentId 重播 SPAWN。重复 append 会
+        // 让 batchExpected 翻倍 → 汇总永远凑不齐（断链表象）。已知 id 只把状态
+        // 拉回 running（resume），不重计数。
+        if (seenAgentIds.current.has(msg.agentId)) {
+          setSubAgents(prev => prev.map(a => a.id === msg.agentId ? { ...a, status: 'running', fading: false } : a))
+        } else {
+          seenAgentIds.current.add(msg.agentId)
+          batchExpected.current.set(msg.batchId, (batchExpected.current.get(msg.batchId) || 0) + 1)
+          setSubAgents(prev => [...prev, { id: msg.agentId, label: msg.label, task: msg.task, status: 'running', messages: [], batchId: msg.batchId }])
+        }
       } else if (msg.type === 'CHAT_AGENT_STREAM') {
         setSubAgents(prev => prev.map(a => a.id === msg.agentId
           ? { ...a, messages: appendAgentChunk(a.messages, msg.chunk || '') }
@@ -466,7 +490,8 @@ export default function App() {
       } else if (msg.type === 'CHAT_AGENT_DONE') {
         const agentId = msg.agentId
         const isErr = msg.status === 'error'
-        setSubAgents(prev => prev.map(a => a.id === agentId ? { ...a, status: isErr ? 'error' : 'done' } : a))
+        const errText = typeof msg.error === 'string' ? msg.error : undefined
+        setSubAgents(prev => prev.map(a => a.id === agentId ? { ...a, status: isErr ? 'error' : 'done', error: errText } : a))
         // done (not error) cards fade out then get removed; errors stay for review.
         if (!isErr) {
           const fadeAt = window.setTimeout(() => {

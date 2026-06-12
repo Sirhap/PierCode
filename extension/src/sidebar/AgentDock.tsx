@@ -29,7 +29,7 @@ function statusLine(agent: SubAgent, calls: AgentToolCall[]): string {
     return cur ? `${cur.name} ${cur.preview}`.trim() : agent.task.slice(0, 40)
   }
   if (agent.status === 'error') {
-    return truncateSummary(agentTranscript(agent)) || '失败'
+    return agent.error || truncateSummary(agentTranscript(agent)) || '失败'
   }
   return `完成 · ${calls.length} 工具调用`
 }

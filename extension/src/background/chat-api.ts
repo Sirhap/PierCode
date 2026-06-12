@@ -1359,14 +1359,19 @@ async function runSubAgent(
     })
     const cancelled = signal.aborted
     const output = cancelled ? `${finalText}\n\n(已取消)`.trim() : finalText
-    broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: cancelled ? 'error' : 'done' }, originTabId)
+    broadcastAgentLifecycle({
+      type: 'CHAT_AGENT_DONE', agentId, status: cancelled ? 'error' : 'done',
+      ...(cancelled ? { error: '已取消' } : {}),
+    }, originTabId)
     return cancelled
       ? { call_id: call.call_id, name: call.name, output: output || '(已取消)', success: false }
       : shapeSubAgentResult(call, finalText)
   } catch (err) {
     const cancelled = signal.aborted
     const msg = cancelled ? '(已取消)' : `子 agent 失败: ${err instanceof Error ? err.message : String(err)}`
-    broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: 'error' }, originTabId)
+    // error 文本随 DONE 广播，AgentDock 行能直接显示失败原因（风控/网络/超时），
+    // 不再只有一个裸 ✗。
+    broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: 'error', error: msg }, originTabId)
     return { call_id: call.call_id, name: call.name, output: msg, success: false }
   } finally {
     cleanup()
