@@ -145,7 +145,10 @@ function QuestionCard({ question, options, onAnswer }: {
         <input
           value={customInput}
           onChange={e => setCustomInput(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && customInput.trim()) onAnswer(customInput.trim()) }}
+          onKeyDown={e => {
+            if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.keyCode === 229) return
+            if (customInput.trim()) onAnswer(customInput.trim())
+          }}
           placeholder={options.length > 0 ? '或输入自定义回答...' : '输入回答...'}
           className="flex-1 rounded-sm border px-3 py-1.5 text-sm outline-none"
           style={{ background: 'var(--panel)', borderColor: 'var(--line)', color: 'var(--txt)' }}
@@ -707,6 +710,8 @@ export default function App() {
       return
     }
     if (e.key === 'Enter' && !e.shiftKey) {
+      // IME 组合态的 Enter 是选字确认，不是发送（keyCode 229 兜底旧 WebKit）
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return
       e.preventDefault()
       handleSend()
     }
