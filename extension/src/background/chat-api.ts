@@ -1242,11 +1242,14 @@ async function handleChatRequestInner(params: ChatRequestParams): Promise<void> 
 
       // spawn_agent runs DETACHED: the batch summary is injected later, when
       // the main conversation is idle. The turn itself ends without waiting.
+      // Agent NESTING depth is 0 here — the spawner is the main conversation —
+      // regardless of `depth`, which counts TOOL recursion turns. Conflating
+      // the two falsely tripped MAX_AGENT_DEPTH after 3 tool turns.
       if (spawns.length > 0 && !currentAbort.signal.aborted && chatId) {
         launchSidebarSpawnBatch(
           spawns,
           { platform, chatId, parentId: sseResult.responseId, model: modelOverride, reasoning },
-          depth,
+          0,
         )
       }
 
@@ -1725,6 +1728,19 @@ async function runIsolatedConversation(params: {
     }
     for (const tc of normal) {
       if (abortSignal?.aborted) break
+      // question needs the sidebar user, who belongs to the MAIN conversation.
+      // Routing it to server /exec broadcasts to page WS clients the sidebar
+      // never sees → the worker hangs to timeout. Reject with feedback so the
+      // autonomous worker decides for itself and finishes.
+      if (tc.name === 'question') {
+        results.push({
+          call_id: tc.call_id,
+          name: tc.name,
+          output: '(子 agent 无法向用户提问。请基于任务说明自行决策，完成任务后用纯文本汇报结果与所做的假设。)',
+          success: false,
+        })
+        continue
+      }
       results.push(await execTool(tc.name, tc.args))
     }
     message = results.map(r => `### ${r.name} #${r.call_id}\n\n${r.output}`).join('\n\n')

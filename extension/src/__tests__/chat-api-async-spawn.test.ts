@@ -145,6 +145,52 @@ describe('async spawn batch (sidebar route)', () => {
     }
   })
 
+  it('spawn at deep TOOL recursion is not rejected as agent nesting (depth conflation)', async () => {
+    let call = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      call++
+      if (call === 1) return sseResponse(SPAWN_FENCE) as any
+      return sseResponse('工人完成') as any
+    }))
+    try {
+      // depth 5 = the main conversation already ran 5 tool turns. The spawner
+      // is still nesting level 0 — the batch must run, not be refused.
+      await handleChatRequest({
+        platform: 'openai', message: '继续', chatId: 'c1', parentId: null, model: 'gpt-4o', depth: 5,
+      })
+      await waitFor(() => types().includes('CHAT_TOOL_DONE'))
+      const result = broadcasts.find(b => b.type === 'CHAT_TOOL_DONE').result
+      expect(result.output).not.toContain('嵌套超过上限')
+      expect(result.output).toContain('工人完成')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('a sub-agent emitting question gets rejection feedback instead of hanging on /exec', async () => {
+    const bodies: string[] = []
+    let call = 0
+    const QUESTION_FENCE =
+      '```piercode-tool\n{"name":"question","call_id":"q1","args":{"question":"用哪个目录?"}}\n```'
+    vi.stubGlobal('fetch', vi.fn(async (_url: any, init?: any) => {
+      bodies.push(String(init?.body || ''))
+      call++
+      if (call === 1) return sseResponse(SPAWN_FENCE) as any     // main turn
+      if (call === 2) return sseResponse(QUESTION_FENCE) as any  // sub-agent asks
+      return sseResponse('已自行决策完成。') as any                  // sub-agent finishes / injection
+    }))
+    try {
+      await handleChatRequest({
+        platform: 'openai', message: '开工', chatId: 'c1', parentId: null, model: 'gpt-4o',
+      })
+      await waitFor(() => bodies.length >= 3)
+      expect(bodies[2]).toContain('无法向用户提问')
+      expect(bodies[2]).toContain('q1')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('a sub-agent emitting spawn_agent gets rejection feedback instead of a silent drop', async () => {
     const bodies: string[] = []
     let call = 0
