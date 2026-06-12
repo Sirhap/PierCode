@@ -43,6 +43,10 @@ type Executor struct {
 	broadcastToClient atomic.Pointer[func(string, []byte) bool]
 	browserMu         sync.RWMutex
 	browser           tool.BrowserController
+	// tabLocks serializes browser WRITE tools per target tab (key "tab:<id>",
+	// or "tab:default" when no tabId arg). Actions on different tabs run in
+	// parallel; the same tab stays strictly ordered. map[string]*sync.Mutex.
+	tabLocks sync.Map
 }
 
 // SetLogger sets the event sink for real-time feedback. Safe to call
@@ -265,7 +269,7 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 		toolCtx.Client.BroadcastToClient = *bp
 	}
 
-	unlock := e.lockForTool(req.Name)
+	unlock := e.lockForTool(req.Name, req.Args)
 	result := t.Execute(toolCtx)
 	unlock()
 
@@ -427,13 +431,55 @@ func (e *Executor) ListTools() []tool.ToolInfo {
 	return all
 }
 
-func (e *Executor) lockForTool(name string) func() {
+func (e *Executor) lockForTool(name string, args map[string]interface{}) func() {
 	if t, ok := e.registry.Get(name); ok && toolIsReadOnly(t) {
 		e.toolMu.RLock()
 		return e.toolMu.RUnlock
 	}
+	// Browser write tools mutate browser state, not the filesystem. They hold
+	// the SHARED side of toolMu (so filesystem writers keep their exclusivity)
+	// and serialize per target tab instead of globally: multi-agent flows can
+	// drive different tabs in parallel, while calls on the same tab — or the
+	// implicit default tab — stay strictly ordered.
+	if isBrowserToolName(name) {
+		e.toolMu.RLock()
+		mu := e.tabLock(browserTabKey(args))
+		mu.Lock()
+		return func() {
+			mu.Unlock()
+			e.toolMu.RUnlock()
+		}
+	}
 	e.toolMu.Lock()
 	return e.toolMu.Unlock
+}
+
+func isBrowserToolName(name string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), "browser_")
+}
+
+// browserTabKey extracts the per-tab lock key from a browser tool's args.
+// JSON numbers arrive as float64; a missing/invalid tabId means the call will
+// resolve to the controller's default tab, so all such calls share one key.
+func browserTabKey(args map[string]interface{}) string {
+	if args != nil {
+		switch n := args["tabId"].(type) {
+		case float64:
+			if n > 0 {
+				return fmt.Sprintf("tab:%d", int(n))
+			}
+		case int:
+			if n > 0 {
+				return fmt.Sprintf("tab:%d", n)
+			}
+		}
+	}
+	return "tab:default"
+}
+
+func (e *Executor) tabLock(key string) *sync.Mutex {
+	mu, _ := e.tabLocks.LoadOrStore(key, &sync.Mutex{})
+	return mu.(*sync.Mutex)
 }
 
 func toolIsReadOnly(t tool.Tool) bool {

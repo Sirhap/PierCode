@@ -33,12 +33,12 @@ func TestToolConcurrencyPolicy(t *testing.T) {
 
 func TestReadOnlyLocksCanRunConcurrently(t *testing.T) {
 	e := New(testConfig(t))
-	unlockRead := e.lockForTool("read_file")
+	unlockRead := e.lockForTool("read_file", nil)
 	defer unlockRead()
 
 	acquired := make(chan func(), 1)
 	go func() {
-		acquired <- e.lockForTool("grep")
+		acquired <- e.lockForTool("grep", nil)
 	}()
 
 	select {
@@ -51,11 +51,11 @@ func TestReadOnlyLocksCanRunConcurrently(t *testing.T) {
 
 func TestWriteLockWaitsForReadLocks(t *testing.T) {
 	e := New(testConfig(t))
-	unlockRead := e.lockForTool("read_file")
+	unlockRead := e.lockForTool("read_file", nil)
 
 	acquired := make(chan func(), 1)
 	go func() {
-		acquired <- e.lockForTool("edit")
+		acquired <- e.lockForTool("edit", nil)
 	}()
 
 	select {
@@ -77,12 +77,12 @@ func TestWriteLockWaitsForReadLocks(t *testing.T) {
 
 func TestWriteLocksAreExclusive(t *testing.T) {
 	e := New(testConfig(t))
-	unlockWrite := e.lockForTool("edit")
+	unlockWrite := e.lockForTool("edit", nil)
 
 	var once sync.Once
 	acquired := make(chan func(), 1)
 	go func() {
-		acquired <- e.lockForTool("exec_cmd")
+		acquired <- e.lockForTool("exec_cmd", nil)
 	}()
 
 	select {
@@ -99,5 +99,100 @@ func TestWriteLocksAreExclusive(t *testing.T) {
 		once.Do(unlock)
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("expected second write lock to acquire after first write lock is released")
+	}
+}
+
+func TestBrowserWriteToolsParallelAcrossTabs(t *testing.T) {
+	e := New(testConfig(t))
+	unlockTab1 := e.lockForTool("browser_click", map[string]interface{}{"tabId": float64(1)})
+	defer unlockTab1()
+
+	acquired := make(chan func(), 1)
+	go func() {
+		acquired <- e.lockForTool("browser_type", map[string]interface{}{"tabId": float64(2)})
+	}()
+
+	select {
+	case unlock := <-acquired:
+		unlock()
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("browser write tools on DIFFERENT tabs must acquire concurrently")
+	}
+}
+
+func TestBrowserWriteToolsSerializeOnSameTab(t *testing.T) {
+	e := New(testConfig(t))
+	unlockFirst := e.lockForTool("browser_click", map[string]interface{}{"tabId": float64(7)})
+
+	var once sync.Once
+	acquired := make(chan func(), 1)
+	go func() {
+		acquired <- e.lockForTool("browser_type", map[string]interface{}{"tabId": float64(7)})
+	}()
+
+	select {
+	case unlock := <-acquired:
+		once.Do(unlock)
+		t.Fatal("browser write tools on the SAME tab must serialize")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	unlockFirst()
+
+	select {
+	case unlock := <-acquired:
+		once.Do(unlock)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected the same-tab lock to acquire after release")
+	}
+}
+
+func TestBrowserDefaultTabCallsShareOneLock(t *testing.T) {
+	e := New(testConfig(t))
+	unlockFirst := e.lockForTool("browser_click", nil)
+
+	acquired := make(chan func(), 1)
+	go func() {
+		acquired <- e.lockForTool("browser_navigate", map[string]interface{}{})
+	}()
+
+	select {
+	case unlock := <-acquired:
+		unlock()
+		t.Fatal("default-tab browser calls must serialize together")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlockFirst()
+	(<-acquired)()
+}
+
+func TestBrowserWriteDoesNotBlockOnOtherDomains(t *testing.T) {
+	e := New(testConfig(t))
+	// A browser action holds only the shared side of toolMu + its tab lock…
+	unlockBrowser := e.lockForTool("browser_click", map[string]interface{}{"tabId": float64(3)})
+	defer unlockBrowser()
+
+	// …so read-only tools still acquire concurrently.
+	acquired := make(chan func(), 1)
+	go func() {
+		acquired <- e.lockForTool("read_file", nil)
+	}()
+	select {
+	case unlock := <-acquired:
+		unlock()
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("read-only tool must not block behind a browser write tool")
+	}
+
+	// …but a filesystem WRITE still waits for the shared lock to clear.
+	fsAcquired := make(chan func(), 1)
+	go func() {
+		fsAcquired <- e.lockForTool("edit", nil)
+	}()
+	select {
+	case unlock := <-fsAcquired:
+		unlock()
+		t.Fatal("filesystem write lock should wait while a browser tool holds the shared lock")
+	case <-time.After(50 * time.Millisecond):
 	}
 }

@@ -76,7 +76,7 @@ Local Filesystem / Browser CDP
 - `ws.go`: WebSocket manager for bidirectional comms between extension ↔ server
 
 **`internal/executor/`**: Tool dispatch and lifecycle
-- `executor.go`: Owns a `tool.Registry`, dispatches tool calls, manages concurrency (read/write locking per tool), injects prompt guidance every N calls
+- `executor.go`: Owns a `tool.Registry`, dispatches tool calls, manages concurrency (read-only tools share an RLock; filesystem writes take the exclusive lock; `browser_*` write tools hold the shared lock + a per-tab mutex keyed by `tabId`, so different tabs can be driven in parallel while same-tab calls stay ordered), injects prompt guidance every N calls
 - `tasks.go`: Background task manager for long-running `exec_cmd` calls (`background: true`)
 
 **`internal/tool/`**: Tool implementations (each tool implements the `Tool` interface in `tool.go`)
