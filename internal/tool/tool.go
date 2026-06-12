@@ -264,6 +264,14 @@ type BrowserTab struct {
 	TrackSource string `json:"trackSource,omitempty"`
 }
 
+// SafeTitle returns the tab title flattened to a single line, stripped of
+// control characters and length-capped. Page titles are attacker-controllable,
+// so any title interpolated into a tool result the model reads must go through
+// this rather than using Title directly (prompt-injection defense).
+func (t BrowserTab) SafeTitle() string {
+	return security.SanitizeLabel(t.Title, 200)
+}
+
 type BrowserSnapshot struct {
 	SnapshotID string
 	Tab        BrowserTab

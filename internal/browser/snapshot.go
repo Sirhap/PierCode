@@ -49,7 +49,7 @@ func CompactSnapshot(raw json.RawMessage, tab tool.BrowserTab, snapshotID string
 	}
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "snapshotId=%s url=%q title=%q\n\n", snapshotID, tab.URL, tab.Title)
+	fmt.Fprintf(&out, "snapshotId=%s url=%q title=%q\n\n", snapshotID, tab.URL, tab.SafeTitle())
 	refs := make([]RefTarget, 0)
 	shown := 0
 	truncated := false

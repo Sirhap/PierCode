@@ -373,3 +373,21 @@ func (b *EventBus) RemoveDialog(callID string) {
 	delete(b.dialogs, callID)
 	b.mu.Unlock()
 }
+
+// HasDialogWaiter reports whether an explicit browser_handle_dialog call is
+// currently waiting for a dialog on the given tab (or for any tab). When this
+// is false and a dialog opens, the Controller auto-dismisses it so a blocking
+// alert/confirm/prompt cannot wedge the tab.
+func (b *EventBus) HasDialogWaiter(tabID int) bool {
+	if b == nil {
+		return false
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, w := range b.dialogs {
+		if w.tabID <= 0 || w.tabID == tabID {
+			return true
+		}
+	}
+	return false
+}

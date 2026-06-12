@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/url"
 	"os"
@@ -51,6 +52,14 @@ func (c *Controller) HandleEvent(event Event) {
 		c.events.HandleEvent(event)
 	}
 	switch event.Event {
+	case "Page.javascriptDialogOpening":
+		// A native JS dialog (alert/confirm/prompt/beforeunload) blocks the page's
+		// event loop, and once blocked the extension can stop receiving any further
+		// CDP commands for the tab. If no explicit browser_handle_dialog call is
+		// waiting for this dialog, auto-dismiss it so the tab cannot wedge.
+		if c.events != nil && !c.events.HasDialogWaiter(event.TabID) {
+			c.autoDismissDialog(event.TabID)
+		}
 	case "tab_removed":
 		c.tabs.ClearDefault(event.TabID)
 		c.events.ClearConsole(event.TabID)
@@ -65,6 +74,26 @@ func (c *Controller) HandleEvent(event Event) {
 		c.tabs.MarkStale(event.TabID)
 		c.events.ClearDomainTracking(event.TabID)
 	}
+}
+
+// autoDismissDialog cancels a native JS dialog that opened without an active
+// browser_handle_dialog waiter, preventing the tab from wedging. It runs in its
+// own goroutine with a short timeout so a slow/disconnected relay can never
+// block the event-dispatch path.
+func (c *Controller) autoDismissDialog(tabID int) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultActionTimeout)
+		defer cancel()
+		params, _ := json.Marshal(map[string]interface{}{"accept": false})
+		if _, err := c.relay.SendCommand(ctx, Command{
+			TabID:  &tabID,
+			Domain: "Page",
+			Method: "handleJavaScriptDialog",
+			Params: params,
+		}, defaultActionTimeout); err != nil {
+			log.Printf("[PierCode] auto-dismiss dialog on tab %d failed: %v", tabID, err)
+		}
+	}()
 }
 
 func (c *Controller) ListTabs(ctx context.Context, includeAI bool) ([]tool.BrowserTab, error) {

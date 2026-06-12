@@ -222,11 +222,11 @@ func NewBrowserNetworkTool() Tool {
 func NewBrowserCookiesTool() Tool {
 	return &browserTool{
 		name:        "browser_cookies",
-		description: "Read browser cookies for a specific domain or URL after user approval. Cookie values are returned by default.",
+		description: "Read browser cookie metadata (name, domain, path, flags) for a domain or URL after user approval. Cookie VALUES are withheld by default to avoid leaking session tokens into the chat; pass includeValue:true only when you genuinely need a value.",
 		parameters: map[string]string{
 			"domain":       "string (optional) - cookie domain scope, e.g. .example.com",
 			"url":          "string (optional) - URL scope for cookies, e.g. https://example.com",
-			"includeValue": "boolean (optional, default true) - include cookie values in output",
+			"includeValue": "boolean (optional, default false) - include cookie values in output; only set true when a value is actually required",
 			"limit":        "number (optional, default 200, max 1000) - maximum cookies to return",
 		},
 		validate: func(args map[string]interface{}) error {
@@ -240,7 +240,7 @@ func NewBrowserCookiesTool() Tool {
 			return nil
 		},
 		execute: func(ctx *Context) (string, error) {
-			includeValue := true
+			includeValue := false
 			if hasBoolArg(ctx.Args, "includeValue") {
 				includeValue = boolArg(ctx.Args, "includeValue")
 			}

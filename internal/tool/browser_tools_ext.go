@@ -395,7 +395,7 @@ func NewBrowserPDFTool() Tool {
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("pdf tabId=%d title=%q url=%q bytes=%d\nSaved to: %s", pdf.Tab.TabID, pdf.Tab.Title, pdf.Tab.URL, pdf.Bytes, pdf.FilePath), nil
+			return fmt.Sprintf("pdf tabId=%d title=%q url=%q bytes=%d\nSaved to: %s", pdf.Tab.TabID, pdf.Tab.SafeTitle(), pdf.Tab.URL, pdf.Bytes, pdf.FilePath), nil
 		},
 	}
 }

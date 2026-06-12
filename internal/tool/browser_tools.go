@@ -66,7 +66,7 @@ func NewBrowserTabsTool() Tool {
 			}
 			var controlled, other []string
 			for _, tab := range tabs {
-				line := fmt.Sprintf("- tabId=%d title=%q url=%q controlled=%v tracked=%v source=%q", tab.TabID, tab.Title, tab.URL, tab.Controlled, tab.Tracked, tab.TrackSource)
+				line := fmt.Sprintf("- tabId=%d title=%q url=%q controlled=%v tracked=%v source=%q", tab.TabID, tab.SafeTitle(), tab.URL, tab.Controlled, tab.Tracked, tab.TrackSource)
 				if tab.Controlled {
 					controlled = append(controlled, line)
 				} else {
@@ -316,7 +316,7 @@ func NewBrowserScreenshotTool() Tool {
 			if err != nil {
 				return "", err
 			}
-			out := fmt.Sprintf("screenshot tabId=%d title=%q url=%q format=%s bytes=%d", shot.Tab.TabID, shot.Tab.Title, shot.Tab.URL, shot.Format, shot.Bytes)
+			out := fmt.Sprintf("screenshot tabId=%d title=%q url=%q format=%s bytes=%d", shot.Tab.TabID, shot.Tab.SafeTitle(), shot.Tab.URL, shot.Format, shot.Bytes)
 			if shot.FilePath != "" {
 				out += "\nSaved to: " + shot.FilePath
 				if shouldAttachScreenshot(ctx) {
@@ -434,7 +434,7 @@ func validateClickTarget(args map[string]interface{}) error {
 }
 
 func formatTab(prefix string, tab BrowserTab) string {
-	return fmt.Sprintf("%s: tabId=%d title=%q url=%q controlled=%v", prefix, tab.TabID, tab.Title, tab.URL, tab.Controlled)
+	return fmt.Sprintf("%s: tabId=%d title=%q url=%q controlled=%v", prefix, tab.TabID, tab.SafeTitle(), tab.URL, tab.Controlled)
 }
 
 func stringArg(args map[string]interface{}, key string) string {

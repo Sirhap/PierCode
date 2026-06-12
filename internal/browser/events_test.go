@@ -81,3 +81,28 @@ func TestEventBusConcurrentConsoleReadWrite(t *testing.T) {
 	close(start)
 	wg.Wait()
 }
+
+func TestHasDialogWaiterGatesAutoDismiss(t *testing.T) {
+	b := NewEventBus()
+	// No waiter → auto-dismiss should fire (HasDialogWaiter false).
+	if b.HasDialogWaiter(5) {
+		t.Fatal("expected no waiter on fresh bus")
+	}
+	// Explicit browser_handle_dialog active for tab 5 → auto-dismiss suppressed.
+	_ = b.WaitForDialog("call-1", 5, 0)
+	if !b.HasDialogWaiter(5) {
+		t.Fatal("waiter for tab 5 should be seen")
+	}
+	if b.HasDialogWaiter(9) {
+		t.Fatal("tab-5 waiter must not match tab 9")
+	}
+	b.RemoveDialog("call-1")
+	if b.HasDialogWaiter(5) {
+		t.Fatal("removed waiter must not match")
+	}
+	// Any-tab waiter (tabID<=0) matches every tab.
+	_ = b.WaitForDialog("call-any", 0, 0)
+	if !b.HasDialogWaiter(123) {
+		t.Fatal("any-tab waiter should match tab 123")
+	}
+}
