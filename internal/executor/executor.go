@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,10 +44,12 @@ type Executor struct {
 	broadcastToClient atomic.Pointer[func(string, []byte) bool]
 	browserMu         sync.RWMutex
 	browser           tool.BrowserController
-	// tabLocks serializes browser WRITE tools per target tab (key "tab:<id>",
-	// or "tab:default" when no tabId arg). Actions on different tabs run in
-	// parallel; the same tab stays strictly ordered. map[string]*sync.Mutex.
-	tabLocks sync.Map
+	// keyedLocks holds fine-grained mutexes for tools whose conflicts are
+	// scoped, not global: browser write tools per target tab ("tab:<id>" /
+	// "tab:default") and single-path file writers per normalized path
+	// ("path:<abs>"). Distinct keys run in parallel; one key stays strictly
+	// ordered. map[string]*sync.Mutex.
+	keyedLocks sync.Map
 }
 
 // SetLogger sets the event sink for real-time feedback. Safe to call
@@ -269,7 +272,7 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 		toolCtx.Client.BroadcastToClient = *bp
 	}
 
-	unlock := e.lockForTool(req.Name, req.Args)
+	unlock := e.lockForTool(req.Name, req.Args, rootSnapshot)
 	result := t.Execute(toolCtx)
 	unlock()
 
@@ -431,27 +434,52 @@ func (e *Executor) ListTools() []tool.ToolInfo {
 	return all
 }
 
-func (e *Executor) lockForTool(name string, args map[string]interface{}) func() {
+func (e *Executor) lockForTool(name string, args map[string]interface{}, rootDir string) func() {
 	if t, ok := e.registry.Get(name); ok && toolIsReadOnly(t) {
 		e.toolMu.RLock()
 		return e.toolMu.RUnlock
 	}
 	// Browser write tools mutate browser state, not the filesystem. They hold
-	// the SHARED side of toolMu (so filesystem writers keep their exclusivity)
+	// the SHARED side of toolMu (so exclusive-lock tools keep their guarantee)
 	// and serialize per target tab instead of globally: multi-agent flows can
 	// drive different tabs in parallel, while calls on the same tab — or the
 	// implicit default tab — stay strictly ordered.
 	if isBrowserToolName(name) {
-		e.toolMu.RLock()
-		mu := e.tabLock(browserTabKey(args))
-		mu.Lock()
-		return func() {
-			mu.Unlock()
-			e.toolMu.RUnlock()
-		}
+		return e.sharedPlusKeyed(browserTabKey(args))
 	}
+	// Single-path file writers conflict only on their target file: serialize
+	// per normalized path so parallel workers writing DIFFERENT files don't
+	// queue behind each other. Path keys are best-effort (Clean + case-fold,
+	// no symlink resolution) — an alias slipping through degrades to the same
+	// last-write-wins race that serialized execution had anyway.
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "write_file", "edit", "multi_edit":
+		return e.sharedPlusKeyed(pathLockKey(rootDir, args))
+	case "exec_cmd", "send_stdin":
+		// Shell commands and task stdin are independent processes; they run
+		// concurrently with each other and with path-scoped writes. A shell
+		// touching the same file as a concurrent edit is unguarded — same as
+		// every standalone agent runner — and exec_cmd output is consumed by
+		// its own caller only.
+		e.toolMu.RLock()
+		return e.toolMu.RUnlock
+	}
+	// Everything else non-read-only (apply_patch multi-file, todo_write,
+	// agent/task control, unknown tools) keeps the global exclusive lock.
 	e.toolMu.Lock()
 	return e.toolMu.Unlock
+}
+
+// sharedPlusKeyed takes the shared side of toolMu plus the keyed mutex, so the
+// caller excludes only same-key peers and global exclusive-lock holders.
+func (e *Executor) sharedPlusKeyed(key string) func() {
+	e.toolMu.RLock()
+	mu := e.keyedLock(key)
+	mu.Lock()
+	return func() {
+		mu.Unlock()
+		e.toolMu.RUnlock()
+	}
 }
 
 func isBrowserToolName(name string) bool {
@@ -477,8 +505,23 @@ func browserTabKey(args map[string]interface{}) string {
 	return "tab:default"
 }
 
-func (e *Executor) tabLock(key string) *sync.Mutex {
-	mu, _ := e.tabLocks.LoadOrStore(key, &sync.Mutex{})
+// pathLockKey normalizes a writer tool's target path into a lock key. A
+// missing path (validation will reject the call anyway) falls back to one
+// shared key so malformed calls still serialize conservatively.
+func pathLockKey(rootDir string, args map[string]interface{}) string {
+	p, _ := args["path"].(string)
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "path:?"
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(rootDir, p)
+	}
+	return "path:" + strings.ToLower(filepath.Clean(p))
+}
+
+func (e *Executor) keyedLock(key string) *sync.Mutex {
+	mu, _ := e.keyedLocks.LoadOrStore(key, &sync.Mutex{})
 	return mu.(*sync.Mutex)
 }
 

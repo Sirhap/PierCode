@@ -33,12 +33,12 @@ func TestToolConcurrencyPolicy(t *testing.T) {
 
 func TestReadOnlyLocksCanRunConcurrently(t *testing.T) {
 	e := New(testConfig(t))
-	unlockRead := e.lockForTool("read_file", nil)
+	unlockRead := e.lockForTool("read_file", nil, "")
 	defer unlockRead()
 
 	acquired := make(chan func(), 1)
 	go func() {
-		acquired <- e.lockForTool("grep", nil)
+		acquired <- e.lockForTool("grep", nil, "")
 	}()
 
 	select {
@@ -51,11 +51,11 @@ func TestReadOnlyLocksCanRunConcurrently(t *testing.T) {
 
 func TestWriteLockWaitsForReadLocks(t *testing.T) {
 	e := New(testConfig(t))
-	unlockRead := e.lockForTool("read_file", nil)
+	unlockRead := e.lockForTool("read_file", nil, "")
 
 	acquired := make(chan func(), 1)
 	go func() {
-		acquired <- e.lockForTool("edit", nil)
+		acquired <- e.lockForTool("todo_write", nil, "")
 	}()
 
 	select {
@@ -77,12 +77,12 @@ func TestWriteLockWaitsForReadLocks(t *testing.T) {
 
 func TestWriteLocksAreExclusive(t *testing.T) {
 	e := New(testConfig(t))
-	unlockWrite := e.lockForTool("edit", nil)
+	unlockWrite := e.lockForTool("todo_write", nil, "")
 
 	var once sync.Once
 	acquired := make(chan func(), 1)
 	go func() {
-		acquired <- e.lockForTool("exec_cmd", nil)
+		acquired <- e.lockForTool("apply_patch", nil, "")
 	}()
 
 	select {
@@ -104,12 +104,12 @@ func TestWriteLocksAreExclusive(t *testing.T) {
 
 func TestBrowserWriteToolsParallelAcrossTabs(t *testing.T) {
 	e := New(testConfig(t))
-	unlockTab1 := e.lockForTool("browser_click", map[string]interface{}{"tabId": float64(1)})
+	unlockTab1 := e.lockForTool("browser_click", map[string]interface{}{"tabId": float64(1)}, "")
 	defer unlockTab1()
 
 	acquired := make(chan func(), 1)
 	go func() {
-		acquired <- e.lockForTool("browser_type", map[string]interface{}{"tabId": float64(2)})
+		acquired <- e.lockForTool("browser_type", map[string]interface{}{"tabId": float64(2)}, "")
 	}()
 
 	select {
@@ -122,12 +122,12 @@ func TestBrowserWriteToolsParallelAcrossTabs(t *testing.T) {
 
 func TestBrowserWriteToolsSerializeOnSameTab(t *testing.T) {
 	e := New(testConfig(t))
-	unlockFirst := e.lockForTool("browser_click", map[string]interface{}{"tabId": float64(7)})
+	unlockFirst := e.lockForTool("browser_click", map[string]interface{}{"tabId": float64(7)}, "")
 
 	var once sync.Once
 	acquired := make(chan func(), 1)
 	go func() {
-		acquired <- e.lockForTool("browser_type", map[string]interface{}{"tabId": float64(7)})
+		acquired <- e.lockForTool("browser_type", map[string]interface{}{"tabId": float64(7)}, "")
 	}()
 
 	select {
@@ -149,11 +149,11 @@ func TestBrowserWriteToolsSerializeOnSameTab(t *testing.T) {
 
 func TestBrowserDefaultTabCallsShareOneLock(t *testing.T) {
 	e := New(testConfig(t))
-	unlockFirst := e.lockForTool("browser_click", nil)
+	unlockFirst := e.lockForTool("browser_click", nil, "")
 
 	acquired := make(chan func(), 1)
 	go func() {
-		acquired <- e.lockForTool("browser_navigate", map[string]interface{}{})
+		acquired <- e.lockForTool("browser_navigate", map[string]interface{}{}, "")
 	}()
 
 	select {
@@ -169,13 +169,13 @@ func TestBrowserDefaultTabCallsShareOneLock(t *testing.T) {
 func TestBrowserWriteDoesNotBlockOnOtherDomains(t *testing.T) {
 	e := New(testConfig(t))
 	// A browser action holds only the shared side of toolMu + its tab lock…
-	unlockBrowser := e.lockForTool("browser_click", map[string]interface{}{"tabId": float64(3)})
+	unlockBrowser := e.lockForTool("browser_click", map[string]interface{}{"tabId": float64(3)}, "")
 	defer unlockBrowser()
 
 	// …so read-only tools still acquire concurrently.
 	acquired := make(chan func(), 1)
 	go func() {
-		acquired <- e.lockForTool("read_file", nil)
+		acquired <- e.lockForTool("read_file", nil, "")
 	}()
 	select {
 	case unlock := <-acquired:
@@ -187,12 +187,103 @@ func TestBrowserWriteDoesNotBlockOnOtherDomains(t *testing.T) {
 	// …but a filesystem WRITE still waits for the shared lock to clear.
 	fsAcquired := make(chan func(), 1)
 	go func() {
-		fsAcquired <- e.lockForTool("edit", nil)
+		fsAcquired <- e.lockForTool("todo_write", nil, "")
 	}()
 	select {
 	case unlock := <-fsAcquired:
 		unlock()
 		t.Fatal("filesystem write lock should wait while a browser tool holds the shared lock")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestPathWritersParallelAcrossFiles(t *testing.T) {
+	e := New(testConfig(t))
+	unlockA := e.lockForTool("write_file", map[string]interface{}{"path": "a.txt"}, "/root")
+	defer unlockA()
+
+	acquired := make(chan func(), 1)
+	go func() {
+		acquired <- e.lockForTool("edit", map[string]interface{}{"path": "b.txt"}, "/root")
+	}()
+	select {
+	case unlock := <-acquired:
+		unlock()
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("writers on DIFFERENT files must acquire concurrently")
+	}
+}
+
+func TestPathWritersSerializeOnSameFileEvenWithAliasSpelling(t *testing.T) {
+	e := New(testConfig(t))
+	unlockFirst := e.lockForTool("write_file", map[string]interface{}{"path": "./dir/../a.txt"}, "/root")
+
+	var once sync.Once
+	acquired := make(chan func(), 1)
+	go func() {
+		acquired <- e.lockForTool("edit", map[string]interface{}{"path": "A.TXT"}, "/root")
+	}()
+	select {
+	case unlock := <-acquired:
+		once.Do(unlock)
+		t.Fatal("writers on the SAME normalized path must serialize")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlockFirst()
+	select {
+	case unlock := <-acquired:
+		once.Do(unlock)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected the same-path lock to acquire after release")
+	}
+}
+
+func TestExecCmdRunsConcurrently(t *testing.T) {
+	e := New(testConfig(t))
+	unlockShell := e.lockForTool("exec_cmd", nil, "")
+	defer unlockShell()
+
+	for _, peer := range []struct {
+		name string
+		args map[string]interface{}
+	}{
+		{"exec_cmd", nil},
+		{"write_file", map[string]interface{}{"path": "x.txt"}},
+		{"read_file", nil},
+	} {
+		acquired := make(chan func(), 1)
+		go func() {
+			acquired <- e.lockForTool(peer.name, peer.args, "/root")
+		}()
+		select {
+		case unlock := <-acquired:
+			unlock()
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("%s must not queue behind a running exec_cmd", peer.name)
+		}
+	}
+}
+
+func TestGlobalExclusiveStillBlocksScopedWriters(t *testing.T) {
+	e := New(testConfig(t))
+	unlockExclusive := e.lockForTool("apply_patch", nil, "")
+
+	var once sync.Once
+	acquired := make(chan func(), 1)
+	go func() {
+		acquired <- e.lockForTool("write_file", map[string]interface{}{"path": "a.txt"}, "/root")
+	}()
+	select {
+	case unlock := <-acquired:
+		once.Do(unlock)
+		t.Fatal("a path writer must wait while apply_patch holds the exclusive lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlockExclusive()
+	select {
+	case unlock := <-acquired:
+		once.Do(unlock)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected the path writer to acquire after the exclusive lock released")
 	}
 }
