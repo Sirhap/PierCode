@@ -4,6 +4,7 @@ import {
   type AgentToolCall,
   parseAgentToolCalls,
   agentTranscript,
+  stripAgentFences,
   truncateSummary,
 } from './subagent-ui'
 
@@ -18,9 +19,9 @@ import {
 // parseAgentToolCalls 从累计 transcript 即时解析（流中的未闭合 fence 解析为空）。
 
 const STATUS_MARK: Record<SubAgent['status'], { mark: string; cls: string }> = {
-  running: { mark: '▸▸', cls: 'text-amber-400' },
+  running: { mark: '▸▸', cls: 'amber-text' },
   done: { mark: '✓', cls: 'glow-text' },
-  error: { mark: '✗', cls: 'text-red-400' },
+  error: { mark: '✗', cls: 'red-text' },
 }
 
 function statusLine(agent: SubAgent, calls: AgentToolCall[]): string {
@@ -54,7 +55,7 @@ function AgentRow({ agent, expanded, onToggle, onAbort }: {
         <span className="truncate flex-1 flex items-center gap-1" style={{ color: 'var(--dim)' }}>
           {agent.status === 'running' && <span className="flex-shrink-0" style={{ color: 'var(--dim)' }}>⎿</span>}
           <span className="truncate">{statusLine(agent, calls)}</span>
-          {agent.status === 'running' && <span className="animate-pulse-dot text-amber-400 flex-shrink-0">●</span>}
+          {agent.status === 'running' && <span className="animate-pulse-dot amber-text flex-shrink-0">●</span>}
         </span>
         {agent.status === 'running' && (
           <button onClick={abort} title="停止此子 agent" className="px-1 cursor-pointer flex-shrink-0" style={{ color: 'var(--dim)' }}>✕</button>
@@ -80,8 +81,9 @@ function AgentRow({ agent, expanded, onToggle, onAbort }: {
           {agent.status !== 'running' && (
             <div className="pl-3 flex items-start gap-1">
               <span style={{ color: 'var(--dim)' }}>⎿</span>
+              {/* 详细展开：完整输出（去工具围栏），外层 max-h-48 滚动查看。 */}
               <span className="whitespace-pre-wrap break-all" style={{ color: 'var(--dim)' }}>
-                {truncateSummary(agentTranscript(agent)) || '(无输出)'}
+                {stripAgentFences(agentTranscript(agent)) || '(无输出)'}
               </span>
             </div>
           )}
@@ -115,7 +117,7 @@ export default function AgentDock({ agents, onAbort }: {
         style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}
         title="子 agent 状态"
       >
-        <span className={running > 0 ? 'text-amber-400 animate-pulse-dot' : errored > 0 ? 'text-red-400' : 'glow-text'}>
+        <span className={running > 0 ? 'amber-text animate-pulse-dot' : errored > 0 ? 'red-text' : 'glow-text'}>
           {badge}
         </span>
       </button>

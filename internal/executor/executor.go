@@ -463,6 +463,13 @@ func (e *Executor) lockForTool(name string, args map[string]interface{}, rootDir
 		// its own caller only.
 		e.toolMu.RLock()
 		return e.toolMu.RUnlock
+	case "spawn_agent":
+		// Worker dispatch is the whole point of parallelism: each spawn only
+		// touches the (thread-safe) agent registry and opens its own tab, so
+		// N spawns in flight must not queue behind each other or behind a
+		// long-running tool holding the lock.
+		e.toolMu.RLock()
+		return e.toolMu.RUnlock
 	}
 	// Everything else non-read-only (apply_patch multi-file, todo_write,
 	// agent/task control, unknown tools) keeps the global exclusive lock.

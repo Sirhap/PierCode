@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, DEFAULT_BATCH_QUIET_MS, DEFAULT_PERMISSION_MODE, DEFAULT_PLATFORM_THRESHOLDS, DEFAULT_STEALTH_MODE, MAX_BATCH_QUIET_MS, MIN_BATCH_QUIET_MS, type ContextCompressionConfig, type PermissionMode, resolveAutoApproveBrowserActions, resolveAutoExecute, resolveBatchQuietMs, resolveContextCompressionConfig, resolvePermissionMode, resolveStealthMode } from '../settings'
+import { DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS, DEFAULT_AUTO_EXECUTE, DEFAULT_BATCH_QUIET_MS, DEFAULT_EXTENSION_ENABLED, DEFAULT_PERMISSION_MODE, DEFAULT_PLATFORM_THRESHOLDS, DEFAULT_STEALTH_MODE, MAX_BATCH_QUIET_MS, MIN_BATCH_QUIET_MS, type ContextCompressionConfig, type PermissionMode, resolveAutoApproveBrowserActions, resolveAutoExecute, resolveBatchQuietMs, resolveContextCompressionConfig, resolveExtensionEnabled, resolvePermissionMode, resolveStealthMode } from '../settings'
 
 const DEFAULT_PORT = 39527
 
@@ -168,6 +168,7 @@ export default function App() {
   const [info, setInfo] = useState('')
   const [loading, setLoading] = useState(false)
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
+  const [extensionEnabled, setExtensionEnabled] = useState(DEFAULT_EXTENSION_ENABLED)
   const [autoSend, setAutoSend] = useState(true)
   const [autoExecute, setAutoExecute] = useState(DEFAULT_AUTO_EXECUTE)
   const [autoApproveBrowserActions, setAutoApproveBrowserActions] = useState(DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS)
@@ -175,7 +176,6 @@ export default function App() {
   const [browserRelay, setBrowserRelay] = useState<BrowserRelayStatus>({})
   const [hasStoredAuth, setHasStoredAuth] = useState(false)
   const [stealthMode, setStealthMode] = useState(DEFAULT_STEALTH_MODE)
-  const [appendUserSendReminder, setAppendUserSendReminder] = useState(true)
   const [systemReminderEnabled, setSystemReminderEnabled] = useState(true)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(DEFAULT_PERMISSION_MODE)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -196,7 +196,7 @@ export default function App() {
   }, [toast])
 
   useEffect(() => {
-    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'batchQuietMs', 'stealthMode', 'appendUserSendReminder', 'systemReminderEnabled', 'contextCompressionConfig', 'qwenCompressionConfig'], (result) => {
+    chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'extensionEnabled', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'batchQuietMs', 'stealthMode', 'systemReminderEnabled', 'contextCompressionConfig', 'qwenCompressionConfig'], (result) => {
       const savedUrl = result.apiUrl || (result.authPort ? `http://127.0.0.1:${result.authPort}` : '')
       if (result.authToken && savedUrl) {
         setHasStoredAuth(true)
@@ -208,6 +208,7 @@ export default function App() {
         setStatus('disconnected')
         setInfo('请输入认证 Token URL')
       }
+      setExtensionEnabled(resolveExtensionEnabled(result.extensionEnabled))
       if (result.autoSend !== undefined) setAutoSend(result.autoSend)
       const nextAutoExecute = resolveAutoExecute(result.autoExecute)
       setAutoExecute(nextAutoExecute)
@@ -220,8 +221,7 @@ export default function App() {
       if (result.batchQuietMs === undefined) chrome.storage.local.set({ batchQuietMs: nextBatchQuietMs })
       const nextStealthMode = resolveStealthMode(result.stealthMode)
       setStealthMode(nextStealthMode)
-      // 缺省 = 开；显式 false 才关（与 content 侧 appendUserSendReminder !== false 一致）。
-      setAppendUserSendReminder(result.appendUserSendReminder !== false)
+      // 缺省 = 开；显式 false 才关（与 content 侧 systemReminderEnabled !== false 一致）。
       setSystemReminderEnabled(result.systemReminderEnabled !== false)
       if (result.stealthMode === undefined) chrome.storage.local.set({ stealthMode: nextStealthMode })
       // 上下文压缩配置：新键缺失时从旧 qwenCompressionConfig 迁移。
@@ -416,6 +416,11 @@ export default function App() {
     }
   }
 
+  const handleExtensionEnabledChange = (val: boolean) => {
+    setExtensionEnabled(val)
+    chrome.storage.local.set({ extensionEnabled: val })
+  }
+
   const handleAutoSendChange = (val: boolean) => {
     setAutoSend(val)
     chrome.storage.local.set({ autoSend: val })
@@ -440,11 +445,6 @@ export default function App() {
   const handleStealthModeChange = (val: boolean) => {
     setStealthMode(val)
     chrome.storage.local.set({ stealthMode: val })
-  }
-
-  const handleAppendUserSendReminderChange = (val: boolean) => {
-    setAppendUserSendReminder(val)
-    chrome.storage.local.set({ appendUserSendReminder: val })
   }
 
   const handleSystemReminderEnabledChange = (val: boolean) => {
@@ -676,6 +676,19 @@ export default function App() {
 
       {/* 设置区：按"自动化/审批"与"沙箱/安全"两类分组，高风险项加警示 */}
       <div className="space-y-4">
+        {/* ── 总开关 ── 一键停用整个插件 ── */}
+        <Section title="总开关">
+          <Toggle
+            label="启用 PierCode"
+            desc="关闭后插件整体停用：AI 页面不再检测/执行工具、不渲染界面，侧边栏对话拒绝运行"
+            checked={extensionEnabled}
+            onChange={handleExtensionEnabledChange}
+          />
+          {!extensionEnabled && (
+            <RiskNote>插件已停用。已打开的 AI 页面立即停止检测；页面上残留的卡片刷新后清除。</RiskNote>
+          )}
+        </Section>
+
         {/* ── 自动化 / 审批 ── 决定"要不要手动确认" ── */}
         <Section title="自动化 / 审批">
           <Toggle
@@ -710,19 +723,11 @@ export default function App() {
           />
 
           <Toggle
-            label="系统提示注入（总开关）"
-            desc="关闭后工具结果与用户消息都不再追加 [系统提示] 等提醒"
+            label="系统提示注入"
+            desc="工具结果与手动发送的消息自动追加 [系统提示] 运行提醒"
             checked={systemReminderEnabled}
             onChange={handleSystemReminderEnabledChange}
           />
-          {systemReminderEnabled && (
-            <Toggle
-              label="用户消息追加系统提示"
-              desc="手动发送的消息末尾自动追加 [系统提示] 运行提醒"
-              checked={appendUserSendReminder}
-              onChange={handleAppendUserSendReminderChange}
-            />
-          )}
 
           <Toggle
             label="自动审批浏览器操作"

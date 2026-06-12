@@ -120,11 +120,21 @@ describe('user-send-reminder', () => {
     expect(textarea.value).toBe('消息');
   });
 
-  it('sub switch off disables append while master stays on', async () => {
+  it('legacy appendUserSendReminder key is ignored (merged into systemReminderEnabled)', async () => {
     storageData = { appendUserSendReminder: false };
     installUserSendReminder(makeDeps());
     await flush();
     expect(isSystemReminderEnabled()).toBe(true);
+    textarea.value = '消息';
+    pressSend();
+    expect(textarea.value).toBe('消息' + REMINDER);
+  });
+
+  it('extensionEnabled=false (插件总开关) disables append too', async () => {
+    storageData = { extensionEnabled: false };
+    installUserSendReminder(makeDeps());
+    await flush();
+    expect(isSystemReminderEnabled()).toBe(false);
     textarea.value = '消息';
     pressSend();
     expect(textarea.value).toBe('消息');

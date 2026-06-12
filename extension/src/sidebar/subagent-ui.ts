@@ -84,6 +84,12 @@ export function agentTranscript(agent: SubAgent): string {
   return agent.messages.map(m => m.content).join('')
 }
 
+// stripAgentFences removes fenced blocks (tool calls etc.) from a transcript,
+// leaving the prose output for the expanded detail view.
+export function stripAgentFences(text: string): string {
+  return text.replace(/```[\w-]*\n[\s\S]*?\n```/g, '').replace(/\n{3,}/g, '\n\n').trim()
+}
+
 // Delay (ms) before a done sub-agent card fades out and is removed.
 export const AGENT_FADE_DELAY_MS = 2500
 // Fade-out animation duration (ms) — must match index.css .agent-fading.

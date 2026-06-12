@@ -47,6 +47,12 @@ html, body {
 /* Accent text/elements — crisp, no CRT bloom. */
 .glow-text { color: var(--glow); }
 .glow-border { border-color: var(--glow); box-shadow: 0 0 0 1px var(--glow-soft); }
+.glow-bg { background: var(--glow); }
+/* Theme-token amber/red — replaces raw Tailwind amber-*/red-* so accents follow the palette. */
+.amber-text { color: var(--amber); }
+.amber-bg { background: var(--amber); }
+.red-text { color: var(--red); }
+.red-bg { background: var(--red); }
 
 /* Blinking block cursor. */
 @keyframes blink { 0%,49% { opacity: 1 } 50%,100% { opacity: 0 } }

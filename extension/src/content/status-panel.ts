@@ -1,7 +1,9 @@
 // 状态面板：AI 页面右下角悬浮。折叠成圆点，点击展开显示
 // 操作状态 / AI 提供商 / token 计量 / 控制的 tab。stealth 隐藏；展开态存 storage。
+// 子 agent 卡独立悬浮于页面右上角（addAgent/appendAgentChunk/setAgentDone）。
 
 import type { TokenMeter } from './token-meter';
+import { extractFenceToolCalls } from '../parser';
 import { T_PANEL, T_LINE, T_DIM, T_TXT, T_GLOW, T_GLOW_SOFT, T_AMBER, T_RED, T_FONT } from './terminal-theme';
 
 const PANEL_STORAGE_KEY = 'statusPanelExpanded';
@@ -46,7 +48,43 @@ function escapeHtml(s: string): string {
 
 const ACC_LABEL: Record<string, string> = { exact: '精确', approx: '近似', estimate: '估算' };
 
-type AgentRow = { label: string; status: string };
+type AgentRow = { label: string; status: string; transcript: string; task?: string; error?: string };
+
+// summarizeToolArgs / clip：从工具调用参数里挑最有代表性的一项做单行预览
+// （与 sidebar/subagent-ui.ts 同逻辑；不 import sidebar 模块避免跨入口共享 chunk）。
+const PREVIEW_KEYS = ['path', 'file_path', 'cmd', 'command', 'pattern', 'url', 'task', 'label', 'query'];
+
+function clipPreview(s: string): string {
+  const line = s.split('\n')[0];
+  return line.length > 40 ? line.slice(0, 39) + '…' : line;
+}
+
+function summarizeToolArgs(args: Record<string, unknown>): string {
+  for (const key of PREVIEW_KEYS) {
+    const v = args[key];
+    if (typeof v === 'string' && v.trim()) return clipPreview(v.trim());
+  }
+  for (const v of Object.values(args)) {
+    if (typeof v === 'string' && v.trim()) return clipPreview(v.trim());
+  }
+  return '';
+}
+
+// stripToolFences 去掉 transcript 里的围栏块（工具调用等），留纯文本输出做终态摘要。
+function stripToolFences(text: string): string {
+  return text.replace(/```[\w-]*\n[\s\S]*?\n```/g, '').replace(/\n{3,}/g, '\n\n');
+}
+
+// currentToolPreview 从累计 transcript 解析已闭合的工具调用，取最后一个做
+// 「当前工具」预览。流中未闭合 fence 解析为空 → 返回 null（显示任务片段兜底）。
+function agentToolCalls(transcript: string): Array<{ name: string; preview: string }> {
+  if (!transcript) return [];
+  try {
+    return extractFenceToolCalls(transcript).map(tc => ({ name: tc.name, preview: summarizeToolArgs(tc.args) }));
+  } catch {
+    return [];
+  }
+}
 
 class StatusPanel {
   private root: HTMLElement | null = null;
@@ -63,6 +101,8 @@ class StatusPanel {
   private tab: ControlledTabInfo | null = null;
   private agents = new Map<string, AgentRow>();
   private agentRemoveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private agentRenderTimer: ReturnType<typeof setTimeout> | null = null;
+  private expandedAgentId: string | null = null;
   private resetTimer: ReturnType<typeof setTimeout> | null = null;
   private onDocumentMouseDown = (event: MouseEvent) => {
     if (!this.expanded || !this.root) return;
@@ -132,30 +172,53 @@ class StatusPanel {
     this.paint();
   }
 
-  // 后台子 agent（API 路由，无可见 UI）：加一行 label · status · ✕。
-  // 容器挂在 root 上（独立于 paint() 的 innerHTML 重写），点 ✕ 复用既有取消路径
+  // 后台子 agent（API 路由，无可见 UI）：右上角浮卡，一 agent 一行
+  // label · 当前工具预览 · status · ✕。点 ✕ 复用既有取消路径
   // —— 向 background 发 CHAT_AGENT_ABORT，触发 chat-api.ts 的 agentAborts.abort()。
-  addAgent(agentId: string, label: string): void {
+  addAgent(agentId: string, label: string, task?: string): void {
     const t = this.agentRemoveTimers.get(agentId);
     if (t) { clearTimeout(t); this.agentRemoveTimers.delete(agentId); }
-    this.agents.set(agentId, { label, status: 'running' });
+    this.agents.set(agentId, { label, status: 'running', transcript: '', task });
     if (!this.root) this.ensureDom();
     this.renderAgents();
   }
 
-  setAgentDone(agentId: string, status: string): void {
+  // appendAgentChunk 累积该 agent 的流式输出（CHAT_AGENT_STREAM），用于解析
+  // 「当前工具调用」预览。渲染节流 ~150ms，避免每个 chunk 全量重建 DOM。
+  appendAgentChunk(agentId: string, chunk: string): void {
+    const a = this.agents.get(agentId);
+    if (!a || !chunk) return;
+    a.transcript += chunk;
+    if (this.agentRenderTimer) return;
+    this.agentRenderTimer = setTimeout(() => {
+      this.agentRenderTimer = null;
+      this.renderAgents();
+    }, 150);
+  }
+
+  setAgentDone(agentId: string, status: string, error?: string): void {
     const a = this.agents.get(agentId);
     if (!a) return;
     a.status = status;
+    if (error) a.error = error;
     this.renderAgents();
-    // 终态行短暂保留以示结果，~4s 后自动移除。
+    this.scheduleAgentRemoval(agentId, 6000);
+  }
+
+  // 终态行保留一段时间以便查看；行处于展开态时不移除（推迟重查），
+  // 收起后下一轮计时器把它清掉。
+  private scheduleAgentRemoval(agentId: string, delayMs: number): void {
     const prev = this.agentRemoveTimers.get(agentId);
     if (prev) clearTimeout(prev);
     this.agentRemoveTimers.set(agentId, setTimeout(() => {
+      if (this.expandedAgentId === agentId) {
+        this.scheduleAgentRemoval(agentId, 4000);
+        return;
+      }
       this.agents.delete(agentId);
       this.agentRemoveTimers.delete(agentId);
       this.renderAgents();
-    }, 4000));
+    }, delayMs));
   }
 
   private renderAgents(): void {
@@ -163,7 +226,6 @@ class StatusPanel {
     this.agentsBox.replaceChildren();
     if (this.agents.size === 0) {
       this.agentsBox.style.display = 'none';
-      this.repositionStack();
       return;
     }
     this.agentsBox.style.display = 'block';
@@ -174,16 +236,25 @@ class StatusPanel {
     this.agentsBox.appendChild(head);
 
     for (const [agentId, info] of this.agents) {
+      const running = info.status === 'running';
+      const expanded = this.expandedAgentId === agentId;
+      const calls = agentToolCalls(info.transcript);
+
       const row = document.createElement('div');
-      row.style.cssText = `display:flex;align-items:center;gap:6px;margin-top:4px;`;
+      row.style.cssText = `display:flex;align-items:center;gap:6px;margin-top:4px;cursor:pointer;`;
+      if (info.task) row.title = info.task;
+      // 点行切换展开详情（工具调用树 + 输出）。✕ 按钮 stopPropagation 不触发。
+      row.addEventListener('click', () => {
+        this.expandedAgentId = expanded ? null : agentId;
+        this.renderAgents();
+      });
 
       const dot = document.createElement('span');
-      const running = info.status === 'running';
-      dot.style.cssText = `flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:${running ? T_AMBER : (info.status === 'error' ? T_RED : T_GLOW)};`;
+      dot.style.cssText = `flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:${running ? T_AMBER : (info.status === 'error' ? T_RED : T_GLOW)};${running ? 'animation:piercode-agent-pulse 1.2s ease-in-out infinite;' : ''}`;
 
       const name = document.createElement('span');
-      name.textContent = info.label;
-      name.style.cssText = `flex:1 1 auto;color:${T_TXT};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+      name.textContent = `@${info.label}`;
+      name.style.cssText = `flex:0 0 auto;max-width:96px;color:${T_GLOW};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
 
       const st = document.createElement('span');
       st.textContent = running ? '运行中' : (info.status === 'error' ? '已停止' : '完成');
@@ -197,17 +268,73 @@ class StatusPanel {
         const btn = document.createElement('button');
         btn.textContent = '✕';
         btn.title = '取消子 agent';
-        btn.style.cssText = `all:unset;flex:0 0 auto;cursor:pointer;color:${T_DIM};font-size:11px;line-height:1;padding:0 2px;`;
+        btn.style.cssText = `all:unset;flex:0 0 auto;cursor:pointer;color:${T_DIM};font-size:11px;line-height:1;padding:0 2px;margin-left:auto;`;
         btn.addEventListener('mouseenter', () => { btn.style.color = T_RED; });
         btn.addEventListener('mouseleave', () => { btn.style.color = T_DIM; });
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
           try { chrome.runtime?.sendMessage?.({ type: 'CHAT_AGENT_ABORT', agentId }); } catch {}
         });
         row.appendChild(btn);
       }
+
+      const caret = document.createElement('span');
+      caret.textContent = expanded ? '▾' : '▸';
+      caret.style.cssText = `flex:0 0 auto;color:${T_DIM};font-size:10px;${running ? '' : 'margin-left:auto;'}`;
+      row.appendChild(caret);
       this.agentsBox.appendChild(row);
+
+      if (!expanded) {
+        // 折叠态预览行：运行中 = 当前（最后一个已闭合）工具调用；终态 = 调用数 / 错误。
+        const sub = document.createElement('div');
+        sub.style.cssText = `display:flex;align-items:baseline;gap:4px;margin:1px 0 0 12px;font-size:10px;color:${T_DIM};overflow:hidden;`;
+        if (running) {
+          const cur = calls[calls.length - 1];
+          const text = cur ? `${cur.name} ${cur.preview}`.trim() : '…';
+          sub.innerHTML = `<span style="flex:0 0 auto;">⎿</span><span style="flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(text)}</span>`;
+        } else if (info.status === 'error' && info.error) {
+          sub.innerHTML = `<span style="flex:0 0 auto;color:${T_RED};">⎿</span><span style="flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${T_RED};">${escapeHtml(info.error.slice(0, 60))}</span>`;
+        } else {
+          sub.innerHTML = `<span style="flex:0 0 auto;">⎿</span><span>${calls.length} 工具调用</span>`;
+        }
+        this.agentsBox.appendChild(sub);
+        continue;
+      }
+
+      // 展开态：⏺ 任务 + 完整工具调用树 + 终态输出（Claude Code ⏺/⎿ 风格）。
+      const detail = document.createElement('div');
+      detail.style.cssText = `margin:2px 0 4px 10px;max-height:200px;overflow-y:auto;font-size:10px;line-height:1.5;`;
+      detail.onclick = (e) => e.stopPropagation();
+
+      if (info.task) {
+        const taskLine = document.createElement('div');
+        taskLine.style.cssText = `display:flex;align-items:flex-start;gap:4px;color:${T_TXT};`;
+        taskLine.innerHTML = `<span style="flex:0 0 auto;color:${running ? T_AMBER : (info.status === 'error' ? T_RED : T_GLOW)};">⏺</span><span style="white-space:pre-wrap;word-break:break-all;">${escapeHtml(info.task.slice(0, 200))}</span>`;
+        detail.appendChild(taskLine);
+      }
+      if (calls.length === 0) {
+        const none = document.createElement('div');
+        none.textContent = '（暂无工具调用）';
+        none.style.cssText = `margin-left:12px;color:${T_DIM};`;
+        detail.appendChild(none);
+      }
+      for (const c of calls) {
+        const callLine = document.createElement('div');
+        callLine.style.cssText = `display:flex;align-items:baseline;gap:4px;margin-left:12px;overflow:hidden;`;
+        callLine.innerHTML = `<span style="flex:0 0 auto;color:${T_DIM};">⎿</span><span style="flex:0 0 auto;color:${T_GLOW};">${escapeHtml(c.name)}</span><span style="flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${T_DIM};">${escapeHtml(c.preview)}</span>`;
+        detail.appendChild(callLine);
+      }
+      if (!running) {
+        const tail = document.createElement('div');
+        const out = info.status === 'error' && info.error
+          ? info.error
+          : stripToolFences(info.transcript).trim().slice(-400) || '(无输出)';
+        tail.style.cssText = `display:flex;align-items:flex-start;gap:4px;margin-left:12px;color:${info.status === 'error' ? T_RED : T_DIM};`;
+        tail.innerHTML = `<span style="flex:0 0 auto;">⎿</span><span style="white-space:pre-wrap;word-break:break-all;">${escapeHtml(out)}</span>`;
+        detail.appendChild(tail);
+      }
+      this.agentsBox.appendChild(detail);
     }
-    this.repositionStack();
   }
 
   // 仅供测试：强制展开。
@@ -218,9 +345,11 @@ class StatusPanel {
 
   destroy(): void {
     if (this.resetTimer) { clearTimeout(this.resetTimer); this.resetTimer = null; }
+    if (this.agentRenderTimer) { clearTimeout(this.agentRenderTimer); this.agentRenderTimer = null; }
     for (const t of this.agentRemoveTimers.values()) clearTimeout(t);
     this.agentRemoveTimers.clear();
     this.agents.clear();
+    this.expandedAgentId = null;
     document.removeEventListener('mousedown', this.onDocumentMouseDown, true);
     this.root?.remove();
     this.root = this.dot = this.panel = this.agentsBox = null;
@@ -260,20 +389,28 @@ class StatusPanel {
     `;
     panel.onclick = (e) => e.stopPropagation();
 
-    // 子 agent 浮层：独立卡，常驻于圆点上方（即便面板折叠也显示后台活动）。
-    // 它在 panel 之后追加，所以 root 的第一个 <div> 仍是 panel（既有测试依赖此结构）。
-    // 容器独立于 panel 的 innerHTML 重写，故行内 ✕ 的事件监听器不会被 paint() 抹掉。
-    // marginBottom（在 paint() 中按面板是否展开动态调整）让两卡竖向堆叠不重叠。
+    // 子 agent 浮层：独立卡，固定在页面右上角（不随状态面板/圆点走），
+    // 即便面板折叠也显示后台活动。容器独立于 panel 的 innerHTML 重写，
+    // 故行内 ✕ 的事件监听器不会被 paint() 抹掉。挂在 root 下以共享
+    // stealth 显隐与 destroy 清理，position:fixed 使其脱离 root 定位。
     const agentsBox = document.createElement('div');
     agentsBox.setAttribute('data-piercode-status-agents', '');
     agentsBox.style.cssText = `
       all: initial; font-family: ${T_FONT};
-      position: absolute; right: 0; bottom: 22px; min-width: 220px; max-width: 280px;
+      position: fixed; right: 16px; top: 16px; z-index: ${Z}; min-width: 220px; max-width: 300px;
       background: ${T_PANEL}; color: ${T_TXT}; border-radius: 10px;
       border: 1px solid ${T_LINE}; box-shadow: 0 0 0 1px ${T_GLOW_SOFT}, 0 4px 16px rgba(0,0,0,0.5);
       padding: 8px 12px; font-size: 12px; line-height: 1.5; display: none;
     `;
     agentsBox.onclick = (e) => e.stopPropagation();
+
+    // 运行中圆点的脉冲动画（一次性注入，stealth 不影响样式表）。
+    if (!document.getElementById('piercode-agent-pulse-style')) {
+      const style = document.createElement('style');
+      style.id = 'piercode-agent-pulse-style';
+      style.textContent = '@keyframes piercode-agent-pulse { 0%,100% { opacity: .45 } 50% { opacity: 1 } }';
+      (document.head || document.documentElement).appendChild(style);
+    }
 
     root.appendChild(panel);
     root.appendChild(agentsBox);
@@ -305,20 +442,10 @@ class StatusPanel {
     this.root.style.display = this.stealth ? 'none' : 'block';
   }
 
-  // 让 panel（展开时）与 agentsBox（有子 agent 时）竖向堆叠不重叠：
-  // agentsBox 贴圆点；panel 在其上方，按 agentsBox 实测高度抬升。
-  private repositionStack(): void {
-    if (!this.panel || !this.agentsBox) return;
-    const agentsVisible = this.agentsBox.style.display !== 'none';
-    const gap = 8;
-    const lift = agentsVisible ? this.agentsBox.offsetHeight + gap : 0;
-    this.panel.style.bottom = `${22 + lift}px`;
-  }
-
   private paint(): void {
     if (!this.dot || !this.panel) return;
     this.dot.style.background = OP_COLORS[this.op];
-    if (!this.expanded) { this.panel.style.display = 'none'; this.repositionStack(); return; }
+    if (!this.expanded) { this.panel.style.display = 'none'; return; }
 
     const provider = this.provider
       ? `${escapeHtml(this.provider)}${this.profile && this.profile !== this.provider ? ' · ' + escapeHtml(this.profile) : ''}`
@@ -354,7 +481,6 @@ class StatusPanel {
       <div style="margin-top:6px;font-size:10px;color:${T_DIM};">${pct}% · ${acc}</div>
       ${tabBlock}
     `;
-    this.repositionStack();
   }
 }
 

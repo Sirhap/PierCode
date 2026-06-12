@@ -118,7 +118,7 @@ export default function ToolCard({ tool, result, streams }: {
               <span style={{ color: 'var(--dim)' }}>args</span>
               <pre
                 className="text-[11px] rounded-sm px-2 py-1 overflow-x-auto whitespace-pre-wrap break-all mt-0.5 ml-4"
-                style={{ background: '#161615', color: 'var(--txt)' }}
+                style={{ background: 'var(--panel-2)', color: 'var(--txt)' }}
               >
                 {JSON.stringify(tool.args, null, 2)}
               </pre>
@@ -136,7 +136,7 @@ export default function ToolCard({ tool, result, streams }: {
           </div>
           <pre
             className="text-[11px] rounded-sm px-2 py-1 overflow-x-auto whitespace-pre-wrap break-all ml-6 mt-0.5"
-            style={{ background: '#161615', color: 'var(--txt)' }}
+            style={{ background: 'var(--panel-2)', color: 'var(--txt)' }}
           >
             {JSON.stringify(tool.args, null, 2)}
           </pre>

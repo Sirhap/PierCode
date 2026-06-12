@@ -37,8 +37,8 @@ function fmt(n: number): string {
 }
 
 const ACCURACY_STYLE: Record<TokenAccuracy, string> = {
-  exact: 'text-emerald-400',
-  approx: 'text-amber-400',
+  exact: 'glow-text',
+  approx: 'amber-text',
   estimate: 'text-gray-500',
 }
 
@@ -52,8 +52,8 @@ export default function TokenPanel({ meter, threshold, platform = 'qwen' }: Toke
   const ratio = meter.total / effectiveThreshold
   const pct = Math.min(100, Math.round(ratio * 100))
 
-  const barColor = ratio >= 1 ? 'bg-red-500' : ratio >= 0.8 ? 'bg-amber-500' : 'bg-emerald-500'
-  const dotColor = ratio >= 1 ? 'bg-red-400' : ratio >= 0.8 ? 'bg-amber-400' : 'bg-emerald-400'
+  const barColor = ratio >= 1 ? 'red-bg' : ratio >= 0.8 ? 'amber-bg' : 'glow-bg'
+  const dotColor = ratio >= 1 ? 'red-bg' : ratio >= 0.8 ? 'amber-bg' : 'glow-bg'
 
   const price = PRICE_PER_1M[platform]
   const cost = price ? (meter.total / 1_000_000) * price : 0
@@ -78,7 +78,7 @@ export default function TokenPanel({ meter, threshold, platform = 'qwen' }: Toke
         <span className="text-[9px] text-gray-600">{pct}%</span>
         <span className={`text-[9px] ${ACCURACY_STYLE[accuracy]}`}>· {accuracy}</span>
         {cost > 0 && <span className="text-[9px] text-gray-600">· ~${cost.toFixed(3)}</span>}
-        {ratio >= 0.8 && <span className="text-[9px] text-amber-500 ml-auto">将压缩</span>}
+        {ratio >= 0.8 && <span className="text-[9px] amber-text ml-auto">将压缩</span>}
       </div>
     </div>
   )

@@ -1,6 +1,14 @@
 export const DEFAULT_AUTO_EXECUTE = false;
 export const DEFAULT_AUTO_APPROVE_BROWSER_ACTIONS = false;
 
+// 插件总开关：false = 整个 PierCode 不生效（AI 页面不检测/不执行/不渲染 UI，
+// 侧边栏对话与子 agent 拒绝运行）。缺省/非法值一律视为开启。
+export const DEFAULT_EXTENSION_ENABLED = true;
+
+export function resolveExtensionEnabled(value: unknown): boolean {
+  return value !== false;
+}
+
 // 自动执行/提交的"静默窗口"：从最后一次 DOM 变动算起，等待这么多毫秒确认
 // 流式输出已停止，再批量执行 / 回填提交。0 = 立即（流一停就触发）。
 // 取代旧的固定 1500ms*2 双等待，既能把一次响应里的多个工具调用聚成一批，

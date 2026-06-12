@@ -44,9 +44,12 @@ export function isSystemReminderEnabled(): boolean {
 async function refreshUserSendReminder(): Promise<void> {
   if (!deps || !deps.checkContext()) return;
   try {
-    const { appendUserSendReminder, systemReminderEnabled } = await chrome.storage.local.get(['appendUserSendReminder', 'systemReminderEnabled']);
-    systemReminderMasterEnabled = systemReminderEnabled !== false;
-    userSendReminderEnabled = appendUserSendReminder !== false && systemReminderMasterEnabled;
+    // 单开关：systemReminderEnabled 同时管工具结果 with_guidance 与用户消息追加
+    // （旧的 appendUserSendReminder 子开关已合并删除）。插件总开关
+    // （extensionEnabled）关闭时同样一并失效。
+    const { systemReminderEnabled, extensionEnabled } = await chrome.storage.local.get(['systemReminderEnabled', 'extensionEnabled']);
+    systemReminderMasterEnabled = systemReminderEnabled !== false && extensionEnabled !== false;
+    userSendReminderEnabled = systemReminderMasterEnabled;
     if (!userSendReminderEnabled) return;
     const text = await deps.fetchReminderText();
     if (text) userSendReminder = text;
@@ -107,7 +110,7 @@ export function installUserSendReminder(d: UserSendReminderDeps): void {
   void refreshUserSendReminder();
   try {
     chrome.storage?.onChanged?.addListener((changes, area) => {
-      if (area === 'local' && (changes.apiUrl || changes.authToken || changes.appendUserSendReminder || changes.systemReminderEnabled)) {
+      if (area === 'local' && (changes.apiUrl || changes.authToken || changes.systemReminderEnabled || changes.extensionEnabled)) {
         void refreshUserSendReminder();
       }
     });

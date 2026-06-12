@@ -1,15 +1,13 @@
 import { TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket, formatToolResults, toolDedupHash, extractFenceToolCalls, hasIncompleteToolFence } from '../parser';
 import { hasApiClient } from './platform-caps';
 import { extractMonacoText, findQwenPierCodeBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
-import { filterUserVisibleSkills, SkillSummary } from '../skills';
-import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, onBrowserAttachmentUpload, sendAIResponseLog, sendUserPromptLog, sendQuestionAnswer, sendQuestionCancel, sendBrowserApprovalAnswer, sendBrowserAttachmentUploadResult, getPierCodeClientId, workerAgentId, isWorkerStopped, sendAgentResult, injectToolResult } from './ws-linker';
+import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, sendAIResponseLog, sendUserPromptLog, getPierCodeClientId, workerAgentId, isWorkerStopped, sendAgentResult, injectToolResult } from './ws-linker';
 import { isConversationURLForCurrentPage, observeConversationURL, getConversationKey } from './conversation-scope';
 import { maybeTruncate } from './result-truncate';
 import { isBalancedJson } from './json-complete';
 import { visualIndicator } from './visual-indicator';
 import { statusPanel, type ControlledTabInfo } from './status-panel';
 import { computeMeter } from './token-meter';
-import { getDestructiveCommandWarning } from './destructive-warning';
 import { exposeAccessibilityTree, generateAccessibilityTree, getElementCoordinates, scrollToElement, clickElement, searchElements } from './accessibility-tree';
 import { SinglePacketWaiter } from './qwen-context-packet-waiter';
 import {
@@ -34,6 +32,12 @@ import { installUserSendReminder, markProgrammaticSend, isSystemReminderEnabled 
 import { selectorsForHost } from './platform-selectors';
 import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
 import { T_PANEL, T_PANEL2, T_LINE, T_DIM, T_TXT, T_GLOW, T_GLOW_SOFT, T_AMBER, T_RED, T_FONT } from './terminal-theme';
+import { hashStr, getToolCallId, ensureToolCallId, renderToolCard, isToolCardLive, initToolCardDeps, streamChunkSubs, streamDoneSubs } from './tool-card';
+import { scheduleResultEchoDecoration } from './tool-result-echo';
+import { showToast } from './toast';
+import { attachInputListener, initEditorCompletionDeps, getEditorText, effectiveFillMethod } from './editor-completion';
+import { ensureAttachmentUploadDispatcher, initAttachmentUploadDeps } from './attachment-upload';
+import { showRemoteQuestionPopup, dismissRemoteQuestionPopup, handleBrowserApprovalAsk, dismissBrowserApprovalPopupForCall, showQuestionPopup, dismissBrowserApprovalPopup, initQuestionApprovalDeps } from './question-approval';
 import { TIMING } from './timing';
 import { DOM_EXTRACT } from './dom-extract-config';
 
@@ -51,6 +55,10 @@ function resolveBatchQuietMs(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_BATCH_QUIET_MS;
   return Math.min(MAX_BATCH_QUIET_MS, Math.max(MIN_BATCH_QUIET_MS, Math.round(value)));
 }
+
+// 总开关（storage key `extensionEnabled`）：false = 整个插件在 AI 页面不生效。
+// 启动时为 false 则完全不 bootstrap；运行中切关则停检测/卸 UI（见 bootstrapGate）。
+let piercodeMasterDisabled = false;
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
@@ -905,23 +913,12 @@ function resolveAutoExecute(value: unknown): boolean {
   return typeof value === 'boolean' ? value : false;
 }
 
-function resolveAutoApproveBrowserActions(value: unknown): boolean {
-  return typeof value === 'boolean' ? value : false;
-}
 
 function resolveStealthMode(value: unknown): boolean {
   // Keep this local so content.js remains a classic MV3 content script.
   return typeof value === 'boolean' ? value : false;
 }
 
-async function shouldAutoApproveBrowserActions(): Promise<boolean> {
-  try {
-    const result = await chrome.storage.local.get(['autoApproveBrowserActions']);
-    return resolveAutoApproveBrowserActions(result.autoApproveBrowserActions);
-  } catch {
-    return false;
-  }
-}
 
 function decodeHTMLEntities(s: string): string {
   const el = document.createElement('textarea');
@@ -981,13 +978,9 @@ interface ToolExecutionResult {
 // ─── 流式工具输出分发 ─────────────────────────────────────────────────────────
 // 同一个 call_id 的 ToolCard 注册自己的 stream/done 回调。WebSocket 收到事件后
 // 通过 dispatch 路由。多 tab 都会收到广播，但只有对应卡片所在的 tab 命中。
-type StreamChunkHandler = (stream: 'stdout' | 'stderr', text: string) => void;
-type StreamDoneHandler = (exitCode: number, status: string, errMsg: string, durationMs: number) => void;
-
-const streamChunkSubs = new Map<string, StreamChunkHandler>();
-const streamDoneSubs = new Map<string, StreamDoneHandler>();
+// （订阅表 streamChunkSubs/streamDoneSubs 移至 ./tool-card，此处 import 后由
+// ensureStreamDispatchers 查表路由。）
 let streamDispatchersRegistered = false;
-let attachmentUploadDispatcherRegistered = false;
 
 function ensureStreamDispatchers() {
   if (streamDispatchersRegistered) return;
@@ -1019,447 +1012,9 @@ function ensureStreamDispatchers() {
   });
 }
 
-interface AttachmentPayload {
-  name: string;
-  mimeType: string;
-  dataBase64: string;
-  bytes?: number;
-}
+// 截图附件注入已拆分至 ./attachment-upload（initAttachmentUploadDeps 注入）。
 
-function ensureAttachmentUploadDispatcher() {
-  if (attachmentUploadDispatcherRegistered) return;
-  attachmentUploadDispatcherRegistered = true;
-  onBrowserAttachmentUpload(async msg => {
-    try {
-      const payload = await fetchScreenshotAttachment(msg.path);
-      const file = new File([base64ToArrayBuffer(payload.dataBase64)], payload.name || msg.name || 'screenshot.jpg', {
-        type: payload.mimeType || msg.mimeType || 'image/jpeg',
-        lastModified: Date.now(),
-      });
-      await attachFileToCurrentChat(file);
-      sendBrowserAttachmentUploadResult(msg.call_id, true);
-      showToast(`截图已作为附件添加：${file.name}`, 3000);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendBrowserAttachmentUploadResult(msg.call_id, false, message);
-      showToast(`截图附件上传失败：${message}`, 5000);
-    }
-  });
-}
-
-async function fetchScreenshotAttachment(path: string): Promise<AttachmentPayload> {
-  if (!checkContext(true)) throw new Error('扩展上下文已失效');
-  const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
-  if (!apiUrl) throw new Error('未配置 API 地址');
-  const headers: any = {};
-  if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  const response = await bgFetch(`${apiEndpoint(apiUrl, '/attachments/screenshot')}?path=${encodeURIComponent(path)}`, { headers });
-  if (response.status === 401) throw new Error('认证失败');
-  if (!response.ok) throw new Error(response.body || `HTTP ${response.status}`);
-  const payload = JSON.parse(response.body) as AttachmentPayload;
-  if (!payload.dataBase64) throw new Error('截图数据为空');
-  return payload;
-}
-
-function base64ToArrayBuffer(data: string): ArrayBuffer {
-  const binary = atob(data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes.buffer;
-}
-
-async function attachFileToCurrentChat(file: File): Promise<void> {
-  await focusCurrentTabForSend();
-  const editor = querySelectorFirst(getSiteConfig().editor) as HTMLElement | null;
-  const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'))
-    .filter(input => !input.disabled && acceptsImageFile(input, file));
-
-  for (const input of prioritizeFileInputs(inputs, editor)) {
-    if (tryAssignFileInput(input, file)) return;
-  }
-  if (editor && dispatchClipboardFile(editor, file)) return;
-  if (editor && dispatchDropFile(editor, file)) return;
-  throw new Error('未找到可用的附件上传入口');
-}
-
-function acceptsImageFile(input: HTMLInputElement, file: File): boolean {
-  const accept = (input.getAttribute('accept') || '').trim().toLowerCase();
-  if (!accept) return true;
-  if (accept.includes('image/*')) return true;
-  if (accept.includes(file.type.toLowerCase())) return true;
-  const ext = file.name.toLowerCase().endsWith('.png') ? '.png' : '.jpg';
-  return accept.split(',').map(s => s.trim()).includes(ext);
-}
-
-function prioritizeFileInputs(inputs: HTMLInputElement[], editor: HTMLElement | null): HTMLInputElement[] {
-  if (!editor) return inputs;
-  const editorRect = editor.getBoundingClientRect();
-  return inputs.slice().sort((a, b) => {
-    const ar = a.getBoundingClientRect();
-    const br = b.getBoundingClientRect();
-    const ad = Math.abs(ar.top - editorRect.top) + Math.abs(ar.left - editorRect.left);
-    const bd = Math.abs(br.top - editorRect.top) + Math.abs(br.left - editorRect.left);
-    return ad - bd;
-  });
-}
-
-function tryAssignFileInput(input: HTMLInputElement, file: File): boolean {
-  try {
-    const transfer = new DataTransfer();
-    transfer.items.add(file);
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'files')?.set;
-    if (setter) setter.call(input, transfer.files);
-    else input.files = transfer.files;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    return !!input.files && input.files.length > 0;
-  } catch (error) {
-    console.warn('[PierCode] file input 附件注入失败:', error);
-    return false;
-  }
-}
-
-function dispatchClipboardFile(target: HTMLElement, file: File): boolean {
-  try {
-    target.focus();
-    const transfer = new DataTransfer();
-    transfer.items.add(file);
-    transfer.setData('text/plain', file.name);
-    const event = new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true });
-    target.dispatchEvent(event);
-    return true;
-  } catch (error) {
-    console.warn('[PierCode] paste 附件注入失败:', error);
-    return false;
-  }
-}
-
-function dispatchDropFile(target: HTMLElement, file: File): boolean {
-  try {
-    target.focus();
-    const transfer = new DataTransfer();
-    transfer.items.add(file);
-    const events = ['dragenter', 'dragover', 'drop'];
-    for (const type of events) {
-      const event = new DragEvent(type, { dataTransfer: transfer, bubbles: true, cancelable: true });
-      target.dispatchEvent(event);
-    }
-    return true;
-  } catch (error) {
-    console.warn('[PierCode] drop 附件注入失败:', error);
-    return false;
-  }
-}
-
-const activeQuestionPopups = new Map<string, HTMLDivElement>();
-const activeBrowserApprovalPopups = new Map<string, HTMLDivElement>();
-
-function showRemoteQuestionPopup(callID: string, question: string, options: unknown[]) {
-  dismissRemoteQuestionPopup(callID);
-
-  const panel = showInlineQuestionPanel({
-    question,
-    options,
-    onSubmit: answer => {
-      sendQuestionAnswer(callID, answer);
-      dismissRemoteQuestionPopup(callID);
-    },
-    onCancel: () => {
-      sendQuestionCancel(callID);
-      dismissRemoteQuestionPopup(callID);
-    },
-  });
-  panel.dataset.piercodeQuestionId = callID;
-  activeQuestionPopups.set(callID, panel);
-}
-
-function dismissRemoteQuestionPopup(callID: string) {
-  const el = activeQuestionPopups.get(callID);
-  if (!el) return;
-  el.remove();
-  activeQuestionPopups.delete(callID);
-}
-
-function showBrowserApprovalPopup(msg: {
-  approval_id: string;
-  call_id?: string;
-  action: string;
-  tab?: { tabId?: number; title?: string; url?: string };
-  target: string;
-  risk: string;
-}) {
-  const existing = activeBrowserApprovalPopups.get(msg.approval_id);
-  if (existing) existing.remove();
-  if (msg.call_id) dismissBrowserApprovalPopupForCall(msg.call_id);
-  const tabLine = msg.tab
-    ? `tabId=${msg.tab.tabId ?? ''}\n标题：${msg.tab.title || '(untitled)'}\nURL：${msg.tab.url || '(unknown)'}`
-    : '目标标签页未知';
-  const panel = showInlineQuestionPanel({
-    question: [
-      `浏览器操作：${msg.action}`,
-      '',
-      tabLine,
-      '',
-      `目标：${msg.target || '(unknown)'}`,
-      `风险：${msg.risk || '此操作会改变网页状态。'}`,
-    ].join('\n'),
-    options: ['允许', '拒绝'],
-    onSubmit: answer => {
-      const approved = answer.trim() === '允许' || answer.trim() === '1';
-      sendBrowserApprovalAnswer(msg.approval_id, approved, approved ? '' : 'user rejected browser action');
-      panel.remove();
-      activeBrowserApprovalPopups.delete(msg.approval_id);
-    },
-    onCancel: () => {
-      sendBrowserApprovalAnswer(msg.approval_id, false, 'user cancelled browser action');
-      activeBrowserApprovalPopups.delete(msg.approval_id);
-    },
-  });
-  panel.dataset.piercodeBrowserApprovalId = msg.approval_id;
-  if (msg.call_id) panel.dataset.piercodeBrowserApprovalCallId = msg.call_id;
-  activeBrowserApprovalPopups.set(msg.approval_id, panel);
-}
-
-async function handleBrowserApprovalAsk(msg: {
-  approval_id: string;
-  call_id?: string;
-  action: string;
-  tab?: { tabId?: number; title?: string; url?: string };
-  target: string;
-  risk: string;
-}) {
-  if (await shouldAutoApproveBrowserActions()) {
-    if (msg.call_id) dismissBrowserApprovalPopupForCall(msg.call_id);
-    dismissBrowserApprovalPopup(msg.approval_id, msg.call_id);
-    const ok = sendBrowserApprovalAnswer(msg.approval_id, true, 'auto approved by extension setting');
-    if (ok) showToast(`已自动允许浏览器操作：${msg.action || 'browser action'}`, 2500);
-    return;
-  }
-  showBrowserApprovalPopup(msg);
-}
-
-function dismissBrowserApprovalPopupForCall(callID: string) {
-  for (const [approvalID, el] of activeBrowserApprovalPopups) {
-    if (el.dataset.piercodeBrowserApprovalCallId !== callID) continue;
-    el.remove();
-    activeBrowserApprovalPopups.delete(approvalID);
-  }
-}
-
-function dismissBrowserApprovalPopup(approvalID: string, callID?: string) {
-  const el = activeBrowserApprovalPopups.get(approvalID);
-  if (el) {
-    el.remove();
-    activeBrowserApprovalPopups.delete(approvalID);
-  }
-  if (callID) dismissBrowserApprovalPopupForCall(callID);
-}
-
-type InlineQuestionPanelOptions = {
-  question: string;
-  options: unknown[];
-  onSubmit: (answer: string) => void;
-  onCancel?: () => void;
-};
-
-function showInlineQuestionPanel(config: InlineQuestionPanelOptions): HTMLDivElement {
-  const options = config.options.map(opt => String(opt));
-  const panel = document.createElement('div');
-  panel.style.cssText = buildQuestionPanelStyle();
-  let closed = false;
-  const closePanel = () => {
-    if (closed) return;
-    closed = true;
-    panel.remove();
-  };
-  const submitAnswer = (answer: string) => {
-    if (!answer) return;
-    config.onSubmit(answer);
-    closePanel();
-  };
-
-  const header = document.createElement('div');
-  header.textContent = 'PierCode 需要回答';
-  header.style.cssText = `font-weight:600;margin-bottom:8px;color:${T_AMBER};font-family:${T_FONT}`;
-  panel.appendChild(header);
-
-  const body = document.createElement('div');
-  body.textContent = config.question;
-  body.style.cssText = 'white-space:pre-wrap;margin-bottom:10px;max-height:120px;overflow:auto';
-  panel.appendChild(body);
-
-  if (options.length > 0) {
-    const optWrap = document.createElement('div');
-    optWrap.style.cssText = 'display:grid;gap:6px;margin-bottom:10px';
-    options.forEach((opt, i) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = `${i + 1}. ${opt}`;
-      btn.style.cssText = [
-        'width:100%', 'padding:7px 10px', `border:1px solid ${T_LINE}`, 'border-radius:6px',
-        `background:${T_PANEL2}`, `color:${T_TXT}`, 'cursor:pointer', 'font-size:12px',
-        'text-align:left', 'line-height:1.35', `font-family:${T_FONT}`,
-      ].join(';');
-      btn.onmouseenter = () => { btn.style.background = T_PANEL; btn.style.borderColor = T_GLOW; btn.style.color = T_GLOW; };
-      btn.onmouseleave = () => { btn.style.background = T_PANEL2; btn.style.borderColor = T_LINE; btn.style.color = T_TXT; };
-      btn.onclick = () => submitAnswer(opt);
-      optWrap.appendChild(btn);
-    });
-    panel.appendChild(optWrap);
-  }
-
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.placeholder = options.length > 0 ? '自定义回答，或输入选项序号后回车' : '输入回答后回车';
-  input.style.cssText = [
-    'width:100%', 'padding:8px 10px', 'box-sizing:border-box',
-    `border:1px solid ${T_LINE}`, 'border-radius:6px',
-    `background:${T_PANEL2}`, `color:${T_TXT}`, 'font-size:13px',
-    'outline:none', `font-family:${T_FONT}`,
-  ].join(';');
-  panel.appendChild(input);
-
-  const actions = document.createElement('div');
-  actions.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:10px';
-
-  const cancelBtn = document.createElement('button');
-  cancelBtn.type = 'button';
-  cancelBtn.textContent = '取消';
-  cancelBtn.style.cssText = `padding:5px 10px;border:1px solid ${T_LINE};border-radius:4px;background:transparent;color:${T_DIM};cursor:pointer;font-family:${T_FONT}`;
-  cancelBtn.onclick = () => {
-    config.onCancel?.();
-    closePanel();
-  };
-
-  const submitBtn = document.createElement('button');
-  submitBtn.type = 'button';
-  submitBtn.textContent = '提交';
-  submitBtn.style.cssText = `padding:5px 14px;border:1px solid ${T_GLOW};border-radius:4px;background:transparent;color:${T_GLOW};cursor:pointer;font-weight:600;font-family:${T_FONT};box-shadow:0 0 0 1px ${T_GLOW_SOFT}`;
-
-  const submit = () => {
-    let answer = input.value.trim();
-    if (!answer) return;
-    const idx = parseInt(answer, 10);
-    if (options.length > 0 && !Number.isNaN(idx) && idx >= 1 && idx <= options.length) {
-      answer = options[idx - 1];
-    }
-    submitAnswer(answer);
-  };
-
-  submitBtn.onclick = submit;
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); submit(); }
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      config.onCancel?.();
-      closePanel();
-    }
-  });
-
-  actions.append(cancelBtn, submitBtn);
-  panel.appendChild(actions);
-
-  document.body.appendChild(panel);
-  setTimeout(() => input.focus(), 50);
-  return panel;
-}
-
-function buildQuestionPanelStyle(): string {
-  const editor = querySelectorFirst(getSiteConfig().editor);
-  const rect = editor?.getBoundingClientRect();
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 768;
-  const margin = 12;
-  const availableWidth = Math.max(320, viewportWidth - margin * 2);
-  const width = Math.min(680, availableWidth, Math.max(480, rect?.width ?? 560));
-  const maxLeft = Math.max(margin, viewportWidth - width - margin);
-  const left = rect
-    ? Math.min(Math.max(rect.left + rect.width - width, margin), maxLeft)
-    : Math.max(margin, viewportWidth - width - 20);
-  const bottom = rect && rect.top > 80
-    ? Math.min(Math.max(viewportHeight - rect.top + margin, margin), viewportHeight - 80)
-    : 96;
-
-  return [
-    'position:fixed', `left:${Math.round(left)}px`, `bottom:${Math.round(bottom)}px`,
-    `width:${Math.round(width)}px`, 'z-index:2147483646',
-    'max-height:min(420px, calc(100vh - 32px))', 'overflow:auto',
-    'padding:14px 16px', 'box-sizing:border-box',
-    `background:${T_PANEL}`, `color:${T_TXT}`,
-    `border:1px solid ${T_LINE}`, 'border-radius:10px',
-    `box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 10px 30px rgba(0,0,0,0.5)`,
-    `font-family:${T_FONT}`,
-    'font-size:13px', 'line-height:1.5',
-  ].join(';');
-}
-
-// renderTodoChecklist renders the todo array (from todo_write args) as a
-// styled checklist in the given container. Mirrors the Go-side
-// formatTodoChecklist so the user sees the same picture regardless of which
-// tool ran. Accepts strings or {text/content/title, status} objects.
-function renderTodoChecklist(container: HTMLElement, todos: unknown[]) {
-  if (!todos.length) {
-    const empty = document.createElement('div');
-    empty.textContent = '(任务列表为空)';
-    empty.style.cssText = 'color:#888;font-size:12px';
-    container.appendChild(empty);
-    return;
-  }
-  const ul = document.createElement('ul');
-  ul.style.cssText = 'list-style:none;margin:0;padding:0;font-size:12px';
-  todos.forEach((raw, i) => {
-    const li = document.createElement('li');
-    li.style.cssText = `padding:2px 0;color:${T_TXT}`;
-    const { text, status } = todoFieldsTS(raw);
-    let marker = '☐';
-    let color = T_TXT;
-    switch (status.toLowerCase()) {
-      case 'completed':
-      case 'done':
-        marker = '☑'; color = T_GLOW; break;
-      case 'in_progress':
-      case 'in-progress':
-      case 'running':
-        marker = '◐'; color = T_AMBER; break;
-      case 'blocked':
-        marker = '⚠'; color = T_RED; break;
-    }
-    li.style.color = color;
-    li.textContent = `${i + 1}. ${marker} ${text}`;
-    if (status.toLowerCase() === 'completed' || status.toLowerCase() === 'done') {
-      li.style.textDecoration = 'line-through';
-    }
-    ul.appendChild(li);
-  });
-  container.appendChild(ul);
-}
-
-function todoFieldsTS(raw: unknown): { text: string; status: string } {
-  if (typeof raw === 'string') return { text: raw, status: '' };
-  if (raw && typeof raw === 'object') {
-    const obj = raw as Record<string, unknown>;
-    for (const k of ['text', 'content', 'title', 'description', 'name', 'task']) {
-      const v = obj[k];
-      if (typeof v === 'string' && v) {
-        return { text: v, status: typeof obj.status === 'string' ? obj.status : '' };
-      }
-    }
-    return { text: JSON.stringify(obj), status: typeof obj.status === 'string' ? obj.status : '' };
-  }
-  return { text: String(raw), status: '' };
-}
-
-function getToolCallId(data: any): string {
-  return String(data?.callId || data?.call_id || '');
-}
-
-function ensureToolCallId(data: any, key: string): any {
-  const existing = getToolCallId(data);
-  if (existing) {
-    return data.callId ? data : { ...data, callId: existing };
-  }
-  return { ...data, callId: `ol_${Math.abs(hashStr(key)).toString(36)}` };
-}
+// 问答/审批弹窗已拆分至 ./question-approval（initQuestionApprovalDeps 注入编辑器定位）。
 
 // aiStudioStopBtnMatch is the special "stop generating" finder for Google AI
 // Studio. Its Run/Stop share the same ms-run-button button (type="button", not
@@ -1515,6 +1070,37 @@ function bootstrapContentScript() {
 
   const cfg = getSiteConfig();
 
+  // 工具卡模块（./tool-card）的执行依赖注入：卡片渲染是 leaf，执行/去重/回填
+  // 仍由本文件实现。必须在任何 observer 启动前完成。
+  initToolCardDeps({ executeToolCallRaw, markExecuted, fillAndSend, ensureStreamDispatchers });
+  initQuestionApprovalDeps({ getEditorEl: () => querySelectorFirst(getSiteConfig().editor) });
+  initAttachmentUploadDeps({
+    checkContext,
+    bgFetch,
+    apiEndpoint,
+    focusCurrentTabForSend,
+    getEditorEl: () => querySelectorFirst(getSiteConfig().editor),
+  });
+  initEditorCompletionDeps({
+    checkContext,
+    bgFetch,
+    apiEndpointForProfile,
+    executeToolCallReturn,
+    getSiteConfig,
+    querySelectorFirst,
+    getNativeSetter,
+    onPromptSubmitted: (text) => {
+      activateResponseSession();
+      const now = Date.now();
+      if (text === lastPromptText && now - lastPromptAt < 1500) return;
+      lastPromptText = text;
+      lastPromptAt = now;
+      // 更新上下文追踪 (user 输入)；updateQwenContext 内部按平台门控
+      updateQwenContext('user', text);
+      sendUserPromptLog(`user:${getConversationId()}:${now}`, text);
+    },
+  });
+
   if (platformAdapter.name === 'qwen') {
     injectPageBridge();
   }
@@ -1563,9 +1149,12 @@ function bootstrapContentScript() {
     chrome.runtime?.onMessage?.addListener((msg) => {
       if (!msg || typeof msg !== 'object') return;
       if (msg.type === 'CHAT_AGENT_SPAWN' && msg.agentId) {
-        statusPanel.addAgent(String(msg.agentId), String(msg.label || 'agent'));
+        statusPanel.addAgent(String(msg.agentId), String(msg.label || 'agent'), msg.task ? String(msg.task) : undefined);
+      } else if (msg.type === 'CHAT_AGENT_STREAM' && msg.agentId) {
+        // 流式 transcript → 右上角浮卡的「当前工具调用」预览。
+        statusPanel.appendAgentChunk(String(msg.agentId), String(msg.chunk || ''));
       } else if (msg.type === 'CHAT_AGENT_DONE' && msg.agentId) {
-        statusPanel.setAgentDone(String(msg.agentId), String(msg.status || 'done'));
+        statusPanel.setAgentDone(String(msg.agentId), String(msg.status || 'done'), msg.error ? String(msg.error) : undefined);
       }
     });
   } catch {
@@ -1690,12 +1279,6 @@ function bootstrapContentScript() {
 
     return false;
   });
-}
-
-function hashStr(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = Math.imul(31, h) + s.charCodeAt(i) | 0;
-  return h >>> 0;
 }
 
 // 状态面板 token 阈值：优先用已加载的压缩配置（按平台），未加载完成前回退
@@ -1971,376 +1554,8 @@ async function executeToolCallReturn(toolCall: any, withGuidance = true): Promis
 }
 
 // 注入工具卡动画样式（一次）。状态点脉冲动画给「执行中/后台执行」用。
-let toolCardAnimStylesInjected = false;
-function ensureToolCardAnimStyles(): void {
-  if (toolCardAnimStylesInjected) return;
-  if (typeof document === 'undefined' || !document.head) return;
-  const style = document.createElement('style');
-  style.setAttribute('data-piercode-tool-card-anim', '');
-  style.textContent = `
-@keyframes piercodeCardPulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.5); opacity: 0.5; }
-}
-`;
-  document.head.appendChild(style);
-  toolCardAnimStylesInjected = true;
-}
 
-// Locate the actual rendered code block (`<pre>` / platform container) inside
-// `sourceEl` whose text is this tool call's JSON. We decorate that block in place
-// instead of inserting a separate card above the message — so the animated
-// status/collapse sits right on the AI's ```piercode-tool block. Match by
-// call_id first (most specific), then by the tool name + a JSON shape, then any
-// pre that looks like a tool fence. Returns null if no block can be pinpointed
-// (callers fall back to inserting above the message).
-function findToolBlockElement(sourceEl: Element, data: any): HTMLElement | null {
-  const callId = getToolCallId(data);
-  const name = String(data?.name || '');
-  const candidates = Array.from(
-    sourceEl.querySelectorAll<HTMLElement>(
-      'pre, .qwen-markdown-code, .language-piercode-tool, .language-tool'
-    )
-  ).filter(el => !el.closest('[data-piercode-key]')); // skip already-decorated
-
-  const looksLikeTool = (t: string) => t.includes('"name"') || t.includes('piercode-tool') || t.includes("'name'");
-  // 1) exact call_id match
-  if (callId) {
-    for (const el of candidates) {
-      const t = el.textContent || '';
-      if (looksLikeTool(t) && t.includes(callId)) return el;
-    }
-  }
-  // 2) name match
-  if (name) {
-    for (const el of candidates) {
-      const t = el.textContent || '';
-      if (looksLikeTool(t) && t.includes(`"${name}"`)) return el;
-    }
-  }
-  // 3) any tool-shaped block
-  for (const el of candidates) {
-    if (looksLikeTool(el.textContent || '')) return el;
-  }
-  return null;
-}
-
-function renderToolCard(data: any, _full: string, sourceEl: Element, key: string, processed: Set<string>) {
-  data = ensureToolCallId(data, key);
-
-  // Prefer in-place decoration of the AI's ```piercode-tool code block. Fall back
-  // to inserting above the message only when the block can't be located.
-  const blockEl = findToolBlockElement(sourceEl, data);
-  // Find stable anchor: message-content's parent, which Angular doesn't rebuild
-  const messageContent = sourceEl.closest('message-content') ?? sourceEl.closest('.prose') ?? sourceEl;
-  const anchor = blockEl?.parentElement ?? messageContent.parentElement ?? sourceEl.parentElement;
-  if (!anchor) return;
-
-  // Prevent duplicate cards
-  if (anchor.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`)) return;
-  if (blockEl?.getAttribute('data-piercode-decorated') === '1') return;
-
-  ensureStreamDispatchers();
-
-  const args = data.args || {};
-  const card = document.createElement('div');
-  card.setAttribute('data-piercode-key', key);
-  card.style.cssText = `border:1px solid ${T_LINE};border-radius:10px;padding:12px 14px;margin:10px 0;background:${T_PANEL};color:${T_TXT};font-size:13px;box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 2px 10px rgba(0,0,0,0.4);font-family:${T_FONT}`;
-
-  ensureToolCardAnimStyles();
-
-  const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px';
-  const nameBadge = document.createElement('span');
-  nameBadge.style.cssText = `display:inline-flex;align-items:center;gap:5px;font-weight:600;font-size:13px;color:${T_GLOW};background:${T_PANEL2};border:1px solid ${T_LINE};border-radius:6px;padding:2px 8px`;
-  nameBadge.textContent = `◆ ${data.name}`;
-  header.appendChild(nameBadge);
-  const callId = document.createElement('span');
-  callId.style.cssText = `color:${T_DIM};font-size:11px;font-family:${T_FONT}`;
-  callId.textContent = `#${getToolCallId(data)}`;
-  header.appendChild(callId);
-
-  // 状态药丸：展示 未执行/执行中/已执行/后台执行/失败 + 动画。
-  const statePill = document.createElement('span');
-  statePill.style.cssText = 'margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;border-radius:999px;padding:2px 10px';
-  const stateDot = document.createElement('span');
-  stateDot.style.cssText = 'width:7px;height:7px;border-radius:50%;flex-shrink:0';
-  const stateText = document.createElement('span');
-  statePill.append(stateDot, stateText);
-  header.appendChild(statePill);
-
-  type CardState = 'pending' | 'running' | 'background' | 'done' | 'error';
-  const STATE_META: Record<CardState, { label: string; color: string; pulse: boolean }> = {
-    pending:    { label: '[run]',  color: T_AMBER, pulse: false },
-    running:    { label: '[run]',  color: T_AMBER, pulse: true },
-    background: { label: '[run]',  color: T_AMBER, pulse: true },
-    done:       { label: '[done]', color: T_GLOW,  pulse: false },
-    error:      { label: '[fail]', color: T_RED,   pulse: false },
-  };
-  function setCardState(s: CardState): void {
-    const meta = STATE_META[s];
-    statePill.style.background = meta.color + '22';
-    statePill.style.color = meta.color;
-    stateDot.style.background = meta.color;
-    stateDot.style.animation = meta.pulse ? 'piercodeCardPulse 1s ease-in-out infinite' : 'none';
-    stateText.textContent = meta.label;
-  }
-  setCardState('pending');
-  card.appendChild(header);
-
-  // 折叠区：工具名/id 已在 header 识别出来；参数详情默认隐藏，点标题展开。
-  const details = document.createElement('details');
-  details.style.cssText = `margin:8px 0;background:${T_PANEL2};border-radius:6px;padding:0;border:1px solid ${T_LINE}`;
-  const summary = document.createElement('summary');
-  summary.style.cssText = `cursor:pointer;list-style:none;padding:6px 8px;font-size:11px;color:${T_DIM};user-select:none`;
-  summary.textContent = '参数详情（点击展开）';
-  details.appendChild(summary);
-  const argsBox = document.createElement('div');
-  argsBox.style.cssText = 'padding:8px';
-  if (String(data.name).toLowerCase() === 'todo_write' && Array.isArray(args.todos)) {
-    renderTodoChecklist(argsBox, args.todos);
-  } else {
-    for (const [k, v] of Object.entries(args)) {
-      const row = document.createElement('div');
-      row.style.cssText = 'margin-bottom:4px';
-      const keyLabel = document.createElement('span');
-      keyLabel.style.cssText = `color:${T_GLOW};font-size:11px`;
-      keyLabel.textContent = k;
-      row.appendChild(keyLabel);
-      const val = document.createElement('div');
-      val.style.cssText = `color:${T_TXT};font-size:12px;font-family:${T_FONT};white-space:pre-wrap;max-height:80px;overflow-y:auto`;
-      val.textContent = typeof v === 'string' ? v : JSON.stringify(v);
-      row.appendChild(val);
-      argsBox.appendChild(row);
-    }
-  }
-  details.appendChild(argsBox);
-  card.appendChild(details);
-
-  // In-place mode: hide the AI's raw ```piercode-tool code block (the long JSON)
-  // by default and tuck it under a second collapsible inside the card. The user
-  // still sees the original text on demand, but the default view is the compact
-  // animated status card — replacing the noisy raw block, not stacking above it.
-  if (blockEl) {
-    blockEl.setAttribute('data-piercode-decorated', '1');
-    const rawDetails = document.createElement('details');
-    rawDetails.style.cssText = `margin:8px 0 0;background:${T_PANEL2};border-radius:6px;padding:0;border:1px solid ${T_LINE}`;
-    const rawSummary = document.createElement('summary');
-    rawSummary.style.cssText = `cursor:pointer;list-style:none;padding:6px 8px;font-size:11px;color:${T_DIM};user-select:none`;
-    rawSummary.textContent = '原始工具调用（点击展开）';
-    rawDetails.appendChild(rawSummary);
-    card.appendChild(rawDetails);
-    // Keep the original block in its original DOM position (don't move it — some
-    // SPAs re-read/rebuild it), just hide it by default and reveal it when the
-    // user expands "原始工具调用". prevDisplay preserves the platform's own value.
-    const prevDisplay = blockEl.style.display;
-    blockEl.style.display = 'none';
-    rawDetails.addEventListener('toggle', () => {
-      blockEl.style.display = rawDetails.open ? prevDisplay : 'none';
-    });
-  }
-
-  // Destructive-command warning banner (exec_cmd only). Informational, does not
-  // block execution — surfaces what the command may do before the user clicks 执行.
-  if (String(data.name).toLowerCase() === 'exec_cmd') {
-    const cmdStr = typeof args.command === 'string' ? args.command : (typeof args.cmd === 'string' ? args.cmd : '');
-    const warning = getDestructiveCommandWarning(cmdStr);
-    if (warning) {
-      const warnBox = document.createElement('div');
-      warnBox.style.cssText = `margin:8px 0;background:${T_PANEL2};border:1px solid ${T_AMBER};border-left:3px solid ${T_AMBER};border-radius:6px;padding:8px 10px;color:${T_AMBER};font-size:12px;line-height:1.45;font-family:${T_FONT}`;
-      warnBox.textContent = `⚠️ 危险命令：${warning}`;
-      card.appendChild(warnBox);
-    }
-  }
-
-  // streamBox: only shown once we actually start receiving live chunks.
-  // exec_cmd uses this for both foreground streaming and background tasks.
-  let streamBox: HTMLDivElement | null = null;
-  function ensureStreamBox(): HTMLDivElement {
-    if (streamBox) return streamBox;
-    streamBox = document.createElement('div');
-    streamBox.style.cssText = `margin-top:10px;background:${T_PANEL2};border:1px solid ${T_LINE};border-radius:6px;padding:8px;max-height:240px;overflow-y:auto;font-family:${T_FONT};font-size:12px;color:${T_TXT};white-space:pre-wrap`;
-    card.insertBefore(streamBox, btnRow);
-    return streamBox;
-  }
-  function appendStreamChunk(stream: 'stdout' | 'stderr', text: string) {
-    const box = ensureStreamBox();
-    const span = document.createElement('span');
-    if (stream === 'stderr') span.style.color = T_RED;
-    span.textContent = text;
-    box.appendChild(span);
-    box.scrollTop = box.scrollHeight;
-  }
-
-  const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;gap:8px;margin-top:10px;align-items:center';
-  const execBtn = document.createElement('button');
-  execBtn.textContent = '执行';
-  execBtn.style.cssText = `padding:5px 16px;background:transparent;color:${T_GLOW};border:1px solid ${T_GLOW};border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:${T_FONT};box-shadow:0 0 0 1px ${T_GLOW_SOFT}`;
-  const skipBtn = document.createElement('button');
-  skipBtn.textContent = '忽略';
-  skipBtn.style.cssText = `padding:5px 12px;background:transparent;color:${T_DIM};border:1px solid ${T_LINE};border-radius:6px;cursor:pointer;font-size:12px;margin-left:auto;font-family:${T_FONT}`;
-  btnRow.appendChild(execBtn);
-  let bgBtn: HTMLButtonElement | null = null;
-  if (String(data.name).toLowerCase() === 'exec_cmd') {
-    bgBtn = document.createElement('button');
-    bgBtn.textContent = '后台执行';
-    bgBtn.style.cssText = `padding:5px 12px;background:transparent;color:${T_AMBER};border:1px solid ${T_AMBER};border-radius:6px;cursor:pointer;font-size:12px;font-family:${T_FONT}`;
-    btnRow.appendChild(bgBtn);
-  }
-  btnRow.appendChild(skipBtn);
-  card.appendChild(btnRow);
-
-  const callIdForStream = getToolCallId(data);
-  const isExecCmd = String(data.name).toLowerCase() === 'exec_cmd';
-  let sawStreamChunk = false;
-
-  function unsubscribeStream() {
-    if (!callIdForStream) return;
-    streamChunkSubs.delete(callIdForStream);
-    streamDoneSubs.delete(callIdForStream);
-  }
-
-  function subscribe() {
-    if (!callIdForStream) return;
-    streamChunkSubs.set(callIdForStream, (stream, text) => {
-      sawStreamChunk = true;
-      appendStreamChunk(stream, text);
-    });
-    streamDoneSubs.set(callIdForStream, (exitCode, status, errMsg, durationMs) => {
-      unsubscribeStream();
-      const ok = status === 'done' && exitCode === 0;
-      setCardState(ok ? 'done' : 'error');
-      execBtn.textContent = ok
-        ? `✅ 完成 (exit=${exitCode}, ${(durationMs / 1000).toFixed(1)}s)`
-        : `❌ ${status} (exit=${exitCode}${errMsg ? `, ${errMsg}` : ''})`;
-      execBtn.disabled = true;
-      if (bgBtn) bgBtn.disabled = true;
-    });
-  }
-
-  execBtn.onclick = async () => {
-    execBtn.disabled = true;
-    execBtn.textContent = '执行中...';
-    setCardState('running');
-    subscribe();
-
-    // 显示可视化指示器
-    visualIndicator.showPulsingBorder();
-    visualIndicator.showStatusBadge('loading');
-    statusPanel.setOpState('executing');
-
-    try {
-      const text = await executeToolCallRaw(data);
-      if (text === null) {
-        execBtn.textContent = '请刷新页面';
-        setCardState('error');
-        unsubscribeStream();
-        visualIndicator.hideAllIndicators();
-        return;
-      }
-      markExecuted(key);
-      setCardState('done');
-
-      // 显示完成状态
-      visualIndicator.showStatusBadge('completed');
-      statusPanel.setOpState('done');
-      setTimeout(() => visualIndicator.hideAllIndicators(), 1500);
-
-      // For exec_cmd whose live stream already populated streamBox, don't
-      // duplicate the full output in a second box — just append a small
-      // separator and the insert-to-chat button. Non-stream tools (and
-      // exec_cmd runs that produced no chunks at all) get the original
-      // resultBox so the user can copy/insert.
-      if (isExecCmd && sawStreamChunk) {
-        const insertBtn = document.createElement('button');
-        insertBtn.textContent = '插入到对话';
-        insertBtn.style.cssText = `margin-top:6px;padding:4px 12px;background:transparent;color:${T_GLOW};border:1px solid ${T_LINE};border-radius:6px;cursor:pointer;font-size:12px;font-family:${T_FONT}`;
-        insertBtn.onclick = () => fillAndSend(text, true);
-        card.appendChild(insertBtn);
-      } else {
-        const resultBox = document.createElement('div');
-        resultBox.style.cssText = `margin-top:10px;background:${T_PANEL2};border-radius:6px;padding:8px;max-height:200px;overflow-y:auto;font-family:${T_FONT};font-size:12px;color:${T_TXT};white-space:pre-wrap;border:1px solid ${T_LINE}`;
-        resultBox.textContent = text;
-        const insertBtn = document.createElement('button');
-        insertBtn.textContent = '插入到对话';
-        insertBtn.style.cssText = `margin-top:6px;padding:4px 12px;background:transparent;color:${T_GLOW};border:1px solid ${T_LINE};border-radius:6px;cursor:pointer;font-size:12px;font-family:${T_FONT}`;
-        insertBtn.onclick = () => fillAndSend(text, true);
-        card.appendChild(resultBox);
-        card.appendChild(insertBtn);
-      }
-      if (execBtn.textContent === '执行中...') execBtn.textContent = '✅ 已执行';
-      // For foreground exec_cmd, the HTTP response already carries the final
-      // output and the server will not send any tool_done for this call_id.
-      // Drop the subscription so the map doesn't leak.
-      if (!isExecCmd || (isExecCmd && !data.args?.background)) {
-        unsubscribeStream();
-      }
-    } catch {
-      execBtn.textContent = '❌ 执行失败';
-      execBtn.disabled = false;
-      setCardState('error');
-      unsubscribeStream();
-      visualIndicator.showStatusBadge('error');
-      statusPanel.setOpState('error');
-      setTimeout(() => visualIndicator.hideAllIndicators(), 2000);
-    }
-  };
-
-  if (bgBtn) {
-    bgBtn.onclick = async () => {
-      bgBtn!.disabled = true;
-      execBtn.disabled = true;
-      execBtn.textContent = '后台执行中...';
-      setCardState('background');
-      subscribe();
-      // Make a shallow copy with background:true so we don't mutate the
-      // original parsed tool call (the AI's text on the page is still the
-      // original foreground request).
-      const bgData = {
-        ...data,
-        args: { ...(data.args || {}), background: true },
-      };
-      try {
-        const text = await executeToolCallRaw(bgData);
-        if (text === null) {
-          execBtn.textContent = '请刷新页面';
-          setCardState('error');
-          unsubscribeStream();
-          return;
-        }
-        markExecuted(key);
-        // text contains "[backgrounded as task ...]" — show it under the args
-        // so the user can correlate the task_id with the live stream below.
-        const info = document.createElement('div');
-        info.style.cssText = `margin-top:6px;color:${T_GLOW};font-size:11px;font-family:${T_FONT};white-space:pre-wrap`;
-        info.textContent = text;
-        card.insertBefore(info, btnRow);
-      } catch {
-        execBtn.textContent = '❌ 后台启动失败';
-        execBtn.disabled = false;
-        bgBtn!.disabled = false;
-        setCardState('error');
-        unsubscribeStream();
-      }
-    };
-  }
-
-  skipBtn.onclick = () => {
-    unsubscribeStream();
-    card.remove();
-    processed.delete(key);
-    markExecuted(key);
-  };
-
-  // In-place: drop the card right where the AI's tool block is (the original
-  // block is hidden just below it). Otherwise fall back to above the message.
-  if (blockEl && blockEl.parentElement === anchor) {
-    anchor.insertBefore(card, blockEl);
-  } else {
-    anchor.insertBefore(card, messageContent);
-  }
-}
+// 工具卡渲染（renderToolCard）与工具响应回显卡已拆分至 ./tool-card 与 ./tool-result-echo。
 
 // 把 piercode-context 包渲染成完整字段卡（带复制按钮），替代聊天里的裸 JSON。
 // 锚定到响应消息上方，packetHash 去重防止流式重扫重复插卡。
@@ -2716,20 +1931,17 @@ function startDOMObserver(_responseSelector: string) {
         const batch = pendingBatch;
         pendingBatch = [];
 
-        for (let i = 0; i < batch.length; i++) {
-          const item = batch[i];
+        // Runs one batch item end-to-end (card state → execute → output queue)
+        // and returns whether the stream should be stopped.
+        const runBatchItem = async (item: typeof batch[number], withGuidance: boolean): Promise<boolean> => {
           const { data: toolCall, key } = item;
-          if (isExecuted(key)) continue;
+          if (isExecuted(key)) return false;
 
           // 更新卡片状态为"执行中..."
           const cardEl = document.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`);
           const btnEl = cardEl?.querySelector('button') as HTMLButtonElement | null;
           if (btnEl) { btnEl.disabled = true; btnEl.textContent = '执行中...'; }
 
-          // Carry the server's prompt guidance on at most one tool per turn: the
-          // last tool of this drain when nothing else is queued. Other tools opt
-          // out so the AI sees the operating reminder once, not once per tool.
-          const withGuidance = i === batch.length - 1 && pendingBatch.length === 0;
           const { output, stopStream, sendable, alreadyInjected } = await executeToolCallReturn(toolCall, withGuidance);
           if (sendable) {
             markExecuted(key);
@@ -2747,6 +1959,30 @@ function startDOMObserver(_responseSelector: string) {
 
           // 更新卡片状态为"已执行"
           if (btnEl) btnEl.textContent = sendable ? '✅ 已执行' : '请刷新页面';
+          return stopStream;
+        };
+
+        // spawn_agent dispatches are independent (each just opens a worker tab /
+        // launches an API sub-conversation) — run them concurrently so N workers
+        // start together instead of one-by-one. Everything else stays sequential:
+        // result ordering and stopStream semantics depend on it.
+        const spawnItems = batch.filter(it => it?.data?.name === 'spawn_agent');
+        const restItems = batch.filter(it => it?.data?.name !== 'spawn_agent');
+
+        if (spawnItems.length > 0) {
+          // Guidance rides on the last spawn only when no sequential items follow.
+          const guidanceOnSpawn = restItems.length === 0 && pendingBatch.length === 0;
+          await Promise.all(spawnItems.map((it, idx) =>
+            runBatchItem(it, guidanceOnSpawn && idx === spawnItems.length - 1).catch(() => false)
+          ));
+        }
+
+        for (let i = 0; i < restItems.length; i++) {
+          // Carry the server's prompt guidance on at most one tool per turn: the
+          // last tool of this drain when nothing else is queued. Other tools opt
+          // out so the AI sees the operating reminder once, not once per tool.
+          const withGuidance = i === restItems.length - 1 && pendingBatch.length === 0;
+          const stopStream = await runBatchItem(restItems[i], withGuidance);
 
           if (stopStream) {
             clickStopButton();
@@ -2815,6 +2051,7 @@ function startDOMObserver(_responseSelector: string) {
   }
 
   async function scanText(text: string, sourceEl?: Element) {
+    if (piercodeMasterDisabled) return;
     if (!isResponseSessionActive()) return;
     const lower = text.toLowerCase();
 
@@ -2897,13 +2134,13 @@ function startDOMObserver(_responseSelector: string) {
         // Hash the parsed semantics, NOT codeText — Monaco virtualizes finished
         // blocks, so codeText drifts across a refresh and re-ran every tool.
         const key = callId ? `${convId}:${data.name}:${callId}` : `${convId}:${toolDedupHash(data)}`;
-        if (processed.has(key)) continue;
+        if (isExecuted(key)) { parsedQwenTool = true; continue; }
+        if (processed.has(key) && (!sourceEl || isToolCardLive(key))) { parsedQwenTool = true; continue; }
         console.log('[PierCode] 提取到工具调用(Qwen DOM):', data);
 
         if (sourceEl) {
-          processed.add(key);
           parsedQwenTool = true;
-          renderToolCard(data, codeText, sourceEl, key, processed);
+          if (renderToolCard(data, codeText, sourceEl, key, processed)) processed.add(key);
           maybeScheduleAutoExecute(data, key, sourceEl ?? document.body);
         }
       }
@@ -2979,12 +2216,18 @@ function startDOMObserver(_responseSelector: string) {
         const callId = getToolCallId(data);
         // Conversation-scoped fallback hash — see the Qwen DOM path above.
         const key = callId ? `${convId}:${data.name}:${callId}` : `${convId}:${toolDedupHash(data)}`;
-        if (processed.has(key)) continue;
+        // Self-heal: skip only if already processed AND its card is still live.
+        // A burned key whose card got orphaned (SPA rebuilt the streaming <pre>)
+        // must be allowed to re-render, or the card stays gone for good. But a
+        // tool already executed/skipped is done — don't resurrect its card.
+        if (isExecuted(key)) continue;
+        if (processed.has(key) && (!sourceEl || isToolCardLive(key))) continue;
         console.log('[PierCode] 提取到工具调用(JSON):', data);
 
         if (sourceEl) {
-          processed.add(key);
-          renderToolCard(data, '', sourceEl, key, processed);
+          // Burn the key only when the card actually lands in the DOM, so a
+          // failed/orphaned render is retried on a later scan.
+          if (renderToolCard(data, '', sourceEl, key, processed)) processed.add(key);
           maybeScheduleAutoExecute(data, key, sourceEl ?? document.body);
         } else {
           if (isExecuted(key)) continue;
@@ -3011,12 +2254,12 @@ function startDOMObserver(_responseSelector: string) {
         const callId = getToolCallId(data);
         // Conversation-scoped fallback hash — see the Qwen DOM path above.
         const key = callId ? `${convId}:${data.name}:${callId}` : `${convId}:${toolDedupHash(data)}`;
-        if (processed.has(key)) continue;
+        if (isExecuted(key)) continue;
+        if (processed.has(key) && (!sourceEl || isToolCardLive(key))) continue;
         console.log('[PierCode] 提取到工具调用(XML):', data);
 
         if (sourceEl) {
-          processed.add(key);
-          renderToolCard(data, full, sourceEl, key, processed);
+          if (renderToolCard(data, full, sourceEl, key, processed)) processed.add(key);
           maybeScheduleAutoExecute(data, key, sourceEl ?? document.body);
         } else {
           if (isExecuted(key)) continue;
@@ -3355,17 +2598,22 @@ function startDOMObserver(_responseSelector: string) {
         mutation.addedNodes.forEach(scanNode);
       }
     }
+    // 工具结果回显（用户气泡里的 ### name #id 回填）→ 紧凑结果卡。节流 300ms。
+    scheduleResultEchoDecoration(platformAdapter.userSelector);
   }).observe(document.body, { childList: true, subtree: true, characterData: true });
 
   // Mark already-rendered history as out-of-scope. The TUI should only mirror
   // prompts and answers that happen after this content script session starts.
   requestAnimationFrame(() => {
     markCurrentResponsesAsHistory();
+    // 历史里的工具结果回填也装饰（纯展示，无执行副作用）。
+    scheduleResultEchoDecoration(platformAdapter.userSelector);
   });
 }
 
 function injectInitButton() {
   const btn = document.createElement('button');
+  btn.setAttribute('data-piercode-init-btn', '');
   btn.textContent = '⌁ 初始化';
   btn.style.cssText = `position:fixed;bottom:80px;right:20px;z-index:99999;padding:8px 14px;background:${T_PANEL};color:${T_GLOW};border:1px solid ${T_GLOW};border-radius:20px;cursor:pointer;font-size:13px;box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 2px 8px rgba(0,0,0,0.4);font-family:${T_FONT}`;
   btn.onclick = sendInitPrompt;
@@ -3446,17 +2694,6 @@ async function fillAiStudioSystemInstructions(prompt: string) {
   if (closeBtn) closeBtn.click();
 }
 
-function showQuestionPopup(question: string, options: string[]): Promise<string> {
-  return new Promise(resolve => {
-    const panel = showInlineQuestionPanel({
-      question,
-      options,
-      onSubmit: answer => resolve(answer),
-      onCancel: () => resolve(''),
-    });
-    panel.style.zIndex = '2147483647';
-  });
-}
 
 // 压缩进度持久卡：替代一闪而过的 toast，常驻右下角分阶段显示压缩状态，
 // 让用户能看到"请求模型中→重试中→本地兜底中→完成/失败"整条链路。
@@ -3561,14 +2798,6 @@ const compressionConfirmCard = (() => {
   return { show, dismiss };
 })();
 
-function showToast(msg: string, durationMs = 3000): void {
-  if (!document.body) return;
-  const toast = document.createElement('div');
-  toast.style.cssText = `position:fixed;bottom:170px;right:20px;z-index:2147483647;background:${T_PANEL};color:${T_GLOW};border:1px solid ${T_GLOW};border-radius:10px;padding:10px 16px;font-size:13px;box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 4px 16px rgba(0,0,0,0.5);font-family:${T_FONT}`;
-  toast.textContent = msg;
-  document.body.appendChild(toast);
-  setTimeout(() => toast.remove(), durationMs);
-}
 
 function clickStopButton(): void {
   const btn = findStopElement(getSiteConfig());
@@ -3739,394 +2968,70 @@ async function fillAndSend(result: string, autoSend = false, options: { forceSen
   return true;
 }
 
-// ── 斜杠命令 / @ 文件补全 ──────────────────────────────────────────────────────
-
-let skillsCache: SkillSummary[] | null = null;
-let skillsCacheTime = 0;
-const filesCache = new Map<string, { ts: number; files: string[] }>();
-const FILES_TTL = 5000;
-
-async function fetchSkills(): Promise<SkillSummary[]> {
-  if (!checkContext()) return [];
-  if (skillsCache && Date.now() - skillsCacheTime < 30000) return skillsCache;
-  const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
-  if (!apiUrl) return [];
-  const headers: any = {};
-  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-  try {
-    const resp = await bgFetch(apiEndpointForProfile(apiUrl, '/skills'), { headers });
-    if (!resp.ok) return [];
-    const data = JSON.parse(resp.body);
-    skillsCache = data.skills || [];
-    skillsCacheTime = Date.now();
-    return skillsCache!;
-  } catch { return []; }
-}
-
-async function loadSkillContent(skillName: string): Promise<string | null> {
-  const callId = `skill_${Math.random().toString(36).slice(2, 8)}`;
-  const result = await executeToolCallReturn({
-    name: 'skill',
-    call_id: callId,
-    args: { skill: skillName },
-  });
-  if (!result.sendable) return null;
-  const output = result.output.trim();
-  return output || null;
-}
-
-function formatSkillInsertion(skillName: string, content: string): string {
-  return [
-    `请加载并遵循下面的 PierCode skill。`,
-    '',
-    `<skill name="${skillName}">`,
-    content.trim(),
-    '</skill>',
-    '',
-    '任务：',
-  ].join('\n');
-}
-
-async function fetchFiles(q: string): Promise<string[]> {
-  if (!checkContext()) return [];
-  const cached = filesCache.get(q);
-  if (cached && Date.now() - cached.ts < FILES_TTL) return cached.files;
-  const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
-  if (!apiUrl) return [];
-  const headers: any = {};
-  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-  try {
-    const resp = await bgFetch(`${apiUrl}/files?q=${encodeURIComponent(q)}`, { headers });
-    if (!resp.ok) return [];
-    const data = JSON.parse(resp.body);
-    const files = data.files || [];
-    filesCache.set(q, { ts: Date.now(), files });
-    return files;
-  } catch { return []; }
-}
-
-function showPickerPopup(
-  anchorEl: HTMLElement,
-  items: Array<{ label: string; sub?: string; value: string }>,
-  onSelect: (value: string) => void,
-  onDismiss: () => void
-): () => void {
-  const popup = document.createElement('div');
-  popup.style.cssText = `position:fixed;z-index:2147483647;background:${T_PANEL};border:1px solid ${T_LINE};border-radius:8px;padding:4px;min-width:240px;max-width:400px;max-height:240px;overflow-y:auto;box-shadow:0 0 0 1px ${T_GLOW_SOFT},0 4px 16px rgba(0,0,0,0.5);font-family:${T_FONT}`;
-
-  let activeIdx = 0;
-  const rows: HTMLElement[] = [];
-
-  function render() {
-    popup.innerHTML = '';
-    rows.length = 0;
-    if (items.length === 0) {
-      const empty = document.createElement('div');
-      empty.style.cssText = `padding:8px 12px;color:${T_DIM};font-size:12px`;
-      empty.textContent = '无匹配项';
-      popup.appendChild(empty);
-      return;
-    }
-    items.forEach((item, i) => {
-      const row = document.createElement('div');
-      row.style.cssText = `padding:6px 12px;border-radius:6px;cursor:pointer;display:flex;flex-direction:column;gap:2px;background:${i === activeIdx ? T_PANEL2 : 'transparent'}`;
-      const label = document.createElement('span');
-      label.style.cssText = `color:${T_TXT};font-size:13px;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`;
-      label.textContent = item.label;
-      row.appendChild(label);
-      if (item.sub) {
-        const sub = document.createElement('span');
-        sub.style.cssText = `color:${T_DIM};font-size:11px;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`;
-        sub.title = item.sub;
-        sub.textContent = item.sub;
-        row.appendChild(sub);
-      }
-      row.onmouseenter = () => { setActive(i); };
-      row.onclick = () => { onSelect(item.value); destroy(); };
-      rows.push(row);
-      popup.appendChild(row);
-    });
-  }
-
-  function setActive(i: number) {
-    if (rows[activeIdx]) rows[activeIdx].style.background = 'transparent';
-    activeIdx = i;
-    if (rows[activeIdx]) {
-      rows[activeIdx].style.background = T_PANEL2;
-      rows[activeIdx].scrollIntoView({ block: 'nearest' });
-    }
-  }
-
-  function reposition() {
-    const rect = anchorEl.getBoundingClientRect();
-    const popupH = Math.min(240, popup.scrollHeight || 240);
-    const spaceAbove = rect.top - 6;
-    const spaceBelow = window.innerHeight - rect.bottom - 6;
-    if (spaceAbove >= popupH || spaceAbove >= spaceBelow) {
-      popup.style.top = `${Math.max(4, rect.top - popupH - 6)}px`;
-    } else {
-      popup.style.top = `${rect.bottom + 6}px`;
-    }
-    popup.style.left = `${rect.left}px`;
-    popup.style.width = `${Math.min(400, rect.width)}px`;
-  }
-
-  render();
-  document.body.appendChild(popup);
-  reposition();
-
-  function onKeyDown(e: KeyboardEvent) {
-    if (!items.length) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); setActive((activeIdx + 1) % items.length); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); setActive((activeIdx - 1 + items.length) % items.length); }
-    else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); onSelect(items[activeIdx].value); destroy(); }
-    else if (e.key === 'Escape') { onDismiss(); destroy(); }
-  }
-
-  function onMouseDown(e: MouseEvent) {
-    if (!popup.contains(e.target as Node)) { onDismiss(); destroy(); }
-  }
-
-  document.addEventListener('keydown', onKeyDown, true);
-  document.addEventListener('mousedown', onMouseDown, true);
-  window.addEventListener('scroll', reposition, true);
-  window.addEventListener('resize', reposition);
-
-  function destroy() {
-    popup.remove();
-    document.removeEventListener('keydown', onKeyDown, true);
-    document.removeEventListener('mousedown', onMouseDown, true);
-    window.removeEventListener('scroll', reposition, true);
-    window.removeEventListener('resize', reposition);
-  }
-
-  return destroy;
-}
-
-function getEditorText(el: HTMLElement): string {
-  if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
-    return (el as HTMLTextAreaElement).value;
-  }
-  return el.innerText || '';
-}
-
-function getCaretPosition(el: HTMLElement): number {
-  if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
-    return (el as HTMLTextAreaElement).selectionStart ?? 0;
-  }
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0) return 0;
-  const range = sel.getRangeAt(0).cloneRange();
-  range.selectNodeContents(el);
-  range.setEnd(sel.getRangeAt(0).endContainer, sel.getRangeAt(0).endOffset);
-  return range.toString().length;
-}
-
-function effectiveFillMethod(el: HTMLElement, configuredFillMethod: string): string {
-  if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') return 'value';
-  if (el.isContentEditable && configuredFillMethod === 'value') return 'execCommand';
-  return configuredFillMethod;
-}
-
-function replaceTokenInEditor(el: HTMLElement, token: string, replacement: string, fillMethod: string) {
-  const method = effectiveFillMethod(el, fillMethod);
-  if (method === 'value') {
-    const ta = el as HTMLTextAreaElement;
-    const val = ta.value;
-    const pos = ta.selectionStart ?? val.length;
-    const before = val.slice(0, pos);
-    const after = val.slice(pos);
-    const tokenStart = before.lastIndexOf(token);
-    if (tokenStart === -1) return;
-    const newVal = val.slice(0, tokenStart) + replacement + after;
-    const nativeSetter = getNativeSetter();
-    if (nativeSetter) nativeSetter.call(ta, newVal);
-    else ta.value = newVal;
-    const newCaret = tokenStart + replacement.length;
-    ta.setSelectionRange(newCaret, newCaret);
-    ta.dispatchEvent(new Event('input', { bubbles: true }));
-  } else if (method === 'execCommand' || method === 'prosemirror') {
-    // prosemirror 也通过 execCommand insertText 拦截，不能直接写 innerHTML
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
-    const range = sel.getRangeAt(0);
-    const text = getEditorText(el);
-    const pos = getCaretPosition(el);
-    const before = text.slice(0, pos);
-    const tokenStart = before.lastIndexOf(token);
-    if (tokenStart === -1) return;
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    let charCount = 0;
-    let startNode: Text | null = null, startOffset = 0;
-    let endNode: Text | null = null, endOffset = 0;
-    while (walker.nextNode()) {
-      const node = walker.currentNode as Text;
-      const len = node.textContent?.length ?? 0;
-      if (!startNode && charCount + len > tokenStart) {
-        startNode = node;
-        startOffset = tokenStart - charCount;
-      }
-      if (startNode && !endNode && charCount + len >= tokenStart + token.length) {
-        endNode = node;
-        endOffset = tokenStart + token.length - charCount;
-        break;
-      }
-      charCount += len;
-    }
-    if (startNode && endNode) {
-      range.setStart(startNode, startOffset);
-      range.setEnd(endNode, endOffset);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      document.execCommand('insertText', false, replacement);
-    }
-  } else {
-    // paste fallback (DeepSeek/Slate)：先删除 token，再粘贴
-    const ta = el as HTMLTextAreaElement;
-    const val = ta.tagName === 'TEXTAREA' ? ta.value : el.innerText;
-    const tokenStart = val.lastIndexOf(token);
-    if (tokenStart !== -1 && ta.tagName === 'TEXTAREA') {
-      const newVal = val.slice(0, tokenStart) + val.slice(tokenStart + token.length);
-      const nativeSetter = getNativeSetter();
-      if (nativeSetter) nativeSetter.call(ta, newVal);
-      else ta.value = newVal;
-      ta.setSelectionRange(tokenStart, tokenStart);
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-    const dataTransfer = new DataTransfer();
-    dataTransfer.setData('text/plain', replacement);
-    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dataTransfer, bubbles: true, cancelable: true }));
-  }
-}
-
-const attachedInputEditors = new WeakSet<HTMLElement>();
-let sendClickListenerAttached = false;
+// 斜杠命令 / @ 文件补全已拆分至 ./editor-completion（initEditorCompletionDeps 注入）。
+// （onPromptSubmitted 的 1.5s 文本去重状态。）
 let lastPromptText = '';
 let lastPromptAt = 0;
 
-function attachInputListener(editorEl: HTMLElement) {
-  if (attachedInputEditors.has(editorEl)) return;
-  attachedInputEditors.add(editorEl);
-
-  const { fillMethod } = getSiteConfig();
-  let destroyPicker: (() => void) | null = null;
-  let inputVersion = 0;
-
-  function dismiss() {
-    if (destroyPicker) { destroyPicker(); destroyPicker = null; }
+// bootstrapGate：总开关检查后再启动。extensionEnabled === false 时不 bootstrap；
+// 运行中切换：关 → 停止检测（piercodeMasterDisabled 由 scanText 检查）并卸掉
+// 状态面板/指示器/初始化按钮；开 → 未启动则现场启动，已启动则恢复 UI。
+function bootstrapGate() {
+  let started = false;
+  const start = () => {
+    if (started) return;
+    started = true;
+    piercodeMasterDisabled = false;
+    bootstrapContentScript();
+  };
+  try {
+    chrome.storage?.onChanged?.addListener((changes, area) => {
+      if (area !== 'local' || !('extensionEnabled' in changes)) return;
+      if (changes.extensionEnabled.newValue !== false) {
+        if (started) {
+          piercodeMasterDisabled = false;
+          try {
+            statusPanel.init();
+            statusPanel.setProvider(platformAdapter.name, platformProfile);
+          } catch {}
+          console.log('[PierCode] 总开关已开启，恢复运行');
+        } else {
+          start();
+        }
+      } else {
+        piercodeMasterDisabled = true;
+        try { statusPanel.destroy(); } catch {}
+        try { visualIndicator.hideAllIndicators(); } catch {}
+        try { document.querySelectorAll('[data-piercode-init-btn]').forEach(el => el.remove()); } catch {}
+        console.log('[PierCode] 总开关已关闭，插件停用（已渲染的卡片刷新页面后清除）');
+      }
+    });
+  } catch {
+    // storage 监听不可用时退化为仅启动时判定。
   }
-
-  function logSubmittedPrompt(activeEditor: HTMLElement): void {
-    const text = getEditorText(activeEditor).trim();
-    if (!text) return;
-    activateResponseSession();
-    const now = Date.now();
-    if (text === lastPromptText && now - lastPromptAt < 1500) return;
-    lastPromptText = text;
-    lastPromptAt = now;
-    // 更新上下文追踪 (user 输入)；updateQwenContext 内部按平台门控
-    updateQwenContext('user', text);
-    sendUserPromptLog(`user:${getConversationId()}:${now}`, text);
-  }
-
-  editorEl.addEventListener('keydown', event => {
-    if (event.key !== 'Enter' || event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) return;
-    logSubmittedPrompt(editorEl);
-  }, true);
-
-  if (!sendClickListenerAttached) {
-    sendClickListenerAttached = true;
-    document.addEventListener('click', event => {
-      const target = event.target as Element | null;
-      if (!target) return;
-      const siteConfig = getSiteConfig();
-      if (!target.closest(siteConfig.sendBtn)) return;
-      const activeEditor = querySelectorFirst(siteConfig.editor) || editorEl;
-      logSubmittedPrompt(activeEditor);
-    }, true);
-  }
-
-  async function updateCompletions() {
-    const currentVersion = ++inputVersion;
-    const text = getEditorText(editorEl);
-    const pos = getCaretPosition(editorEl);
-    const before = text.slice(0, pos);
-
-    const slashMatch = before.match(/(?:^|[\s\n\u00a0])(\/([\w-]*))$/);
-    if (slashMatch) {
-      const token = slashMatch[1];
-      const query = slashMatch[2].toLowerCase();
-      const skills = filterUserVisibleSkills(await fetchSkills());
-      if (currentVersion !== inputVersion) return;
-      const filtered = query
-        ? skills.filter(s => s.name.toLowerCase().includes(query) || s.description.toLowerCase().includes(query))
-        : skills;
-      dismiss();
-      if (filtered.length === 0) return;
-      destroyPicker = showPickerPopup(
-        editorEl,
-        filtered.map(s => ({
-          label: s.name,
-          sub: s.description,
-          value: s.name,
-        })),
-        async (skillName) => {
-          dismiss();
-          // Slash skill selection is a local UX shortcut: insert a bounded
-          // instruction wrapper plus resolved SKILL.md content, not a visible
-          // tool-call fence that the assistant must execute later.
-          const content = await loadSkillContent(skillName);
-          if (!content) {
-            showToast(`加载 skill ${skillName} 失败`, 5000);
+  try {
+    const got = chrome.storage?.local?.get(['extensionEnabled']);
+    if (got && typeof (got as Promise<Record<string, unknown>>).then === 'function') {
+      (got as Promise<Record<string, unknown>>)
+        .then(r => {
+          if (r?.extensionEnabled === false) {
+            piercodeMasterDisabled = true;
+            console.log('[PierCode] 总开关已关闭，插件未启动');
             return;
           }
-          replaceTokenInEditor(editorEl, token, formatSkillInsertion(skillName, content), fillMethod);
-        },
-        dismiss
-      );
+          start();
+        })
+        .catch(() => start());
       return;
     }
-
-    const atMatch = before.match(/@([^\s]*)$/);
-    if (atMatch) {
-      const token = atMatch[0];
-      const query = atMatch[1];
-      const files = await fetchFiles(query);
-      if (currentVersion !== inputVersion) return;
-      dismiss();
-      if (files.length === 0) return;
-      destroyPicker = showPickerPopup(
-        editorEl,
-        files.map(f => ({ label: f, value: f })),
-        (path) => { replaceTokenInEditor(editorEl, token, path, fillMethod); dismiss(); },
-        dismiss
-      );
-      return;
-    }
-
-    dismiss();
+  } catch {
+    // storage 不可用（测试/特殊环境）→ 直接启动。
   }
-
-  let completionTimer: number | null = null;
-  function scheduleCompletionUpdate() {
-    if (completionTimer !== null) window.clearTimeout(completionTimer);
-    completionTimer = window.setTimeout(() => {
-      completionTimer = null;
-      void updateCompletions();
-    }, 0);
-  }
-
-  editorEl.addEventListener('input', scheduleCompletionUpdate);
-  editorEl.addEventListener('keyup', event => {
-    if (event.key.length === 1 || event.key === 'Backspace' || event.key === 'Delete' || event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-      scheduleCompletionUpdate();
-    }
-  }, true);
-  editorEl.addEventListener('compositionend', scheduleCompletionUpdate);
+  start();
 }
 
 // Run the content-script init LAST, after every module-level binding above is
 // initialized — eliminates the TDZ window that crashed tool-card rendering inside
 // Hub iframe panes. (injectPageBridgeEarly already ran at module top for the
 // document_start visibility shim; this only defers the heavier init.)
-bootstrapContentScript();
+bootstrapGate();
