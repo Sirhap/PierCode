@@ -217,7 +217,7 @@ type BrowserController interface {
 	UseTab(ctx context.Context, tabID int, reason, callID string) (BrowserTab, error)
 	Navigate(ctx context.Context, tabID *int, url, callID string) (BrowserTab, error)
 	NavigateWithBeforeunload(ctx context.Context, tabID *int, url, callID, beforeunloadPolicy string) (BrowserTab, error)
-	Snapshot(ctx context.Context, tabID *int, maxNodes int) (BrowserSnapshot, error)
+	Snapshot(ctx context.Context, tabID *int, opts SnapshotOptions) (BrowserSnapshot, error)
 	Click(ctx context.Context, req BrowserClickRequest) (string, error)
 	Type(ctx context.Context, req BrowserTypeRequest) (string, error)
 	Clipboard(ctx context.Context, req BrowserClipboardRequest) (BrowserClipboardResponse, error)
@@ -271,6 +271,15 @@ type BrowserTab struct {
 // this rather than using Title directly (prompt-injection defense).
 func (t BrowserTab) SafeTitle() string {
 	return security.SanitizeLabel(t.Title, 200)
+}
+
+// SnapshotOptions controls how a browser accessibility snapshot is rendered.
+// All zero values mean "use the default".
+type SnapshotOptions struct {
+	MaxNodes int    // cap on emitted nodes
+	MaxChars int    // cap on output characters
+	Depth    int    // max nesting depth to descend
+	RefID    string // when set, render only the subtree rooted at this ref
 }
 
 type BrowserSnapshot struct {

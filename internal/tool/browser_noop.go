@@ -34,7 +34,7 @@ func (noopBrowserController) NavigateWithBeforeunload(_ context.Context, _ *int,
 	return BrowserTab{}, errNoopBrowser
 }
 
-func (noopBrowserController) Snapshot(_ context.Context, _ *int, _ int) (BrowserSnapshot, error) {
+func (noopBrowserController) Snapshot(_ context.Context, _ *int, _ SnapshotOptions) (BrowserSnapshot, error) {
 	return BrowserSnapshot{}, errNoopBrowser
 }
 

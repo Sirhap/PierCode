@@ -55,7 +55,7 @@ func (r *userJourneyRecorder) NavigateWithBeforeunload(_ context.Context, _ *int
 	return BrowserTab{TabID: 1, URL: url, Title: "Page"}, nil
 }
 
-func (r *userJourneyRecorder) Snapshot(_ context.Context, _ *int, _ int) (BrowserSnapshot, error) {
+func (r *userJourneyRecorder) Snapshot(_ context.Context, _ *int, _ SnapshotOptions) (BrowserSnapshot, error) {
 	return BrowserSnapshot{
 		SnapshotID: "snap-1",
 		Tab:        BrowserTab{TabID: 1, URL: "https://example.com", Title: "Example"},

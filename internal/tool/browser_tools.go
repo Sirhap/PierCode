@@ -175,14 +175,22 @@ func NewBrowserSnapshotTool() Tool {
 	return &browserTool{
 		name:        "browser_snapshot",
 		readOnly:    true,
-		description: "Get a compact accessibility tree snapshot of the controlled page with e0/e1 refs for later browser_click/browser_type",
+		description: "Get an indented accessibility-tree snapshot of the controlled page with e0/e1 refs for later browser_click/browser_type. Output preserves parent-child nesting. If it truncates, lower depth or focus a subtree with refId.",
 		parameters: map[string]string{
 			"tabId":    "number (optional) - controlled tab id",
-			"maxNodes": "number (optional, default 200) - maximum compact nodes to return",
+			"maxNodes": "number (optional, default 200) - maximum nodes to return",
+			"depth":    "number (optional, default 15) - maximum nesting depth to descend",
+			"refId":    "string (optional) - render only the subtree rooted at this ref (e.g. e12) to drill into one region",
+			"maxChars": "number (optional, default 12000) - maximum output characters",
 		},
 		validate: func(map[string]interface{}) error { return nil },
 		execute: func(ctx *Context) (string, error) {
-			snapshot, err := ctx.Browser.Snapshot(ctx.Context, optionalInt(ctx.Args, "tabId"), intArgDefault(ctx.Args, "maxNodes", 200))
+			snapshot, err := ctx.Browser.Snapshot(ctx.Context, optionalInt(ctx.Args, "tabId"), SnapshotOptions{
+				MaxNodes: intArgDefault(ctx.Args, "maxNodes", 0),
+				MaxChars: intArgDefault(ctx.Args, "maxChars", 0),
+				Depth:    intArgDefault(ctx.Args, "depth", 0),
+				RefID:    stringArg(ctx.Args, "refId"),
+			})
 			if err != nil {
 				return "", err
 			}

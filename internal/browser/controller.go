@@ -374,7 +374,7 @@ func (c *Controller) NavigateWithBeforeunload(ctx context.Context, tabID *int, r
 	return next, nil
 }
 
-func (c *Controller) Snapshot(ctx context.Context, tabID *int, maxNodes int) (tool.BrowserSnapshot, error) {
+func (c *Controller) Snapshot(ctx context.Context, tabID *int, opts tool.SnapshotOptions) (tool.BrowserSnapshot, error) {
 	tab, err := c.ensureTab(ctx, tabID)
 	if err != nil {
 		return tool.BrowserSnapshot{}, err
@@ -402,7 +402,7 @@ func (c *Controller) Snapshot(ctx context.Context, tabID *int, maxNodes int) (to
 	}
 	tab.Controlled = true
 	snapshotID := fmt.Sprintf("snap_%d", c.snapSeq.Add(1))
-	snapshot, refs, err := CompactSnapshot(raw, tab, snapshotID, maxNodes)
+	snapshot, refs, err := CompactSnapshot(raw, tab, snapshotID, opts)
 	if err != nil {
 		return tool.BrowserSnapshot{}, err
 	}
