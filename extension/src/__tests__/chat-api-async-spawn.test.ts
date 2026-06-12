@@ -241,6 +241,45 @@ describe('injection queue idle gating', () => {
   })
 })
 
+describe('injection conversation binding', () => {
+  it('injects into the conversation that spawned the batch, not a newer unrelated one', async () => {
+    const st = __injectionStateForTest()
+    // User started a NEW conversation while the batch ran.
+    st.setMainContext({ platform: 'openai', chatId: 'NEW-chat', parentId: 'np', model: 'gpt-4o' })
+    st.queue.push({ message: '汇总', ctx: { platform: 'openai', chatId: 'OLD-chat', parentId: 'op', model: 'gpt-4o' } })
+
+    vi.stubGlobal('fetch', vi.fn(async () => sseResponse('继续') as any))
+    try {
+      st.drain()
+      await waitFor(() => types().includes('CHAT_DONE'))
+      // CHAT_DONE echoes the chatId the injected turn ran in.
+      const done = broadcasts.find(b => b.type === 'CHAT_DONE')
+      expect(done.chatId).toBe('OLD-chat')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('prefers lastMainContext (fresher parentId) when it IS the same conversation', async () => {
+    const st = __injectionStateForTest()
+    st.setMainContext({ platform: 'openai', chatId: 'c1', parentId: 'fresh-parent', model: 'gpt-4o' })
+    st.queue.push({ message: '汇总', ctx: { platform: 'openai', chatId: 'c1', parentId: 'stale-parent', model: 'gpt-4o' } })
+
+    const bodies: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: any, init?: any) => {
+      bodies.push(String(init?.body || ''))
+      return sseResponse('继续') as any
+    }))
+    try {
+      st.drain()
+      await waitFor(() => types().includes('CHAT_DONE'))
+      expect(broadcasts.find(b => b.type === 'CHAT_DONE').chatId).toBe('c1')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
 describe('SW-restart recovery of an uninjected finished batch', () => {
   it('re-queues the summary from the persisted record (emit-once)', async () => {
     sessionData['spawnBatch:sb1'] = {

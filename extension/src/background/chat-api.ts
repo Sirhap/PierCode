@@ -1070,7 +1070,14 @@ function enqueueInjection(message: string, ctx: MainTurnContext): void {
 function drainInjectionQueue(): void {
   if (mainTurnDepth > 0 || pendingInjections.length === 0) return
   const item = pendingInjections.shift()!
-  const ctx = lastMainContext ?? item.ctx
+  // The summary belongs to the conversation that SPAWNED the batch (item.ctx).
+  // lastMainContext is only "the same conversation, fresher parentId" when the
+  // chatId matches — the user may have started a new session or switched
+  // platform while the batch ran, and injecting there would leak the summary
+  // into an unrelated conversation.
+  const ctx = lastMainContext && lastMainContext.chatId === item.ctx.chatId
+    ? lastMainContext
+    : item.ctx
   // New assistant bubble in the sidebar for the continuation.
   broadcast({ type: 'CHAT_CONTINUING' })
   void handleChatRequest({

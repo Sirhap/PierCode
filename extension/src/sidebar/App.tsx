@@ -252,13 +252,16 @@ export default function App() {
   // MV3 把 SW 杀掉后若无人发消息，batch 会一直瘫着（看起来像子 agent 断链）。
   // content 路线有状态轮询当 waker，sidebar 路线靠这里。消息本身可以无人应答
   // —— 投递动作就会拉起 SW 并触发 registerChatApiHandler 的 resume。
+  // 依赖布尔值而非 subAgents 数组：流式 chunk 每次都换数组引用，若直接依赖会
+  // 在活跃流式期反复重建 interval，定时器永远到不了 20s。
+  const hasRunningAgents = subAgents.some(a => a.status === 'running')
   useEffect(() => {
-    if (!subAgents.some(a => a.status === 'running')) return
+    if (!hasRunningAgents) return
     const t = window.setInterval(() => {
       chrome.runtime.sendMessage({ type: 'PIERCODE_SW_WAKE' }).catch(() => {})
     }, 20_000)
     return () => window.clearInterval(t)
-  }, [subAgents])
+  }, [hasRunningAgents])
 
   // ── Lifted token meter (computed once, shared by TokenPanel + StatusHUD) ─
   const meter = useMemo<TokenMeter>(() => {
