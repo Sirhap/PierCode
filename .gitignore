@@ -67,3 +67,6 @@ chatgpt-proxy/.pyi-build/
 chatgpt-proxy/build/
 chatgpt-proxy/dist/
 *.spec
+
+# reverse-engineered reference porting specs (local only, not committed)
+tmp/

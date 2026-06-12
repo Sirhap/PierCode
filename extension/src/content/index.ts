@@ -8,7 +8,6 @@ import { isBalancedJson } from './json-complete';
 import { visualIndicator } from './visual-indicator';
 import { statusPanel, type ControlledTabInfo } from './status-panel';
 import { computeMeter } from './token-meter';
-import { exposeAccessibilityTree, generateAccessibilityTree, getElementCoordinates, scrollToElement, clickElement, searchElements } from './accessibility-tree';
 import { SinglePacketWaiter } from './qwen-context-packet-waiter';
 import {
   compactToolOutputForChat,
@@ -1165,9 +1164,6 @@ function bootstrapContentScript() {
   ensureStreamDispatchers();
   ensureAttachmentUploadDispatcher();
 
-  // 暴露无障碍树 API
-  exposeAccessibilityTree();
-
   if (cfg.responseSelector) {
     const sel = cfg.responseSelector;
     // Safe to start directly: bootstrapContentScript runs at EOF, after every
@@ -1234,42 +1230,6 @@ function bootstrapContentScript() {
         .then(sendResponse)
         .catch(error => sendResponse({ ok: false, error: String(error) }));
       return true;
-    }
-
-    // 处理无障碍树相关请求
-    if (msg.type === 'GENERATE_SNAPSHOT') {
-      const { filter, maxDepth, maxChars, refId } = msg.params || {};
-      try {
-        const result = generateAccessibilityTree(filter, maxDepth, maxChars, refId);
-        sendResponse({ success: true, ...result });
-      } catch (error) {
-        sendResponse({ success: false, error: String(error) });
-      }
-      return true;
-    }
-
-    if (msg.type === 'GET_ELEMENT_COORDINATES') {
-      const coords = getElementCoordinates(msg.ref);
-      sendResponse(coords);
-      return false;
-    }
-
-    if (msg.type === 'SCROLL_TO_ELEMENT') {
-      const success = scrollToElement(msg.ref);
-      sendResponse({ success });
-      return false;
-    }
-
-    if (msg.type === 'CLICK_ELEMENT') {
-      const result = clickElement(msg.ref);
-      sendResponse(result);
-      return false;
-    }
-
-    if (msg.type === 'SEARCH_ELEMENTS') {
-      const results = searchElements(msg.query, msg.maxResults);
-      sendResponse({ results });
-      return false;
     }
 
     if (msg.type === 'PIERCODE_CONTROLLED_TAB') {
