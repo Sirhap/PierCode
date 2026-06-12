@@ -901,21 +901,12 @@ interface ChatRequestParams {
   reasoning?: string
 }
 
-// Execute the tool calls extracted from one assistant turn and broadcast each
-// result. Shared by the active-fetch path (recurses with the formatted output)
-// and the listen path (injects the formatted output back into the driven tab).
-// Broadcasts CHAT_TOOLS up front and CHAT_TOOL_DONE per result, matching the UI
-// contract either way.
-async function runToolCalls(
-  toolCalls: ToolCall[],
-  platform: string,
-  modelOverride: string | undefined,
-  depth: number,
+// Execute the NON-spawn tool calls of one assistant turn and broadcast each
+// result. Question tools need user interaction; the rest go to server /exec.
+async function runNormalToolCalls(
+  normal: ToolCall[],
   signal: AbortSignal,
 ): Promise<ToolResult[]> {
-  // Callers broadcast CHAT_TOOLS up front (active path here; listen path in
-  // consumeListenStream), so this helper only executes and emits CHAT_TOOL_DONE.
-  const { spawns, normal } = partitionSpawnCalls(toolCalls)
   const results: ToolResult[] = []
 
   // Separate question tools — they need user interaction, not server exec.
@@ -935,6 +926,23 @@ async function runToolCalls(
     results.push(result)
     broadcast({ type: 'CHAT_TOOL_DONE', result })
   }
+
+  return results
+}
+
+// Legacy synchronous tool runner for the LISTEN path (page-driven tabs): spawn
+// batches are awaited inline because the driven tab has no idle-injection
+// channel. The active sidebar path (handleChatRequest) instead defers spawns to
+// launchSidebarSpawnBatch so the main conversation is never blocked.
+async function runToolCalls(
+  toolCalls: ToolCall[],
+  platform: string,
+  modelOverride: string | undefined,
+  depth: number,
+  signal: AbortSignal,
+): Promise<ToolResult[]> {
+  const { spawns, normal } = partitionSpawnCalls(toolCalls)
+  const results = await runNormalToolCalls(normal, signal)
 
   // spawn_agent → parallel sub-conversations (no tabs). Each runSubAgent catches
   // its own failures into a failed ToolResult, so Promise.all never rejects.
@@ -1001,7 +1009,115 @@ export async function continueListenTurn(platform: string, content: string): Pro
   await handleChatRequestViaListen(platform, formatToolResults(results))
 }
 
-async function handleChatRequest(params: ChatRequestParams): Promise<void> {
+// ── Async sidebar spawn batches + idle injection ─────────────────────────────
+//
+// spawn_agent from the SIDEBAR main conversation must not block it: the batch
+// runs detached (through the recoverable-batch machinery, so checkpoints,
+// keep-alive and SW-restart resume all apply), the main turn ends immediately
+// (CHAT_DONE unlocks the input), and the batch summary is queued. The queue is
+// drained only when the main conversation is idle (no handleChatRequest in
+// flight), injecting the summary as a new turn so it never interleaves with a
+// user message.
+
+// The resume point of the sidebar main conversation, refreshed after every
+// completed stream turn. Injection continues from here.
+interface MainTurnContext {
+  platform: string
+  chatId: string
+  parentId: string | null
+  model?: string
+  reasoning?: string
+}
+
+let lastMainContext: MainTurnContext | null = null
+// >0 while any handleChatRequest is running (the whole recursion chain).
+let mainTurnDepth = 0
+// Queued batch summaries waiting for an idle main conversation. ctx is the
+// fallback resume point persisted with the batch (used when a restarted SW has
+// no lastMainContext yet); a fresher lastMainContext wins at drain time.
+const pendingInjections: Array<{ message: string; ctx: MainTurnContext }> = []
+
+let sidebarBatchSeq = 0
+
+// launchSidebarSpawnBatch runs a sidebar spawn batch detached. Reuses the
+// recoverable-batch path (persist + checkpoint + keep-alive + resume); the
+// `inject` ctx on the record routes results into the injection queue instead of
+// a CONTENT_SPAWN_RESULT tab push.
+export function launchSidebarSpawnBatch(
+  spawns: ToolCall[],
+  ctx: MainTurnContext,
+  depth: number,
+): void {
+  const batchKey = `sidebar-${Date.now()}-${++sidebarBatchSeq}`
+  void startRecoverableSpawnBatch(batchKey, spawns, ctx.platform, ctx.model, undefined, {
+    inject: ctx,
+    depth,
+  }).catch(err => {
+    broadcast({ type: 'CHAT_ERROR', error: `子 agent 批次失败: ${err instanceof Error ? err.message : String(err)}` })
+  })
+}
+
+// enqueueInjection queues a finished batch's summary and tries to drain.
+function enqueueInjection(message: string, ctx: MainTurnContext): void {
+  pendingInjections.push({ message, ctx })
+  drainInjectionQueue()
+}
+
+// drainInjectionQueue injects ONE queued summary when the main conversation is
+// idle. The injected turn is itself a handleChatRequest, whose finally drains
+// the next item — so multiple finished batches inject sequentially, never
+// interleaved with each other or with a user turn.
+function drainInjectionQueue(): void {
+  if (mainTurnDepth > 0 || pendingInjections.length === 0) return
+  const item = pendingInjections.shift()!
+  const ctx = lastMainContext ?? item.ctx
+  // New assistant bubble in the sidebar for the continuation.
+  broadcast({ type: 'CHAT_CONTINUING' })
+  void handleChatRequest({
+    platform: ctx.platform,
+    message: item.message,
+    chatId: ctx.chatId,
+    parentId: ctx.parentId,
+    model: ctx.model,
+    reasoning: ctx.reasoning,
+    depth: 1, // continuation turn: never re-applies the system prompt
+  }).catch(err => {
+    broadcast({ type: 'CHAT_ERROR', error: err instanceof Error ? err.message : String(err) })
+  })
+}
+
+// Test-only: inspect/reset the injection machinery.
+export function __injectionStateForTest(): {
+  queue: Array<{ message: string; ctx: MainTurnContext }>
+  setMainContext: (ctx: MainTurnContext | null) => void
+  setTurnDepth: (n: number) => void
+  drain: () => void
+  reset: () => void
+} {
+  return {
+    queue: pendingInjections,
+    setMainContext: (ctx) => { lastMainContext = ctx },
+    setTurnDepth: (n) => { mainTurnDepth = n },
+    drain: drainInjectionQueue,
+    reset: () => {
+      pendingInjections.length = 0
+      lastMainContext = null
+      mainTurnDepth = 0
+    },
+  }
+}
+
+export async function handleChatRequest(params: ChatRequestParams): Promise<void> {
+  mainTurnDepth++
+  try {
+    await handleChatRequestInner(params)
+  } finally {
+    mainTurnDepth--
+    if (mainTurnDepth === 0) drainInjectionQueue()
+  }
+}
+
+async function handleChatRequestInner(params: ChatRequestParams): Promise<void> {
   const { platform, depth = 0, systemPrompt, reasoning } = params
   let { chatId, parentId, model: modelOverride, message } = params
 
@@ -1110,27 +1226,52 @@ async function handleChatRequest(params: ChatRequestParams): Promise<void> {
       (step) => broadcast({ type: 'CHAT_THINKING', step }),
     )
 
+    // Refresh the injection resume point: a queued batch summary continues the
+    // conversation from the latest completed stream turn.
+    if (chatId) {
+      lastMainContext = { platform, chatId, parentId: sseResult.responseId, model: modelOverride, reasoning }
+    }
+
     // Check for tool calls
     const toolCalls = extractToolCalls(sseResult.content)
 
     if (toolCalls.length > 0) {
       broadcast({ type: 'CHAT_TOOLS', tools: toolCalls })
-      const results = await runToolCalls(toolCalls, platform, modelOverride, depth, currentAbort.signal)
-      const toolResultContent = formatToolResults(results)
+      const { spawns, normal } = partitionSpawnCalls(toolCalls)
+      const results = await runNormalToolCalls(normal, currentAbort.signal)
 
-      // Signal sidebar to create a new assistant message for the continuation
-      broadcast({ type: 'CHAT_CONTINUING' })
+      // spawn_agent runs DETACHED: the batch summary is injected later, when
+      // the main conversation is idle. The turn itself ends without waiting.
+      if (spawns.length > 0 && !currentAbort.signal.aborted && chatId) {
+        launchSidebarSpawnBatch(
+          spawns,
+          { platform, chatId, parentId: sseResult.responseId, model: modelOverride, reasoning },
+          depth,
+        )
+      }
 
-      // Recursive: same chatId, use responseId as parentId for tool result
-      await handleChatRequest({
-        platform,
-        message: toolResultContent,
-        chatId,
-        parentId: sseResult.responseId,
-        model: modelOverride,
-        reasoning,
-        depth: depth + 1,
-      })
+      if (results.length > 0) {
+        const toolResultContent = formatToolResults(results)
+
+        // Signal sidebar to create a new assistant message for the continuation
+        broadcast({ type: 'CHAT_CONTINUING' })
+
+        // Recursive: same chatId, use responseId as parentId for tool result
+        await handleChatRequest({
+          platform,
+          message: toolResultContent,
+          chatId,
+          parentId: sseResult.responseId,
+          model: modelOverride,
+          reasoning,
+          depth: depth + 1,
+        })
+        return
+      }
+
+      // Spawn-only turn: end it now so the input unlocks; the batch result
+      // arrives later through the injection queue.
+      broadcast({ type: 'CHAT_DONE', chatId, responseId: sseResult.responseId })
       return
     }
 
@@ -1278,6 +1419,12 @@ interface SpawnBatchRecord {
   createdAt: number
   done: boolean
   agents: SpawnAgentRecord[]
+  /** Sidebar route: resume point of the main conversation. When set, finished
+   *  results go to the idle-injection queue instead of a tab push. */
+  inject?: MainTurnContext
+  /** True once the summary was handed to the injection queue (emit-once across
+   *  SW restarts; resumeOrphanedSpawnBatches re-injects done-but-uninjected). */
+  injected?: boolean
 }
 
 const SPAWN_BATCH_PREFIX = 'spawnBatch:'
@@ -1320,14 +1467,17 @@ async function loadSpawnBatch(batchKey: string): Promise<SpawnBatchRecord | null
   }
 }
 
-// sweepSpawnBatches deletes expired records and returns the undone survivors.
-async function sweepSpawnBatches(): Promise<SpawnBatchRecord[]> {
+// sweepSpawnBatches deletes expired records and returns the survivors that
+// still need work: undone batches (resume) and done sidebar batches whose
+// summary never reached the injection queue (SW died between done and inject).
+async function sweepSpawnBatches(): Promise<{ undone: SpawnBatchRecord[]; uninjected: SpawnBatchRecord[] }> {
   const store = sessionStore()
-  if (!store) return []
+  if (!store) return { undone: [], uninjected: [] }
   try {
     const all = await store.get(null)
     const now = Date.now()
     const undone: SpawnBatchRecord[] = []
+    const uninjected: SpawnBatchRecord[] = []
     const drop: string[] = []
     for (const [k, v] of Object.entries(all || {})) {
       if (!k.startsWith(SPAWN_BATCH_PREFIX)) continue
@@ -1336,12 +1486,14 @@ async function sweepSpawnBatches(): Promise<SpawnBatchRecord[]> {
         drop.push(k)
       } else if (!rec.done) {
         undone.push(rec)
+      } else if (rec.inject && !rec.injected) {
+        uninjected.push(rec)
       }
     }
     if (drop.length) await store.remove(drop)
-    return undone
+    return { undone, uninjected }
   } catch {
-    return []
+    return { undone: [], uninjected: [] }
   }
 }
 
@@ -1371,6 +1523,7 @@ export async function startRecoverableSpawnBatch(
   platform: string,
   model: string | undefined,
   originTabId?: number,
+  opts?: { inject?: MainTurnContext; depth?: number },
 ): Promise<void> {
   const stamp = Date.now()
   const rec: SpawnBatchRecord = {
@@ -1378,8 +1531,9 @@ export async function startRecoverableSpawnBatch(
     batchId: `batch-${stamp}-${Math.random().toString(36).slice(2, 6)}`,
     platform,
     model,
-    depth: 0,
+    depth: opts?.depth ?? 0,
     originTabId,
+    inject: opts?.inject,
     createdAt: stamp,
     done: false,
     agents: spawns.map((call, i) => ({
@@ -1417,6 +1571,13 @@ async function runSpawnBatchRecord(rec: SpawnBatchRecord): Promise<void> {
       return result
     }))
     rec.done = true
+    // Sidebar route: per-result CHAT_TOOL_DONE (attaches to the spawning turn's
+    // message in the UI) + queue the batch summary for idle injection.
+    if (rec.inject && !rec.injected) {
+      for (const r of results) broadcast({ type: 'CHAT_TOOL_DONE', result: r })
+      rec.injected = true
+      enqueueInjection(formatToolResults(results), rec.inject)
+    }
     finishedSpawnBatches.set(rec.batchKey, results)
     // Cap the in-memory finished store: it only exists so the status poll works
     // without chrome.storage.session, and a long SW life would otherwise retain
@@ -1449,9 +1610,18 @@ async function runSpawnBatchRecord(rec: SpawnBatchRecord): Promise<void> {
 // resumeOrphanedSpawnBatches re-launches batches a killed SW left undone.
 // Called on every SW start (registerChatApiHandler) and is cheap when idle.
 export async function resumeOrphanedSpawnBatches(): Promise<void> {
-  const undone = await sweepSpawnBatches()
+  const { undone, uninjected } = await sweepSpawnBatches()
   for (const rec of undone) {
     if (!liveSpawnBatches.has(rec.batchKey)) void runSpawnBatchRecord(rec)
+  }
+  // SW died after the batch finished but before its summary was queued:
+  // re-queue from the persisted results (emit-once via the injected flag).
+  for (const rec of uninjected) {
+    const results = rec.agents.map(a => a.result).filter((r): r is ToolResult => !!r)
+    if (results.length === 0 || !rec.inject) continue
+    rec.injected = true
+    await saveSpawnBatch(rec)
+    enqueueInjection(formatToolResults(results), rec.inject)
   }
 }
 
@@ -1537,10 +1707,22 @@ async function runIsolatedConversation(params: {
     parentId = sse.responseId
 
     const calls = extractToolCalls(sse.content)
-    const { normal } = partitionSpawnCalls(calls)  // sub-agents don't spawn further
-    if (normal.length === 0) break
+    const { spawns, normal } = partitionSpawnCalls(calls)  // sub-agents don't spawn further
+    if (normal.length === 0 && spawns.length === 0) break
 
     const results: ToolResult[] = []
+    // Inline spawn from a sub-agent: refuse with explicit feedback instead of
+    // silently dropping the call (which cut the conversation short and handed
+    // the parent a half-finished result). The AI sees a failed tool result and
+    // finishes the task itself.
+    for (const tc of spawns) {
+      results.push({
+        call_id: tc.call_id,
+        name: tc.name,
+        output: '(子 agent 不能再派生子 agent：已达嵌套边界。请不要再调用 spawn_agent，直接自己完成任务，然后用纯文本汇报结果。)',
+        success: false,
+      })
+    }
     for (const tc of normal) {
       if (abortSignal?.aborted) break
       results.push(await execTool(tc.name, tc.args))
@@ -1575,10 +1757,14 @@ function broadcast(msg: Record<string, unknown>) {
 // content scripts, so a content-route StatusPanel sees its own agents via the
 // origin tab. When originTabId is undefined (sidebar route), it stays sidebar-
 // only — no all-tabs fan-out, so other AI tabs don't show foreign agent rows.
+// Every event carries `origin` so each UI renders only its own agents: the
+// sidebar drops 'tab' events (the runtime broadcast still reaches it for
+// content-route agents), and a tab's StatusPanel only ever receives its own.
 function broadcastAgentLifecycle(msg: Record<string, unknown>, originTabId?: number) {
-  broadcast(msg) // sidebar (runtime.sendMessage)
+  const tagged = { ...msg, origin: originTabId != null ? 'tab' : 'sidebar' }
+  broadcast(tagged) // sidebar (runtime.sendMessage)
   if (originTabId != null) {
-    chrome.tabs.sendMessage(originTabId, msg).catch(() => {})
+    chrome.tabs.sendMessage(originTabId, tagged).catch(() => {})
   }
 }
 

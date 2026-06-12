@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildAgentSummary, accumulateBatch } from '../sidebar/subagent-ui'
-import type { SubAgent } from '../sidebar/WorkerRadar'
+import { buildAgentSummary, accumulateBatch, type SubAgent } from '../sidebar/subagent-ui'
 
 const mkAgent = (id: string, batchId: string, status: SubAgent['status'], content: string): SubAgent =>
   ({ id, label: id, task: 't', status, batchId, messages: [{ role: 'assistant', content }] }) as any

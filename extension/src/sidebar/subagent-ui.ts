@@ -1,4 +1,15 @@
-import type { SubAgent } from './WorkerRadar'
+import type { ChatMessage } from './MessageView'
+import { extractFenceToolCalls } from '../parser'
+
+export interface SubAgent {
+  id: string
+  label: string
+  task: string
+  status: 'running' | 'done' | 'error'
+  messages: ChatMessage[]
+  fading?: boolean
+  batchId?: string
+}
 
 export interface AgentSummaryItem {
   label: string
@@ -26,6 +37,49 @@ export function buildAgentSummary(agents: SubAgent[]): AgentSummaryItem[] {
       output,
     }
   })
+}
+
+// ── Tool-call tree (AgentDock) ──────────────────────────────────────────────
+
+export interface AgentToolCall {
+  name: string
+  /** Short human preview of the call's most telling argument. */
+  preview: string
+}
+
+// summarizeToolArgs picks the most telling argument for a one-line preview:
+// path/command-like keys first, then the first short string value.
+export function summarizeToolArgs(args: Record<string, unknown>): string {
+  const PREFERRED = ['path', 'file_path', 'cmd', 'command', 'pattern', 'url', 'task', 'label', 'query']
+  for (const key of PREFERRED) {
+    const v = args[key]
+    if (typeof v === 'string' && v.trim()) return clip(v.trim())
+  }
+  for (const v of Object.values(args)) {
+    if (typeof v === 'string' && v.trim()) return clip(v.trim())
+  }
+  return ''
+}
+
+function clip(s: string): string {
+  const line = s.split('\n')[0]
+  return line.length > 40 ? line.slice(0, 39) + '…' : line
+}
+
+// parseAgentToolCalls extracts the tool calls a sub-agent emitted, in order,
+// from its accumulated streamed transcript. Drives the AgentDock "current tool"
+// preview (last entry while running) and the expanded call tree. Incomplete
+// fences (still streaming) simply parse to nothing yet.
+export function parseAgentToolCalls(transcript: string): AgentToolCall[] {
+  return extractFenceToolCalls(transcript).map(tc => ({
+    name: tc.name,
+    preview: summarizeToolArgs(tc.args),
+  }))
+}
+
+// agentTranscript concatenates a sub-agent's streamed assistant text.
+export function agentTranscript(agent: SubAgent): string {
+  return agent.messages.map(m => m.content).join('')
 }
 
 // Delay (ms) before a done sub-agent card fades out and is removed.

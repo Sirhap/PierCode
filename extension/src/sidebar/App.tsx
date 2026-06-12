@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import MessageView, { type ChatMessage, type ToolResult, type ThinkingStep } from './MessageView'
 import Picker, { type PickerItem } from './Picker'
 import TokenPanel from './token-panel'
-import WorkerRadar, { type SubAgent } from './WorkerRadar'
+import AgentDock from './AgentDock'
 import StatusHUD from './StatusHUD'
 import { classifyCompletion } from './completions'
 import { filterAgentTemplates } from './agent-templates'
@@ -23,7 +23,7 @@ import {
   getActiveSessionId, setActiveSessionId,
   type SessionMeta, type StoredSession,
 } from './session-store'
-import { accumulateBatch, AGENT_FADE_DELAY_MS, AGENT_FADE_DURATION_MS } from './subagent-ui'
+import { accumulateBatch, AGENT_FADE_DELAY_MS, AGENT_FADE_DURATION_MS, type SubAgent } from './subagent-ui'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -159,37 +159,6 @@ function QuestionCard({ question, options, onAnswer }: {
           提交
         </button>
       </div>
-    </div>
-  )
-}
-
-// ── Sub-agent Card Component ───────────────────────────────────────────────
-
-function SubAgentCard({ agent }: { agent: SubAgent }) {
-  const [open, setOpen] = useState(false)
-  const mark = agent.status === 'running' ? '▸▸' : agent.status === 'error' ? '✗' : '✓'
-  const markCls = agent.status === 'running' ? 'text-amber-400 animate-pulse-dot' : agent.status === 'error' ? 'text-red-400' : 'glow-text'
-  const transcript = agent.messages.map(m => m.content).join('')
-  const abortAgent = (e: { stopPropagation: () => void }) => {
-    e.stopPropagation()
-    chrome.runtime.sendMessage({ type: 'CHAT_AGENT_ABORT', agentId: agent.id })
-  }
-  return (
-    <div className={`rounded-sm border text-xs${agent.fading ? ' agent-fading' : ''}`} style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}>
-      <div className="flex items-center gap-2 px-2 py-1 cursor-pointer" onClick={() => setOpen(o => !o)}>
-        <span className={markCls}>{mark}</span>
-        <span className="glow-text text-[11px]">@{agent.label}</span>
-        <span className="truncate flex-1" style={{ color: 'var(--dim)' }}>{agent.task.slice(0, 40)}</span>
-        {agent.status === 'running' && (
-          <button onClick={abortAgent} title="停止此子 agent" className="px-1 cursor-pointer" style={{ color: 'var(--dim)' }}>✕</button>
-        )}
-        <span className="text-[10px]" style={{ color: 'var(--dim)' }}>{open ? '▾' : '▸'}</span>
-      </div>
-      {open && (
-        <pre className="px-2 pb-2 text-[10px] whitespace-pre-wrap break-all max-h-32 overflow-y-auto" style={{ color: 'var(--dim)' }}>
-          {transcript || '(暂无输出)'}
-        </pre>
-      )}
     </div>
   )
 }
@@ -384,6 +353,9 @@ export default function App() {
     const CHAT_TYPES = new Set(['CHAT_STREAM', 'CHAT_THINKING', 'CHAT_TOOLS', 'CHAT_TOOL_DONE', 'CHAT_TOOL_STREAM', 'CHAT_DONE', 'CHAT_ERROR', 'CHAT_CONTINUING', 'CHAT_QUESTION', 'CHAT_AGENT_SPAWN', 'CHAT_AGENT_STREAM', 'CHAT_AGENT_DONE'])
     const listener = (msg: any) => {
       if (!msg?.type || !CHAT_TYPES.has(msg.type)) return
+      // 隔离：网页 content 路由颁发的子 agent（origin:'tab'）只归该 tab 的
+      // StatusPanel，sidebar 不渲染，避免跨界串台。无 origin 字段（旧消息）放行。
+      if (msg.type.startsWith('CHAT_AGENT_') && msg.origin === 'tab') return
       if (msg.type === 'CHAT_STREAM') {
         setMessages(prev => {
           const next = [...prev]
@@ -453,7 +425,9 @@ export default function App() {
           return next
         })
       } else if (msg.type === 'CHAT_CONTINUING') {
-        // Tool execution done, AI is continuing — create a fresh assistant message
+        // Tool execution done / batch summary injecting — fresh assistant message.
+        // Also (re-)enter streaming: an idle-injected spawn summary starts a new
+        // turn after CHAT_DONE already unlocked the input.
         const now = Date.now()
         setMessages(prev => {
           const newMsg: ChatMessage = { role: 'assistant', content: '', streaming: true, ts: now }
@@ -461,6 +435,7 @@ export default function App() {
           currentAssistantIdx.current = next.length - 1
           return next
         })
+        setStreaming(true)
       } else if (msg.type === 'CHAT_QUESTION') {
         // Question tool needs user interaction — show UI
         setPendingQuestion({
@@ -787,8 +762,8 @@ export default function App() {
     setMessages(prev => prev.map((m, i) => i === idx ? { ...m, pinned: !m.pinned } : m))
   }, [])
 
-  const jumpToAgent = useCallback((id: string) => {
-    document.getElementById(`agent-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  const abortAgent = useCallback((id: string) => {
+    chrome.runtime.sendMessage({ type: 'CHAT_AGENT_ABORT', agentId: id })
   }, [])
 
   const handleQuestionAnswer = useCallback((answer: string) => {
@@ -881,7 +856,7 @@ export default function App() {
 
   // ── Render ────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-screen crt-scanlines crt-grain" style={{ background: 'var(--bg)', color: 'var(--txt)' }}>
+    <div className="relative flex flex-col h-screen crt-scanlines crt-grain" style={{ background: 'var(--bg)', color: 'var(--txt)' }}>
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div className="boot boot-1 flex items-center justify-between px-3 py-2 border-b flex-shrink-0" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
         <div className="flex items-center gap-2 min-w-0">
@@ -972,8 +947,8 @@ export default function App() {
         )}
       </div>
 
-      {/* ── Worker radar ────────────────────────────────────────────────────── */}
-      <WorkerRadar agents={subAgents} onJump={jumpToAgent} />
+      {/* ── Agent dock（右上角浮标 + 抽屉，取代 WorkerRadar） ──────────────────── */}
+      <AgentDock agents={subAgents} onAbort={abortAgent} />
 
       {/* ── Pinned region ───────────────────────────────────────────────────── */}
       {messages.some(m => m.pinned) && (
@@ -1017,17 +992,6 @@ export default function App() {
           />
         ))}
       </div>
-
-      {/* ── Sub-agents ──────────────────────────────────────────────────────── */}
-      {subAgents.length > 0 && (
-        <div className="px-3 py-1.5 border-t flex-shrink-0 space-y-1 max-h-40 overflow-y-auto chat-scroll" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
-          {subAgents.map(a => (
-            <div key={a.id} id={`agent-${a.id}`}>
-              <SubAgentCard agent={a} />
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* ── Question card (user interaction) ─────────────────────────────────── */}
       {pendingQuestion && (
