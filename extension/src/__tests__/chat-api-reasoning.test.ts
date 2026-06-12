@@ -41,12 +41,21 @@ describe('openai buildBody reasoning → reasoning_effort', () => {
   })
 })
 
-describe('claude buildBody reasoning → thinking (unverified web protocol)', () => {
-  it('omits thinking when off', () => {
-    expect(body('claude', { reasoning: 'off' })).not.toHaveProperty('thinking')
+describe('claude buildBody → claude.ai web /completion shape', () => {
+  it('posts prompt + root parent uuid on the first turn', () => {
+    const b = body('claude', {})
+    expect(b.prompt).toBe('hi')
+    expect(b.parent_message_uuid).toBe('00000000-0000-4000-8000-000000000000')
+    expect(b.rendering_mode).toBe('messages')
+    expect(b.attachments).toEqual([])
+    // The web endpoint has no public-API fields — sending them 400s.
+    expect(b).not.toHaveProperty('messages')
+    expect(b).not.toHaveProperty('model')
+    expect(b).not.toHaveProperty('thinking')
   })
-  it('enables extended thinking when think', () => {
-    expect(body('claude', { reasoning: 'think' }).thinking).toMatchObject({ type: 'enabled' })
+  it('threads parentId as parent_message_uuid', () => {
+    const b = JSON.parse(PLATFORMS.claude.buildBody('hi', 'uuid-123'))
+    expect(b.parent_message_uuid).toBe('uuid-123')
   })
 })
 

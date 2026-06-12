@@ -2,8 +2,9 @@
 // Pure data + functions, no React/chrome, so it stays unit-testable (mirrors
 // glow.ts). Each platform exposes its OWN set of levels because the underlying
 // web protocols differ: Qwen has a Fast/Thinking/auto feature_config, the
-// OpenAI-compatible API takes reasoning_effort=low|medium|high, Claude only
-// toggles extended thinking on/off, and ChatGPT picks a thinking model slug.
+// OpenAI-compatible API takes reasoning_effort=low|medium|high, claude.ai's
+// web /completion has no thinking field (empty list → no picker), and ChatGPT
+// picks a thinking model slug.
 //
 // The `key` strings are stored verbatim in chrome.storage (key
 // `${platform}Reasoning`) and travel through CHAT_REQUEST → BuildCtx, where
@@ -33,10 +34,9 @@ export const REASONING_LEVELS: Record<Platform, ReasoningLevel[]> = {
     { key: 'medium', label: '中' },
     { key: 'high', label: '高' },
   ],
-  claude: [
-    { key: 'off', label: '关闭' },
-    { key: 'think', label: '思考' },
-  ],
+  // claude.ai web /completion 协议没有 thinking 字段（chat-api buildBody 已不
+  // 发送），不渲染假开关。
+  claude: [],
   chatgpt: [
     { key: 'auto', label: '自动' },
     { key: 'think', label: '思考' },

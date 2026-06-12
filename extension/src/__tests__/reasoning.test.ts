@@ -14,14 +14,17 @@ describe('reasoning levels', () => {
   it('exposes per-platform level keys', () => {
     expect(REASONING_LEVELS.qwen.map(l => l.key)).toEqual(['off', 'fast', 'think', 'auto'])
     expect(REASONING_LEVELS.openai.map(l => l.key)).toEqual(['off', 'low', 'medium', 'high'])
-    expect(REASONING_LEVELS.claude.map(l => l.key)).toEqual(['off', 'think'])
+    // claude.ai web /completion has no thinking field → no picker at all.
+    expect(REASONING_LEVELS.claude).toEqual([])
     expect(REASONING_LEVELS.chatgpt.map(l => l.key)).toEqual(['auto', 'think'])
   })
 
-  it('defaults to the first level of each platform', () => {
+  it('defaults to the first level of each platform (claude has none → off)', () => {
     for (const p of Object.keys(REASONING_LEVELS) as Platform[]) {
+      if (REASONING_LEVELS[p].length === 0) continue
       expect(DEFAULT_REASONING[p]).toBe(REASONING_LEVELS[p][0].key)
     }
+    expect(DEFAULT_REASONING.claude).toBe('off')
   })
 
   it('qwen defaults to off (keeps no-thinking behaviour); chatgpt to auto', () => {
@@ -37,7 +40,7 @@ describe('reasoning levels', () => {
   it('isReasoning is scoped per platform', () => {
     expect(isReasoning('openai', 'high')).toBe(true)
     expect(isReasoning('qwen', 'high')).toBe(false)   // 'high' only exists for openai
-    expect(isReasoning('claude', 'think')).toBe(true)
+    expect(isReasoning('claude', 'think')).toBe(false) // claude has no levels
     expect(isReasoning('qwen', 42)).toBe(false)
     expect(isReasoning('qwen', undefined)).toBe(false)
   })

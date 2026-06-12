@@ -1248,40 +1248,57 @@ const LISTEN_TAB_URLS: Record<string, { match: string[]; open: string }> = {
   qwen: { match: ['*://chat.qwen.ai/*', '*://qwen.ai/*', '*://*.qwen.ai/*', '*://*.qwenlm.ai/*'], open: 'https://chat.qwen.ai/' },
   chatgpt: { match: ['*://chatgpt.com/*', '*://*.chatgpt.com/*', '*://chat.openai.com/*'], open: 'https://chatgpt.com/' },
 };
+// Only tabs WE created are tracked here. Never adopt the user's own AI tabs:
+// DOM-submitting into one would append the sidebar conversation into whatever
+// chat the user has open (the "sidebar shares the page's conversation" bug).
+// Persisted in chrome.storage.session so an SW restart doesn't orphan the tab.
 const listenTabByPlatform = new Map<string, number>();
 
-async function findListenTab(platform: string): Promise<number | null> {
+async function restoreListenTabs(): Promise<void> {
+  if (listenTabByPlatform.size > 0) return;
+  const stored = await chrome.storage.session.get(['listenTabs']).catch(() => ({} as any));
+  const saved = stored?.listenTabs as Record<string, number> | undefined;
+  if (!saved) return;
+  for (const [p, id] of Object.entries(saved)) listenTabByPlatform.set(p, id);
+}
+
+function persistListenTabs(): void {
+  const obj: Record<string, number> = {};
+  listenTabByPlatform.forEach((id, p) => { obj[p] = id; });
+  chrome.storage.session.set({ listenTabs: obj }).catch(() => undefined);
+}
+
+async function ensureListenTab(platform: string, fresh: boolean): Promise<number | null> {
   const cfg = LISTEN_TAB_URLS[platform];
   if (!cfg) return null;
-  // Reuse the tab pinned for this platform if it's still open.
+  await restoreListenTabs();
   const pinned = listenTabByPlatform.get(platform);
   if (pinned != null) {
     const alive = await chrome.tabs.get(pinned).catch(() => null);
-    if (alive) return pinned;
+    if (alive) {
+      if (fresh) {
+        // New sidebar conversation → point the dedicated tab at a new chat so
+        // we never continue the previous one.
+        await chrome.tabs.update(pinned, { url: cfg.open });
+        await waitForTabComplete(pinned, 30000).catch(() => undefined);
+      }
+      return pinned;
+    }
     listenTabByPlatform.delete(platform);
+    persistListenTabs();
   }
-  const tabs = await chrome.tabs.query({ url: cfg.match });
-  const tab = tabs.find(t => typeof t.id === 'number');
-  if (tab?.id != null) { listenTabByPlatform.set(platform, tab.id); return tab.id; }
-  return null;
-}
-
-async function ensureListenTab(platform: string): Promise<number | null> {
-  const existing = await findListenTab(platform);
-  if (existing != null) return existing;
-  const cfg = LISTEN_TAB_URLS[platform];
-  if (!cfg) return null;
-  // Open a background tab (active:false → user stays in the sidebar). The
-  // keep-alive shim (page-bridge) keeps the background tab streaming.
+  // Open a dedicated background tab (active:false → user stays in the sidebar).
+  // The keep-alive shim (page-bridge) keeps the background tab streaming.
   const tab = await chrome.tabs.create({ url: cfg.open, active: false });
   if (tab.id == null) return null;
   listenTabByPlatform.set(platform, tab.id);
+  persistListenTabs();
   await waitForTabComplete(tab.id, 30000).catch(() => undefined);
   return tab.id;
 }
 
-setListenSendHook(async (platform, text) => {
-  const tabId = await ensureListenTab(platform);
+setListenSendHook(async (platform, text, opts) => {
+  const tabId = await ensureListenTab(platform, opts?.fresh === true);
   if (tabId == null) return { ok: false, error: `无法为 ${platform} 找到或打开页面` };
   // Poll-send: the content script may not be ready right after a fresh open.
   const deadline = Date.now() + 30000;

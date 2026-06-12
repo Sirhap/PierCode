@@ -29,19 +29,22 @@ import { accumulateBatch, AGENT_FADE_DELAY_MS, AGENT_FADE_DURATION_MS, type SubA
 
 type Platform = 'qwen' | 'chatgpt' | 'claude' | 'openai'
 
+// 'openai' 平台仍存在于后台（chat-api PLATFORMS），但不再提供 UI 入口；
+// 旧 openai 会话仍可从会话列表恢复。
 const PLATFORMS: { key: Platform; label: string; icon: string; tip: string }[] = [
   { key: 'qwen', label: 'Qwen', icon: '🔮', tip: '需要已登录 chat.qwen.ai' },
   { key: 'chatgpt', label: 'ChatGPT', icon: '💬', tip: '需要已登录 chatgpt.com' },
   { key: 'claude', label: 'Claude', icon: '🟣', tip: '需要已登录 claude.ai' },
-  { key: 'openai', label: 'OpenAI 兼容', icon: '🔗', tip: '需要在 storage 配置 API Key' },
 ]
 
 const DEFAULT_MODELS: Record<Platform, string> = {
   qwen: 'qwen3.7-plus',
-  chatgpt: 'gpt-4o',
+  chatgpt: 'gpt-5-5',
   claude: 'claude-sonnet-4-20250514',
   openai: 'gpt-4o',
 }
+
+const PLATFORM_ICONS: Record<string, string> = { qwen: '🔮', chatgpt: '💬', claude: '🟣', openai: '🔗' }
 
 interface ModelInfo { id: string; name: string }
 
@@ -76,6 +79,23 @@ async function bgFetch(url: string, options?: RequestInit): Promise<{ ok: boolea
       },
     )
   })
+}
+
+// ChatGPT 模型列表：cookie 鉴权拿 accessToken，再拉 backend-api/models。
+// 失败（未登录等）返回 []，UI 回退到手输框。
+async function fetchChatGptModels(): Promise<ModelInfo[]> {
+  const sess = await bgFetch('https://chatgpt.com/api/auth/session', { credentials: 'include' })
+  const accessToken = sess.json()?.accessToken
+  if (!accessToken) return []
+  const res = await bgFetch(
+    'https://chatgpt.com/backend-api/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true',
+    { headers: { Authorization: `Bearer ${accessToken}` }, credentials: 'include' },
+  )
+  const data = res.json()
+  if (!Array.isArray(data?.models)) return []
+  return data.models
+    .filter((m: any) => typeof m.slug === 'string')
+    .map((m: any) => ({ id: m.slug, name: m.title || m.slug }))
 }
 
 async function getAuth(): Promise<{ apiUrl: string; token: string } | null> {
@@ -222,6 +242,10 @@ export default function App() {
   const batchDone = useRef<Map<string, SubAgent[]>>(new Map())
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const sessionIdRef = useRef<string>(genId())
+  // 镜像 sessionIdRef 的 state：ref 变更不触发重渲染，旧版会话下拉框因此永远
+  // 显示陈旧值（"没法切换会话"的根因之一）。UI 一律读这个 state。
+  const [activeSession, setActiveSession] = useState<string>(sessionIdRef.current)
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
 
   // ── Command palette ───────────────────────────────────────────────────
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -294,6 +318,7 @@ export default function App() {
       const s = await loadSession(activeId)
       if (!s) return
       sessionIdRef.current = s.id
+      setActiveSession(s.id)
       setMessages(s.messages as ChatMessage[])
       setPlatform(s.platform as Platform)
       setModel(s.model)
@@ -342,6 +367,16 @@ export default function App() {
         setTokenThreshold(cfg.defaultMaxContextTokens)
       }
     })
+    // Fetch ChatGPT models (cookie-auth backend-api; [] → manual input fallback)
+    if (platform === 'chatgpt') {
+      fetchChatGptModels().then(list => {
+        setModels(list)
+        // 旧存量 model（如 gpt-4o）不在新列表里 → 落到列表第一个，避免下拉框
+        // 显示与实际发送不一致。
+        if (list.length > 0) setModel(prev => (list.some(m => m.id === prev) ? prev : list[0].id))
+      }).catch(() => setModels([]))
+      return
+    }
     // Fetch Qwen models
     if (platform === 'qwen') {
       getQwenToken().then(token => {
@@ -812,6 +847,7 @@ export default function App() {
   const startNewSession = useCallback(() => {
     if (streaming) chrome.runtime.sendMessage({ type: 'CHAT_CANCEL' })
     sessionIdRef.current = genId()
+    setActiveSession(sessionIdRef.current)
     setMessages([])
     setSubAgents([])
     setError('')
@@ -823,28 +859,50 @@ export default function App() {
     inputRef.current?.focus()
   }, [streaming])
 
+  // 切换服务商：chatId/parentId 与平台绑定，带着旧平台的会话状态去新平台必然
+  // 连不上。有历史消息 → 保留旧会话并开新会话；空会话 → 仅清状态换平台。
+  const switchPlatform = useCallback((p: Platform) => {
+    if (p === platform) return
+    if (messages.length > 0) {
+      startNewSession()
+    } else {
+      chatIdRef.current = null
+      lastResponseIdRef.current = null
+    }
+    setPlatform(p)
+  }, [platform, messages.length, startNewSession])
+
   const switchSession = useCallback(async (id: string) => {
     if (id === sessionIdRef.current) return
+    if (streaming) chrome.runtime.sendMessage({ type: 'CHAT_CANCEL' })
     const s = await loadSession(id)
     if (!s) return
     sessionIdRef.current = s.id
+    setActiveSession(s.id)
     setMessages(s.messages as ChatMessage[])
     setSubAgents([])
+    setError('')
+    setStreaming(false)
+    currentAssistantIdx.current = -1
     setPlatform(s.platform as Platform)
     setModel(s.model)
     chatIdRef.current = s.chatId
     lastResponseIdRef.current = s.lastResponseId
     setActiveSessionId(s.id)
-  }, [])
+  }, [streaming])
 
-  const removeCurrentSession = useCallback(async () => {
-    const id = sessionIdRef.current
+  const removeSession = useCallback(async (id: string) => {
     await deleteSession(id)
     const list = await listSessions()
     setSessions(list)
+    if (id !== sessionIdRef.current) return
     if (list.length > 0) await switchSession(list[0].id)
     else startNewSession()
   }, [switchSession, startNewSession])
+
+  const removeCurrentSession = useCallback(async () => {
+    await removeSession(sessionIdRef.current)
+  }, [removeSession])
 
   // ── Palette command list ───────────────────────────────────────────────
   const paletteCommands = useMemo<Command[]>(() => {
@@ -858,14 +916,14 @@ export default function App() {
     } },
     ]
     for (const p of PLATFORMS) {
-      list.push({ id: `plat-${p.key}`, title: `切换到 ${p.label}`, hint: 'platform', run: () => setPlatform(p.key) })
+      list.push({ id: `plat-${p.key}`, title: `切换到 ${p.label}`, hint: 'platform', run: () => switchPlatform(p.key) })
     }
     for (const s of sessions) {
-      if (s.id === sessionIdRef.current) continue
+      if (s.id === activeSession) continue
       list.push({ id: `sess-${s.id}`, title: `会话: ${s.title || '新对话'}`, hint: 'switch', run: () => switchSession(s.id) })
     }
     return list
-  }, [sessions, startNewSession, switchSession])
+  }, [sessions, activeSession, startNewSession, switchSession, switchPlatform])
 
   // ── Palette search callbacks ───────────────────────────────────────────
   const searchMessages = useCallback((q: string): SearchHit[] => {
@@ -895,22 +953,17 @@ export default function App() {
         <div className="flex items-center gap-2 min-w-0">
           <span className="glow-text">⌁</span>
           <span className="text-sm font-medium glow-text">PIERCODE</span>
-          <span className="text-[11px] truncate" style={{ color: 'var(--dim)' }}>
-            //{sessions.find(s => s.id === sessionIdRef.current)?.title || 'new'}
-          </span>
+          <button
+            onClick={() => setSessionMenuOpen(o => !o)}
+            className="text-[11px] truncate cursor-pointer flex items-center gap-1 min-w-0"
+            style={{ color: 'var(--dim)' }}
+            title="会话列表"
+          >
+            <span className="truncate">//{sessions.find(s => s.id === activeSession)?.title || 'new'}</span>
+            <span className="flex-shrink-0">{sessionMenuOpen ? '▴' : '▾'}</span>
+          </button>
         </div>
         <div className="flex items-center gap-2 relative">
-          {sessions.length > 0 && (
-            <select
-              value={sessionIdRef.current}
-              onChange={e => switchSession(e.target.value)}
-              className="rounded-sm px-1 py-0.5 text-[10px] outline-none max-w-[110px] border"
-              style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--txt)' }}
-              title="切换会话"
-            >
-              {sessions.map(s => <option key={s.id} value={s.id}>{s.title || '新对话'}</option>)}
-            </select>
-          )}
           <button onClick={startNewSession} className="text-[12px] cursor-pointer" style={{ color: 'var(--dim)' }} title="新对话">＋</button>
           {/* glow picker */}
           <button onClick={() => setGlowMenuOpen(o => !o)} className="w-3 h-3 rounded-full border" style={{ background: 'var(--glow)', borderColor: 'var(--line)' }} title="主题色" />
@@ -931,6 +984,52 @@ export default function App() {
         </div>
       </div>
 
+      {/* ── Session drawer ──────────────────────────────────────────────────── */}
+      {sessionMenuOpen && (
+        <div className="fixed inset-0 z-[59]" onClick={() => setSessionMenuOpen(false)} />
+      )}
+      {sessionMenuOpen && (
+        <div className="absolute left-2 top-9 z-[60] w-64 max-h-72 overflow-y-auto chat-scroll rounded-sm border shadow-lg" style={{ background: 'var(--panel)', borderColor: 'var(--line)' }}>
+          <div className="flex items-center justify-between px-2 py-1.5 border-b" style={{ borderColor: 'var(--line)' }}>
+            <span className="text-[11px]" style={{ color: 'var(--dim)' }}>会话（{sessions.length}）</span>
+            <button
+              onClick={() => { setSessionMenuOpen(false); startNewSession() }}
+              className="text-[11px] cursor-pointer glow-text"
+            >＋ 新对话</button>
+          </div>
+          {sessions.length === 0 && (
+            <div className="px-2 py-3 text-[11px]" style={{ color: 'var(--dim)' }}>暂无历史会话</div>
+          )}
+          {sessions.map(s => {
+            const on = s.id === activeSession
+            return (
+              <div
+                key={s.id}
+                className="flex items-center gap-2 px-2 py-1.5 cursor-pointer hover:opacity-80 border-b last:border-b-0"
+                style={{ borderColor: 'var(--line)', background: on ? 'var(--panel-2)' : 'transparent' }}
+                onClick={() => { setSessionMenuOpen(false); switchSession(s.id) }}
+              >
+                <span className="flex-shrink-0 text-[11px]">{PLATFORM_ICONS[s.platform] || '·'}</span>
+                <div className="flex-1 min-w-0">
+                  <div className={`text-[11px] truncate ${on ? 'glow-text' : ''}`} style={{ color: on ? undefined : 'var(--txt)' }}>
+                    {s.title || '新对话'}
+                  </div>
+                  <div className="text-[10px]" style={{ color: 'var(--dim)' }}>
+                    {s.platform} · {new Date(s.ts).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </div>
+                <button
+                  onClick={e => { e.stopPropagation(); removeSession(s.id) }}
+                  className="flex-shrink-0 text-[11px] cursor-pointer hover:text-red-300"
+                  style={{ color: 'var(--dim)' }}
+                  title="删除会话"
+                >✕</button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
       {/* ── Platform rail ───────────────────────────────────────────────────── */}
       <div className="boot boot-2 flex items-center gap-2 px-3 py-1.5 border-b flex-shrink-0 overflow-x-auto text-xs" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
         {PLATFORMS.map(p => {
@@ -938,7 +1037,7 @@ export default function App() {
           return (
             <button
               key={p.key}
-              onClick={() => setPlatform(p.key)}
+              onClick={() => switchPlatform(p.key)}
               className={`whitespace-nowrap cursor-pointer pb-0.5 border-b-2 ${on ? 'glow-text' : ''}`}
               style={{ borderColor: on ? 'var(--glow)' : 'transparent', color: on ? undefined : 'var(--dim)' }}
             >
@@ -1010,7 +1109,7 @@ export default function App() {
               <p className="text-[10px] mt-2">Enter 发送 · Shift+Enter 换行</p>
             </div>
             {!connected && (
-              <div className="mt-2 text-[10px] text-amber-500 text-center">
+              <div className="mt-2 text-[10px] amber-text text-center">
                 ⚠ 未连接 PierCode 服务<br/>请在扩展弹窗配置 Token
               </div>
             )}
@@ -1042,7 +1141,7 @@ export default function App() {
         <div className="px-3 py-1.5 border-t text-xs text-red-300 flex items-center gap-2 flex-shrink-0" style={{ borderColor: 'var(--line)', background: 'rgba(120,20,20,.2)' }}>
           <span>⚠</span>
           <span className="flex-1 truncate">{error}</span>
-          <button onClick={() => setError('')} className="text-red-400 hover:text-red-200 cursor-pointer flex-shrink-0">✕</button>
+          <button onClick={() => setError('')} className="red-text hover:text-red-200 cursor-pointer flex-shrink-0">✕</button>
         </div>
       )}
 

@@ -410,42 +410,71 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
     name: 'Claude',
     cookieName: 'sessionKey',
     cookieDomain: 'claude.ai',
-    supportsSystem: true,
-    getUrl() {
-      // Claude API requires org + conversation. This is resolved per-request
-      // in getAuth() and stashed in session storage — no module mutation.
-      return '' // placeholder; real URL passed via getAuth result
+    // claude.ai's web /completion endpoint has no system slot — the init
+    // prompt is prepended to the first user message instead. (The old config
+    // POSTed a public-API shaped body straight to /chat_conversations — the
+    // conversation-CREATE endpoint — which 400'd with "name: Field required".)
+    supportsSystem: false,
+    async createConversation(token) {
+      const orgId = await getClaudeOrgId(token)
+      const uuid = crypto.randomUUID()
+      const res = await fetch(`https://claude.ai/api/organizations/${orgId}/chat_conversations`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'Origin': 'https://claude.ai',
+          'Referer': 'https://claude.ai/',
+        },
+        body: JSON.stringify({ uuid, name: '' }),
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        throw new Error(`claude.ai 创建会话失败 ${res.status}: ${text.slice(0, 200)}`)
+      }
+      const data = await res.json().catch(() => null)
+      return (data?.uuid as string) || uuid
+    },
+    getUrl(ctx) {
+      // Org id resolved by getAuth() before any turn; chatId by createConversation.
+      if (!claudeOrgId || !ctx?.chatId) return ''
+      return `https://claude.ai/api/organizations/${claudeOrgId}/chat_conversations/${ctx.chatId}/completion`
     },
     buildHeaders(token) {
       return {
         'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
         'Authorization': `Bearer ${token}`,
         'Origin': 'https://claude.ai',
         'Referer': 'https://claude.ai/',
       }
     },
-    buildBody(message, _parentId, ctx) {
+    buildBody(message, parentId) {
+      // Web protocol: conversation state lives server-side; each turn posts the
+      // prompt (+ parent message uuid when we have one) to /completion.
       const body: Record<string, unknown> = {
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 4096,
-        messages: [{ role: 'user', content: message }],
-        stream: true,
-      }
-      if (ctx?.systemPrompt) body.system = ctx.systemPrompt
-      // TODO(reasoning): claude.ai's web endpoint is reverse-engineered and we
-      // have NOT confirmed it accepts the public-API extended-thinking field.
-      // Shape below mirrors the documented API; verify against a real claude.ai
-      // request before relying on it. 'off' (default) sends nothing.
-      if (ctx?.reasoning === 'think') {
-        body.thinking = { type: 'enabled', budget_tokens: 4096 }
+        prompt: message,
+        parent_message_uuid: parentId || '00000000-0000-4000-8000-000000000000',
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        attachments: [],
+        files: [],
+        rendering_mode: 'messages',
       }
       return JSON.stringify(body)
     },
     parseChunk(data) {
+      // claude.ai streams `{"type":"completion","completion":"..."}` chunks;
+      // newer responses may use public-API content_block_delta shapes.
+      if (typeof data.completion === 'string') return data.completion
       if (data.type === 'content_block_delta' && data.delta?.text) {
         return data.delta.text
       }
       return null
+    },
+    deltaResponseId(data) {
+      // Thread the assistant message uuid as next turn's parent when present.
+      const id = data.message?.uuid ?? data.uuid ?? data.parent_uuid
+      return typeof id === 'string' ? id : null
     },
   },
 
@@ -529,6 +558,25 @@ export function __agentAbortsForTest(): Map<string, AbortController> {
   return agentAborts
 }
 
+// ── Claude org cache ─────────────────────────────────────────────────────────
+
+// claude.ai org id, resolved once per SW lifetime (re-fetched after SW restart).
+let claudeOrgId: string | null = null
+
+async function getClaudeOrgId(token: string): Promise<string> {
+  if (claudeOrgId) return claudeOrgId
+  const res = await fetch('https://claude.ai/api/organizations', {
+    headers: { 'Authorization': `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(`无法获取 Claude 组织信息（HTTP ${res.status}），请确认已登录 claude.ai`)
+  const orgs = await res.json().catch(() => null)
+  if (!Array.isArray(orgs) || orgs.length === 0 || !orgs[0]?.uuid) {
+    throw new Error('无法获取 Claude 组织信息，请确认已登录 claude.ai')
+  }
+  claudeOrgId = orgs[0].uuid as string
+  return claudeOrgId
+}
+
 // ── Cookie Auth ────────────────────────────────────────────────────────────
 
 async function getCookieToken(domain: string, name: string): Promise<string | null> {
@@ -559,23 +607,17 @@ async function getAuth(platform: string): Promise<AuthResult | { error: string }
     return { token: result.openaiApiKey, url }
   }
 
-  // Claude：需要额外获取 org ID
+  // Claude：解析并缓存 org ID；URL 由 getUrl(ctx) 按会话拼出（createConversation
+  // → /chat_conversations/{uuid}/completion），这里不返回 url。
   if (platform === 'claude') {
     const token = await getCookieToken(config.cookieDomain, config.cookieName)
     if (!token) return { error: '未找到 Claude sessionKey cookie，请先登录 claude.ai' }
     try {
-      const res = await fetch('https://claude.ai/api/organizations', {
-        headers: { 'Authorization': `Bearer ${token}` },
-      })
-      if (res.ok) {
-        const orgs = await res.json()
-        if (Array.isArray(orgs) && orgs.length > 0) {
-          const url = `https://claude.ai/api/organizations/${orgs[0].uuid}/chat_conversations`
-          return { token, url }
-        }
-      }
-    } catch {}
-    return { error: '无法获取 Claude 组织信息，请确认已登录' }
+      await getClaudeOrgId(token)
+      return { token }
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : '无法获取 Claude 组织信息，请确认已登录' }
+    }
   }
 
   // ChatGPT：走本地 chatgpt-proxy（piercode/chatgpt-proxy/），它在 server 端解
@@ -726,10 +768,15 @@ export function buildSubAgentMessage(workerPrompt: string, task: string): string
 
 /** Shape a sub-agent's final assistant text into a ToolResult for the parent. */
 export function shapeSubAgentResult(call: ToolCall, finalText: string): ToolResult {
+  // Prefix the worker's identity so the parent model (and the user reading the
+  // injected turn) can tell WHICH sub-agent each result block came from — the
+  // block header is always `### spawn_agent #id`, which alone is ambiguous.
+  const label = String(call.args?.label || call.args?.description || '').trim()
+  const header = label ? `【子agent「${label}」结果】\n\n` : ''
   return {
     call_id: call.call_id,
     name: call.name,
-    output: finalText || '(子 agent 无输出)',
+    output: header + (finalText || '(子 agent 无输出)'),
     success: true,
   }
 }
@@ -965,7 +1012,11 @@ async function runToolCalls(
 // receiver (installApiListenReceiver → consumeListenStream → broadcast). The
 // driver lives in background/index.ts (it owns tab lifecycle); chat-api calls it
 // through this hook to keep tab logic out of the chat module.
-export type ListenSendHook = (platform: string, text: string) => Promise<{ ok: boolean; error?: string }>
+export type ListenSendHook = (
+  platform: string,
+  text: string,
+  opts?: { fresh?: boolean },
+) => Promise<{ ok: boolean; error?: string }>
 let listenSendHook: ListenSendHook | null = null
 export function setListenSendHook(hook: ListenSendHook): void {
   listenSendHook = hook
@@ -978,12 +1029,18 @@ export function isListenPlatform(platform: string): boolean {
 
 // Drive the page to send `message`. The response is handled asynchronously by
 // the listen receiver, so this returns once the page has accepted the input.
-async function handleChatRequestViaListen(platform: string, message: string): Promise<void> {
+// Synthetic conversation ids for the listen route. The page owns the real
+// conversation; this id only marks "the sidebar conversation has started" so
+// the sidebar sends chatId≠null on later turns (fresh=false → same tab/chat).
+const listenChatIds = new Map<string, string>()
+
+async function handleChatRequestViaListen(platform: string, message: string, fresh = false): Promise<void> {
   if (!listenSendHook) {
     broadcast({ type: 'CHAT_ERROR', error: '监听通道未初始化（缺少 tab 驱动）' })
     return
   }
-  const r = await listenSendHook(platform, message)
+  if (fresh) listenChatIds.set(platform, `listen-${crypto.randomUUID()}`)
+  const r = await listenSendHook(platform, message, { fresh })
   if (!r.ok) {
     broadcast({ type: 'CHAT_ERROR', error: r.error || `无法驱动 ${platform} 页面发送` })
   }
@@ -994,15 +1051,16 @@ async function handleChatRequestViaListen(platform: string, message: string): Pr
 // back into the driven tab (the page sends again → next response is intercepted).
 // No assistant tools → the turn is done.
 export async function continueListenTurn(platform: string, content: string): Promise<void> {
+  const listenChatId = listenChatIds.get(platform) || null
   const toolCalls = extractToolCalls(content)
   if (toolCalls.length === 0) {
-    broadcast({ type: 'CHAT_DONE', chatId: null, responseId: null })
+    broadcast({ type: 'CHAT_DONE', chatId: listenChatId, responseId: null })
     return
   }
   const signal = (currentAbort ??= new AbortController()).signal
   const results = await runToolCalls(toolCalls, platform, undefined, 0, signal)
   if (signal.aborted) {
-    broadcast({ type: 'CHAT_DONE', chatId: null, responseId: null })
+    broadcast({ type: 'CHAT_DONE', chatId: listenChatId, responseId: null })
     return
   }
   broadcast({ type: 'CHAT_CONTINUING' })
@@ -1115,6 +1173,16 @@ export function __injectionStateForTest(): {
 }
 
 export async function handleChatRequest(params: ChatRequestParams): Promise<void> {
+  // 插件总开关：关闭时拒绝整个对话回合（含其触发的子 agent / 工具执行）。
+  try {
+    const { extensionEnabled } = await chrome.storage.local.get(['extensionEnabled'])
+    if (extensionEnabled === false) {
+      broadcast({ type: 'CHAT_ERROR', error: 'PierCode 插件已停用（在 popup 中打开总开关后重试）' })
+      return
+    }
+  } catch {
+    // storage 不可用时按开启处理。
+  }
   mainTurnDepth++
   try {
     await handleChatRequestInner(params)
@@ -1140,7 +1208,10 @@ async function handleChatRequestInner(params: ChatRequestParams): Promise<void> 
   if (isListenPlatform(platform) && depth === 0) {
     let outbound = message
     if (systemPrompt) outbound = `${systemPrompt}\n\n---\n\n${outbound}`
-    await handleChatRequestViaListen(platform, outbound)
+    // fresh = sidebar starts a NEW conversation → the driver must put its
+    // dedicated tab on a new chat instead of appending to whatever
+    // conversation the page currently shows.
+    await handleChatRequestViaListen(platform, outbound, !chatId)
     return
   }
 
@@ -1361,6 +1432,7 @@ async function runSubAgent(
       depth: parentDepth + 1,
       agentId,
       abortSignal: signal,
+      originTabId,
       resume,
       onCheckpoint: recovery?.onCheckpoint,
     })
@@ -1671,6 +1743,8 @@ async function runIsolatedConversation(params: {
   depth: number
   agentId: string
   abortSignal?: AbortSignal
+  /** Tab that spawned this agent (content route) — streams also go to its StatusPanel. */
+  originTabId?: number
   /** Resume state from a previous service-worker life (recoverable batches). */
   resume?: AgentCheckpoint
   /** Called after each completed turn with the state needed to resume it. */
@@ -1715,7 +1789,7 @@ async function runIsolatedConversation(params: {
     const sse = await processSSEStream(
       response,
       config,
-      (chunk) => broadcast({ type: 'CHAT_AGENT_STREAM', agentId, chunk }),
+      (chunk) => broadcastAgentLifecycle({ type: 'CHAT_AGENT_STREAM', agentId, chunk }, params.originTabId),
       abortSignal,
     )
     lastText = sse.content
