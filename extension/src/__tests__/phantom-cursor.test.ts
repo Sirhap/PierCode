@@ -21,7 +21,7 @@ describe('syncPhantomCursor', () => {
     expect(target).toEqual({ tabId: 7 });
     expect(method).toBe('Runtime.evaluate');
     expect(args.awaitPromise).toBe(true);
-    expect(args.expression).toContain('.move(11, 20)');
+    expect(args.expression).toContain('.move(11, 20, "mouseMoved")');
   });
 
   it('skips when coordinates are missing', async () => {
@@ -38,7 +38,7 @@ describe('syncPhantomCursor', () => {
       const p = syncPhantomCursor(7, { type: 'mousePressed', x: 1, y: 2 }).then(() => {
         settled = true;
       });
-      await vi.advanceTimersByTimeAsync(249);
+      await vi.advanceTimersByTimeAsync(319); // MOVE_WAIT_CAP_MS = 320
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(2);
       await p;
@@ -65,14 +65,18 @@ describe('phantom cursor renderer (page context)', () => {
 
   beforeEach(() => {
     dom = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'outside-only' });
+    // 让渲染器里的 setTimeout/clearTimeout 走宿主(可被 vi.useFakeTimers 控制)的实现,
+    // 否则它们绑在 JSDOM realm 上,fake timers 推不动。
+    dom.window.setTimeout = ((fn: () => void, ms?: number) => setTimeout(fn, ms)) as typeof dom.window.setTimeout;
+    dom.window.clearTimeout = ((id: number) => clearTimeout(id)) as typeof dom.window.clearTimeout;
   });
 
   afterEach(() => {
     dom.window.close();
   });
 
-  function move(x: number, y: number): Promise<void> {
-    return dom.window.eval(buildPhantomCursorExpression(x, y)) as Promise<void>;
+  function move(x: number, y: number, type?: string): Promise<void> {
+    return dom.window.eval(buildPhantomCursorExpression(x, y, type)) as Promise<void>;
   }
 
   it('creates the cursor element at the given position on first move', async () => {
@@ -106,13 +110,23 @@ describe('phantom cursor renderer (page context)', () => {
     expect(Date.now() - start).toBeLessThan(100);
   });
 
-  it('fades out and removes the cursor after idle timeout', async () => {
-    await move(10, 10);
-    const el = dom.window.document.getElementById('piercode-phantom-cursor')!;
+  it('dims to a resident state at idle, then removes the cursor after the remove delay', async () => {
+    vi.useFakeTimers();
+    try {
+      await move(10, 10);
+      const el = dom.window.document.getElementById('piercode-phantom-cursor')!;
 
-    await new Promise((r) => setTimeout(r, 4300));
+      // IDLE_HIDE_MS(9000): 降到半透明驻留,仍在 DOM 中
+      await vi.advanceTimersByTimeAsync(9100);
+      expect(el.isConnected).toBe(true);
+      expect(el.style.opacity).toBe('0.35');
 
-    expect(el.isConnected).toBe(false);
-    expect(dom.window.document.getElementById('piercode-phantom-cursor')).toBeNull();
-  }, 10000);
+      // 再过 IDLE_REMOVE_MS(6000): 真正移除
+      await vi.advanceTimersByTimeAsync(6100);
+      expect(el.isConnected).toBe(false);
+      expect(dom.window.document.getElementById('piercode-phantom-cursor')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
