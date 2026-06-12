@@ -458,53 +458,76 @@ func findElementsExpression(query string, maxResults int) string {
   var terms = query.toLowerCase().split(/\s+/).filter(function(t) { return t.length > 0; });
   if (terms.length === 0) return JSON.stringify([]);
 
+  // Only consider elements a user could actually target. Containers (div/section)
+  // are scored but heavily penalized so the labelled control wins over its wrapper.
+  var INTERACTIVE = {a:1,button:1,input:1,select:1,textarea:1,summary:1,label:1,option:1};
+  var INTERACTIVE_ROLES = {button:1,link:1,textbox:1,searchbox:1,checkbox:1,radio:1,combobox:1,menuitem:1,tab:1,option:1,switch:1,slider:1};
+
+  function visible(el){
+    var r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    var s = getComputedStyle(el);
+    if (s.visibility === 'hidden' || s.display === 'none' || parseFloat(s.opacity||'1') === 0) return false;
+    if (el.closest('[aria-hidden=true]')) return false;
+    return true;
+  }
+  // The element's OWN label text, not the whole subtree (so an ancestor that
+  // merely contains a matching button does not outscore the button).
+  function ownText(el){
+    var t = '';
+    for (var i=0;i<el.childNodes.length;i++){ var n=el.childNodes[i]; if(n.nodeType===3) t+=n.textContent; }
+    t = t.trim();
+    if (!t && (el.tagName==='BUTTON'||el.tagName==='A'||el.getAttribute('role'))) t=(el.textContent||'').trim();
+    return t.slice(0,200);
+  }
+  function stableSelector(el){
+    if (el.id) return '#' + CSS.escape(el.id);
+    var name = el.getAttribute('name');
+    if (name) return el.tagName.toLowerCase() + '[name="' + CSS.escape(name) + '"]';
+    var al = el.getAttribute('aria-label');
+    if (al) return el.tagName.toLowerCase() + '[aria-label="' + CSS.escape(al) + '"]';
+    var ph = el.getAttribute('placeholder');
+    if (ph) return el.tagName.toLowerCase() + '[placeholder="' + CSS.escape(ph) + '"]';
+    // Fallback: tag + nth-of-type within parent (short, less brittle than a deep chain).
+    var p = el.parentElement;
+    if (p){ var same=0, idx=0; for(var i=0;i<p.children.length;i++){ if(p.children[i].tagName===el.tagName){ same++; if(p.children[i]===el) idx=same; } }
+      var base=(p.id?('#'+CSS.escape(p.id)+' >'):'') ; return (base+' '+el.tagName.toLowerCase()+':nth-of-type('+idx+')').trim(); }
+    return el.tagName.toLowerCase();
+  }
+
   var results = [];
   var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, null, false);
   var node;
   while (node = walker.nextNode()) {
-    var role = node.getAttribute('role') || node.tagName.toLowerCase();
+    var tag = node.tagName.toLowerCase();
+    var roleAttr = (node.getAttribute('role') || '').toLowerCase();
+    var role = roleAttr || tag;
+    var isInteractive = INTERACTIVE[tag] || INTERACTIVE_ROLES[roleAttr] || node.tabIndex >= 0;
     var ariaLabel = (node.getAttribute('aria-label') || '').trim();
     var title = (node.getAttribute('title') || '').trim();
-    var text = (node.textContent || '').trim().slice(0, 200);
     var placeholder = (node.getAttribute('placeholder') || '').trim();
+    var text = ownText(node);
 
+    var hay = (ariaLabel+' '+title+' '+placeholder+' '+text+' '+role).toLowerCase();
     var score = 0;
-    var textLower = text.toLowerCase();
-    var ariaLower = ariaLabel.toLowerCase();
-    var titleLower = title.toLowerCase();
-    var roleLower = role.toLowerCase();
-    var placeholderLower = placeholder.toLowerCase();
-
     for (var i = 0; i < terms.length; i++) {
       var term = terms[i];
-      if (ariaLower.indexOf(term) >= 0) score += 3;
-      if (titleLower.indexOf(term) >= 0) score += 3;
-      if (textLower.indexOf(term) >= 0) score += 1;
-      if (roleLower.indexOf(term) >= 0) score += 2;
-      if (placeholderLower.indexOf(term) >= 0) score += 2;
+      if (ariaLabel.toLowerCase().indexOf(term) >= 0) score += 4;
+      if (placeholder.toLowerCase().indexOf(term) >= 0) score += 3;
+      if (title.toLowerCase().indexOf(term) >= 0) score += 3;
+      if (text.toLowerCase().indexOf(term) >= 0) score += 2;
+      if (role.indexOf(term) >= 0) score += 2;
+      else if (hay.indexOf(term) >= 0) score += 1;
     }
+    if (score === 0) continue;
+    // Reward interactive leaves; penalize big containers so the control wins.
+    if (isInteractive) score += 3;
+    else { score -= 2; if ((node.textContent||'').length > 400) score -= 2; }
+    if (score <= 0) continue;
+    if (!visible(node)) continue;
 
-    if (score > 0) {
-      var displayText = ariaLabel || title || placeholder || text.slice(0, 100);
-      var selector = '';
-      try {
-        var el = node;
-        var parts = [];
-        while (el && el !== document.body) {
-          var part = el.tagName.toLowerCase();
-          if (el.id) { parts.unshift('#' + CSS.escape(el.id)); break; }
-          if (el.className && typeof el.className === 'string') {
-            var cls = el.className.trim().split(/\s+/).slice(0, 2).map(function(c) { return CSS.escape(c); }).join('.');
-            if (cls) part += '.' + cls;
-          }
-          parts.unshift(part);
-          el = el.parentElement;
-        }
-        selector = parts.join(' > ');
-      } catch(e) { selector = role; }
-
-      results.push({ref: selector, role: role, text: displayText.slice(0, 200), score: score});
-    }
+    var displayText = ariaLabel || placeholder || title || text;
+    results.push({ref: stableSelector(node), role: role, text: displayText.slice(0,200), score: score});
   }
 
   results.sort(function(a, b) { return b.score - a.score; });

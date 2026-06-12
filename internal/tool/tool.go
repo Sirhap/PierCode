@@ -228,6 +228,7 @@ type BrowserController interface {
 	Scroll(ctx context.Context, req BrowserScrollRequest) (string, error)
 	Evaluate(ctx context.Context, req BrowserEvaluateRequest) (BrowserEvaluateResponse, error)
 	GetContent(ctx context.Context, req BrowserGetContentRequest) (string, error)
+	GetPageText(ctx context.Context, req BrowserGetPageTextRequest) (string, error)
 	Select(ctx context.Context, req BrowserSelectRequest) (string, error)
 	GoBack(ctx context.Context, tabID *int, callID string) (BrowserTab, error)
 	GoForward(ctx context.Context, tabID *int, callID string) (BrowserTab, error)
@@ -317,6 +318,11 @@ type BrowserTypeRequest struct {
 	// and key-listening widgets (Monaco, CodeMirror, games) react.
 	Mode   string
 	CallID string
+}
+
+type BrowserGetPageTextRequest struct {
+	TabID    *int
+	MaxChars int
 }
 
 type BrowserClipboardRequest struct {

@@ -151,6 +151,7 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserScrollTool())
 	e.registry.Register(tool.NewBrowserEvaluateTool())
 	e.registry.Register(tool.NewBrowserGetContentTool())
+	e.registry.Register(tool.NewBrowserGetPageTextTool())
 	e.registry.Register(tool.NewBrowserSelectTool())
 	e.registry.Register(tool.NewBrowserGoBackTool())
 	e.registry.Register(tool.NewBrowserGoForwardTool())
@@ -549,7 +550,7 @@ func isReadOnlyToolName(name string) bool {
 	case "read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question", "tool_help",
 		"todo_read", "task_list", "task_output", "browser_tabs", "browser_snapshot",
 		"browser_screenshot", "browser_wait", "browser_wait_for_function", "browser_get_content",
-		"browser_pdf", "browser_console", "browser_network",
+		"browser_get_page_text", "browser_pdf", "browser_console", "browser_network",
 		"browser_find", "browser_get_attributes":
 		return true
 	default:

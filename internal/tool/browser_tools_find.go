@@ -10,7 +10,7 @@ func NewBrowserFindTool() Tool {
 	return &browserTool{
 		name:        "browser_find",
 		readOnly:    true,
-		description: "Search page elements by keyword matching against text, aria-label, title, and role. Returns scored results with CSS selectors. Use the 'ref' field as the 'selector' parameter in browser_click/browser_hover/browser_type.",
+		description: "Find VISIBLE, interactive page elements (buttons, links, inputs) matching a keyword query. Scores the labelled control above its container, filters hidden/zero-size elements, and returns a stable CSS selector per match. Pass the returned 'ref' value as the 'selector' parameter to browser_click/browser_hover/browser_type. For broad page understanding prefer browser_snapshot; use find to locate one control quickly.",
 		parameters: map[string]string{
 			"query":      "string (required) - keywords to search for",
 			"maxResults": "number (optional, default 20) - maximum results to return",

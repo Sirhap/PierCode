@@ -188,6 +188,25 @@ func NewBrowserGetContentTool() Tool {
 	}
 }
 
+func NewBrowserGetPageTextTool() Tool {
+	return &browserTool{
+		name:        "browser_get_page_text",
+		readOnly:    true,
+		description: "Extract the main readable article text from the page, stripping nav/header/footer/sidebar chrome. Cheapest way to READ a page's content (docs, articles); use browser_snapshot when you need refs to click/type, or browser_get_content for raw innerText/HTML.",
+		parameters: map[string]string{
+			"maxChars": "number (optional, default/max 50000) - cap on returned characters",
+			"tabId":    "number (optional) - controlled tab id",
+		},
+		validate: func(map[string]interface{}) error { return nil },
+		execute: func(ctx *Context) (string, error) {
+			return ctx.Browser.GetPageText(ctx.Context, BrowserGetPageTextRequest{
+				TabID:    optionalInt(ctx.Args, "tabId"),
+				MaxChars: intArgDefault(ctx.Args, "maxChars", 0),
+			})
+		},
+	}
+}
+
 func NewBrowserSelectTool() Tool {
 	return &browserTool{
 		name:        "browser_select",

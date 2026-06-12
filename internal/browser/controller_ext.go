@@ -223,6 +223,62 @@ func (c *Controller) GetContent(ctx context.Context, req tool.BrowserGetContentR
 	return text, nil
 }
 
+// GetPageText returns the page's main readable text (article body), stripping
+// navigation/header/footer/aside chrome. It uses a lightweight readability
+// heuristic in page context: prefer <article>/<main>/[role=main], else pick the
+// densest text block, fall back to body innerText. Distinct from GetContent,
+// which returns raw innerText/HTML of the whole page or a selector.
+func (c *Controller) GetPageText(ctx context.Context, req tool.BrowserGetPageTextRequest) (string, error) {
+	tab, err := c.ensureTab(ctx, req.TabID)
+	if err != nil {
+		return "", err
+	}
+	maxChars := req.MaxChars
+	if maxChars <= 0 || maxChars > 50000 {
+		maxChars = 50000
+	}
+	out, err := c.runtimeEvaluate(ctx, tab.TabID, pageTextExpression(), false, defaultReadTimeout, true)
+	if err != nil {
+		return "", err
+	}
+	text := runtimeValueString(out)
+	if len([]rune(text)) > maxChars {
+		text = string([]rune(text)[:maxChars]) + "\n…[truncated]"
+	}
+	if strings.TrimSpace(text) == "" {
+		return "(no readable text extracted from the page)", nil
+	}
+	return text, nil
+}
+
+// pageTextExpression builds the in-page readability extractor. It picks the best
+// content root, removes obvious chrome, and returns normalized text.
+func pageTextExpression() string {
+	return `(function(){
+  function clean(s){ return (s||'').replace(/[ \t\f\v]+/g,' ').replace(/\n{3,}/g,'\n\n').trim(); }
+  function textLen(el){ return (el && el.innerText ? el.innerText.length : 0); }
+  var root = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role=main]');
+  if(!root){
+    // Pick the densest block among common content containers.
+    var best=null, bestLen=0;
+    var cands=document.querySelectorAll('article, main, section, div');
+    for(var i=0;i<cands.length && i<2000;i++){
+      var el=cands[i];
+      // skip likely-chrome containers
+      var id=((el.id||'')+' '+(el.className||'')).toLowerCase();
+      if(/nav|header|footer|sidebar|menu|comment|promo|banner|cookie/.test(id)) continue;
+      var l=textLen(el);
+      if(l>bestLen){ bestLen=l; best=el; }
+    }
+    root = best || document.body;
+  }
+  // Clone and strip non-content elements before reading text.
+  var clone = root.cloneNode(true);
+  clone.querySelectorAll('script,style,noscript,nav,header,footer,aside,form,button,svg,[aria-hidden=true]').forEach(function(n){ n.remove(); });
+  return clean(clone.innerText || clone.textContent || '');
+})()`
+}
+
 func (c *Controller) Select(ctx context.Context, req tool.BrowserSelectRequest) (string, error) {
 	tab, err := c.ensureTab(ctx, req.TabID)
 	if err != nil {

@@ -69,7 +69,7 @@
 依赖: 无（读路径独立）。
 - **5a 层级 snapshot**: snapshot.go CompactSnapshot 改缩进父子格式（role + 引号 name + [ref] + 关键属性 href/type/placeholder），加 `depth`（默认 15）/`ref_id` 子树下钻/`max_chars` 参数；超限改**错误**且文本自带指导（"降 depth 或聚焦 ref_N"）。ref 格式保持 e0/e1 兼容现有（或迁移；评估）。
 - **5b get_page_text 工具**: 新 browser_get_page_text——Readability 式正文抽取纯文本（≤50k），区别于 browser_get_content（raw innerText）。新 tool + controller 方法 + executor 注册 + isReadOnlyTool。
-- **5c find 重建**: browser_find 改自然语言 → 调已连接 AI 一次采样在 snapshot 上选 ≤20 候选，返回 snapshot 兼容 ref（`ref | role | name | reason`）；超限提示收窄。废弃 TreeWalker 子树评分 + CSS 路径。采样通道走 ClientIO（sidebar API / 网页 AI）。controller_find.go Find(16)。
+- **5c find 重建**: ~~改 LLM 采样~~ **架构受限改方案**：服务端无同步 server→AI 采样通道（触发工具调用的网页 AI 正在生成本轮响应，同步子查询会死锁；question 工具等的是人不是模型）。改为重写 in-page 启发式修掉审计的具体缺陷：评分交互叶子元素（容器重罚，标签控件胜出）、过滤不可见/零尺寸、用元素自身文本而非整子树文本、输出稳定 `#id`/`[aria-label]`/`[name]` 选择器（可直接当 selector 用，不再脆弱深链）。controller_find.go findElementsExpression。LLM 采样路留作未来（需新建双向通道，非 content 路可用）。
 - **验证**: go test；手动: snapshot 有层级缩进、depth 限制、超限报错带指导；get_page_text 出正文；find 用自然语言命中按钮且返回可用 ref。
 
 ### Phase 6 — 截图 token 预算 + vision 回路（M）

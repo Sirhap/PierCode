@@ -78,6 +78,10 @@ func (noopBrowserController) GetContent(_ context.Context, _ BrowserGetContentRe
 	return "", errNoopBrowser
 }
 
+func (noopBrowserController) GetPageText(_ context.Context, _ BrowserGetPageTextRequest) (string, error) {
+	return "", errNoopBrowser
+}
+
 func (noopBrowserController) Select(_ context.Context, _ BrowserSelectRequest) (string, error) {
 	return "", errNoopBrowser
 }
