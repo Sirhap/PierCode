@@ -15,7 +15,7 @@ func TestViewportSetAndResetEmitEmulationCommands(t *testing.T) {
 	var relay *RelayManager
 	var seen []string
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -57,7 +57,7 @@ func TestViewportSetAndResetEmitEmulationCommands(t *testing.T) {
 func TestFinalizeTabsClosesCreatedAndSkipsClaimedByDefault(t *testing.T) {
 	var relay *RelayManager
 	var closedPayload []int
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -127,7 +127,7 @@ func TestFinalizeTabsClosesCreatedAndSkipsClaimedByDefault(t *testing.T) {
 
 func TestDownloadsQueriesNativeRecentDownloads(t *testing.T) {
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)

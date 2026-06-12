@@ -10,7 +10,7 @@ import (
 )
 
 func TestDebuggerDetachedMarksSnapshotsStale(t *testing.T) {
-	controller := NewController(NewRelayManager(func([]byte) bool { return false }), func([]byte) {})
+	controller := NewController(NewRelayManagerFromSend(func([]byte) bool { return false }), func([]byte) {})
 	tab := tool.BrowserTab{TabID: 99, URL: "https://example.com", Title: "Example"}
 	controller.tabs.StoreSnapshot(tab, "snap_detach", []RefTarget{{Ref: "e0", Role: "link", Name: "Learn more"}})
 
@@ -28,7 +28,7 @@ func TestDebuggerDetachedMarksSnapshotsStale(t *testing.T) {
 
 func TestResolvePointMarksSnapshotStaleWhenBackendNodeCannotResolve(t *testing.T) {
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)

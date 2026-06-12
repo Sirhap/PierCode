@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -67,17 +68,47 @@ func (c *Controller) HandleEvent(event Event) {
 }
 
 func (c *Controller) ListTabs(ctx context.Context, includeAI bool) ([]tool.BrowserTab, error) {
-	params := map[string]interface{}{"includeAiPages": includeAI}
-	var out struct {
-		Tabs []tool.BrowserTab `json:"tabs"`
-	}
-	if err := c.sendNative(ctx, "listTabs", params, &out); err != nil {
+	// Always fetch AI pages from the extensions; filter server-side below. A
+	// controlled/tracked AI page (one the AI opened itself) must surface even
+	// when includeAI is false.
+	params, _ := json.Marshal(map[string]interface{}{"includeAiPages": true})
+	// Fan out to EVERY connected browser — each only knows its own chrome.tabs,
+	// so a single first-result-wins send would surface just one browser's tabs
+	// (and could be the wrong browser entirely). Merge + de-dup by tabId.
+	results, err := c.relay.SendCommandFanout(ctx, Command{
+		Domain: "PierCode",
+		Method: "listTabs",
+		Params: params,
+	}, defaultReadTimeout)
+	if err != nil {
 		return nil, err
 	}
-	for i := range out.Tabs {
-		out.Tabs[i] = c.tabs.Upsert(out.Tabs[i])
+	seen := make(map[int]bool)
+	var merged []tool.BrowserTab
+	for _, res := range results {
+		var out struct {
+			Tabs []tool.BrowserTab `json:"tabs"`
+		}
+		if json.Unmarshal(res.Data, &out) != nil {
+			continue
+		}
+		for _, t := range out.Tabs {
+			if t.TabID > 0 && seen[t.TabID] {
+				continue
+			}
+			t = c.tabs.Upsert(t)
+			// Hide the user's own untracked AI conversation tabs unless asked;
+			// keep controlled/tracked AI pages always.
+			if !includeAI && c.policy.IsAIPage(t.URL) && !t.Controlled && t.TrackSource == "" {
+				continue
+			}
+			if t.TabID > 0 {
+				seen[t.TabID] = true
+			}
+			merged = append(merged, t)
+		}
 	}
-	return out.Tabs, nil
+	return merged, nil
 }
 
 func (c *Controller) NewTab(ctx context.Context, rawURL string) (tool.BrowserTab, error) {
@@ -88,25 +119,47 @@ func (c *Controller) NewTab(ctx context.Context, rawURL string) (tool.BrowserTab
 	if err := c.policy.CheckNavigate(rawURL); err != nil {
 		return tool.BrowserTab{}, err
 	}
-	// An AI conversation tab (spawn_agent's worker tab is the main case) must
-	// NOT become the default target for subsequent tabID-less browser tools:
-	// that silently re-pointed the coordinator's browser automation at the
-	// worker's chat page, and the default-tab path used to skip the AI-page
-	// approval gate entirely. Such a tab is still tracked (MarkCreated) so
-	// finalize/cleanup works, but the previous default stays in place.
+	// A tab the AI opens via browser_new_tab — even an AI-conversation page like
+	// qwen.ai — IS its working tab, so it becomes the controlled default and is
+	// pre-approved, so the very next browser_* call against it isn't blocked by
+	// the AI-page gate. (The hazard the old code guarded against was adopting the
+	// USER's existing AI conversation; that path is browser_use_tab, which still
+	// asks.)
+	//
+	// EXCEPTION: a spawn_agent worker tab (URL carries ?piercode_agent=<id>) is
+	// driven by its OWN content script, not the coordinator's browser_* tools.
+	// It must NOT become the coordinator's default target — otherwise tabID-less
+	// browser calls silently re-point at the worker's chat page. It's tracked
+	// (MarkCreated) for finalize, but stays controlled=false and non-default.
 	isAIPage := c.policy.IsAIPage(rawURL)
+	isWorkerTab := isWorkerAgentURL(rawURL)
+	controlled := !isWorkerTab
 	var tab tool.BrowserTab
-	params := map[string]interface{}{"url": rawURL, "controlled": !isAIPage}
+	params := map[string]interface{}{"url": rawURL, "controlled": controlled}
 	if err := c.sendNativeWithTimeout(ctx, "createTab", params, defaultNavigateTimeout, &tab); err != nil {
 		return tool.BrowserTab{}, err
 	}
-	if !isAIPage {
+	c.tabs.MarkCreated(tab.TabID)
+	if controlled {
 		tab.Controlled = true
 		c.tabs.SetDefault(tab)
+		if isAIPage {
+			c.tabs.MarkApproved(tab.TabID)
+		}
 	}
-	c.tabs.MarkCreated(tab.TabID)
 	tab = c.tabs.Upsert(tab)
 	return tab, nil
+}
+
+// isWorkerAgentURL reports whether a URL is a spawn_agent worker tab (it carries
+// the piercode_agent query param). Such tabs are self-driven and must not become
+// the coordinator's default/controlled target.
+func isWorkerAgentURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return u.Query().Get("piercode_agent") != ""
 }
 
 func (c *Controller) UseTab(ctx context.Context, tabID int, reason, callID string) (tool.BrowserTab, error) {
@@ -653,7 +706,22 @@ func (c *Controller) ensureTab(ctx context.Context, tabID *int) (tool.BrowserTab
 
 func (c *Controller) getTab(ctx context.Context, tabID int) (tool.BrowserTab, error) {
 	var tab tool.BrowserTab
-	if err := c.sendNative(ctx, "getTab", map[string]interface{}{"tabId": tabID}, &tab); err != nil {
+	// Carry tabId in cmd.TabID so the relay routes getTab to the browser that
+	// owns it (or, owner unknown, prefers the success over other browsers'
+	// "No tab with id" failures). Without this, getTab broadcast and a
+	// non-owning browser's failure could win the race.
+	rawParams, _ := json.Marshal(map[string]interface{}{"tabId": tabID})
+	tid := tabID
+	raw, err := c.relay.SendCommand(ctx, Command{
+		TabID:  &tid,
+		Domain: "PierCode",
+		Method: "getTab",
+		Params: rawParams,
+	}, defaultReadTimeout)
+	if err != nil {
+		return tool.BrowserTab{}, err
+	}
+	if err := json.Unmarshal(raw, &tab); err != nil {
 		return tool.BrowserTab{}, err
 	}
 	return c.tabs.Upsert(tab), nil

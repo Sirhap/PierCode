@@ -32,6 +32,13 @@ type clientConn struct {
 	closeOnce sync.Once
 }
 
+// tabOwners maps a browser tabId to the WS client id of the browser instance
+// that hosts it. Multiple browsers may each connect as role "browser-relay";
+// without this, a tabId-targeted command would be broadcast to every browser
+// and a non-owning one answers "No tab with id …" first, breaking the call.
+// Learned from listTabs / browser_event(tab_created|tab_updated). Cleared when
+// the tab closes or the owning client disconnects.
+
 type WSClientMeta struct {
 	ID        string
 	Client    string
@@ -48,6 +55,9 @@ type WSManager struct {
 	done           chan struct{}
 	closeOnce      sync.Once
 	allowedOrigins []string
+
+	tabOwnersMu sync.RWMutex
+	tabOwners   map[int]string // tabId → owning browser-relay client id
 }
 
 // NewWSManager 创建新的 WebSocket 管理器。allowedOrigins 是用户显式配置的
@@ -55,6 +65,7 @@ type WSManager struct {
 func NewWSManager(allowedOrigins []string) *WSManager {
 	return &WSManager{
 		clients:        make(map[*clientConn]bool),
+		tabOwners:      make(map[int]string),
 		done:           make(chan struct{}),
 		allowedOrigins: append([]string(nil), allowedOrigins...),
 		upgrader: websocket.Upgrader{
@@ -228,15 +239,18 @@ func formatProviderCount(count int) string {
 
 // Unregister 移除客户端连接
 func (m *WSManager) Unregister(conn *websocket.Conn) {
+	var goneID string
 	m.clientsMu.Lock()
 	for cc := range m.clients {
 		if cc.conn == conn {
+			goneID = cc.id
 			delete(m.clients, cc)
 			cc.close()
 			break
 		}
 	}
 	m.clientsMu.Unlock()
+	m.forgetClientTabs(goneID)
 }
 
 // Broadcast queues a message for all connected clients. Slow clients are
@@ -311,6 +325,87 @@ func (m *WSManager) SendToRole(role string, message []byte) bool {
 	return sent
 }
 
+// ── Tab ownership (multi-browser routing) ───────────────────────────────────
+
+// RecordTabOwner remembers which browser-relay client hosts a tab. Called when
+// listTabs / browser_event reveals a tab on a given source client.
+func (m *WSManager) RecordTabOwner(clientID string, tabID int) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" || tabID <= 0 {
+		return
+	}
+	m.tabOwnersMu.Lock()
+	m.tabOwners[tabID] = clientID
+	m.tabOwnersMu.Unlock()
+}
+
+// ForgetTab drops a tab's ownership (tab closed).
+func (m *WSManager) ForgetTab(tabID int) {
+	if tabID <= 0 {
+		return
+	}
+	m.tabOwnersMu.Lock()
+	delete(m.tabOwners, tabID)
+	m.tabOwnersMu.Unlock()
+}
+
+// forgetClientTabs drops every tab owned by a disconnected client.
+func (m *WSManager) forgetClientTabs(clientID string) {
+	if clientID == "" {
+		return
+	}
+	m.tabOwnersMu.Lock()
+	for tabID, owner := range m.tabOwners {
+		if owner == clientID {
+			delete(m.tabOwners, tabID)
+		}
+	}
+	m.tabOwnersMu.Unlock()
+}
+
+// tabOwner returns the client id hosting tabID, if known.
+func (m *WSManager) tabOwner(tabID int) (string, bool) {
+	if tabID <= 0 {
+		return "", false
+	}
+	m.tabOwnersMu.RLock()
+	owner, ok := m.tabOwners[tabID]
+	m.tabOwnersMu.RUnlock()
+	return owner, ok
+}
+
+// BrowserRelayIDs returns the client ids of every connected browser-relay.
+func (m *WSManager) BrowserRelayIDs() []string {
+	m.clientsMu.RLock()
+	defer m.clientsMu.RUnlock()
+	ids := make([]string, 0, len(m.clients))
+	for cc := range m.clients {
+		if cc.role == "browser-relay" {
+			ids = append(ids, cc.id)
+		}
+	}
+	return ids
+}
+
+// SendBrowserCommand routes a browser command payload. When tabID is known and
+// its owning browser is connected, the command goes ONLY to that browser —
+// otherwise it broadcasts to every browser-relay (single-browser case, or a tab
+// whose owner we haven't learned yet). Returns whether at least one client got
+// it, and whether the send was owner-targeted (callers may relax first-result
+// races when targeted).
+func (m *WSManager) SendBrowserCommand(tabID *int, message []byte) (sent bool, targeted bool) {
+	if tabID != nil {
+		if owner, ok := m.tabOwner(*tabID); ok {
+			if m.SendToID(owner, message) {
+				return true, true
+			}
+			// Owner vanished mid-flight; fall through to broadcast.
+			m.ForgetTab(*tabID)
+		}
+	}
+	return m.SendToRole("browser-relay", message), false
+}
+
 // IsAllowedOrigin 判断 Origin header 是否允许。空 Origin（同源 / 非浏览器
 // 工具）放行；chrome-extension:// 自动放行；127.0.0.1 / localhost 任意端口
 // 放行；其它必须出现在 allowed 列表里精确匹配。
@@ -354,11 +449,16 @@ func (m *WSManager) writePump(cc *clientConn) {
 
 func (m *WSManager) unregisterClient(cc *clientConn) {
 	m.clientsMu.Lock()
+	removed := false
 	if _, ok := m.clients[cc]; ok {
 		delete(m.clients, cc)
 		cc.close()
+		removed = true
 	}
 	m.clientsMu.Unlock()
+	if removed {
+		m.forgetClientTabs(cc.id)
+	}
 }
 
 func (cc *clientConn) close() {

@@ -21,7 +21,7 @@ func TestFindReturnsScoredResults(t *testing.T) {
 	valueJSON, _ := json.Marshal(findResultsJSON)
 
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -71,7 +71,7 @@ func TestFindEmptyQueryReturnsEmpty(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 102, URL: "https://example.com", Title: "Find Empty"}
 
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -103,7 +103,7 @@ func TestResizeSendsWindowBounds(t *testing.T) {
 	var relay *RelayManager
 	var capturedParams map[string]interface{}
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -151,7 +151,7 @@ func TestFormInputCheckbox(t *testing.T) {
 	var relay *RelayManager
 	var capturedExpression string
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -201,7 +201,7 @@ func TestFormInputCheckboxPreservesBooleanFalse(t *testing.T) {
 	var relay *RelayManager
 	var capturedExpression string
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -244,7 +244,7 @@ func TestFormInputContentEditable(t *testing.T) {
 	var relay *RelayManager
 	var capturedExpression string
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -307,7 +307,7 @@ func TestZoomCapturesRegion(t *testing.T) {
 	imgBytes := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01}
 	imgBase64 := base64.StdEncoding.EncodeToString(imgBytes)
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -381,7 +381,7 @@ func TestZoomCapturesRefRegion(t *testing.T) {
 	imgBytes := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01}
 	imgBase64 := base64.StdEncoding.EncodeToString(imgBytes)
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -434,7 +434,7 @@ func TestReadConsoleReturnsBufferedMessages(t *testing.T) {
 	var relay *RelayManager
 	runtimeEnabled := false
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -499,7 +499,7 @@ func TestReadNetworkReturnsBufferedRequests(t *testing.T) {
 	var relay *RelayManager
 	networkEnabled := false
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -568,7 +568,7 @@ func TestReadNetworkFormatsStatusTextAndDuration(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 115, URL: "https://example.com", Title: "Network Format"}
 	var relay *RelayManager
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -636,7 +636,7 @@ func TestReadNetworkFormatsStatusTextAndDuration(t *testing.T) {
 func TestCookiesRequiresApprovalBeforeRelayCommand(t *testing.T) {
 	var commandSent bool
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		commandSent = true
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
@@ -688,7 +688,7 @@ func TestZoomRespectsOutputDir(t *testing.T) {
 	imgBytes := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01}
 	imgBase64 := base64.StdEncoding.EncodeToString(imgBytes)
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)

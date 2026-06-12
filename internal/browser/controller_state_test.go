@@ -13,7 +13,7 @@ func TestStorageSetBuildsExpression(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 201, URL: "https://example.com", Title: "Storage"}
 	var capturedExpr string
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -58,7 +58,7 @@ func TestStorageSessionGet(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 202, URL: "https://example.com", Title: "Storage"}
 	var capturedExpr string
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		_ = json.Unmarshal(payload, &cmd)
 		var params struct {
@@ -88,7 +88,7 @@ func TestEmulateAppliesColorSchemeAndTimezone(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 203, URL: "https://example.com", Title: "Emulate"}
 	var methods []string
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -125,7 +125,7 @@ func TestEmulateResetClears(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 204, URL: "https://example.com", Title: "Emulate Reset"}
 	var methods []string
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		_ = json.Unmarshal(payload, &cmd)
 		methods = append(methods, cmd.Method)
@@ -147,7 +147,7 @@ func TestGetAttributesSelector(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 205, URL: "https://example.com", Title: "Attrs"}
 	var capturedExpr string
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		_ = json.Unmarshal(payload, &cmd)
 		var params struct {
@@ -184,7 +184,7 @@ func TestWaitForNavigationMatchesURL(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 206, URL: "https://example.com", Title: "Nav"}
 	var capturedExpr string
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		_ = json.Unmarshal(payload, &cmd)
 		var params struct {
@@ -218,7 +218,7 @@ func TestSetCookieSendsNativeCommand(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 207, URL: "https://example.com", Title: "Cookie"}
 	var capturedParams map[string]interface{}
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)

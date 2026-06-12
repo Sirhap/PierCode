@@ -12,7 +12,7 @@ import (
 func TestDispatchClickRightButton(t *testing.T) {
 	var commands []Command
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -67,7 +67,7 @@ func TestDispatchClickRightButton(t *testing.T) {
 func TestDispatchClickDoubleClick(t *testing.T) {
 	var commands []Command
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -103,7 +103,7 @@ func TestDispatchClickDoubleClick(t *testing.T) {
 func TestDispatchClickTripleClick(t *testing.T) {
 	var commands []Command
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -133,7 +133,7 @@ func TestDispatchClickTripleClick(t *testing.T) {
 func TestDispatchClickMiddleButton(t *testing.T) {
 	var commands []Command
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -169,7 +169,7 @@ func TestDispatchClickMiddleButton(t *testing.T) {
 func TestDispatchDragUsesMinimalMouseSequence(t *testing.T) {
 	var commands []Command
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -208,7 +208,7 @@ func TestBrowserTypeVerifiesTextLanded(t *testing.T) {
 	var controller *Controller
 	var relay *RelayManager
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -270,7 +270,7 @@ func TestBrowserTypeFailsWhenTextDoesNotLand(t *testing.T) {
 	var controller *Controller
 	var relay *RelayManager
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -320,7 +320,7 @@ func TestNavigateWithBeforeunloadAccept(t *testing.T) {
 	var relay *RelayManager
 	dialogHandled := make(chan map[string]interface{}, 1)
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -398,7 +398,7 @@ func TestNavigateWithBeforeunloadDismiss(t *testing.T) {
 	var relay *RelayManager
 	dialogHandled := make(chan map[string]interface{}, 1)
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -473,7 +473,7 @@ func TestNavigateWithBeforeunloadNone(t *testing.T) {
 	var commands []Command
 	var relay *RelayManager
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)

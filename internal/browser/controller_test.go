@@ -33,7 +33,7 @@ func TestEnsureTabRequiresApprovalForAIPage(t *testing.T) {
 func newGetTabRelay(t *testing.T, tab tool.BrowserTab) *RelayManager {
 	t.Helper()
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -54,7 +54,7 @@ func newGetTabRelay(t *testing.T, tab tool.BrowserTab) *RelayManager {
 func intPtr(v int) *int { return &v }
 
 func TestHandleEventTabRemovedClearsEventBusBuffers(t *testing.T) {
-	controller := NewController(NewRelayManager(func([]byte) bool { return false }), func([]byte) {})
+	controller := NewController(NewRelayManagerFromSend(func([]byte) bool { return false }), func([]byte) {})
 
 	const tabID = 55
 
@@ -119,7 +119,7 @@ func TestHandleEventTabRemovedClearsEventBusBuffers(t *testing.T) {
 }
 
 func TestDebuggerDetachedClearsDomainTracking(t *testing.T) {
-	controller := NewController(NewRelayManager(func([]byte) bool { return false }), func([]byte) {})
+	controller := NewController(NewRelayManagerFromSend(func([]byte) bool { return false }), func([]byte) {})
 
 	const tabID = 77
 	controller.events.MarkDomainEnabled(tabID, "Runtime")
@@ -151,7 +151,7 @@ func TestNavigateWithBeforeunloadUsesParentContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)

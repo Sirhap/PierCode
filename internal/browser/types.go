@@ -52,7 +52,36 @@ type ApprovalAnswer struct {
 	Reason     string `json:"reason,omitempty"`
 }
 
-type clientSender func([]byte) bool
+// RelayTransport is how the relay reaches browser-relay WS clients. The server
+// supplies the WSManager-backed impl. Routing by tabId lets multiple connected
+// browsers coexist: a tabId-bearing command goes only to the browser that owns
+// that tab (falling back to broadcast when the owner is unknown).
+type RelayTransport interface {
+	// SendBrowserCommand routes one command payload. Returns (sent, targeted):
+	// targeted=true means it went to a single owning browser, false means it
+	// was broadcast to all browser-relays.
+	SendBrowserCommand(tabID *int, payload []byte) (sent bool, targeted bool)
+	// BrowserRelayIDs lists every connected browser-relay client id (for
+	// per-client fan-out, e.g. aggregating listTabs across browsers).
+	BrowserRelayIDs() []string
+	// SendToID delivers a payload to one specific client id.
+	SendToID(id string, payload []byte) bool
+}
+
+// broadcastTransport adapts a single broadcast send func into a RelayTransport
+// with one virtual client. Used by tests and any single-channel caller — no
+// tab routing, every command broadcasts and there is exactly one fan-out lane.
+type broadcastTransport struct {
+	send func([]byte) bool
+}
+
+func (b broadcastTransport) SendBrowserCommand(_ *int, payload []byte) (bool, bool) {
+	return b.send(payload), false
+}
+func (b broadcastTransport) BrowserRelayIDs() []string { return []string{"broadcast"} }
+func (b broadcastTransport) SendToID(_ string, payload []byte) bool {
+	return b.send(payload)
+}
 
 const (
 	defaultReadTimeout       = 10 * time.Second

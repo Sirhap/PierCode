@@ -84,7 +84,7 @@ func TestSecurityPolicyIsSensitive(t *testing.T) {
 
 // Navigate must reject dangerous schemes before issuing any relay command.
 func TestNavigateRejectsDangerousSchemeWithoutRelay(t *testing.T) {
-	relay := NewRelayManager(func(payload []byte) bool {
+	relay := NewRelayManagerFromSend(func(payload []byte) bool {
 		t.Fatalf("relay must not be called for a blocked navigation; got: %s", payload)
 		return false
 	})
@@ -107,7 +107,7 @@ func TestNavigateRejectsDangerousSchemeWithoutRelay(t *testing.T) {
 func multiCmdRelay(t *testing.T, tab tool.BrowserTab) *RelayManager {
 	t.Helper()
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)

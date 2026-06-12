@@ -52,6 +52,11 @@ func NewBrowserTabsTool() Tool {
 		},
 		validate: func(map[string]interface{}) error { return nil },
 		execute: func(ctx *Context) (string, error) {
+			// ListTabs always surfaces CONTROLLED/tracked AI pages (e.g. one the AI
+			// just opened via browser_new_tab) regardless of includeAiPages, so
+			// "open qwen.ai then list tabs" no longer reports "No browser tabs are
+			// available". includeAiPages only governs the USER's own untracked AI
+			// conversation tabs.
 			tabs, err := ctx.Browser.ListTabs(ctx.Context, boolArg(ctx.Args, "includeAiPages"))
 			if err != nil {
 				return "", err

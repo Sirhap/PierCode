@@ -77,9 +77,9 @@ func New(config *types.Config) *Server {
 		ws:       ws,
 		stop:     make(chan struct{}),
 	}
-	relay := browser.NewRelayManager(func(payload []byte) bool {
-		return ws.SendToRole("browser-relay", payload)
-	})
+	// WSManager satisfies browser.RelayTransport (tabId-routed sends + per-client
+	// fan-out), so a tab-targeted command reaches only the browser that owns it.
+	relay := browser.NewRelayManager(ws)
 	s.browser = browser.NewController(relay, func(payload []byte) {
 		ws.Send(payload)
 	})
@@ -686,6 +686,31 @@ func browserProviderFromRequest(r *http.Request) string {
 	}
 }
 
+// extractTabIDs pulls tabIds out of a browser_result Data blob: a top-level
+// {"tabId": N} (getTab/createTab/navigate) and/or {"tabs": [{"tabId": N}…]}
+// (listTabs). Used to learn tab→browser ownership for multi-browser routing.
+func extractTabIDs(data json.RawMessage) []int {
+	var probe struct {
+		TabID int `json:"tabId"`
+		Tabs  []struct {
+			TabID int `json:"tabId"`
+		} `json:"tabs"`
+	}
+	if json.Unmarshal(data, &probe) != nil {
+		return nil
+	}
+	var ids []int
+	if probe.TabID > 0 {
+		ids = append(ids, probe.TabID)
+	}
+	for _, t := range probe.Tabs {
+		if t.TabID > 0 {
+			ids = append(ids, t.TabID)
+		}
+	}
+	return ids
+}
+
 func (s *Server) handleWSClientMessage(sourceClientID string, payload []byte) {
 	var msg struct {
 		Type       string          `json:"type"`
@@ -765,6 +790,13 @@ func (s *Server) handleWSClientMessage(sourceClientID string, payload []byte) {
 		tool.PendingQuestions.Cancel(callID, msg.Reason)
 	case "browser_result":
 		if s.browser != nil {
+			// Learn which browser hosts the tab(s) named in this result so a
+			// later tabId-targeted command routes only to this browser.
+			if msg.Success && len(msg.Data) > 0 {
+				for _, tabID := range extractTabIDs(msg.Data) {
+					s.ws.RecordTabOwner(sourceClientID, tabID)
+				}
+			}
 			s.browser.DeliverResult(browser.Result{
 				Type:    msg.Type,
 				ID:      msg.ID,
@@ -789,6 +821,14 @@ func (s *Server) handleWSClientMessage(sourceClientID string, payload []byte) {
 		})
 	case "browser_event":
 		if s.browser != nil {
+			// Track tab→browser ownership from lifecycle events.
+			if msg.TabID > 0 {
+				if msg.Event == "tab_removed" {
+					s.ws.ForgetTab(msg.TabID)
+				} else {
+					s.ws.RecordTabOwner(sourceClientID, msg.TabID)
+				}
+			}
 			s.browser.HandleEvent(browser.Event{
 				Type:   msg.Type,
 				Event:  msg.Event,
@@ -860,7 +900,7 @@ func (s *Server) handleAgentResult(agentID, status, summary, result string) {
 	if strings.TrimSpace(summary) == "" {
 		summary = rec.Description
 	}
-	notification := buildTaskNotification(rec.AgentID, string(rec.Status), summary, result)
+	notification := buildTaskNotification(rec.AgentID, rec.Description, string(rec.Status), summary, result)
 	payload, err := json.Marshal(gin.H{"type": "inject", "text": notification, "conversation_url": rec.DispatcherConversationURL})
 	if err != nil {
 		return
@@ -876,10 +916,13 @@ func (s *Server) handleAgentResult(agentID, status, summary, result string) {
 
 // buildTaskNotification renders a worker result packet into the <task-notification>
 // XML the coordinator prompt is taught to recognize.
-func buildTaskNotification(agentID, status, summary, result string) string {
+func buildTaskNotification(agentID, description, status, summary, result string) string {
 	var b strings.Builder
 	b.WriteString("<task-notification>\n")
 	fmt.Fprintf(&b, "<task-id>%s</task-id>\n", html.EscapeString(agentID))
+	if d := strings.TrimSpace(description); d != "" {
+		fmt.Fprintf(&b, "<task-description>%s</task-description>\n", html.EscapeString(d))
+	}
 	fmt.Fprintf(&b, "<status>%s</status>\n", html.EscapeString(status))
 	fmt.Fprintf(&b, "<summary>%s</summary>\n", html.EscapeString(strings.TrimSpace(summary)))
 	if strings.TrimSpace(result) != "" {

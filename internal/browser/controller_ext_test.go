@@ -18,7 +18,7 @@ func TestHandleDialogAcceptsRelayedJavaScriptDialog(t *testing.T) {
 	var relay *RelayManager
 	handled := make(chan map[string]interface{}, 1)
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -84,7 +84,7 @@ func TestHandleDialogDoesNotMissDialogDuringPageEnable(t *testing.T) {
 	var controller *Controller
 	var relay *RelayManager
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -129,7 +129,7 @@ func TestUploadUsesCDPSetFileInputFiles(t *testing.T) {
 	var relay *RelayManager
 	var uploaded []string
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -182,7 +182,7 @@ func TestUploadFallsBackToDataTransferWhenCDPSetFilesFails(t *testing.T) {
 	var relay *RelayManager
 	var fallbackCalled bool
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -234,7 +234,7 @@ func TestUploadFallsBackToPageEventsWhenFileInputMissing(t *testing.T) {
 	var fallbackExpr string
 	resolveAttempts := 0
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -318,7 +318,7 @@ func TestSelectByLabelExpressionContainsValidation(t *testing.T) {
 	var capturedExpr string
 	var relay *RelayManager
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -366,7 +366,7 @@ func TestSelectByIndexExpressionContainsValidation(t *testing.T) {
 	var capturedExpr string
 	var relay *RelayManager
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -416,7 +416,7 @@ func TestSelectByLabelMismatchPropagatesError(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 82, URL: "https://example.com/select", Title: "Select"}
 	var relay *RelayManager
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -450,7 +450,7 @@ func TestSelectByIndexOutOfBoundsPropagatesError(t *testing.T) {
 	tab := tool.BrowserTab{TabID: 83, URL: "https://example.com/select", Title: "Select"}
 	var relay *RelayManager
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -485,7 +485,7 @@ func TestSelectByDefaultUsesValue(t *testing.T) {
 	var capturedExpr string
 	var relay *RelayManager
 
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			t.Fatalf("invalid command payload: %v", err)
@@ -550,7 +550,7 @@ func TestWaitForFunctionExpressionNoDeadFetchXHRCode(t *testing.T) {
 // default-tab path must apply the same AI-page approval gate as the explicit
 // tabID path, instead of silently driving an AI conversation page.
 func TestEnsureTabRefusesUnapprovedAIDefault(t *testing.T) {
-	relay := NewRelayManager(func(payload []byte) bool { return true })
+	relay := NewRelayManagerFromSend(func(payload []byte) bool { return true })
 	controller := newApprovedController(relay)
 	tab := tool.BrowserTab{TabID: 91, URL: "https://chat.qwen.ai/c/worker", Title: "Worker"}
 	controller.tabs.SetDefault(tab)
@@ -574,7 +574,7 @@ func TestEnsureTabRefusesUnapprovedAIDefault(t *testing.T) {
 // worker tab on an AI host must not hijack the default browser-tool target.
 func TestNewTabAIPageDoesNotBecomeDefault(t *testing.T) {
 	var relay *RelayManager
-	relay = NewRelayManager(func(payload []byte) bool {
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
 		var cmd Command
 		if err := json.Unmarshal(payload, &cmd); err != nil {
 			return false
