@@ -43,6 +43,12 @@ type ApprovalAsk struct {
 	Target     string      `json:"target"`
 	Risk       string      `json:"risk"`
 	Options    []string    `json:"options"`
+	// Host is the registrable domain of the acted-on tab and ActionClass groups
+	// the operation (e.g. "click", "type", "evaluate", "cookie"). Together they
+	// key a reusable grant so a user can approve "always for this site + this
+	// action class" instead of re-approving every call.
+	Host        string `json:"host,omitempty"`
+	ActionClass string `json:"action_class,omitempty"`
 }
 
 type ApprovalAnswer struct {
@@ -50,6 +56,10 @@ type ApprovalAnswer struct {
 	ApprovalID string `json:"approval_id"`
 	Approved   bool   `json:"approved"`
 	Reason     string `json:"reason,omitempty"`
+	// Scope, when the user approves, records how widely the grant applies:
+	// "" / "once" = just this call; "session" = remember (host, action_class)
+	// for the rest of the process. The UI sets this from the approval card.
+	Scope string `json:"scope,omitempty"`
 }
 
 // RelayTransport is how the relay reaches browser-relay WS clients. The server

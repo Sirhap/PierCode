@@ -41,6 +41,15 @@ func (c *Controller) DeliverResult(res Result) bool {
 	return c.relay.DeliverResult(res)
 }
 
+// AllowSensitiveHost marks a domain as not payment/financial-sensitive, so the
+// keyword heuristic stops refusing browser actions on it (e.g. developer docs or
+// e-commerce test sites that merely mention payment/checkout).
+func (c *Controller) AllowSensitiveHost(hostOrURL string) {
+	if c.policy != nil {
+		c.policy.AllowSensitiveHost(hostOrURL)
+	}
+}
+
 func (c *Controller) DeliverApproval(answer ApprovalAnswer) bool {
 	return c.approvals.Deliver(answer)
 }
@@ -844,13 +853,48 @@ func (c *Controller) sendNativeWithTimeout(ctx context.Context, method string, p
 }
 
 func (c *Controller) ask(ctx context.Context, callID, action string, tab tool.BrowserTab, target, risk string) error {
+	host, _ := registrableDomain(tab.URL)
 	return c.approvals.Ask(ctx, ApprovalAsk{
-		CallID: callID,
-		Action: action,
-		Tab:    tab,
-		Target: target,
-		Risk:   risk,
+		CallID:      callID,
+		Action:      action,
+		Tab:         tab,
+		Target:      target,
+		Risk:        risk,
+		Host:        host,
+		ActionClass: actionClassFor(action),
 	})
+}
+
+// actionClassFor groups an approval prompt's action into a coarse class used as
+// the grant key, so "always for this site" applies to a category (clicking,
+// typing, …) rather than the exact phrasing. Mutating-but-low-risk pointer/text
+// actions share "interact"; higher-risk capabilities each get their own class
+// so a broad interact grant never silently covers evaluate/cookie/upload.
+func actionClassFor(action string) string {
+	a := action
+	switch {
+	case containsAny(a, "JavaScript", "evaluate", "脚本"):
+		return "evaluate"
+	case containsAny(a, "cookie", "Cookie"):
+		return "cookie"
+	case containsAny(a, "剪贴板", "clipboard"):
+		return "clipboard"
+	case containsAny(a, "上传", "upload"):
+		return "upload"
+	case containsAny(a, "弹窗", "dialog"):
+		return "dialog"
+	default:
+		return "interact"
+	}
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Controller) resolvePoint(ctx context.Context, tabID *int, ref, selector, snapshotID string, xArg, yArg *float64) (tool.BrowserTab, float64, float64, string, error) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/sirhap/piercode/internal/tool"
 	"golang.org/x/net/publicsuffix"
@@ -83,9 +84,45 @@ var sensitivePathKeywords = []string{
 	"结账",
 }
 
-type SecurityPolicy struct{}
+type SecurityPolicy struct {
+	mu sync.RWMutex
+	// sensitiveAllow holds registrable domains the user has explicitly marked as
+	// NOT sensitive, overriding the keyword heuristic. This fixes false positives
+	// where a developer-docs or e-commerce-test page mentions payment/checkout.
+	sensitiveAllow map[string]bool
+}
 
-func NewSecurityPolicy() *SecurityPolicy { return &SecurityPolicy{} }
+func NewSecurityPolicy() *SecurityPolicy {
+	return &SecurityPolicy{sensitiveAllow: make(map[string]bool)}
+}
+
+// AllowSensitiveHost marks a registrable domain (or any URL/host) as not
+// sensitive, so IsSensitive returns false for it. Idempotent.
+func (p *SecurityPolicy) AllowSensitiveHost(hostOrURL string) {
+	d, ok := registrableDomain(hostOrURL)
+	if !ok {
+		d = strings.ToLower(strings.TrimSpace(hostOrURL))
+	}
+	if d == "" {
+		return
+	}
+	p.mu.Lock()
+	if p.sensitiveAllow == nil {
+		p.sensitiveAllow = make(map[string]bool)
+	}
+	p.sensitiveAllow[d] = true
+	p.mu.Unlock()
+}
+
+func (p *SecurityPolicy) isSensitiveAllowed(rawURL string) bool {
+	d, ok := registrableDomain(rawURL)
+	if !ok {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.sensitiveAllow[d]
+}
 
 func (p *SecurityPolicy) CheckNavigate(raw string) error {
 	raw = strings.TrimSpace(raw)
@@ -121,6 +158,10 @@ func (p *SecurityPolicy) IsAIPage(raw string) bool {
 // IsSensitive checks if a tab likely contains payment/financial content.
 // [Fixed by mimo-v2.5-pro: split host vs path matching, added Chinese keywords]
 func (p *SecurityPolicy) IsSensitive(tab tool.BrowserTab) bool {
+	// User override: a domain explicitly marked safe is never sensitive.
+	if p.isSensitiveAllowed(tab.URL) {
+		return false
+	}
 	u, err := url.Parse(strings.TrimSpace(tab.URL))
 	if err == nil {
 		host := strings.ToLower(u.Hostname())

@@ -83,6 +83,9 @@ func New(config *types.Config) *Server {
 	s.browser = browser.NewController(relay, func(payload []byte) {
 		ws.Send(payload)
 	})
+	for _, h := range config.AllowedSensitiveHosts {
+		s.browser.AllowSensitiveHost(h)
+	}
 	s.executor.SetBrowserController(s.browser)
 
 	// Tools (currently just `question`) can push arbitrary WS payloads via
@@ -725,6 +728,7 @@ func (s *Server) handleWSClientMessage(sourceClientID string, payload []byte) {
 		Error      string          `json:"error"`
 		ApprovalID string          `json:"approval_id"`
 		Approved   bool            `json:"approved"`
+		Scope      string          `json:"scope"`
 		OK         bool            `json:"ok"`
 		Event      string          `json:"event"`
 		TabID      int             `json:"tabId"`
@@ -812,6 +816,7 @@ func (s *Server) handleWSClientMessage(sourceClientID string, payload []byte) {
 				ApprovalID: msg.ApprovalID,
 				Approved:   msg.Approved,
 				Reason:     msg.Reason,
+				Scope:      msg.Scope,
 			})
 		}
 	case "browser_attachment_upload_result":

@@ -63,6 +63,7 @@ function showBrowserApprovalPopup(msg: {
   tab?: { tabId?: number; title?: string; url?: string };
   target: string;
   risk: string;
+  options?: string[];
 }) {
   const existing = activeBrowserApprovalPopups.get(msg.approval_id);
   if (existing) existing.remove();
@@ -70,6 +71,10 @@ function showBrowserApprovalPopup(msg: {
   const tabLine = msg.tab
     ? `tabId=${msg.tab.tabId ?? ''}\n标题：${msg.tab.title || '(untitled)'}\nURL：${msg.tab.url || '(unknown)'}`
     : '目标标签页未知';
+  // The server may offer a session-scoped option ("本站点始终允许"): a third
+  // choice that remembers (site, action class) so repeat actions skip the prompt.
+  const sessionLabel = '本站点始终允许';
+  const options = Array.isArray(msg.options) && msg.options.length >= 2 ? msg.options : ['允许', '拒绝'];
   const panel = showInlineQuestionPanel({
     question: [
       `浏览器操作：${msg.action}`,
@@ -79,10 +84,17 @@ function showBrowserApprovalPopup(msg: {
       `目标：${msg.target || '(unknown)'}`,
       `风险：${msg.risk || '此操作会改变网页状态。'}`,
     ].join('\n'),
-    options: ['允许', '拒绝'],
+    options,
     onSubmit: answer => {
-      const approved = answer.trim() === '允许' || answer.trim() === '1';
-      sendBrowserApprovalAnswer(msg.approval_id, approved, approved ? '' : 'user rejected browser action');
+      const a = answer.trim();
+      const isSession = a === sessionLabel;
+      const approved = a === '允许' || a === '1' || isSession;
+      sendBrowserApprovalAnswer(
+        msg.approval_id,
+        approved,
+        approved ? '' : 'user rejected browser action',
+        isSession ? 'session' : '',
+      );
       panel.remove();
       activeBrowserApprovalPopups.delete(msg.approval_id);
     },
@@ -103,6 +115,7 @@ export async function handleBrowserApprovalAsk(msg: {
   tab?: { tabId?: number; title?: string; url?: string };
   target: string;
   risk: string;
+  options?: string[];
 }) {
   if (await shouldAutoApproveBrowserActions()) {
     if (msg.call_id) dismissBrowserApprovalPopupForCall(msg.call_id);

@@ -49,6 +49,8 @@ func main() {
 	permissionMode := flag.String("permission-mode", "default", "文件权限模式：default=仅工作区/追加目录，auto=自动允许启动目录父级，unrestricted=不限制文件路径")
 	var addDirs stringListFlag
 	flag.Var(&addDirs, "add-dir", "额外允许访问的目录；可重复或逗号分隔，类似 Claude Code --add-dir")
+	var allowSensitiveHosts stringListFlag
+	flag.Var(&allowSensitiveHosts, "allow-sensitive-host", "将域名标记为非支付/金融敏感，覆盖关键词启发式（用于开发文档/电商测试页误判）；可重复或逗号分隔")
 	forceKillPort := flag.Bool("force-kill-port", false, "若端口被非 piercode 进程占用，强制结束该进程")
 	fixedToken := flag.String("token", "", "使用固定的认证 token（而非随机生成），方便扩展重启后自动重连")
 	ephemeralToken := flag.Bool("ephemeral-token", false, "每次启动都随机生成 token（旧行为）。默认会把 token 持久化到 ~/.piercode/token，扩展无需每次重连")
@@ -135,6 +137,7 @@ func main() {
 		AdditionalAllowedDirs: additionalAllowedDirs,
 		PermissionMode:        mode,
 		AllowedOrigins:        origins,
+		AllowedSensitiveHosts: allowSensitiveHosts,
 	}
 
 	if shellEnabled {

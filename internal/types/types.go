@@ -98,6 +98,10 @@ type Config struct {
 	// permitted to reach the server. Empty = only same-origin and the
 	// default chrome-extension scheme.
 	AllowedOrigins []string
+	// AllowedSensitiveHosts lists registrable domains the user has marked as NOT
+	// payment/financial-sensitive, overriding the keyword heuristic so browser
+	// actions are not refused on developer-docs / e-commerce-test pages.
+	AllowedSensitiveHosts []string
 }
 
 func (c *Config) GetRootDir() string {

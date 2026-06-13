@@ -1065,14 +1065,14 @@ export function sendQuestionCancel(callID: string, reason = "user_cancelled"): b
 	}
 }
 
-export function sendBrowserApprovalAnswer(approvalID: string, approved: boolean, reason = ""): boolean {
+export function sendBrowserApprovalAnswer(approvalID: string, approved: boolean, reason = "", scope = ""): boolean {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     console.warn("[PierCode] WebSocket 未连接，无法发送 browser approval");
     return false;
   }
   if (answeredBrowserApprovals.has(approvalID)) return true;
   try {
-	    ws.send(JSON.stringify({ type: "browser_approval_answer", approval_id: approvalID, approved, reason, conversation_url: observeConversationURL() }));
+	    ws.send(JSON.stringify({ type: "browser_approval_answer", approval_id: approvalID, approved, reason, scope, conversation_url: observeConversationURL() }));
     answeredBrowserApprovals.add(approvalID);
     // Evict oldest entries if the set grows too large. The dedup window is
     // short-lived (same page session), so clearing is safe.

@@ -160,3 +160,22 @@ func TestSameRegistrableHost(t *testing.T) {
 		}
 	}
 }
+
+func TestIsSensitiveAllowlistOverride(t *testing.T) {
+	p := NewSecurityPolicy()
+	docs := tool.BrowserTab{URL: "https://stripe.com/docs/payments/checkout", Title: "Checkout — Stripe Docs"}
+	// The keyword heuristic flags this (payment/checkout in URL+title).
+	if !p.IsSensitive(docs) {
+		t.Fatal("expected docs page to trip the keyword heuristic before override")
+	}
+	// After the user allowlists the domain, it is no longer treated as sensitive.
+	p.AllowSensitiveHost("https://stripe.com")
+	if p.IsSensitive(docs) {
+		t.Fatal("allowlisted domain must not be sensitive")
+	}
+	// A different sensitive domain is unaffected.
+	bank := tool.BrowserTab{URL: "https://mybank.com/transfer", Title: "Transfer"}
+	if !p.IsSensitive(bank) {
+		t.Fatal("non-allowlisted sensitive domain must still be flagged")
+	}
+}
