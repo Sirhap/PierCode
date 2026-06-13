@@ -341,3 +341,56 @@ func TestEmulateNetworkThrottle(t *testing.T) {
 		t.Fatalf("output should report the throttle, got %q", out)
 	}
 }
+
+func TestIsIframeTarget(t *testing.T) {
+	if !isIframeTarget(`textbox "Card" (in iframe)`) {
+		t.Fatal("expected iframe target to be detected")
+	}
+	if isIframeTarget(`button "Submit"`) {
+		t.Fatal("main-frame target wrongly detected as iframe")
+	}
+}
+
+func TestResolveOOPIFPointSumsFrameOffset(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 40, URL: "https://shop.example.com", Title: "Checkout"}
+	// Snapshot registry: a ref inside an OOPIF session with a backend node.
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		switch cmd.Domain + "." + cmd.Method {
+		case "PierCode.getTab":
+			data, _ := json.Marshal(tab)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		case "DOM.getBoxModel":
+			// Frame session box → frame-relative (10,20)-(30,40); page session
+			// (iframe owner) box → (100,200)-(500,600).
+			if cmd.SessionID == "FRAME-SESS" {
+				go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"model":{"border":[10,20,30,20,30,40,10,40]}}`)})
+			} else {
+				go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"model":{"border":[100,200,500,200,500,600,100,600]}}`)})
+			}
+		case "Target.getTargetInfo":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"targetInfo":{"targetId":"FRAME-1"}}`)})
+		case "DOM.getFrameOwner":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"backendNodeId":77}`)})
+		case "DOM.scrollIntoViewIfNeeded":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		default:
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	target := RefTarget{Ref: "e1", BackendID: 5, SessionID: "FRAME-SESS", Role: "textbox", Name: "Card"}
+	x, y, err := controller.resolveOOPIFPoint(context.Background(), tab.TabID, target)
+	if err != nil {
+		t.Fatalf("resolveOOPIFPoint error: %v", err)
+	}
+	// node center (20,30) + iframe owner top-left (100,200) = (120,230).
+	if x != 120 || y != 230 {
+		t.Fatalf("expected absolute (120,230), got (%.0f,%.0f)", x, y)
+	}
+}

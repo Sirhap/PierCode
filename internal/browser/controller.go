@@ -492,8 +492,13 @@ func (c *Controller) Click(ctx context.Context, req tool.BrowserClickRequest) (s
 	if clickCount == 3 {
 		action = "triple-clicked"
 	}
-	if err := c.assertPointActionable(ctx, tab.TabID, x, y); err != nil {
-		return "", err
+	// Skip the elementFromPoint hit-test for iframe targets: the topmost element
+	// at the iframe-absolute point on the page session is the <iframe> itself,
+	// not the inner control, so the test would always (wrongly) fail.
+	if !isIframeTarget(target) {
+		if err := c.assertPointActionable(ctx, tab.TabID, x, y); err != nil {
+			return "", err
+		}
 	}
 	if err := c.ask(ctx, req.CallID, action+" 页面元素", tab, target, action+" 可能触发页面操作。"); err != nil {
 		return "", err
@@ -503,6 +508,12 @@ func (c *Controller) Click(ctx context.Context, req tool.BrowserClickRequest) (s
 	}
 	c.tabs.MarkStale(tab.TabID)
 	return fmt.Sprintf("%s %s at %.0f,%.0f in tabId=%d", action, target, x, y, tab.TabID), nil
+}
+
+// isIframeTarget reports whether resolvePoint resolved an OOPIF node (its target
+// description is suffixed "(in iframe)").
+func isIframeTarget(target string) bool {
+	return strings.Contains(target, "(in iframe)")
 }
 
 func (c *Controller) Type(ctx context.Context, req tool.BrowserTypeRequest) (string, error) {
@@ -516,8 +527,10 @@ func (c *Controller) Type(ctx context.Context, req tool.BrowserTypeRequest) (str
 	if c.policy.IsSensitive(tab) {
 		return "", fmt.Errorf("browser_type refused on sensitive payment/financial page")
 	}
-	if err := c.assertPointActionable(ctx, tab.TabID, x, y); err != nil {
-		return "", err
+	if !isIframeTarget(target) {
+		if err := c.assertPointActionable(ctx, tab.TabID, x, y); err != nil {
+			return "", err
+		}
 	}
 	if err := c.ask(ctx, req.CallID, "输入文本", tab, target, "输入会修改网页表单内容。"); err != nil {
 		return "", err
@@ -1044,6 +1057,17 @@ func (c *Controller) resolvePoint(ctx context.Context, tabID *int, ref, selector
 		if err != nil {
 			return tool.BrowserTab{}, 0, 0, "", err
 		}
+		// OOPIF node: resolve its box on its own child session (frame-relative in
+		// headed mode) and add the iframe element's viewport offset to get the
+		// absolute click point. Input is always dispatched on the page session.
+		if target.SessionID != "" && target.BackendID > 0 {
+			x, y, ferr := c.resolveOOPIFPoint(ctx, tab.TabID, target)
+			if ferr != nil {
+				c.tabs.MarkStale(tab.TabID)
+				return tool.BrowserTab{}, 0, 0, "", fmt.Errorf("snapshot is stale; call browser_snapshot again: %w", ferr)
+			}
+			return tab, x, y, fmt.Sprintf("%s %q (in iframe)", target.Role, target.Name), nil
+		}
 		// Scroll the element into view BEFORE reading bounds so the click point
 		// reflects the post-scroll viewport position — otherwise a ref below the
 		// fold resolves to off-screen coordinates and the dispatched mouse event
@@ -1108,6 +1132,109 @@ func (c *Controller) boxModelBounds(ctx context.Context, tabID int, backendID in
 		maxY = math.Max(maxY, out.Model.Border[i+1])
 	}
 	return &Bounds{X: minX, Y: minY, Width: maxX - minX, Height: maxY - minY}, nil
+}
+
+// boxModelBoundsOnSession is boxModelBounds but addressed to a specific CDP
+// session (an OOPIF child frame). In headed mode the returned coordinates are
+// relative to that frame's own viewport, not the main viewport.
+func (c *Controller) boxModelBoundsOnSession(ctx context.Context, tabID int, sessionID string, backendID int) (*Bounds, error) {
+	params, _ := json.Marshal(map[string]int{"backendNodeId": backendID})
+	raw, err := c.relay.SendCommand(ctx, Command{
+		TabID:     &tabID,
+		SessionID: sessionID,
+		Domain:    "DOM",
+		Method:    "getBoxModel",
+		Params:    params,
+	}, defaultActionTimeout)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Model struct {
+			Border []float64 `json:"border"`
+		} `json:"model"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	if len(out.Model.Border) < 8 {
+		return nil, fmt.Errorf("DOM.getBoxModel returned no bounds")
+	}
+	minX, maxX := out.Model.Border[0], out.Model.Border[0]
+	minY, maxY := out.Model.Border[1], out.Model.Border[1]
+	for i := 0; i+1 < len(out.Model.Border); i += 2 {
+		minX = math.Min(minX, out.Model.Border[i])
+		maxX = math.Max(maxX, out.Model.Border[i])
+		minY = math.Min(minY, out.Model.Border[i+1])
+		maxY = math.Max(maxY, out.Model.Border[i+1])
+	}
+	return &Bounds{X: minX, Y: minY, Width: maxX - minX, Height: maxY - minY}, nil
+}
+
+// resolveOOPIFPoint computes the viewport-absolute click point for a node inside
+// a cross-origin iframe: the node's frame-relative center (read on its own
+// session) PLUS the iframe element's viewport offset (read on the page session
+// via the frame's owner). Input is then dispatched on the page session at this
+// absolute point. The frame's owning <iframe> is located with
+// Target.getTargetInfo (frame id) → DOM.getFrameOwner on the page session.
+func (c *Controller) resolveOOPIFPoint(ctx context.Context, tabID int, target RefTarget) (float64, float64, error) {
+	// 1. Node box on its own frame session (frame-relative in headed mode).
+	nodeBox, err := c.boxModelBoundsOnSession(ctx, tabID, target.SessionID, target.BackendID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("box on frame session: %w", err)
+	}
+	// 2. Frame id for this session, then the iframe owner's backend node on the
+	// page session, then its box (viewport-absolute, since the page session is
+	// the top frame).
+	offset, err := c.iframeOwnerOffset(ctx, tabID, target.SessionID)
+	if err != nil {
+		// Without the offset the frame-relative point is wrong; fail loud so the
+		// caller re-snapshots rather than silently mis-clicking.
+		return 0, 0, fmt.Errorf("iframe owner offset: %w", err)
+	}
+	return offset.X + centerX(nodeBox), offset.Y + centerY(nodeBox), nil
+}
+
+// iframeOwnerOffset returns the viewport-absolute top-left of the <iframe>
+// element that owns the given child session's frame.
+func (c *Controller) iframeOwnerOffset(ctx context.Context, tabID int, sessionID string) (Bounds, error) {
+	// Frame id of the child session.
+	rawInfo, err := c.relay.SendCommand(ctx, Command{
+		TabID: &tabID, SessionID: sessionID, Domain: "Target", Method: "getTargetInfo", Params: json.RawMessage(`{}`),
+	}, defaultActionTimeout)
+	if err != nil {
+		return Bounds{}, err
+	}
+	var info struct {
+		TargetInfo struct {
+			TargetID string `json:"targetId"`
+		} `json:"targetInfo"`
+	}
+	if err := json.Unmarshal(rawInfo, &info); err != nil {
+		return Bounds{}, err
+	}
+	// DOM.getFrameOwner on the PAGE session maps a frameId → the owning <iframe>
+	// element's backend node. For a CDP frame, targetId == frameId for OOPIFs.
+	ownerParams, _ := json.Marshal(map[string]string{"frameId": info.TargetInfo.TargetID})
+	rawOwner, err := c.relay.SendCommand(ctx, Command{
+		TabID: &tabID, Domain: "DOM", Method: "getFrameOwner", Params: ownerParams,
+	}, defaultActionTimeout)
+	if err != nil {
+		return Bounds{}, err
+	}
+	var owner struct {
+		BackendNodeID int `json:"backendNodeId"`
+	}
+	if err := json.Unmarshal(rawOwner, &owner); err != nil || owner.BackendNodeID == 0 {
+		return Bounds{}, fmt.Errorf("no iframe owner node")
+	}
+	// Scroll the iframe into view + read its box on the page session.
+	_ = c.scrollBackendNodeIntoView(ctx, tabID, owner.BackendNodeID)
+	box, err := c.boxModelBounds(ctx, tabID, owner.BackendNodeID)
+	if err != nil {
+		return Bounds{}, err
+	}
+	return *box, nil
 }
 
 // assertPointActionable verifies, in page context, that the click point (x,y) is
