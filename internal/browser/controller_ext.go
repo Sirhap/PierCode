@@ -160,6 +160,9 @@ func (c *Controller) Scroll(ctx context.Context, req tool.BrowserScrollRequest) 
 		return "", err
 	}
 	c.tabs.MarkStale(tab.TabID)
+	if err := c.settle(ctx, tab.TabID); err != nil {
+		return "", err
+	}
 	return fmt.Sprintf("mouse-wheel scrolled %s by %dpx in tabId=%d", normalizedDirection(req.Direction), normalizedAmount(req.Amount), tab.TabID), nil
 }
 
@@ -479,6 +482,9 @@ func (c *Controller) Drag(ctx context.Context, req tool.BrowserDragRequest) (str
 		}
 	}
 	c.tabs.MarkStale(fromTab.TabID)
+	if err := c.settle(ctx, fromTab.TabID); err != nil {
+		return "", err
+	}
 	// A drag's effect is visual and DnD libraries can silently no-op, so the
 	// "dragged" result alone is not proof. Tell the model to verify rather than
 	// assume success.

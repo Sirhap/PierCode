@@ -36,3 +36,27 @@ func TestSetInputFidelity(t *testing.T) {
 		t.Fatalf("SetInputFidelity did not apply zero config")
 	}
 }
+
+func TestSettleSleepsWhenConfigured(t *testing.T) {
+	c := NewController(nil, func([]byte) {})
+	c.SetInputFidelity(InputFidelity{SettleMS: 200})
+	var got time.Duration
+	c.sleep = func(ctx context.Context, d time.Duration) error { got = d; return nil }
+	if err := c.settle(context.Background(), 1); err != nil {
+		t.Fatalf("settle err: %v", err)
+	}
+	if got != 200*time.Millisecond {
+		t.Fatalf("expected 200ms settle, got %v", got)
+	}
+}
+
+func TestSettleNoopAtZero(t *testing.T) {
+	c := NewController(nil, func([]byte) {})
+	c.SetInputFidelity(InputFidelity{SettleMS: 0})
+	called := false
+	c.sleep = func(ctx context.Context, d time.Duration) error { called = true; return nil }
+	_ = c.settle(context.Background(), 1)
+	if called {
+		t.Fatalf("settle should not sleep at SettleMS=0")
+	}
+}

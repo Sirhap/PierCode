@@ -43,6 +43,15 @@ func ctxSleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// settle 在动作后等 SettleMS(>0 时)让 SPA 重渲染，再让调用方返回/下次截图。
+// SettleMS=0 时无操作；network-idle 等待是 browser_wait 的职责，不在此。
+func (c *Controller) settle(ctx context.Context, tabID int) error {
+	if c.fidelity.SettleMS <= 0 {
+		return nil
+	}
+	return c.sleep(ctx, time.Duration(c.fidelity.SettleMS)*time.Millisecond)
+}
+
 // lerpPoints returns `steps` linearly-interpolated points from `from`
 // (exclusive) to `to` (inclusive). steps<=1 returns just [to].
 func lerpPoints(from, to Point, steps int) []Point {

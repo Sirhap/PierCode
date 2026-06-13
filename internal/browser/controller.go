@@ -511,6 +511,9 @@ func (c *Controller) Click(ctx context.Context, req tool.BrowserClickRequest) (s
 		return "", err
 	}
 	c.tabs.MarkStale(tab.TabID)
+	if err := c.settle(ctx, tab.TabID); err != nil {
+		return "", err
+	}
 	return fmt.Sprintf("%s %s at %.0f,%.0f in tabId=%d%s", action, target, x, y, tab.TabID, c.switchNote()), nil
 }
 
@@ -592,6 +595,9 @@ func (c *Controller) Type(ctx context.Context, req tool.BrowserTypeRequest) (str
 		}
 	}
 	c.tabs.MarkStale(tab.TabID)
+	if err := c.settle(ctx, tab.TabID); err != nil {
+		return "", err
+	}
 	return fmt.Sprintf("typed %d characters into %s in tabId=%d", len([]rune(req.Text)), target, tab.TabID), nil
 }
 
