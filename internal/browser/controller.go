@@ -424,6 +424,16 @@ func (c *Controller) Snapshot(ctx context.Context, tabID *int, opts tool.Snapsho
 	if err != nil {
 		return tool.BrowserSnapshot{}, err
 	}
+	if opts.WithCoordinates {
+		if marks, mErr := c.enumerateInteractive(ctx, tab.TabID); mErr == nil && len(marks) > 0 {
+			var b strings.Builder
+			b.WriteString("\n\nInteractive elements (index · role · text @ x,y wxh):\n")
+			for _, m := range marks {
+				b.WriteString(fmt.Sprintf("  [%d] %s %q @ %.0f,%.0f %.0fx%.0f\n", m.Index, m.Role, m.Text, m.CenterX, m.CenterY, m.W, m.H))
+			}
+			snapshot.Text += b.String()
+		}
+	}
 	c.tabs.StoreSnapshot(tab, snapshotID, refs)
 	return snapshot, nil
 }

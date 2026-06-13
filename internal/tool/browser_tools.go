@@ -185,14 +185,16 @@ func NewBrowserSnapshotTool() Tool {
 			"depth":    "number (optional, default 15) - maximum nesting depth to descend",
 			"refId":    "string (optional) - render only the subtree rooted at this ref (e.g. e12) to drill into one region",
 			"maxChars": "number (optional, default 12000) - maximum output characters",
+			"withCoordinates": "boolean (optional, default false) - append @(x,y wxh) per element",
 		},
 		validate: func(map[string]interface{}) error { return nil },
 		execute: func(ctx *Context) (string, error) {
 			snapshot, err := ctx.Browser.Snapshot(ctx.Context, optionalInt(ctx.Args, "tabId"), SnapshotOptions{
-				MaxNodes: intArgDefault(ctx.Args, "maxNodes", 0),
-				MaxChars: intArgDefault(ctx.Args, "maxChars", 0),
-				Depth:    intArgDefault(ctx.Args, "depth", 0),
-				RefID:    stringArg(ctx.Args, "refId"),
+				MaxNodes:        intArgDefault(ctx.Args, "maxNodes", 0),
+				MaxChars:        intArgDefault(ctx.Args, "maxChars", 0),
+				Depth:           intArgDefault(ctx.Args, "depth", 0),
+				RefID:           stringArg(ctx.Args, "refId"),
+				WithCoordinates: boolArg(ctx.Args, "withCoordinates"),
 			})
 			if err != nil {
 				return "", err

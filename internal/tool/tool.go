@@ -291,10 +291,11 @@ func (t BrowserTab) SafeTitle() string {
 // SnapshotOptions controls how a browser accessibility snapshot is rendered.
 // All zero values mean "use the default".
 type SnapshotOptions struct {
-	MaxNodes int    // cap on emitted nodes
-	MaxChars int    // cap on output characters
-	Depth    int    // max nesting depth to descend
-	RefID    string // when set, render only the subtree rooted at this ref
+	MaxNodes        int    // cap on emitted nodes
+	MaxChars        int    // cap on output characters
+	Depth           int    // max nesting depth to descend
+	RefID           string // when set, render only the subtree rooted at this ref
+	WithCoordinates bool   // when true, append a per-element @(x,y wxh) coordinate block
 }
 
 type BrowserSnapshot struct {
@@ -304,6 +305,19 @@ type BrowserSnapshot struct {
 	NodeCount  int
 	RefCount   int
 	Truncated  bool
+}
+
+// MarkedElement is one interactive element from browser_mark / enumerateInteractive,
+// with its CSS-px bounding box and click center. Indices are 1-based and stable
+// within a single enumeration. It lives in the tool package (not browser) so the
+// BrowserController interface can reference it without an import cycle.
+type MarkedElement struct {
+	Index            int
+	X, Y, W, H       float64
+	CenterX, CenterY float64
+	Role             string
+	Text             string
+	Ref              string
 }
 
 type BrowserClickRequest struct {
