@@ -108,6 +108,8 @@ func NewBrowserScrollTool() Tool {
 			"direction":  "string (optional, up|down|left|right, default down)",
 			"amount":     "number (optional, default 500) - scroll pixels",
 			"method":     "string (optional, auto|scrollBy|mouseWheel, default auto)",
+			"x":          "number (optional) - viewport x for the wheel pointer (defaults to viewport center)",
+			"y":          "number (optional) - viewport y for the wheel pointer",
 			"tabId":      "number (optional) - controlled tab id",
 		},
 		validate: validateBrowserScroll,
@@ -120,6 +122,8 @@ func NewBrowserScrollTool() Tool {
 				Direction:  stringArg(ctx.Args, "direction"),
 				Amount:     intArgDefault(ctx.Args, "amount", 500),
 				Method:     stringArg(ctx.Args, "method"),
+				X:          optionalFloat(ctx.Args, "x"),
+				Y:          optionalFloat(ctx.Args, "y"),
 			})
 		},
 	}

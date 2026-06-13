@@ -614,3 +614,55 @@ func TestNewTabAIPageDoesNotBecomeDefault(t *testing.T) {
 		t.Fatalf("worker tab should still be tracked as created for finalize/cleanup")
 	}
 }
+
+func TestDispatchMouseWheelChunksAndUsesPoint(t *testing.T) {
+	var commands []Command
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		commands = append(commands, cmd)
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+	// 320px 向下 @110/tick => 3 个事件(110,110,100)，都在 (250,300)
+	if err := c.dispatchMouseWheel(context.Background(), 1, 250, 300, 0, 320); err != nil {
+		t.Fatalf("wheel err: %v", err)
+	}
+	if len(commands) != 3 {
+		t.Fatalf("expected 3 wheel ticks, got %d", len(commands))
+	}
+	var total float64
+	for _, cmd := range commands {
+		var p map[string]interface{}
+		_ = json.Unmarshal(cmd.Params, &p)
+		if p["x"] != float64(250) || p["y"] != float64(300) {
+			t.Fatalf("wheel not at point: %v,%v", p["x"], p["y"])
+		}
+		total += p["deltaY"].(float64)
+	}
+	if total != 320 {
+		t.Fatalf("total deltaY %v != 320", total)
+	}
+}
+
+func TestDispatchMouseWheelInstantSingleEvent(t *testing.T) {
+	var commands []Command
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		commands = append(commands, cmd)
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+	c.SetInputFidelity(InputFidelity{WheelTickPx: 0}) // 瞬时
+	if err := c.dispatchMouseWheel(context.Background(), 1, 250, 300, 0, 320); err != nil {
+		t.Fatalf("wheel err: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("instant mode should emit 1 event, got %d", len(commands))
+	}
+}

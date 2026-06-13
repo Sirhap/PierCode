@@ -415,6 +415,8 @@ type BrowserScrollRequest struct {
 	Direction  string
 	Amount     int
 	Method     string
+	X          *float64
+	Y          *float64
 }
 
 type BrowserEvaluateRequest struct {

@@ -155,11 +155,26 @@ func (c *Controller) Scroll(ctx context.Context, req tool.BrowserScrollRequest) 
 			// No movement: drop to the mouse-wheel fallback below.
 		}
 	}
-	if err := c.dispatchMouseWheel(ctx, tab.TabID, dx, dy); err != nil {
+	wx, wy := c.scrollPoint(ctx, tab.TabID, req)
+	if err := c.dispatchMouseWheel(ctx, tab.TabID, wx, wy, dx, dy); err != nil {
 		return "", err
 	}
 	c.tabs.MarkStale(tab.TabID)
 	return fmt.Sprintf("mouse-wheel scrolled %s by %dpx in tabId=%d", normalizedDirection(req.Direction), normalizedAmount(req.Amount), tab.TabID), nil
+}
+
+// scrollPoint 选择滚轮指针位置：显式 x/y 优先，否则取 CSS 视口中心
+// （不再用硬编码的 500,500）。ref/selector 定向暂用视口中心。
+func (c *Controller) scrollPoint(ctx context.Context, tabID int, req tool.BrowserScrollRequest) (float64, float64) {
+	if req.X != nil && req.Y != nil {
+		return *req.X, *req.Y
+	}
+	lm := c.fetchLayoutMetrics(ctx, tabID)
+	cx, cy := float64(lm.CSSWidth)/2, float64(lm.CSSHeight)/2
+	if cx == 0 {
+		cx, cy = 500, 500 // 指标不可用时的兜底
+	}
+	return cx, cy
 }
 
 func (c *Controller) Evaluate(ctx context.Context, req tool.BrowserEvaluateRequest) (tool.BrowserEvaluateResponse, error) {
@@ -1059,16 +1074,39 @@ func (c *Controller) dispatchMouseMoved(ctx context.Context, tabID int, x, y flo
 	return err
 }
 
-func (c *Controller) dispatchMouseWheel(ctx context.Context, tabID int, dx, dy float64) error {
-	params, _ := json.Marshal(map[string]interface{}{
-		"type":   "mouseWheel",
-		"x":      500,
-		"y":      500,
-		"deltaX": dx,
-		"deltaY": dy,
-	})
-	_, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: params}, defaultActionTimeout)
-	return err
+func (c *Controller) dispatchMouseWheel(ctx context.Context, tabID int, x, y, dx, dy float64) error {
+	tick := c.fidelity.WheelTickPx
+	steps := 1
+	if tick > 0 {
+		longest := dx
+		if dy > longest {
+			longest = dy
+		}
+		if -dx > longest {
+			longest = -dx
+		}
+		if -dy > longest {
+			longest = -dy
+		}
+		if longest > float64(tick) {
+			steps = int((longest + float64(tick) - 1) / float64(tick))
+		}
+	}
+	for i := 0; i < steps; i++ {
+		sx := dx / float64(steps)
+		sy := dy / float64(steps)
+		if i == steps-1 { // 最后一 tick 吸收取整余数
+			sx = dx - sx*float64(steps-1)
+			sy = dy - sy*float64(steps-1)
+		}
+		params, _ := json.Marshal(map[string]interface{}{
+			"type": "mouseWheel", "x": x, "y": y, "deltaX": sx, "deltaY": sy,
+		})
+		if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: params}, defaultActionTimeout); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Controller) dispatchDrag(ctx context.Context, tabID int, from, to Point) error {
