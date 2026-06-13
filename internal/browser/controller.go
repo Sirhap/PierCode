@@ -855,8 +855,12 @@ func (c *Controller) Mark(ctx context.Context, req tool.BrowserMarkRequest) ([]t
 		return nil, tool.BrowserScreenshot{}, err
 	}
 	c.tabs.SetMarks(tab.TabID, marks)
+	// No settle before the shot: Page.captureScreenshot forces a frame, so the
+	// just-injected overlay is committed and captured without an extra delay.
 	shot, err := c.Screenshot(ctx, tool.BrowserScreenshotRequest{TabID: &tab.TabID, Format: req.Format, OutputDir: req.OutputDir})
 	if err != nil {
+		// Marks stay recorded even if the screenshot fails — the overlay is on the
+		// page and browser_click mark= resolves from the registry, not the image.
 		return marks, tool.BrowserScreenshot{}, err
 	}
 	return marks, shot, nil
