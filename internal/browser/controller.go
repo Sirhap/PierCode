@@ -817,21 +817,20 @@ func (c *Controller) Screenshot(ctx context.Context, req tool.BrowserScreenshotR
 	return shot, nil
 }
 
-// layoutMetrics holds the CSS-pixel layout viewport, visual-viewport scale/scroll,
+// layoutMetrics holds the CSS-pixel layout viewport, visual-viewport scroll,
 // and devicePixelRatio used to map a screenshot-px point back to the CSS-px click
 // coordinate space.
 type layoutMetrics struct {
 	CSSWidth, CSSHeight int
-	Scale               float64
 	ScrollX, ScrollY    float64
 	DPR                 float64
 }
 
 // fetchLayoutMetrics queries Page.getLayoutMetrics + window.devicePixelRatio for
 // the tab. Best-effort: any relay/decode failure leaves the safe defaults
-// (Scale=1, DPR=1, zero dims) so a screenshot is never blocked by it.
+// (DPR=1, zero dims) so a screenshot is never blocked by it.
 func (c *Controller) fetchLayoutMetrics(ctx context.Context, tabID int) layoutMetrics {
-	lm := layoutMetrics{Scale: 1, DPR: 1}
+	lm := layoutMetrics{DPR: 1}
 	raw, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Page", Method: "getLayoutMetrics"}, defaultReadTimeout)
 	if err == nil {
 		var m struct {
@@ -840,7 +839,6 @@ func (c *Controller) fetchLayoutMetrics(ctx context.Context, tabID int) layoutMe
 				ClientHeight int `json:"clientHeight"`
 			} `json:"cssLayoutViewport"`
 			VisualViewport struct {
-				Scale float64 `json:"scale"`
 				PageX float64 `json:"pageX"`
 				PageY float64 `json:"pageY"`
 			} `json:"visualViewport"`
@@ -848,9 +846,6 @@ func (c *Controller) fetchLayoutMetrics(ctx context.Context, tabID int) layoutMe
 		if json.Unmarshal(raw, &m) == nil {
 			lm.CSSWidth = m.CSSLayoutViewport.ClientWidth
 			lm.CSSHeight = m.CSSLayoutViewport.ClientHeight
-			if m.VisualViewport.Scale > 0 {
-				lm.Scale = m.VisualViewport.Scale
-			}
 			lm.ScrollX = m.VisualViewport.PageX
 			lm.ScrollY = m.VisualViewport.PageY
 		}
