@@ -1,7 +1,9 @@
 package browser
 
 import (
+	"archive/zip"
 	"bytes"
+	"fmt"
 	"image"
 	"image/color/palette"
 	"image/draw"
@@ -37,6 +39,30 @@ func encodeGIF(frames [][]byte, delayCs int) ([]byte, error) {
 	}
 	var buf bytes.Buffer
 	if err := gif.EncodeAll(&buf, out); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// encodeFramesZip packs raw captured frame bytes (jpeg) into a zip archive as
+// frame-000.jpg, frame-001.jpg, … — a dependency-free way to return every
+// captured frame for diffing or per-frame vision. Returns nil if no frames.
+func encodeFramesZip(frames [][]byte) ([]byte, error) {
+	if len(frames) == 0 {
+		return nil, nil
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i, f := range frames {
+		w, err := zw.Create(fmt.Sprintf("frame-%03d.jpg", i))
+		if err != nil {
+			return nil, err
+		}
+		if _, err := w.Write(f); err != nil {
+			return nil, err
+		}
+	}
+	if err := zw.Close(); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil

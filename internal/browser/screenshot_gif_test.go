@@ -1,10 +1,12 @@
 package browser
 
 import (
+	"archive/zip"
 	"bytes"
 	"image"
 	"image/color"
 	"image/gif"
+	"image/jpeg"
 	"image/png"
 	"testing"
 )
@@ -60,4 +62,26 @@ func TestEncodeGIFSkipsBadFramesReturnsNilIfAllBad(t *testing.T) {
 	if err != nil || out == nil {
 		t.Fatalf("expected one-frame gif, got %v err=%v", out, err)
 	}
+}
+
+func TestEncodeFramesZipContainsFrames(t *testing.T) {
+	f := jpegBytes(2, 2)
+	zipped, err := encodeFramesZip([][]byte{f, f, f})
+	if err != nil {
+		t.Fatalf("zip err: %v", err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(zipped), int64(len(zipped)))
+	if err != nil {
+		t.Fatalf("read zip: %v", err)
+	}
+	if len(zr.File) != 3 {
+		t.Fatalf("expected 3 frames in zip, got %d", len(zr.File))
+	}
+}
+
+func jpegBytes(w, h int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, img, nil)
+	return buf.Bytes()
 }

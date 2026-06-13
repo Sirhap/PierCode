@@ -408,6 +408,8 @@ func NewBrowserRecordTool() Tool {
 		parameters: map[string]string{
 			"frames":     "number (optional, default 12, max 60) - frames to capture",
 			"intervalMs": "number (optional, default 200, min 50) - delay between frames",
+			"quality":    "number (optional, 1-95, default 60) - frame JPEG quality",
+			"format":     "string (optional, gif|frames, default gif) - gif animation or a zip of per-frame jpgs",
 			"tabId":      "number (optional) - controlled tab id",
 		},
 		validate: func(map[string]interface{}) error { return nil },
@@ -416,6 +418,8 @@ func NewBrowserRecordTool() Tool {
 				TabID:      optionalInt(ctx.Args, "tabId"),
 				Frames:     intArgDefault(ctx.Args, "frames", 0),
 				IntervalMS: intArgDefault(ctx.Args, "intervalMs", 0),
+				Quality:    intArgDefault(ctx.Args, "quality", 0),
+				Format:     stringArg(ctx.Args, "format"),
 				OutputDir:  filepath.Join(ctx.EffectiveRootDir(), ".piercode", "screenshots"),
 			})
 			if err != nil {

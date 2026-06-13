@@ -367,8 +367,10 @@ type BrowserGetPageTextRequest struct {
 
 type BrowserRecordRequest struct {
 	TabID      *int
-	Frames     int // number of frames to capture (default 12, max 60)
-	IntervalMS int // delay between frames in ms (default 200, min 50)
+	Frames     int    // number of frames to capture (default 12, max 60)
+	IntervalMS int    // delay between frames in ms (default 200, min 50)
+	Quality    int    // frame JPEG quality 1-95, default 60
+	Format     string // "gif" (default) | "frames" (zip of per-frame jpgs)
 	OutputDir  string
 }
 

@@ -953,7 +953,11 @@ func (c *Controller) RecordGIF(ctx context.Context, req tool.BrowserRecordReques
 	if intervalMS < 50 {
 		intervalMS = 50
 	}
-	captureParams, _ := json.Marshal(map[string]interface{}{"format": "jpeg", "quality": 60})
+	quality := req.Quality
+	if quality <= 0 || quality > 95 {
+		quality = 60
+	}
+	captureParams, _ := json.Marshal(map[string]interface{}{"format": "jpeg", "quality": quality})
 
 	shots := make([][]byte, 0, frames)
 	ticker := time.NewTicker(time.Duration(intervalMS) * time.Millisecond)
@@ -988,30 +992,50 @@ func (c *Controller) RecordGIF(ctx context.Context, req tool.BrowserRecordReques
 		}
 	}
 
-	gifBytes, err := encodeGIF(shots, intervalMS/10)
-	if err != nil {
-		return tool.BrowserScreenshot{}, fmt.Errorf("failed to encode gif: %w", err)
+	format := strings.ToLower(strings.TrimSpace(req.Format))
+	if format == "" {
+		format = "gif"
 	}
-	if gifBytes == nil {
-		return tool.BrowserScreenshot{}, fmt.Errorf("no frames captured for gif")
-	}
-
 	outputDir := filepath.Clean(strings.TrimSpace(req.OutputDir))
 	if outputDir == "" {
-		return tool.BrowserScreenshot{}, fmt.Errorf("gif output directory is required")
+		return tool.BrowserScreenshot{}, fmt.Errorf("recording output directory is required")
 	}
 	if mkErr := os.MkdirAll(outputDir, 0o755); mkErr != nil {
-		return tool.BrowserScreenshot{}, fmt.Errorf("failed to create gif dir: %w", mkErr)
+		return tool.BrowserScreenshot{}, fmt.Errorf("failed to create recording dir: %w", mkErr)
 	}
-	tmpFile, mkErr := os.CreateTemp(outputDir, "recording-*.gif")
+	var data []byte
+	var pattern string
+	switch format {
+	case "gif":
+		g, gerr := encodeGIF(shots, intervalMS/10)
+		if gerr != nil {
+			return tool.BrowserScreenshot{}, fmt.Errorf("failed to encode gif: %w", gerr)
+		}
+		if g == nil {
+			return tool.BrowserScreenshot{}, fmt.Errorf("no frames captured")
+		}
+		data, pattern = g, "recording-*.gif"
+	case "frames":
+		z, zerr := encodeFramesZip(shots)
+		if zerr != nil {
+			return tool.BrowserScreenshot{}, fmt.Errorf("failed to zip frames: %w", zerr)
+		}
+		if z == nil {
+			return tool.BrowserScreenshot{}, fmt.Errorf("no frames captured")
+		}
+		data, pattern = z, "recording-*.zip"
+	default:
+		return tool.BrowserScreenshot{}, fmt.Errorf("unsupported format %q; use gif or frames", format)
+	}
+	tmpFile, mkErr := os.CreateTemp(outputDir, pattern)
 	if mkErr != nil {
-		return tool.BrowserScreenshot{}, fmt.Errorf("failed to create gif file: %w", mkErr)
+		return tool.BrowserScreenshot{}, fmt.Errorf("failed to create recording file: %w", mkErr)
 	}
 	defer tmpFile.Close()
-	if _, mkErr = tmpFile.Write(gifBytes); mkErr != nil {
-		return tool.BrowserScreenshot{}, fmt.Errorf("failed to write gif: %w", mkErr)
+	if _, mkErr = tmpFile.Write(data); mkErr != nil {
+		return tool.BrowserScreenshot{}, fmt.Errorf("failed to write recording: %w", mkErr)
 	}
-	return tool.BrowserScreenshot{Tab: tab, Format: "gif", Bytes: len(gifBytes), FilePath: tmpFile.Name()}, nil
+	return tool.BrowserScreenshot{Tab: tab, Format: format, Bytes: len(data), FilePath: tmpFile.Name()}, nil
 }
 
 func (c *Controller) Viewport(ctx context.Context, req tool.BrowserViewportRequest) (string, error) {
