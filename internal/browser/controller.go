@@ -753,6 +753,7 @@ func (c *Controller) Screenshot(ctx context.Context, req tool.BrowserScreenshotR
 	if req.FullPage {
 		params["captureBeyondViewport"] = true
 	}
+	lm := c.fetchLayoutMetrics(ctx, tab.TabID)
 	rawParams, _ := json.Marshal(params)
 	raw, err := c.relay.SendCommand(ctx, Command{
 		TabID:  &tab.TabID,
@@ -777,7 +778,7 @@ func (c *Controller) Screenshot(ctx context.Context, req tool.BrowserScreenshotR
 	// Fit the capture inside the vision-token budget (longest-edge + byte cap
 	// with a JPEG quality step-down). Best-effort: a decode failure leaves the
 	// bytes untouched. The format may change to jpeg after the budget pass.
-	decoded, format = budgetScreenshot(decoded, format)
+	decoded, format, pxW, pxH := budgetScreenshotWithDims(decoded, format)
 	size := len(decoded)
 
 	outputDir := strings.TrimSpace(req.OutputDir)
@@ -802,8 +803,65 @@ func (c *Controller) Screenshot(ctx context.Context, req tool.BrowserScreenshotR
 		return tool.BrowserScreenshot{}, fmt.Errorf("failed to write screenshot: %w", mkErr)
 	}
 
-	shot := tool.BrowserScreenshot{Tab: tab, Format: format, Bytes: size, FilePath: tmpFile.Name()}
+	scale := 0.0
+	if lm.CSSWidth > 0 && pxW > 0 {
+		scale = float64(pxW) / float64(lm.CSSWidth)
+	}
+	shot := tool.BrowserScreenshot{
+		Tab: tab, Format: format, Bytes: size, FilePath: tmpFile.Name(),
+		Width: pxW, Height: pxH,
+		CSSWidth: lm.CSSWidth, CSSHeight: lm.CSSHeight,
+		DevicePixelRatio: lm.DPR, ScreenshotScale: scale,
+		ScrollX: lm.ScrollX, ScrollY: lm.ScrollY,
+	}
 	return shot, nil
+}
+
+// layoutMetrics holds the CSS-pixel layout viewport, visual-viewport scale/scroll,
+// and devicePixelRatio used to map a screenshot-px point back to the CSS-px click
+// coordinate space.
+type layoutMetrics struct {
+	CSSWidth, CSSHeight int
+	Scale               float64
+	ScrollX, ScrollY    float64
+	DPR                 float64
+}
+
+// fetchLayoutMetrics queries Page.getLayoutMetrics + window.devicePixelRatio for
+// the tab. Best-effort: any relay/decode failure leaves the safe defaults
+// (Scale=1, DPR=1, zero dims) so a screenshot is never blocked by it.
+func (c *Controller) fetchLayoutMetrics(ctx context.Context, tabID int) layoutMetrics {
+	lm := layoutMetrics{Scale: 1, DPR: 1}
+	raw, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Page", Method: "getLayoutMetrics"}, defaultReadTimeout)
+	if err == nil {
+		var m struct {
+			CSSLayoutViewport struct {
+				ClientWidth  int `json:"clientWidth"`
+				ClientHeight int `json:"clientHeight"`
+			} `json:"cssLayoutViewport"`
+			VisualViewport struct {
+				Scale float64 `json:"scale"`
+				PageX float64 `json:"pageX"`
+				PageY float64 `json:"pageY"`
+			} `json:"visualViewport"`
+		}
+		if json.Unmarshal(raw, &m) == nil {
+			lm.CSSWidth = m.CSSLayoutViewport.ClientWidth
+			lm.CSSHeight = m.CSSLayoutViewport.ClientHeight
+			if m.VisualViewport.Scale > 0 {
+				lm.Scale = m.VisualViewport.Scale
+			}
+			lm.ScrollX = m.VisualViewport.PageX
+			lm.ScrollY = m.VisualViewport.PageY
+		}
+	}
+	if out, err := c.runtimeEvaluate(ctx, tabID, "window.devicePixelRatio", false, defaultReadTimeout, true); err == nil && out != nil {
+		var dpr float64
+		if json.Unmarshal(out.Result.Value, &dpr) == nil && dpr > 0 {
+			lm.DPR = dpr
+		}
+	}
+	return lm
 }
 
 // RecordGIF captures a short animated GIF of the controlled tab by grabbing a

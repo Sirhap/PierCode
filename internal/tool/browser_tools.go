@@ -370,6 +370,9 @@ func NewBrowserScreenshotTool() Tool {
 				return "", err
 			}
 			out := fmt.Sprintf("screenshot tabId=%d title=%q url=%q format=%s bytes=%d", shot.Tab.TabID, shot.Tab.SafeTitle(), shot.Tab.URL, shot.Format, shot.Bytes)
+			out += fmt.Sprintf("\n[screenshot %dx%d px · css %dx%d · scale %.2f · dpr %g · scroll %.0f,%.0f]",
+				shot.Width, shot.Height, shot.CSSWidth, shot.CSSHeight,
+				shot.ScreenshotScale, shot.DevicePixelRatio, shot.ScrollX, shot.ScrollY)
 			if shot.FilePath != "" {
 				out += "\nSaved to: " + shot.FilePath
 				if shouldAttachScreenshot(ctx) {

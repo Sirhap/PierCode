@@ -367,13 +367,18 @@ type BrowserScreenshotRequest struct {
 }
 
 type BrowserScreenshot struct {
-	Tab      BrowserTab
-	Format   string
-	Bytes    int
-	Width    int
-	Height   int
-	DataURL  string
-	FilePath string // [Fixed by mimo-v2.5-pro: screenshot saved to file]
+	Tab              BrowserTab
+	Format           string
+	Bytes            int
+	Width, Height    int     // 最终图像像素（budget 之后）
+	CSSWidth         int     // CSS 像素布局视口宽
+	CSSHeight        int     // CSS 像素布局视口高
+	DevicePixelRatio float64 // window.devicePixelRatio
+	ScreenshotScale  float64 // Width / CSSWidth（每 CSS 像素对应的图像像素）
+	ScrollX          float64 // visualViewport pageX
+	ScrollY          float64 // visualViewport pageY
+	DataURL          string
+	FilePath         string // [Fixed by mimo-v2.5-pro: screenshot saved to file]
 }
 
 type BrowserWaitRequest struct {

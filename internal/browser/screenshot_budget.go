@@ -66,6 +66,17 @@ func budgetScreenshot(data []byte, format string) ([]byte, string) {
 	return append([]byte(nil), buf.Bytes()...), "jpeg"
 }
 
+// budgetScreenshotWithDims 同 budgetScreenshot，额外返回最终解码后的像素尺寸，
+// 供调用方计算截图↔CSS 缩放系数。
+func budgetScreenshotWithDims(data []byte, format string) (out []byte, outFormat string, w, h int) {
+	out, outFormat = budgetScreenshot(data, format)
+	if img, _, err := image.Decode(bytes.NewReader(out)); err == nil {
+		b := img.Bounds()
+		return out, outFormat, b.Dx(), b.Dy()
+	}
+	return out, outFormat, 0, 0
+}
+
 // downscaleBox shrinks an image by an integer factor using box averaging.
 func downscaleBox(src image.Image, factor int) image.Image {
 	if factor < 2 {
