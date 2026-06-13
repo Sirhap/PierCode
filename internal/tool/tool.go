@@ -686,8 +686,13 @@ type BrowserEmulateRequest struct {
 	Latitude          *float64
 	Longitude         *float64
 	Accuracy          *float64
-	Reset             bool
-	CallID            string
+	// Network throttling via Network.emulateNetworkConditions. Network is a named
+	// profile ("slow-3g", "fast-3g", "offline") that fills the latency/throughput
+	// values; Offline forces the offline flag. Empty Network = no throttle change.
+	Network string
+	Offline *bool
+	Reset   bool
+	CallID  string
 }
 
 type BrowserGetAttributesRequest struct {

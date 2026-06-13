@@ -298,3 +298,46 @@ func contains(list []string, want string) bool {
 	}
 	return false
 }
+
+func TestEmulateNetworkThrottle(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 211, URL: "https://example.com", Title: "Throttle"}
+	var sawNetworkEnable, sawEmulateConditions bool
+	var condOffline interface{}
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		switch cmd.Domain + "." + cmd.Method {
+		case "Network.enable":
+			sawNetworkEnable = true
+		case "Network.emulateNetworkConditions":
+			sawEmulateConditions = true
+			var p map[string]interface{}
+			_ = json.Unmarshal(cmd.Params, &p)
+			condOffline = p["offline"]
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	out, err := controller.Emulate(context.Background(), tool.BrowserEmulateRequest{Network: "slow-3g"})
+	if err != nil {
+		t.Fatalf("Emulate(network) error: %v", err)
+	}
+	if !sawNetworkEnable {
+		t.Fatal("expected Network.enable before throttling")
+	}
+	if !sawEmulateConditions {
+		t.Fatal("expected Network.emulateNetworkConditions")
+	}
+	if condOffline != false {
+		t.Fatalf("slow-3g profile should not be offline, got offline=%v", condOffline)
+	}
+	if !strings.Contains(out, "emulateNetworkConditions") {
+		t.Fatalf("output should report the throttle, got %q", out)
+	}
+}

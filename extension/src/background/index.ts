@@ -771,6 +771,38 @@ function parsePiercodeAgentId(url: string): string {
   }
 }
 
+// Reused tab-group id (per window) so all controlled tabs land in one group.
+let piercodeTabGroupId: number | null = null;
+
+// groupControlledTab puts an automated tab into a visible "PierCode" tab group
+// and sets an action badge, so the user can see which tabs the agent drives.
+// Best-effort: tabGroups may be unavailable or the tab may close mid-call.
+async function groupControlledTab(tabId: number): Promise<void> {
+  try {
+    if (!chrome.tabs.group || !chrome.tabGroups) return;
+    const opts: chrome.tabs.GroupOptions = { tabIds: tabId };
+    if (piercodeTabGroupId != null) {
+      try {
+        await chrome.tabGroups.get(piercodeTabGroupId);
+        opts.groupId = piercodeTabGroupId;
+      } catch {
+        piercodeTabGroupId = null; // stale (window closed) → make a new group
+      }
+    }
+    const groupId = await chrome.tabs.group(opts);
+    piercodeTabGroupId = groupId;
+    await chrome.tabGroups.update(groupId, { title: 'PierCode', color: 'blue' }).catch(() => undefined);
+  } catch {
+    // tabGroups unavailable / tab gone — ignore.
+  }
+  try {
+    await chrome.action.setBadgeText({ tabId, text: '●' });
+    await chrome.action.setBadgeBackgroundColor({ tabId, color: '#5b8cff' });
+  } catch {
+    // action badge best-effort.
+  }
+}
+
 async function createControlledTab(url: string, controlled = true) {
   const tab = await chrome.tabs.create({ url: url || 'about:blank', active: false });
   if (!tab.id) throw new Error('created tab has no id');
@@ -780,6 +812,9 @@ async function createControlledTab(url: string, controlled = true) {
   if (controlled) controlledTabId = tab.id;
   const agentId = parsePiercodeAgentId(url);
   if (agentId) workerAgentIdByTabId.set(tab.id, agentId);
+  // Group the automated tab under a visible "PierCode" tab group + badge it, so
+  // the user can always see which tabs the agent controls. Best-effort.
+  void groupControlledTab(tab.id);
   await waitForTabComplete(tab.id, 30000).catch(() => undefined);
   const fresh = await chrome.tabs.get(tab.id);
   setBrowserRelayStatus({ state: browserWs?.readyState === WebSocket.OPEN ? 'open' : 'closed' });

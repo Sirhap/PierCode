@@ -163,7 +163,9 @@ func NewBrowserEmulateTool() Tool {
 			"latitude":          "number (optional, with longitude) - geolocation latitude",
 			"longitude":         "number (optional, with latitude) - geolocation longitude",
 			"accuracy":          "number (optional, default 100) - geolocation accuracy meters",
-			"reset":             "boolean (optional, default false) - clear all emulation overrides",
+			"network":           "string (optional, slow-3g|fast-3g|slow-4g|offline) - throttle network conditions",
+			"offline":           "boolean (optional) - force offline; combine with or instead of network",
+			"reset":             "boolean (optional, default false) - clear all emulation overrides incl. network",
 			"tabId":             "number (optional) - controlled tab id",
 		},
 		validate: func(args map[string]interface{}) error {
@@ -179,12 +181,18 @@ func NewBrowserEmulateTool() Tool {
 			if hasLat != hasLng {
 				return fmt.Errorf("latitude and longitude must be provided together")
 			}
+			net := strings.ToLower(stringArg(args, "network"))
+			if net != "" && net != "slow-3g" && net != "fast-3g" && net != "slow-4g" && net != "offline" {
+				return fmt.Errorf("network must be slow-3g, fast-3g, slow-4g, or offline")
+			}
 			hasAny := stringArg(args, "userAgent") != "" ||
 				optionalFloat(args, "deviceScaleFactor") != nil ||
 				hasBoolArg(args, "mobile") ||
 				cs != "" ||
 				stringArg(args, "timezone") != "" ||
-				hasLat
+				hasLat ||
+				net != "" ||
+				hasBoolArg(args, "offline")
 			if !hasAny {
 				return fmt.Errorf("provide at least one emulation override or reset=true")
 			}
@@ -210,8 +218,16 @@ func NewBrowserEmulateTool() Tool {
 				Latitude:          optionalFloat(ctx.Args, "latitude"),
 				Longitude:         optionalFloat(ctx.Args, "longitude"),
 				Accuracy:          optionalFloat(ctx.Args, "accuracy"),
-				Reset:             boolArg(ctx.Args, "reset"),
-				CallID:            stringArg(ctx.Args, "call_id"),
+				Network:           strings.ToLower(stringArg(ctx.Args, "network")),
+				Offline: func() *bool {
+					if hasBoolArg(ctx.Args, "offline") {
+						b := boolArg(ctx.Args, "offline")
+						return &b
+					}
+					return nil
+				}(),
+				Reset:  boolArg(ctx.Args, "reset"),
+				CallID: stringArg(ctx.Args, "call_id"),
 			})
 		},
 	}

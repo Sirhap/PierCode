@@ -146,21 +146,26 @@ func (c *Controller) Emulate(ctx context.Context, req tool.BrowserEmulateRequest
 		return "", err
 	}
 	type cdpCmd struct {
+		domain string // "" defaults to Emulation
 		method string
 		params map[string]interface{}
 	}
 	var cmds []cdpCmd
 	if req.Reset {
 		cmds = []cdpCmd{
-			{"setUserAgentOverride", map[string]interface{}{"userAgent": ""}},
-			{"clearDeviceMetricsOverride", map[string]interface{}{}},
-			{"setEmulatedMedia", map[string]interface{}{"features": []interface{}{}}},
-			{"setTimezoneOverride", map[string]interface{}{"timezoneId": ""}},
-			{"clearGeolocationOverride", map[string]interface{}{}},
+			{"", "setUserAgentOverride", map[string]interface{}{"userAgent": ""}},
+			{"", "clearDeviceMetricsOverride", map[string]interface{}{}},
+			{"", "setEmulatedMedia", map[string]interface{}{"features": []interface{}{}}},
+			{"", "setTimezoneOverride", map[string]interface{}{"timezoneId": ""}},
+			{"", "clearGeolocationOverride", map[string]interface{}{}},
+			// Clear any network throttling/offline emulation back to live network.
+			{"Network", "emulateNetworkConditions", map[string]interface{}{
+				"offline": false, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1,
+			}},
 		}
 	} else {
 		if req.UserAgent != "" {
-			cmds = append(cmds, cdpCmd{"setUserAgentOverride", map[string]interface{}{"userAgent": req.UserAgent}})
+			cmds = append(cmds, cdpCmd{"", "setUserAgentOverride", map[string]interface{}{"userAgent": req.UserAgent}})
 		}
 		if req.DeviceScaleFactor > 0 || req.Mobile != nil {
 			mobile := false
@@ -171,7 +176,7 @@ func (c *Controller) Emulate(ctx context.Context, req tool.BrowserEmulateRequest
 			if dsf <= 0 {
 				dsf = 1
 			}
-			cmds = append(cmds, cdpCmd{"setDeviceMetricsOverride", map[string]interface{}{
+			cmds = append(cmds, cdpCmd{"", "setDeviceMetricsOverride", map[string]interface{}{
 				"width":             0,
 				"height":            0,
 				"deviceScaleFactor": dsf,
@@ -179,34 +184,53 @@ func (c *Controller) Emulate(ctx context.Context, req tool.BrowserEmulateRequest
 			}})
 		}
 		if req.ColorScheme != "" {
-			cmds = append(cmds, cdpCmd{"setEmulatedMedia", map[string]interface{}{
+			cmds = append(cmds, cdpCmd{"", "setEmulatedMedia", map[string]interface{}{
 				"features": []map[string]interface{}{
 					{"name": "prefers-color-scheme", "value": req.ColorScheme},
 				},
 			}})
 		}
 		if req.Timezone != "" {
-			cmds = append(cmds, cdpCmd{"setTimezoneOverride", map[string]interface{}{"timezoneId": req.Timezone}})
+			cmds = append(cmds, cdpCmd{"", "setTimezoneOverride", map[string]interface{}{"timezoneId": req.Timezone}})
 		}
 		if req.Latitude != nil && req.Longitude != nil {
 			accuracy := 100.0
 			if req.Accuracy != nil {
 				accuracy = *req.Accuracy
 			}
-			cmds = append(cmds, cdpCmd{"setGeolocationOverride", map[string]interface{}{
+			cmds = append(cmds, cdpCmd{"", "setGeolocationOverride", map[string]interface{}{
 				"latitude":  *req.Latitude,
 				"longitude": *req.Longitude,
 				"accuracy":  accuracy,
 			}})
 		}
+		// Network throttling: a named profile sets latency + throughput; offline
+		// can also be toggled independently.
+		if req.Network != "" || req.Offline != nil {
+			cond := networkProfile(req.Network)
+			if req.Offline != nil {
+				cond["offline"] = *req.Offline
+			}
+			cmds = append(cmds, cdpCmd{"Network", "emulateNetworkConditions", cond})
+		}
 	}
 
 	var applied []string
 	for _, cmd := range cmds {
+		domain := cmd.domain
+		if domain == "" {
+			domain = "Emulation"
+		}
+		if domain == "Network" && !c.events.IsDomainEnabled(tab.TabID, "Network") {
+			// emulateNetworkConditions requires the Network domain enabled.
+			if _, err := c.relay.SendCommand(ctx, Command{TabID: &tab.TabID, Domain: "Network", Method: "enable", Params: json.RawMessage(`{}`)}, defaultActionTimeout); err == nil {
+				c.events.MarkDomainEnabled(tab.TabID, "Network")
+			}
+		}
 		params, _ := json.Marshal(cmd.params)
 		if _, err := c.relay.SendCommand(ctx, Command{
 			TabID:  &tab.TabID,
-			Domain: "Emulation",
+			Domain: domain,
 			Method: cmd.method,
 			Params: params,
 		}, defaultActionTimeout); err != nil {
@@ -219,6 +243,24 @@ func (c *Controller) Emulate(ctx context.Context, req tool.BrowserEmulateRequest
 		return fmt.Sprintf("reset emulation overrides in tabId=%d", tab.TabID), nil
 	}
 	return fmt.Sprintf("applied emulation in tabId=%d: %s", tab.TabID, strings.Join(applied, ", ")), nil
+}
+
+// networkProfile maps a named throttle profile to Network.emulateNetworkConditions
+// params. Throughput is bytes/sec; -1 disables a limit. An unknown/empty name
+// returns the "no throttle" baseline (callers may still set offline separately).
+func networkProfile(name string) map[string]interface{} {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "offline":
+		return map[string]interface{}{"offline": true, "latency": 0, "downloadThroughput": 0, "uploadThroughput": 0}
+	case "slow-3g", "slow3g":
+		return map[string]interface{}{"offline": false, "latency": 400, "downloadThroughput": 400 * 1024 / 8, "uploadThroughput": 400 * 1024 / 8}
+	case "fast-3g", "fast3g":
+		return map[string]interface{}{"offline": false, "latency": 150, "downloadThroughput": 1500 * 1024 / 8, "uploadThroughput": 750 * 1024 / 8}
+	case "slow-4g", "slow4g":
+		return map[string]interface{}{"offline": false, "latency": 100, "downloadThroughput": 4 * 1024 * 1024 / 8, "uploadThroughput": 3 * 1024 * 1024 / 8}
+	default:
+		return map[string]interface{}{"offline": false, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1}
+	}
 }
 
 func (c *Controller) GetAttributes(ctx context.Context, req tool.BrowserGetAttributesRequest) (string, error) {
