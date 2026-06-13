@@ -733,3 +733,43 @@ func TestZoomRespectsOutputDir(t *testing.T) {
 		t.Fatalf("expected screenshot file to exist at %s", resp.FilePath)
 	}
 }
+
+func TestFindCarriesIframeCoordinates(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 102, URL: "https://example.com", Title: "Frames"}
+	// Simulate what the in-page heuristic returns for a same-origin iframe match:
+	// a result with absolute x/y + frame URL (no usable top-level selector).
+	findResultsJSON := `[{"ref":"input[name=\"card\"]","role":"textbox","text":"Card number","score":7,"x":420,"y":260,"frame":"https://example.com/embed"}]`
+	valueJSON, _ := json.Marshal(findResultsJSON)
+
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		if cmd.Domain+"."+cmd.Method == "Runtime.evaluate" {
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(fmt.Sprintf(`{"result":{"type":"string","value":%s}}`, valueJSON))})
+		} else {
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	results, err := controller.Find(context.Background(), tool.BrowserFindRequest{Query: "card", MaxResults: 5})
+	if err != nil {
+		t.Fatalf("Find error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.X == nil || r.Y == nil {
+		t.Fatal("iframe match must carry absolute x/y")
+	}
+	if *r.X != 420 || *r.Y != 260 {
+		t.Fatalf("expected x=420 y=260, got x=%v y=%v", *r.X, *r.Y)
+	}
+	if r.Frame != "https://example.com/embed" {
+		t.Fatalf("expected frame URL, got %q", r.Frame)
+	}
+}

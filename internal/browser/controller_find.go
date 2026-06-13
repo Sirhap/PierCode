@@ -496,9 +496,10 @@ func findElementsExpression(query string, maxResults int) string {
   }
 
   var results = [];
-  var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, null, false);
-  var node;
-  while (node = walker.nextNode()) {
+  // Score one element. offX/offY is the cumulative viewport offset of the
+  // element's document (0,0 for the top document, the summed iframe positions
+  // for a same-origin nested frame). frameUrl labels which frame it came from.
+  function scoreNode(node, offX, offY, frameUrl) {
     var tag = node.tagName.toLowerCase();
     var roleAttr = (node.getAttribute('role') || '').toLowerCase();
     var role = roleAttr || tag;
@@ -519,16 +520,51 @@ func findElementsExpression(query string, maxResults int) string {
       if (role.indexOf(term) >= 0) score += 2;
       else if (hay.indexOf(term) >= 0) score += 1;
     }
-    if (score === 0) continue;
-    // Reward interactive leaves; penalize big containers so the control wins.
+    if (score === 0) return;
     if (isInteractive) score += 3;
     else { score -= 2; if ((node.textContent||'').length > 400) score -= 2; }
-    if (score <= 0) continue;
-    if (!visible(node)) continue;
+    if (score <= 0) return;
+    if (!visible(node)) return;
 
     var displayText = ariaLabel || placeholder || title || text;
-    results.push({ref: stableSelector(node), role: role, text: displayText.slice(0,200), score: score});
+    var entry = {ref: stableSelector(node), role: role, text: displayText.slice(0,200), score: score};
+    if (offX || offY || frameUrl) {
+      // Element lives inside a same-origin iframe: a top-level CSS selector can't
+      // reach it, so emit absolute viewport coordinates (click uses x/y) and note
+      // the frame. The selector still applies WITHIN that frame's document.
+      var r = node.getBoundingClientRect();
+      entry.x = Math.round(offX + r.left + r.width/2);
+      entry.y = Math.round(offY + r.top + r.height/2);
+      entry.frame = frameUrl || '(iframe)';
+    }
+    results.push(entry);
   }
+  // Walk a document, then recurse into its SAME-ORIGIN iframes (cross-origin
+  // contentDocument access throws and is skipped). depth-capped to avoid runaway.
+  function walkDoc(doc, offX, offY, frameUrl, depth) {
+    if (!doc || depth > 4) return;
+    var walker = doc.createTreeWalker(doc.body || doc.documentElement, NodeFilter.SHOW_ELEMENT, null, false);
+    var node;
+    while (node = walker.nextNode()) {
+      if (node.tagName === 'IFRAME' || node.tagName === 'FRAME') {
+        var idoc = null;
+        try { idoc = node.contentDocument; } catch (e) { idoc = null; }
+        if (idoc) {
+          var ir = node.getBoundingClientRect();
+          // Add the iframe's content-box origin (border+padding) to the offset.
+          var cs = null; try { cs = (node.ownerDocument.defaultView||window).getComputedStyle(node); } catch(e){}
+          var bl = cs ? parseFloat(cs.borderLeftWidth)||0 : 0;
+          var bt = cs ? parseFloat(cs.borderTopWidth)||0 : 0;
+          var pl = cs ? parseFloat(cs.paddingLeft)||0 : 0;
+          var pt = cs ? parseFloat(cs.paddingTop)||0 : 0;
+          walkDoc(idoc, offX + ir.left + bl + pl, offY + ir.top + bt + pt, (idoc.location && idoc.location.href) || frameUrl, depth + 1);
+        }
+        continue;
+      }
+      scoreNode(node, offX, offY, frameUrl);
+    }
+  }
+  walkDoc(document, 0, 0, '', 0);
 
   results.sort(function(a, b) { return b.score - a.score; });
   return JSON.stringify(results.slice(0, maxResults));

@@ -513,6 +513,12 @@ type BrowserFindResult struct {
 	Role  string `json:"role"`
 	Text  string `json:"text"`
 	Score int    `json:"score"`
+	// X/Y/Frame are set only for matches inside a same-origin iframe, where a
+	// top-level selector cannot reach the element: X/Y are viewport-absolute
+	// click coordinates and Frame is the iframe's URL.
+	X     *float64 `json:"x,omitempty"`
+	Y     *float64 `json:"y,omitempty"`
+	Frame string   `json:"frame,omitempty"`
 }
 
 type BrowserZoomRequest struct {

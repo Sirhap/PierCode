@@ -10,7 +10,7 @@ func NewBrowserFindTool() Tool {
 	return &browserTool{
 		name:        "browser_find",
 		readOnly:    true,
-		description: "Find VISIBLE, interactive page elements (buttons, links, inputs) matching a keyword query. Scores the labelled control above its container, filters hidden/zero-size elements, and returns a stable CSS selector per match. Pass the returned 'ref' value as the 'selector' parameter to browser_click/browser_hover/browser_type. For broad page understanding prefer browser_snapshot; use find to locate one control quickly.",
+		description: "Find VISIBLE, interactive page elements (buttons, links, inputs) matching a keyword query, INCLUDING inside same-origin iframes. Scores the labelled control above its container, filters hidden/zero-size elements, and returns a stable CSS selector per match. Pass the returned 'selector' as the 'selector' parameter to browser_click/browser_hover/browser_type. A match marked '(in iframe …)' also reports absolute x,y — click it with browser_click x/y, since a top-level selector cannot reach into the frame. For broad page understanding prefer browser_snapshot.",
 		parameters: map[string]string{
 			"query":      "string (required) - keywords to search for",
 			"maxResults": "number (optional, default 20) - maximum results to return",
@@ -37,7 +37,13 @@ func NewBrowserFindTool() Tool {
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("Found %d matching elements:\n\n", len(results)))
 			for i, r := range results {
-				sb.WriteString(fmt.Sprintf("%d. [selector: %s] %s - %q (score: %d)\n", i+1, r.Ref, r.Role, r.Text, r.Score))
+				if r.X != nil && r.Y != nil {
+					// Same-origin iframe match: a top-level selector cannot reach it,
+					// so direct the model to click by absolute coordinate.
+					sb.WriteString(fmt.Sprintf("%d. [in iframe %s — click x=%.0f y=%.0f] %s - %q (score: %d)\n", i+1, r.Frame, *r.X, *r.Y, r.Role, r.Text, r.Score))
+				} else {
+					sb.WriteString(fmt.Sprintf("%d. [selector: %s] %s - %q (score: %d)\n", i+1, r.Ref, r.Role, r.Text, r.Score))
+				}
 			}
 			return sb.String(), nil
 		},
