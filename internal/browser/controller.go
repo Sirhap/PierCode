@@ -507,7 +507,17 @@ func (c *Controller) Click(ctx context.Context, req tool.BrowserClickRequest) (s
 		return "", err
 	}
 	c.tabs.MarkStale(tab.TabID)
-	return fmt.Sprintf("%s %s at %.0f,%.0f in tabId=%d", action, target, x, y, tab.TabID), nil
+	return fmt.Sprintf("%s %s at %.0f,%.0f in tabId=%d%s", action, target, x, y, tab.TabID, c.switchNote()), nil
+}
+
+// switchNote returns a one-line note when an automatic controlled-tab switch
+// happened (e.g. a click opened a new tab that became the default), so the model
+// is told the controlled tab moved instead of silently acting on a new tab.
+func (c *Controller) switchNote() string {
+	if from, to, ok := c.tabs.ConsumeDefaultSwitch(); ok {
+		return fmt.Sprintf("\nNote: controlled tab switched from #%d to #%d (a new tab opened and became active). Subsequent tabId-less tools now target #%d.", from, to, to)
+	}
+	return ""
 }
 
 // isIframeTarget reports whether resolvePoint resolved an OOPIF node (its target

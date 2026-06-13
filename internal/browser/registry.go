@@ -47,6 +47,16 @@ type TabRegistry struct {
 	// [Fixed by mimo-v2.5-pro: track AI page approval state from browser_use_tab]
 	approved map[int]bool
 	tracking map[int]string
+	// pendingSwitch records an unreported automatic default-tab change (e.g. a
+	// click opened a new tab that became the controlled tab). A tool consumes it
+	// once to tell the model the controlled tab moved, instead of letting the AI
+	// silently act on a different tab than it thinks.
+	pendingSwitch *tabSwitch
+}
+
+type tabSwitch struct {
+	from int
+	to   int
 }
 
 func NewTabRegistry() *TabRegistry {
@@ -62,10 +72,30 @@ func (r *TabRegistry) SetDefault(tab tool.BrowserTab) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	id := tab.TabID
+	// Record an automatic switch so a tool can surface it: the controlled tab
+	// moving out from under the AI (e.g. a click that opened a new tab) is the
+	// kind of state change it must be told about.
+	if r.defaultID != nil && *r.defaultID != id {
+		r.pendingSwitch = &tabSwitch{from: *r.defaultID, to: id}
+	}
 	tab.Controlled = true
 	tab = r.enrichLocked(tab)
 	r.defaultID = &id
 	r.tabs[id] = tab
+}
+
+// ConsumeDefaultSwitch returns and clears any pending automatic default-tab
+// change. A tool calls it after acting to append a "controlled tab switched"
+// note to its result. Returns ok=false when there was no switch.
+func (r *TabRegistry) ConsumeDefaultSwitch() (from, to int, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pendingSwitch == nil {
+		return 0, 0, false
+	}
+	s := r.pendingSwitch
+	r.pendingSwitch = nil
+	return s.from, s.to, true
 }
 
 func (r *TabRegistry) ClearDefault(tabID int) {

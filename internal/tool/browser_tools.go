@@ -392,7 +392,7 @@ func NewBrowserRecordTool() Tool {
 	return &browserTool{
 		name:        "browser_record",
 		readOnly:    true,
-		description: "Record a short animated GIF of the controlled tab by capturing a burst of frames. Use to capture a hover/transition/loading sequence. Saved under .piercode/screenshots as a .gif.",
+		description: "Record a short animated GIF by capturing a fixed BURST of frames at an interval (this is NOT a start/stop recorder — one call grabs N frames back-to-back, then encodes). Use to capture a transition/loading/hover sequence that happens within the burst window. Saved under .piercode/screenshots as a .gif.",
 		parameters: map[string]string{
 			"frames":     "number (optional, default 12, max 60) - frames to capture",
 			"intervalMs": "number (optional, default 200, min 50) - delay between frames",
@@ -449,7 +449,11 @@ func shouldAttachScreenshot(ctx *Context) bool {
 func uploadScreenshotAttachment(ctx *Context, shot BrowserScreenshot) (string, error) {
 	callID := stringArg(ctx.Args, "call_id")
 	if callID == "" {
-		return "", fmt.Errorf("missing call_id for attachment upload")
+		// The attachment flow only needs a unique key to pair the upload result
+		// (the extension echoes whatever call_id it receives). When the tool call
+		// omitted one — common when a model hand-writes the tool block — generate
+		// one rather than dropping the screenshot upload silently.
+		callID = fmt.Sprintf("screenshot_%d", time.Now().UnixNano())
 	}
 	mimeType := "image/jpeg"
 	if strings.EqualFold(shot.Format, "png") || strings.EqualFold(filepath.Ext(shot.FilePath), ".png") {

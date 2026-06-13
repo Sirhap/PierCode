@@ -464,7 +464,10 @@ func (c *Controller) Drag(ctx context.Context, req tool.BrowserDragRequest) (str
 		}
 	}
 	c.tabs.MarkStale(fromTab.TabID)
-	return fmt.Sprintf("dragged %s to %s in tabId=%d", fromTarget, toTarget, fromTab.TabID), nil
+	// A drag's effect is visual and DnD libraries can silently no-op, so the
+	// "dragged" result alone is not proof. Tell the model to verify rather than
+	// assume success.
+	return fmt.Sprintf("dragged %s to %s in tabId=%d. Verify the result with browser_snapshot or browser_screenshot — a drag can be a visual no-op if the target did not accept the drop.", fromTarget, toTarget, fromTab.TabID), nil
 }
 
 func (c *Controller) PDF(ctx context.Context, req tool.BrowserPDFRequest) (tool.BrowserPDFResponse, error) {
