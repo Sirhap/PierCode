@@ -186,6 +186,73 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onConnect) {
   });
 }
 
+// ── Offscreen-iframe relay ───────────────────────────────────────────────────
+// When this content script runs INSIDE the chat.qwen.ai iframe that the hidden
+// offscreen document hosts (extension/src/offscreen), it bridges between the
+// offscreen parent (window.parent, chrome-extension:// origin) and page-bridge.
+// The offscreen doc relays qwen requests here via window.parent.postMessage so
+// baxia (running in this real qwen page) auto-injects a fresh bx-ua and the
+// request carries the browser's shared cookies (incl. post-滑块 x5sec). See
+// memory qwen-bxua-needs-page-env. Only the offscreen-hosted frame activates
+// this — a normal top-level qwen tab has window.parent === window.
+const OFFSCREEN_PF = 'PIERCODE_OFFSCREEN_PF';             // parent → iframe: exec fetch
+const OFFSCREEN_PF_ABORT = 'PIERCODE_OFFSCREEN_PF_ABORT';
+const OFFSCREEN_PF_HEAD = 'PIERCODE_OFFSCREEN_PF_HEAD';   // iframe → parent
+const OFFSCREEN_PF_CHUNK = 'PIERCODE_OFFSCREEN_PF_CHUNK';
+const OFFSCREEN_PF_DONE = 'PIERCODE_OFFSCREEN_PF_DONE';
+const OFFSCREEN_PF_ERROR = 'PIERCODE_OFFSCREEN_PF_ERROR';
+const OFFSCREEN_READY = 'PIERCODE_OFFSCREEN_IFRAME_READY'; // iframe → parent: ready
+
+function isOffscreenHostedFrame(): boolean {
+  try {
+    // Subframe whose parent is the extension's own offscreen doc. We can't read
+    // the cross-origin-ish parent's location reliably, but being a subframe +
+    // matching the qwen host + chrome.runtime present is the signal we act on.
+    return window.parent !== window && /(^|\.)qwen\.ai$/.test(location.hostname);
+  } catch {
+    return false;
+  }
+}
+
+if (typeof chrome !== 'undefined' && chrome.runtime?.id && isOffscreenHostedFrame()) {
+  const post = (m: Record<string, unknown>) => {
+    try { window.parent.postMessage(m, '*'); } catch { /* parent gone */ }
+  };
+
+  // page-bridge → iframe content → offscreen parent.
+  window.addEventListener('message', (event: MessageEvent) => {
+    if (event.source !== window) return; // page-bridge posts to this window
+    const d = event.data;
+    if (!d || typeof d.requestId !== 'string') return;
+    if (d.type === PF_EXEC_HEAD) post({ type: OFFSCREEN_PF_HEAD, requestId: d.requestId, ok: d.ok, status: d.status });
+    else if (d.type === PF_EXEC_CHUNK) post({ type: OFFSCREEN_PF_CHUNK, requestId: d.requestId, b64: d.b64 });
+    else if (d.type === PF_EXEC_DONE) post({ type: OFFSCREEN_PF_DONE, requestId: d.requestId });
+    else if (d.type === PF_EXEC_ERROR) post({ type: OFFSCREEN_PF_ERROR, requestId: d.requestId, error: d.error });
+  });
+
+  // offscreen parent → iframe content → page-bridge.
+  window.addEventListener('message', (event: MessageEvent) => {
+    if (event.source !== window.parent) return; // only the offscreen parent
+    const d = event.data;
+    if (!d || typeof d.type !== 'string') return;
+    if (d.type === OFFSCREEN_PF) {
+      injectPageBridge();
+      window.postMessage({
+        type: PF_EXEC,
+        requestId: d.requestId,
+        url: d.url, method: d.method, headers: d.headers, body: d.body, stream: d.stream,
+      }, '*');
+    } else if (d.type === OFFSCREEN_PF_ABORT) {
+      window.postMessage({ type: PF_EXEC_ABORT, requestId: d.requestId }, '*');
+    }
+  });
+
+  // Announce readiness so the offscreen doc can start sending. page-bridge is
+  // injected lazily on first request; baxia is already live in this qwen page.
+  injectPageBridge();
+  post({ type: OFFSCREEN_READY });
+}
+
 // Passive listen relay: page-bridge tees the page's own chat-API SSE response
 // and posts AL_* frames. For each intercepted stream we open a fresh port to the
 // SW (keyed by the page-generated requestId) and forward HEAD/CHUNK/DONE/ERROR.
@@ -2994,4 +3061,16 @@ function bootstrapGate() {
 // initialized — eliminates the TDZ window that crashed tool-card rendering inside
 // Hub iframe panes. (injectPageBridgeEarly already ran at module top for the
 // document_start visibility shim; this only defers the heavier init.)
-bootstrapGate();
+//
+// Only the TOP frame bootstraps the full content script (StatusPanel, tool
+// detection, init button). With manifest all_frames:true (added for the
+// offscreen qwen iframe), content.js now loads in every subframe too — but
+// subframes must NOT run tool detection (would double-execute) or inject UI.
+// Subframe work is limited to the offscreen-iframe relay above (self-gated by
+// isOffscreenHostedFrame). A normal page's embedded iframes do nothing.
+function isTopFrame(): boolean {
+  try { return window.top === window.self; } catch { return false; }
+}
+if (isTopFrame()) {
+  bootstrapGate();
+}

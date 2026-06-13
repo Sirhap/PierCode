@@ -12,6 +12,7 @@
 
 import { extractFenceToolCalls, formatToolResults } from '../parser'
 import { qwenPageFetch } from './qwen-page-fetch'
+import { qwenOffscreenFetch } from './qwen-offscreen-fetch'
 import { installApiListenReceiver } from './api-listen'
 import { createBxUaBroker, type BxUaCreds } from './qwen-bxua-broker'
 import { genSsxmod } from './qwen-ssxmod'
@@ -65,6 +66,12 @@ export interface PlatformConfig {
    *  the SDK running in the real qwen page. A SW fetch lacks it → captcha wall
    *  (RGV587_ERROR). */
   usePageFetch?: boolean
+  /** When true, requests route through a hidden offscreen document hosting a
+   *  chat.qwen.ai iframe (see qwen-offscreen-fetch.ts) — baxia runs there and
+   *  auto-injects a fresh bx-ua, with the browser's shared cookies (incl.
+   *  post-滑块 x5sec) clearing completions risk control. No visible tab.
+   *  Preferred over usePageFetch for qwen (no open tab required). */
+  useOffscreenFetch?: boolean
 }
 
 /** Response-like duck type that both window.fetch's Response and qwenPageFetch's
@@ -85,11 +92,19 @@ async function platformFetch(
   stream: boolean,
   signal?: AbortSignal,
 ): Promise<FetchLike> {
+  // qwen offscreen path: run the request inside a hidden chat.qwen.ai iframe so
+  // baxia auto-injects a fresh bx-ua + the browser's shared cookies (incl.
+  // post-滑块 x5sec) clear completions risk control. No visible tab. This is the
+  // ONLY path verified to pass completions (SW direct / copied bx-ua → RGV587;
+  // see memory qwen-bxua-needs-page-env).
+  if (config.useOffscreenFetch) {
+    return qwenOffscreenFetch(url, { ...init, stream }, signal)
+  }
   if (config.usePageFetch) {
     return qwenPageFetch(url, { ...init, stream }, signal)
   }
-  // qwen direct path: detect RGV587 risk control on the response; on hit,
-  // invalidate the cached bx-ua, re-borrow, rebuild headers, and retry once.
+  // qwen direct path (legacy fallback): detect RGV587 risk control on the
+  // response; on hit, invalidate the cached bx-ua, re-borrow, retry once.
   if (config.name === 'Qwen') {
     return qwenDirectFetch(config, url, init, signal)
   }
@@ -219,31 +234,29 @@ export const PLATFORMS: Record<string, PlatformConfig> = {
     name: 'Qwen',
     cookieName: 'token',
     cookieDomain: 'chat.qwen.ai',
+    // Route all qwen requests through the hidden offscreen chat.qwen.ai iframe
+    // so baxia injects a fresh bx-ua and shared cookies (incl. post-滑块 x5sec)
+    // clear risk control. No visible tab. See qwen-offscreen-fetch.ts.
+    useOffscreenFetch: true,
     async createConversation(token, model) {
       // Qwen's web client echoes the `xsrf-token` cookie back as an x-xsrf-token
-      // header. Without it Aliyun risk control (RGV587_ERROR) walls the request
-      // behind a captcha ("哎哟喂,被挤爆啦").
+      // header. The offscreen iframe's page-bridge sends the request from the
+      // real qwen page so baxia adds bx-ua/bx-umidtoken and credentials:'include'
+      // carries cookies; we still pass Authorization + x-xsrf-token here.
       const xsrf = await getCookieToken('chat.qwen.ai', 'xsrf-token')
-      // /chats/new clears risk control without bx-ua (verified), but we attach
-      // it anyway (harmless) so a single code path covers both endpoints. Clean
-      // SW fetch — cookies sent via credentials:'include'.
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
-        'Origin': 'https://chat.qwen.ai',
-        'Referer': 'https://chat.qwen.ai/',
         'version': '0.2.63',
         'source': 'web',
         'x-request-id': crypto.randomUUID(),
         'timezone': Intl.DateTimeFormat().resolvedOptions().timeZone,
-        'bx-v': '2.5.36',
         ...(xsrf ? { 'x-xsrf-token': xsrf } : {}),
       }
-      await applyQwenRiskHeaders(headers)
-      const res = await fetch('https://chat.qwen.ai/api/v2/chats/new', {
+      const res = await qwenOffscreenFetch('https://chat.qwen.ai/api/v2/chats/new', {
         method: 'POST',
         headers,
-        credentials: 'include',
+        stream: false,
         body: JSON.stringify({
           title: '新建对话',
           models: [model],

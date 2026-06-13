@@ -118,6 +118,8 @@ export default defineConfig({
       closeBundle() {
         mkdirSync('dist', { recursive: true })
         copyFileSync('public/manifest.json', 'dist/manifest.json')
+        copyFileSync('public/dnr-offscreen.json', 'dist/dnr-offscreen.json')
+        copyFileSync('src/offscreen/offscreen.html', 'dist/offscreen.html')
         if (existsSync('dist/src/popup/index.html')) {
           copyFileSync('dist/src/popup/index.html', 'dist/popup.html')
         }
@@ -144,10 +146,13 @@ export default defineConfig({
         sidebar: resolve(__dirname, 'src/sidebar/index.html'),
         content: resolve(__dirname, 'src/content/index.ts'),
         pageBridge: resolve(__dirname, 'src/page-bridge/index.ts'),
+        offscreen: resolve(__dirname, 'src/offscreen/index.ts'),
         background: resolve(__dirname, 'src/background/index.ts')
       },
       output: {
-        entryFileNames: chunk => chunk.name === 'pageBridge' ? 'page-bridge.js' : '[name].js'
+        entryFileNames: chunk =>
+          chunk.name === 'pageBridge' ? 'page-bridge.js' :
+          chunk.name === 'offscreen' ? 'offscreen.js' : '[name].js'
       }
     }
   }
