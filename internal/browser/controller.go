@@ -833,6 +833,35 @@ func (c *Controller) Screenshot(ctx context.Context, req tool.BrowserScreenshotR
 	return shot, nil
 }
 
+// Mark enumerates the tab's interactive elements, injects a numbered overlay,
+// records the marks for browser_click mark= resolution, and returns a screenshot
+// with the overlay baked in plus the mark list. clear=true just removes the
+// overlay and returns.
+func (c *Controller) Mark(ctx context.Context, req tool.BrowserMarkRequest) ([]tool.MarkedElement, tool.BrowserScreenshot, error) {
+	tab, err := c.ensureTab(ctx, req.TabID)
+	if err != nil {
+		return nil, tool.BrowserScreenshot{}, err
+	}
+	if req.Clear {
+		_, _ = c.runtimeEvaluate(ctx, tab.TabID, buildClearOverlayExpression(), false, defaultActionTimeout, true)
+		c.tabs.SetMarks(tab.TabID, nil)
+		return nil, tool.BrowserScreenshot{}, nil
+	}
+	marks, err := c.enumerateInteractive(ctx, tab.TabID)
+	if err != nil {
+		return nil, tool.BrowserScreenshot{}, err
+	}
+	if _, err := c.runtimeEvaluate(ctx, tab.TabID, buildMarkOverlayExpression(marks), false, defaultActionTimeout, true); err != nil {
+		return nil, tool.BrowserScreenshot{}, err
+	}
+	c.tabs.SetMarks(tab.TabID, marks)
+	shot, err := c.Screenshot(ctx, tool.BrowserScreenshotRequest{TabID: &tab.TabID, Format: req.Format, OutputDir: req.OutputDir})
+	if err != nil {
+		return marks, tool.BrowserScreenshot{}, err
+	}
+	return marks, shot, nil
+}
+
 // layoutMetrics holds the CSS-pixel layout viewport, visual-viewport scroll,
 // and devicePixelRatio used to map a screenshot-px point back to the CSS-px click
 // coordinate space.

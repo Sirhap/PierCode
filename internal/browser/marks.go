@@ -56,6 +56,70 @@ func (c *Controller) enumerateInteractive(ctx context.Context, tabID int) ([]too
 	return marks, nil
 }
 
+// buildMarkOverlayExpression returns JS that injects a closed-shadow-root SVG
+// overlay drawing a numbered badge at the top-left of each mark's box. It mirrors
+// the phantom-cursor.ts injection pattern (closed shadow root on a neutral host,
+// self-contained, idempotent — re-injecting replaces the prior overlay). Label
+// placement is a simplified port of cua som/visualization.py: badge sits just
+// above-left of the box, clamped into the viewport.
+func buildMarkOverlayExpression(marks []tool.MarkedElement) string {
+	// Marshal to the lowercase shape the overlay JS reads (tool.MarkedElement has
+	// no json tags, so map explicitly).
+	type ovl struct {
+		Index int     `json:"index"`
+		X     float64 `json:"x"`
+		Y     float64 `json:"y"`
+		W     float64 `json:"w"`
+		H     float64 `json:"h"`
+	}
+	ovls := make([]ovl, 0, len(marks))
+	for _, m := range marks {
+		ovls = append(ovls, ovl{Index: m.Index, X: m.X, Y: m.Y, W: m.W, H: m.H})
+	}
+	data, _ := json.Marshal(ovls)
+	return `(function(){
+  var MARKS = ` + string(data) + `;
+  var HOST_ID = '__piercode_som__';
+  var prev = document.getElementById(HOST_ID); if(prev) prev.remove();
+  var host = document.createElement('div'); host.id = HOST_ID;
+  host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483646';
+  (document.body||document.documentElement).appendChild(host);
+  var root = host.attachShadow ? host.attachShadow({mode:'closed'}) : host;
+  var ns='http://www.w3.org/2000/svg';
+  var svg=document.createElementNS(ns,'svg');
+  svg.setAttribute('width','100%'); svg.setAttribute('height','100%');
+  svg.style.cssText='position:absolute;inset:0';
+  for(var i=0;i<MARKS.length;i++){
+    var m=MARKS[i];
+    var rect=document.createElementNS(ns,'rect');
+    rect.setAttribute('x',m.x); rect.setAttribute('y',m.y);
+    rect.setAttribute('width',m.w); rect.setAttribute('height',m.h);
+    rect.setAttribute('fill','none'); rect.setAttribute('stroke','#22d3ee');
+    rect.setAttribute('stroke-width','2'); rect.setAttribute('rx','3');
+    svg.appendChild(rect);
+    var lx=Math.max(0,m.x-2), ly=Math.max(12,m.y-2);
+    var bg=document.createElementNS(ns,'rect');
+    var label=''+m.index; var bw=8+label.length*8;
+    bg.setAttribute('x',lx); bg.setAttribute('y',ly-12);
+    bg.setAttribute('width',bw); bg.setAttribute('height',14);
+    bg.setAttribute('fill','#0e7490'); bg.setAttribute('rx','3');
+    svg.appendChild(bg);
+    var txt=document.createElementNS(ns,'text');
+    txt.setAttribute('x',lx+4); txt.setAttribute('y',ly-1);
+    txt.setAttribute('font-family','monospace'); txt.setAttribute('font-size','11');
+    txt.setAttribute('font-weight','bold'); txt.setAttribute('fill','#ffffff');
+    txt.textContent=label; svg.appendChild(txt);
+  }
+  root.appendChild(svg);
+  return {ok:true,count:MARKS.length};
+})()`
+}
+
+// buildClearOverlayExpression removes the SoM overlay host if present.
+func buildClearOverlayExpression() string {
+	return `(function(){var h=document.getElementById('__piercode_som__'); if(h){h.remove(); return {ok:true};} return {ok:false};})()`
+}
+
 // markCollectorExpression returns the in-page JS that enumerates interactive
 // elements. It mirrors findElementsExpression's visible()/stableSelector()/
 // same-origin-iframe walk, but emits ALL interactive elements (no query filter)

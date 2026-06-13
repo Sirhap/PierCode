@@ -483,6 +483,43 @@ func NewBrowserHandleDialogTool() Tool {
 	}
 }
 
+func NewBrowserMarkTool() Tool {
+	return &browserTool{
+		name:        "browser_mark",
+		description: "Overlay numbered badges on every interactive element and return a screenshot showing the numbers. Then browser_click with mark=<n> clicks element n. Call browser_mark again to refresh after the page changes; mark={clear:true} removes the overlay.",
+		parameters: map[string]string{
+			"clear":  "boolean (optional) - remove the overlay instead of drawing it",
+			"format": "string (optional, png|jpeg, default jpeg) - screenshot format",
+			"tabId":  "number (optional) - controlled tab id",
+		},
+		validate: func(map[string]interface{}) error { return nil },
+		execute: func(ctx *Context) (string, error) {
+			marks, shot, err := ctx.Browser.Mark(ctx.Context, BrowserMarkRequest{
+				TabID:     optionalInt(ctx.Args, "tabId"),
+				Clear:     boolArg(ctx.Args, "clear"),
+				Format:    stringArg(ctx.Args, "format"),
+				OutputDir: filepath.Join(ctx.EffectiveRootDir(), ".piercode", "screenshots"),
+			})
+			if err != nil {
+				return "", err
+			}
+			if len(marks) == 0 && shot.FilePath == "" {
+				return "overlay cleared", nil
+			}
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("marked %d interactive elements:\n", len(marks)))
+			for _, m := range marks {
+				b.WriteString(fmt.Sprintf("  [%d] %s %q @ %.0f,%.0f\n", m.Index, m.Role, m.Text, m.CenterX, m.CenterY))
+			}
+			if shot.FilePath != "" {
+				b.WriteString("Screenshot with numbers: " + shot.FilePath + "\n")
+			}
+			b.WriteString("Click an element with browser_click mark=<n>.")
+			return b.String(), nil
+		},
+	}
+}
+
 func validateBrowserWait(args map[string]interface{}) error {
 	selector := stringArg(args, "selector")
 	loadState := stringArg(args, "loadState")

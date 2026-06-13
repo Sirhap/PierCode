@@ -30,6 +30,19 @@ func TestConsumeDefaultSwitchReportsTabChange(t *testing.T) {
 	}
 }
 
+func TestMarksRoundTripAndPurge(t *testing.T) {
+	r := NewTabRegistry()
+	r.SetMarks(3, []tool.MarkedElement{{Index: 1, CenterX: 10, CenterY: 20}})
+	got, ok := r.Marks(3)
+	if !ok || len(got) != 1 || got[0].CenterX != 10 {
+		t.Fatalf("marks round-trip failed: %#v ok=%v", got, ok)
+	}
+	r.ClearDefault(3)
+	if _, ok := r.Marks(3); ok {
+		t.Fatal("ClearDefault should purge marks")
+	}
+}
+
 func TestClearDefaultPurgesLastPointer(t *testing.T) {
 	r := NewTabRegistry()
 	r.SetLastPointer(7, Point{X: 10, Y: 20})

@@ -3,7 +3,10 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/sirhap/piercode/internal/tool"
 )
 
 func TestEnumerateInteractiveReturnsBoxes(t *testing.T) {
@@ -38,5 +41,20 @@ func TestEnumerateInteractiveReturnsBoxes(t *testing.T) {
 	}
 	if marks[0].Role != "button" || marks[0].Ref != "#ok" {
 		t.Fatalf("mark fields wrong: %#v", marks[0])
+	}
+}
+
+func TestMarkOverlayExpressionContainsBadges(t *testing.T) {
+	expr := buildMarkOverlayExpression([]tool.MarkedElement{
+		{Index: 1, X: 10, Y: 20, W: 40, H: 16, CenterX: 30, CenterY: 28},
+	})
+	for _, must := range []string{"attachShadow", "mode:'closed'", "__piercode_som__"} {
+		if !strings.Contains(expr, must) {
+			t.Fatalf("overlay expr missing %q", must)
+		}
+	}
+	clr := buildClearOverlayExpression()
+	if !strings.Contains(clr, "remove") {
+		t.Fatalf("clear expr should remove the overlay host")
 	}
 }

@@ -268,6 +268,7 @@ type BrowserController interface {
 	WaitForNavigation(ctx context.Context, req BrowserWaitForNavigationRequest) (string, error)
 	Emulate(ctx context.Context, req BrowserEmulateRequest) (string, error)
 	GetAttributes(ctx context.Context, req BrowserGetAttributesRequest) (string, error)
+	Mark(ctx context.Context, req BrowserMarkRequest) ([]MarkedElement, BrowserScreenshot, error)
 }
 
 type BrowserTab struct {
@@ -318,6 +319,16 @@ type MarkedElement struct {
 	Role             string
 	Text             string
 	Ref              string
+}
+
+// BrowserMarkRequest drives browser_mark: enumerate + overlay numbered badges
+// (Clear=true removes the overlay instead). Format selects the screenshot
+// encoding; OutputDir is where the numbered screenshot is written.
+type BrowserMarkRequest struct {
+	TabID     *int
+	Clear     bool
+	Format    string
+	OutputDir string
 }
 
 type BrowserClickRequest struct {

@@ -58,6 +58,10 @@ func (noopBrowserController) RecordGIF(_ context.Context, _ BrowserRecordRequest
 	return BrowserScreenshot{}, errNoopBrowser
 }
 
+func (noopBrowserController) Mark(_ context.Context, _ BrowserMarkRequest) ([]MarkedElement, BrowserScreenshot, error) {
+	return nil, BrowserScreenshot{}, errNoopBrowser
+}
+
 func (noopBrowserController) Wait(_ context.Context, _ BrowserWaitRequest) (string, error) {
 	return "", errNoopBrowser
 }

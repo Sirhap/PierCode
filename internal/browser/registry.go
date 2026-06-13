@@ -50,6 +50,9 @@ type TabRegistry struct {
 	// lastPointer 记录每个 tab 最后一次合成的指针视口坐标,供 moveTo 做插值起点
 	// 与扩展端幻影光标动画对齐(沿途触发 mouseover/mouseenter)。
 	lastPointer map[int]Point
+	// marksByTab 记录每个 tab 最近一次 browser_mark 枚举出的可交互元素号牌,供
+	// browser_click 的 mark=<n> 解析成点击坐标。tab 关闭时随 ClearDefault 清除。
+	marksByTab map[int][]tool.MarkedElement
 	// pendingSwitch records an unreported automatic default-tab change (e.g. a
 	// click opened a new tab that became the controlled tab). A tool consumes it
 	// once to tell the model the controlled tab moved, instead of letting the AI
@@ -69,7 +72,26 @@ func NewTabRegistry() *TabRegistry {
 		approved:    make(map[int]bool),
 		tracking:    make(map[int]string),
 		lastPointer: make(map[int]Point),
+		marksByTab:  make(map[int][]tool.MarkedElement),
 	}
+}
+
+// SetMarks 记录某个 tab 最近一次 browser_mark 枚举出的号牌列表(nil 表示已清除)。
+func (r *TabRegistry) SetMarks(tabID int, marks []tool.MarkedElement) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.marksByTab == nil {
+		r.marksByTab = map[int][]tool.MarkedElement{}
+	}
+	r.marksByTab[tabID] = marks
+}
+
+// Marks 返回某个 tab 最近一次记录的号牌列表;ok=false 表示从未 browser_mark 过。
+func (r *TabRegistry) Marks(tabID int) ([]tool.MarkedElement, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	m, ok := r.marksByTab[tabID]
+	return m, ok
 }
 
 // SetLastPointer 记录某个 tab 最近一次合成指针落点,供下次 moveTo 作为插值起点。
@@ -131,6 +153,7 @@ func (r *TabRegistry) ClearDefault(tabID int) {
 	delete(r.approved, tabID)
 	delete(r.tracking, tabID)
 	delete(r.lastPointer, tabID)
+	delete(r.marksByTab, tabID)
 }
 
 // MarkApproved records that a tab has been explicitly approved for AI automation
