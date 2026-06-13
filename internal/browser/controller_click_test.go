@@ -604,3 +604,74 @@ func TestBrowserTypeKeysModeFiresPerCharKeyEvents(t *testing.T) {
 		t.Fatalf("expected per-char keyDown text 'hi', got %q", got)
 	}
 }
+
+func TestClickInsideOOPIFLandsAtOffsetSummedPoint(t *testing.T) {
+	// Full Click path for a ref inside a cross-origin iframe: the dispatched
+	// Input.dispatchMouseEvent must land at the iframe-owner offset PLUS the
+	// node's frame-relative center, on the page session (no sessionId on Input).
+	tab := tool.BrowserTab{TabID: 50, URL: "https://app.example.com/dashboard", Title: "Dashboard", Controlled: true}
+	var pressX, pressY float64
+	var inputHadSession bool
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		switch cmd.Domain + "." + cmd.Method {
+		case "PierCode.getTab":
+			data, _ := json.Marshal(tab)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		case "DOM.getBoxModel":
+			if cmd.SessionID == "FRAME-SESS" {
+				// frame-relative node box: center (20,30)
+				go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"model":{"border":[10,20,30,20,30,40,10,40]}}`)})
+			} else {
+				// iframe owner box on page session: top-left (100,200)
+				go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"model":{"border":[100,200,500,200,500,600,100,600]}}`)})
+			}
+		case "Target.getTargetInfo":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"targetInfo":{"targetId":"FRAME-1"}}`)})
+		case "DOM.getFrameOwner":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"backendNodeId":77}`)})
+		case "Input.dispatchMouseEvent":
+			var p struct {
+				Type string  `json:"type"`
+				X    float64 `json:"x"`
+				Y    float64 `json:"y"`
+			}
+			_ = json.Unmarshal(cmd.Params, &p)
+			if cmd.SessionID != "" {
+				inputHadSession = true // MUST be empty: input goes to the page session
+			}
+			if p.Type == "mousePressed" {
+				pressX, pressY = p.X, p.Y
+			}
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		default:
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+	// Seed a snapshot whose ref e0 lives inside the OOPIF session.
+	controller.tabs.StoreSnapshot(tab, "snap_oopif", []RefTarget{
+		{Ref: "e0", BackendID: 5, SessionID: "FRAME-SESS", Role: "button", Name: "Pay now"},
+	})
+
+	out, err := controller.Click(context.Background(), tool.BrowserClickRequest{
+		Ref: "e0", SnapshotID: "snap_oopif", CallID: "oopif-click",
+	})
+	if err != nil {
+		t.Fatalf("Click inside OOPIF returned error: %v", err)
+	}
+	if inputHadSession {
+		t.Fatal("Input.dispatchMouseEvent must target the page session (no sessionId), not the frame session")
+	}
+	// (100,200) iframe offset + (20,30) frame-relative center = (120,230).
+	if pressX != 120 || pressY != 230 {
+		t.Fatalf("OOPIF click landed at (%.0f,%.0f), expected offset-summed (120,230)", pressX, pressY)
+	}
+	if !strings.Contains(out, "in iframe") {
+		t.Fatalf("expected result to note the iframe target, got %q", out)
+	}
+}
