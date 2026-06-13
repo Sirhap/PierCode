@@ -130,6 +130,7 @@ func (r *TabRegistry) ClearDefault(tabID int) {
 	delete(r.snapshots, tabID)
 	delete(r.approved, tabID)
 	delete(r.tracking, tabID)
+	delete(r.lastPointer, tabID)
 }
 
 // MarkApproved records that a tab has been explicitly approved for AI automation

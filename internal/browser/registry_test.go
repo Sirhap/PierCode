@@ -29,3 +29,17 @@ func TestConsumeDefaultSwitchReportsTabChange(t *testing.T) {
 		t.Fatal("re-setting same default must not record a switch")
 	}
 }
+
+func TestClearDefaultPurgesLastPointer(t *testing.T) {
+	r := NewTabRegistry()
+	r.SetLastPointer(7, Point{X: 10, Y: 20})
+	if _, ok := r.LastPointer(7); !ok {
+		t.Fatal("last pointer should be set")
+	}
+	// Closing the tab must purge its last-pointer so a reused tabId does not
+	// interpolate from a stale prior position.
+	r.ClearDefault(7)
+	if _, ok := r.LastPointer(7); ok {
+		t.Fatal("ClearDefault should delete the tab's last pointer")
+	}
+}
