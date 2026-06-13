@@ -47,6 +47,9 @@ type TabRegistry struct {
 	// [Fixed by mimo-v2.5-pro: track AI page approval state from browser_use_tab]
 	approved map[int]bool
 	tracking map[int]string
+	// lastPointer 记录每个 tab 最后一次合成的指针视口坐标,供 moveTo 做插值起点
+	// 与扩展端幻影光标动画对齐(沿途触发 mouseover/mouseenter)。
+	lastPointer map[int]Point
 	// pendingSwitch records an unreported automatic default-tab change (e.g. a
 	// click opened a new tab that became the controlled tab). A tool consumes it
 	// once to tell the model the controlled tab moved, instead of letting the AI
@@ -61,11 +64,30 @@ type tabSwitch struct {
 
 func NewTabRegistry() *TabRegistry {
 	return &TabRegistry{
-		tabs:      make(map[int]tool.BrowserTab),
-		snapshots: make(map[int][]*snapshotCache),
-		approved:  make(map[int]bool),
-		tracking:  make(map[int]string),
+		tabs:        make(map[int]tool.BrowserTab),
+		snapshots:   make(map[int][]*snapshotCache),
+		approved:    make(map[int]bool),
+		tracking:    make(map[int]string),
+		lastPointer: make(map[int]Point),
 	}
+}
+
+// SetLastPointer 记录某个 tab 最近一次合成指针落点,供下次 moveTo 作为插值起点。
+func (r *TabRegistry) SetLastPointer(tabID int, p Point) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lastPointer == nil {
+		r.lastPointer = map[int]Point{}
+	}
+	r.lastPointer[tabID] = p
+}
+
+// LastPointer 返回某个 tab 最近一次合成指针落点;ok=false 表示尚未记录(首次移动)。
+func (r *TabRegistry) LastPointer(tabID int) (Point, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.lastPointer[tabID]
+	return p, ok
 }
 
 func (r *TabRegistry) SetDefault(tab tool.BrowserTab) {

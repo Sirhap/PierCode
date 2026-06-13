@@ -23,6 +23,7 @@ func TestDispatchClickRightButton(t *testing.T) {
 		return true
 	})
 	controller := NewController(relay, func([]byte) {})
+	controller.SetInputFidelity(InputFidelity{MoveSteps: 1})
 
 	if err := controller.dispatchClick(context.Background(), 1, 100, 200, "right", 1); err != nil {
 		t.Fatalf("dispatchClick returned error: %v", err)
@@ -78,6 +79,7 @@ func TestDispatchClickDoubleClick(t *testing.T) {
 		return true
 	})
 	controller := NewController(relay, func([]byte) {})
+	controller.SetInputFidelity(InputFidelity{MoveSteps: 1})
 
 	if err := controller.dispatchClick(context.Background(), 1, 100, 200, "left", 2); err != nil {
 		t.Fatalf("dispatchClick returned error: %v", err)
@@ -114,6 +116,7 @@ func TestDispatchClickTripleClick(t *testing.T) {
 		return true
 	})
 	controller := NewController(relay, func([]byte) {})
+	controller.SetInputFidelity(InputFidelity{MoveSteps: 1})
 
 	if err := controller.dispatchClick(context.Background(), 1, 100, 200, "left", 3); err != nil {
 		t.Fatalf("dispatchClick returned error: %v", err)
@@ -144,6 +147,7 @@ func TestDispatchClickMiddleButton(t *testing.T) {
 		return true
 	})
 	controller := NewController(relay, func([]byte) {})
+	controller.SetInputFidelity(InputFidelity{MoveSteps: 1})
 
 	if err := controller.dispatchClick(context.Background(), 1, 100, 200, "middle", 1); err != nil {
 		t.Fatalf("dispatchClick returned error: %v", err)
@@ -673,5 +677,60 @@ func TestClickInsideOOPIFLandsAtOffsetSummedPoint(t *testing.T) {
 	}
 	if !strings.Contains(out, "in iframe") {
 		t.Fatalf("expected result to note the iframe target, got %q", out)
+	}
+}
+
+func TestClickInterpolatesMovesFromLastPointer(t *testing.T) {
+	var commands []Command
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		commands = append(commands, cmd)
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+	c.tabs.SetLastPointer(1, Point{X: 0, Y: 0}) // 已知起点
+	if err := c.dispatchClick(context.Background(), 1, 100, 100, "left", 1); err != nil {
+		t.Fatalf("click err: %v", err)
+	}
+	moves := 0
+	var last map[string]interface{}
+	for _, cmd := range commands {
+		var p map[string]interface{}
+		_ = json.Unmarshal(cmd.Params, &p)
+		if p["type"] == "mouseMoved" {
+			moves++
+			last = p
+		}
+	}
+	if moves < 5 {
+		t.Fatalf("expected >=5 interpolated moves, got %d", moves)
+	}
+	if last["x"] != float64(100) || last["y"] != float64(100) {
+		t.Fatalf("final move should land on target, got %v,%v", last["x"], last["y"])
+	}
+}
+
+func TestClickInstantSingleMove(t *testing.T) {
+	var moves int
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		var p map[string]interface{}
+		_ = json.Unmarshal(cmd.Params, &p)
+		if p["type"] == "mouseMoved" {
+			moves++
+		}
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+	c.SetInputFidelity(InputFidelity{MoveSteps: 1})
+	_ = c.dispatchClick(context.Background(), 1, 100, 100, "left", 1)
+	if moves != 1 {
+		t.Fatalf("instant mode expected 1 move, got %d", moves)
 	}
 }

@@ -1343,6 +1343,29 @@ func (c *Controller) assertPointActionable(ctx context.Context, tabID int, x, y 
 	return nil
 }
 
+// moveTo 从最后已知指针(未知则用目标本身)发 MoveSteps 个插值 mouseMoved 到 (x,y),
+// 并更新最后指针。button="none"/buttons=0 是普通移动;拖拽用 buttons=1。沿途的中间点
+// 让页面 mouseover/mouseenter 逐段触发(hover 菜单/tooltip 才会展开),且真实事件轨迹
+// 与扩展端幻影光标动画一致,不再瞬移。
+func (c *Controller) moveTo(ctx context.Context, tabID int, x, y float64, button string, buttons int) error {
+	from := Point{X: x, Y: y}
+	if p, ok := c.tabs.LastPointer(tabID); ok {
+		from = p
+	}
+	for _, pt := range lerpPoints(from, Point{X: x, Y: y}, c.fidelity.MoveSteps) {
+		ev := map[string]interface{}{"type": "mouseMoved", "x": pt.X, "y": pt.Y, "button": button}
+		if buttons != 0 {
+			ev["buttons"] = buttons
+		}
+		params, _ := json.Marshal(ev)
+		if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: params}, defaultActionTimeout); err != nil {
+			return err
+		}
+	}
+	c.tabs.SetLastPointer(tabID, Point{X: x, Y: y})
+	return nil
+}
+
 func (c *Controller) dispatchClick(ctx context.Context, tabID int, x, y float64, button string, clickCount int) error {
 	if button == "" {
 		button = "left"
@@ -1359,9 +1382,9 @@ func (c *Controller) dispatchClick(ctx context.Context, tabID int, x, y float64,
 	case "middle":
 		buttons = 4
 	}
-	// 先发 mouseMoved:扩展端虚拟光标(phantom cursor)随之滑到目标点,页面 hover 态也先于
-	// 点击触发,更接近真实用户操作
-	if err := c.dispatchMouseMoved(ctx, tabID, x, y); err != nil {
+	// 先发插值 mouseMoved:扩展端虚拟光标(phantom cursor)随之滑到目标点,页面 hover 态也
+	// 先于点击沿途触发,更接近真实用户操作
+	if err := c.moveTo(ctx, tabID, x, y, "none", 0); err != nil {
 		return err
 	}
 	for _, typ := range []string{"mousePressed", "mouseReleased"} {

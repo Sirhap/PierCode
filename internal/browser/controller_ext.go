@@ -79,7 +79,7 @@ func (c *Controller) Hover(ctx context.Context, req tool.BrowserHoverRequest) (s
 	if err := c.ask(ctx, req.CallID, "悬停页面元素", tab, target, "悬停可能触发菜单、预览或页面交互。"); err != nil {
 		return "", err
 	}
-	if err := c.dispatchMouseMoved(ctx, tab.TabID, x, y); err != nil {
+	if err := c.moveTo(ctx, tab.TabID, x, y, "none", 0); err != nil {
 		return "", err
 	}
 	if req.WaitAfterHoverMS > 0 {
@@ -1567,4 +1567,3 @@ func resolvePDFOutputPath(path string) (string, error) {
 	}
 	return filepath.Join(path, fmt.Sprintf("page-%d.pdf", time.Now().UnixNano())), nil
 }
-
