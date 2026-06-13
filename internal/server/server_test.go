@@ -554,7 +554,7 @@ func TestHandlePrompt(t *testing.T) {
 		if !bytes.Contains(body, []byte("exec_cmd")) {
 			t.Errorf("expected default profile to include tool docs")
 		}
-		if !bytes.Contains(body, []byte("Qwen Host Tool Bridge Override")) {
+		if !bytes.Contains(body, []byte("Qwen Native Tools vs. Local Work")) {
 			t.Errorf("expected qwen profile to include qwen guidance")
 		}
 		if !bytes.Contains(body, []byte("does not exist")) {
