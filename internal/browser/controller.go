@@ -1226,13 +1226,18 @@ func (c *Controller) iframeOwnerOffset(ctx context.Context, tabID int, sessionID
 		BackendNodeID int `json:"backendNodeId"`
 	}
 	if err := json.Unmarshal(rawOwner, &owner); err != nil || owner.BackendNodeID == 0 {
-		return Bounds{}, fmt.Errorf("no iframe owner node")
+		// getFrameOwner on the page session can't resolve the <iframe> when it is
+		// itself nested inside another cross-origin frame (A→B→C). The single-level
+		// offset would mis-place the click, so fail loud rather than mis-click.
+		return Bounds{}, fmt.Errorf("iframe owner not reachable from the page session (likely a deeply-nested cross-origin frame); clicking inside nested cross-origin iframes is not supported — interact with the page that hosts the field directly")
 	}
-	// Scroll the iframe into view + read its box on the page session.
+	// Scroll the iframe into view + read its box on the page session. If the box
+	// can't be read here, the owner lives in another process (nested OOPIF) and
+	// the single-level offset is wrong — surface it instead of mis-clicking.
 	_ = c.scrollBackendNodeIntoView(ctx, tabID, owner.BackendNodeID)
 	box, err := c.boxModelBounds(ctx, tabID, owner.BackendNodeID)
 	if err != nil {
-		return Bounds{}, err
+		return Bounds{}, fmt.Errorf("iframe owner box not readable on the page session (nested cross-origin frame): %w", err)
 	}
 	return *box, nil
 }

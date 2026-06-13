@@ -394,3 +394,41 @@ func TestResolveOOPIFPointSumsFrameOffset(t *testing.T) {
 		t.Fatalf("expected absolute (120,230), got (%.0f,%.0f)", x, y)
 	}
 }
+
+func TestResolveOOPIFPointNestedFrameErrorsClearly(t *testing.T) {
+	// A deeply-nested cross-origin frame: getFrameOwner on the page session can't
+	// resolve the <iframe> (backendNodeId 0), so the resolver must error clearly
+	// rather than mis-click with a single-level offset.
+	tab := tool.BrowserTab{TabID: 41, URL: "https://app.example.com", Title: "App"}
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		switch cmd.Domain + "." + cmd.Method {
+		case "PierCode.getTab":
+			data, _ := json.Marshal(tab)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		case "DOM.getBoxModel":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"model":{"border":[10,20,30,20,30,40,10,40]}}`)})
+		case "Target.getTargetInfo":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"targetInfo":{"targetId":"FRAME-DEEP"}}`)})
+		case "DOM.getFrameOwner":
+			// Owner not reachable from the page session (nested cross-origin).
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"backendNodeId":0}`)})
+		default:
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	target := RefTarget{Ref: "e1", BackendID: 5, SessionID: "DEEP-SESS", Role: "textbox", Name: "Nested"}
+	_, _, err := controller.resolveOOPIFPoint(context.Background(), tab.TabID, target)
+	if err == nil {
+		t.Fatal("expected a clear error for a nested cross-origin frame, not a silent mis-click")
+	}
+	if !strings.Contains(err.Error(), "nested cross-origin") {
+		t.Fatalf("error should explain the nested-frame limitation, got: %v", err)
+	}
+}
