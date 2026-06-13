@@ -1110,7 +1110,7 @@ func (c *Controller) dispatchDrag(ctx context.Context, tabID int, from, to Point
 		_, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: params}, defaultActionTimeout)
 		return err
 	}
-	if err := send(map[string]interface{}{"type": "mouseMoved", "x": from.X, "y": from.Y, "button": "none"}); err != nil {
+	if err := c.moveTo(ctx, tabID, from.X, from.Y, "none", 0); err != nil {
 		return err
 	}
 	if err := send(map[string]interface{}{"type": "mousePressed", "x": from.X, "y": from.Y, "button": "left", "buttons": 1}); err != nil {
@@ -1153,6 +1153,8 @@ func (c *Controller) dispatchHTML5Drag(ctx context.Context, tabID int, from, to 
 	if out != nil && strings.Contains(string(out.Result.Value), `"ok":false`) {
 		return c.dispatchDrag(ctx, tabID, from, to)
 	}
+	// 成功路径记录落点，使后续 click 可以从正确位置插值出发，而非从陈旧点。
+	c.tabs.SetLastPointer(tabID, to)
 	return nil
 }
 

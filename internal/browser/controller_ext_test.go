@@ -302,6 +302,64 @@ func dialogEvent(tabID int, typ, message string) Event {
 	}
 }
 
+// TestDragApproachInterpolatesFromLastPointer 验证 dispatchDrag 起手走 moveTo
+// 插值（非单步瞬移），使接近拖拽起点与 click 保持一致。
+func TestDragApproachInterpolatesFromLastPointer(t *testing.T) {
+	var commands []Command
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		commands = append(commands, cmd)
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+	c.SetInputFidelity(InputFidelity{MoveSteps: 5, DragSteps: 4, DragHoldMS: 0})
+	c.sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	c.tabs.SetLastPointer(1, Point{X: 0, Y: 0})
+
+	if err := c.dispatchDrag(context.Background(), 1, Point{X: 100, Y: 100}, Point{X: 200, Y: 100}); err != nil {
+		t.Fatalf("drag err: %v", err)
+	}
+	// press 之前 button:"none" 的 mouseMoved 数 > 1 表明走了插值接近，非瞬移。
+	approachMoves := 0
+	for _, cmd := range commands {
+		var p map[string]interface{}
+		_ = json.Unmarshal(cmd.Params, &p)
+		if p["type"] == "mousePressed" {
+			break
+		}
+		if p["type"] == "mouseMoved" && p["button"] == "none" {
+			approachMoves++
+		}
+	}
+	if approachMoves <= 1 {
+		t.Fatalf("expected interpolated approach (>1 none-button moves), got %d", approachMoves)
+	}
+}
+
+// TestHTML5DragUpdatesLastPointer 验证 dispatchHTML5Drag 成功路径（不 fallback）
+// 把落点记录到 last-pointer，使后续 click 可以从正确点插值出发。
+func TestHTML5DragUpdatesLastPointer(t *testing.T) {
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		// HTML5 drag 只发一个 Runtime.evaluate，返回 ok:true（不 fallback）。
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"value":"{\"ok\":true}"}}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+	if err := c.dispatchHTML5Drag(context.Background(), 1, Point{X: 10, Y: 10}, Point{X: 90, Y: 90}); err != nil {
+		t.Fatalf("html5 drag err: %v", err)
+	}
+	p, ok := c.tabs.LastPointer(1)
+	if !ok || p.X != 90 || p.Y != 90 {
+		t.Fatalf("expected last-pointer at drop 90,90, got %#v ok=%v", p, ok)
+	}
+}
+
 func newApprovedController(relay *RelayManager) *Controller {
 	var controller *Controller
 	controller = NewController(relay, func(payload []byte) {

@@ -184,7 +184,7 @@ func TestDispatchDragUsesMinimalMouseSequence(t *testing.T) {
 		return true
 	})
 	controller := NewController(relay, func([]byte) {})
-	controller.SetInputFidelity(InputFidelity{DragSteps: 1, DragHoldMS: 0})
+	controller.SetInputFidelity(InputFidelity{MoveSteps: 1, DragSteps: 1, DragHoldMS: 0})
 
 	if err := controller.dispatchDrag(context.Background(), 1, Point{X: 10, Y: 20}, Point{X: 100, Y: 120}); err != nil {
 		t.Fatalf("dispatchDrag returned error: %v", err)
