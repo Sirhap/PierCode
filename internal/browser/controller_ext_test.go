@@ -666,3 +666,54 @@ func TestDispatchMouseWheelInstantSingleEvent(t *testing.T) {
 		t.Fatalf("instant mode should emit 1 event, got %d", len(commands))
 	}
 }
+
+func TestDispatchDragHoldsAndInterpolates(t *testing.T) {
+	var commands []Command
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		commands = append(commands, cmd)
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+	c.SetInputFidelity(InputFidelity{DragSteps: 16, DragHoldMS: 60})
+	var slept []time.Duration
+	c.sleep = func(ctx context.Context, d time.Duration) error { slept = append(slept, d); return nil }
+
+	if err := c.dispatchDrag(context.Background(), 1, Point{X: 0, Y: 0}, Point{X: 160, Y: 0}); err != nil {
+		t.Fatalf("drag err: %v", err)
+	}
+	var pressed, released bool
+	moves := 0
+	for _, cmd := range commands {
+		var p map[string]interface{}
+		_ = json.Unmarshal(cmd.Params, &p)
+		switch p["type"] {
+		case "mousePressed":
+			pressed = true
+		case "mouseReleased":
+			released = true
+		case "mouseMoved":
+			if p["buttons"] == float64(1) {
+				moves++
+			}
+		}
+	}
+	if !pressed || !released {
+		t.Fatalf("missing press/release")
+	}
+	if moves < 16 {
+		t.Fatalf("expected >=16 dragging moves, got %d", moves)
+	}
+	hold := false
+	for _, d := range slept {
+		if d == 60*time.Millisecond {
+			hold = true
+		}
+	}
+	if !hold {
+		t.Fatalf("expected 60ms drag-hold sleep")
+	}
+}

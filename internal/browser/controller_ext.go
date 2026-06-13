@@ -1110,20 +1110,34 @@ func (c *Controller) dispatchMouseWheel(ctx context.Context, tabID int, x, y, dx
 }
 
 func (c *Controller) dispatchDrag(ctx context.Context, tabID int, from, to Point) error {
-	mid := Point{X: (from.X + to.X) / 2, Y: (from.Y + to.Y) / 2}
-	events := []map[string]interface{}{
-		{"type": "mouseMoved", "x": from.X, "y": from.Y, "button": "none"},
-		{"type": "mousePressed", "x": from.X, "y": from.Y, "button": "left", "buttons": 1},
-		{"type": "mouseMoved", "x": mid.X, "y": mid.Y, "button": "left", "buttons": 1},
-		map[string]interface{}{"type": "mouseMoved", "x": to.X, "y": to.Y, "button": "left", "buttons": 1},
-		map[string]interface{}{"type": "mouseReleased", "x": to.X, "y": to.Y, "button": "left", "buttons": 0},
+	send := func(ev map[string]interface{}) error {
+		params, _ := json.Marshal(ev)
+		_, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: params}, defaultActionTimeout)
+		return err
 	}
-	for _, event := range events {
-		params, _ := json.Marshal(event)
-		if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: params}, defaultActionTimeout); err != nil {
+	if err := send(map[string]interface{}{"type": "mouseMoved", "x": from.X, "y": from.Y, "button": "none"}); err != nil {
+		return err
+	}
+	if err := send(map[string]interface{}{"type": "mousePressed", "x": from.X, "y": from.Y, "button": "left", "buttons": 1}); err != nil {
+		return err
+	}
+	// press 后停顿,让 dragstart/pointerdown 在移动前 settle。
+	if err := c.sleep(ctx, time.Duration(c.fidelity.DragHoldMS)*time.Millisecond); err != nil {
+		return err
+	}
+	steps := c.fidelity.DragSteps
+	if steps < 1 {
+		steps = 1
+	}
+	for _, pt := range lerpPoints(from, to, steps) {
+		if err := send(map[string]interface{}{"type": "mouseMoved", "x": pt.X, "y": pt.Y, "button": "left", "buttons": 1}); err != nil {
 			return err
 		}
 	}
+	if err := send(map[string]interface{}{"type": "mouseReleased", "x": to.X, "y": to.Y, "button": "left", "buttons": 0}); err != nil {
+		return err
+	}
+	c.tabs.SetLastPointer(tabID, to)
 	return nil
 }
 

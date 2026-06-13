@@ -184,18 +184,19 @@ func TestDispatchDragUsesMinimalMouseSequence(t *testing.T) {
 		return true
 	})
 	controller := NewController(relay, func([]byte) {})
+	controller.SetInputFidelity(InputFidelity{DragSteps: 1, DragHoldMS: 0})
 
 	if err := controller.dispatchDrag(context.Background(), 1, Point{X: 10, Y: 20}, Point{X: 100, Y: 120}); err != nil {
 		t.Fatalf("dispatchDrag returned error: %v", err)
 	}
-	if len(commands) != 5 {
-		t.Fatalf("expected 5 drag commands, got %d", len(commands))
+	if len(commands) != 4 {
+		t.Fatalf("expected 4 drag commands, got %d", len(commands))
 	}
 	var first, last map[string]interface{}
 	if err := json.Unmarshal(commands[0].Params, &first); err != nil {
 		t.Fatalf("unmarshal first drag params: %v", err)
 	}
-	if err := json.Unmarshal(commands[4].Params, &last); err != nil {
+	if err := json.Unmarshal(commands[len(commands)-1].Params, &last); err != nil {
 		t.Fatalf("unmarshal last drag params: %v", err)
 	}
 	if first["type"] != "mouseMoved" || first["button"] != "none" {
