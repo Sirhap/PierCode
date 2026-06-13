@@ -139,8 +139,11 @@ try {
     throw new Error('no browser relay connected — the installed extension must be reloaded to extension/dist and configured with the backend auth URL.');
   }
 
-  console.log(`opening parent ${parentURL} (frame ${frameSrc})`);
-  await execTool('browser_new_tab', { url: parentURL });
+  console.log(`opening parent ${parentURL} (frame ${frameSrc}) — watch your Chrome, a tab opens`);
+  const newTab = await execTool('browser_new_tab', { url: parentURL });
+  // Resolve the controlled tab id so we can act on it explicitly and screenshot.
+  const tabId = (out(newTab).match(/tabId=(\d+)/) || [])[1];
+  console.log('controlled tabId:', tabId);
   // Give the OOPIF time to attach (Target.attachedToTarget) + AX enable.
   await sleep(2500);
 
@@ -172,6 +175,9 @@ try {
       const result = out(await execTool('browser_get_content', { selector: '#frameResult' }));
       console.log('parent #frameResult =', result.trim());
       check('clicking the OOPIF button flipped in-frame state to paid', /paid/.test(result), `got: ${result.trim()} — coordinate offset may be wrong`);
+      // Visible proof: a screenshot showing the in-frame state after the click.
+      const shot = await execTool('browser_screenshot', { attach: false }, { allowError: true });
+      console.log('screenshot:', out(shot).split('\n').find(l => /Saved to/.test(l)) || out(shot));
     }
   }
 
