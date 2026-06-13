@@ -35,9 +35,6 @@ func TestEnumerateInteractiveReturnsBoxes(t *testing.T) {
 		if m.W == 0 || m.H == 0 {
 			t.Fatalf("mark %d missing bbox: %#v", m.Index, m)
 		}
-		if m.CenterX != m.X+m.W/2 || m.CenterY != m.Y+m.H/2 {
-			// collector computes center; tolerate the JS-provided cx/cy which equals box center
-		}
 	}
 	if marks[0].Role != "button" || marks[0].Ref != "#ok" {
 		t.Fatalf("mark fields wrong: %#v", marks[0])
