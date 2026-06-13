@@ -10,7 +10,7 @@ func NewBrowserFindTool() Tool {
 	return &browserTool{
 		name:        "browser_find",
 		readOnly:    true,
-		description: "Find VISIBLE, interactive page elements (buttons, links, inputs) matching a keyword query, INCLUDING inside same-origin iframes. Scores the labelled control above its container, filters hidden/zero-size elements, and returns a stable CSS selector per match. Pass the returned 'selector' as the 'selector' parameter to browser_click/browser_hover/browser_type. A match marked '(in iframe …)' also reports absolute x,y — click it with browser_click x/y, since a top-level selector cannot reach into the frame. For broad page understanding prefer browser_snapshot.",
+		description: "Find visible interactive elements (buttons, links, inputs) matching keywords, including same-origin iframes. Scores the labelled control above its container, filters hidden/zero-size elements, and returns a stable CSS selector per match. Pass the returned 'selector' as the 'selector' parameter to browser_click/browser_hover/browser_type. A match marked '(in iframe …)' also reports absolute x,y — click it with browser_click x/y, since a top-level selector cannot reach into the frame. For broad page understanding prefer browser_snapshot.",
 		parameters: map[string]string{
 			"query":      "string (required) - keywords to search for",
 			"maxResults": "number (optional, default 20) - maximum results to return",

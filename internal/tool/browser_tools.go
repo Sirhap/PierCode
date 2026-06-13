@@ -305,7 +305,7 @@ func NewBrowserTypeTool() Tool {
 func NewBrowserClipboardTool() Tool {
 	return &browserTool{
 		name:        "browser_clipboard",
-		description: "Read or write the page clipboard after user approval. Pairs with typing/paste flows. Reading exposes system clipboard contents; writing changes shared clipboard state.",
+		description: "Read or write the page clipboard after user approval. Pairs with typing/paste flows. Reading returns the page clipboard; writing changes shared clipboard state.",
 		parameters: map[string]string{
 			"action": "string (required) - 'read' returns clipboard text, 'write' sets it",
 			"text":   "string (required for write) - text to place on the clipboard",

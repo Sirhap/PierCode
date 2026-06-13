@@ -24,10 +24,10 @@ func NewEditTool(config *types.Config) *EditTool {
 
 func (t *EditTool) Name() string { return "edit" }
 func (t *EditTool) Description() string {
-	return `Performs exact string replacements in files.
+	return `Replace text in a file by matching old_string (exact, with whitespace/punctuation-tolerant fallback).
 
 Usage:
-- You must use ` + "`read_file`" + ` at least once in the conversation before editing a file. Read first so you match the real content.
+- Read the file first (` + "`read_file`" + `) so your old_string matches the real content; the edit fails if it doesn't match.
 - When editing text from read_file output, preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The prefix format is ` + "`<lineno>\\t`" + ` (line number + tab). Everything after the tab is the actual file content to match. Never include any part of the line number prefix in old_string or new_string.
 - ALWAYS prefer editing existing files. Do NOT create new files unless required.
 - Only use emojis if the user explicitly requests it.

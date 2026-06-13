@@ -26,13 +26,13 @@ func NewMultiEditTool(config *types.Config) *MultiEditTool {
 func (t *MultiEditTool) Name() string { return "multi_edit" }
 
 func (t *MultiEditTool) Description() string {
-	return "Apply multiple exact string replacements to one file atomically, in order. All edits must apply or none are written."
+	return "Apply multiple replacements to one file in a single atomic transaction (in order; all apply or none are written). Use over repeated edit calls when changing several spots in one file."
 }
 
 func (t *MultiEditTool) Parameters() interface{} {
 	return map[string]string{
 		"path":  "string (required) - file path",
-		"edits": "array (required) - list of {old_string, new_string, replace_all?} applied in order",
+		"edits": "array (required) - objects with old_string (required), new_string (required), replace_all (bool, optional); applied in order",
 	}
 }
 

@@ -28,8 +28,8 @@ func (t *GlobTool) Description() string {
 
 Usage:
 - Supports patterns like ` + "`**/*.go`" + `, ` + "`src/**/*.ts`" + `, ` + "`*.md`" + `.
-- Use glob to find files by path; use grep to search file contents.
-- For open-ended searches that may need multiple rounds, narrow the pattern instead of listing the whole tree.`
+- Use glob to find files by name; use grep to search file contents.
+- Narrow the pattern/path for large repos rather than scanning the whole tree.`
 }
 func (t *GlobTool) Parameters() interface{} {
 	return map[string]string{
@@ -139,7 +139,7 @@ func (t *GlobTool) Execute(ctx *Context) *Result {
 		lines = append(lines, f.path)
 	}
 	if truncated {
-		lines = append(lines, fmt.Sprintf("(结果已截断，仅显示前 %d 条)", limit))
+		lines = append(lines, fmt.Sprintf("(results truncated, showing first %d)", limit))
 	}
 
 	result.Status = "success"

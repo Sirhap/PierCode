@@ -16,7 +16,7 @@ func (t *QuestionTool) Metadata() ToolMetadata { return ToolMetadata{ReadOnly: t
 
 func (t *QuestionTool) Name() string { return "question" }
 func (t *QuestionTool) Description() string {
-	return "Ask the user a blocking question and wait for input. Use this instead of plain prose when user input is required to continue safely: destructive/irreversible actions, credentials or external authority, materially different implementation choices, missing business requirements, paths, ports, account names, environment values, repeated tool failures, or ambiguous risk tradeoffs. Do not ask for codebase facts you can inspect with tools. Provide options when choices are clear."
+	return "Ask the user a blocking question and wait for input. Use this instead of plain prose when user input is required to continue safely: destructive/irreversible actions, credentials or external authority, materially different implementation choices, missing business requirements, paths, ports, account names, environment values, or ambiguous risk tradeoffs. Do not ask for codebase facts you can inspect with tools. Provide options when choices are clear."
 }
 func (t *QuestionTool) Parameters() interface{} {
 	return map[string]string{

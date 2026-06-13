@@ -15,14 +15,14 @@ const (
 // Reminder content. These strings are part of the prompt contract, so they live
 // in the prompt layer rather than as magic constants inside the executor.
 const (
-	operatingReminder = "\n\n[系统提示] 继续以 PierCode 身份执行：任何本地文件/命令/代码/搜索任务必须输出可见 `piercode-tool` fenced JSON 调本地工具——不要凭记忆答、不要说“无法访问文件”、不要只给计划；参数失败先 `tool_help`；需要细则加载匹配 skill；完成前验证。（联网/天气这类非本地任务用网页 AI 自带能力答，不走 piercode-tool。）"
+	operatingReminder = "\n\n[系统提示] 继续以 PierCode 身份执行：本地文件/命令/代码/搜索任务由 `piercode-tool` 完成——请输出可见的 `piercode-tool` fenced JSON 块来调本地工具，答案以实际读到的文件/命令输出为准而非记忆或推测；本地访问随时可用，需要文件内容时去读它而不是说访问不了；先动手再汇报，别停在纯计划。参数报错时先查 `tool_help`；需要细则时加载匹配的 skill；完成前先验证。（联网、天气这类非本地任务用网页 AI 自带能力回答即可，无需走 piercode-tool。）"
 
 	taskCheckpointReminder = "\n\n[任务状态快照提示] 多步任务请简短保留：目标、已完成、已改文件、验证、下一步/阻塞；必要时同步 todo。"
 
 	// workerResultPacketReminder is wired onto the worker profile's ContextHandoff
 	// in DefaultProfileRegistry. It nudges a dispatched worker to close out with
 	// the result packet the coordinator is waiting on.
-	workerResultPacketReminder = "\n\n[Worker 结果回传提示] 你是 PierCode worker，只负责手头这一个自包含任务。任务完成、失败或受阻时，只输出一个 ```piercode-agent-result fenced JSON block（字段：version、agent_id、status=completed|failed|blocked、summary、result、evidence、files_changed）；不要套 `piercode-tool`，不要输出多个 block，不要在 packet 前后加解释；输出后停止。coordinator 看不到你的会话，result/evidence 要自包含。"
+	workerResultPacketReminder = "\n\n[Worker 结果回传提示] 你是 PierCode worker，只负责手头这一个自包含任务。任务完成、失败或受阻时，这个 packet 就是你的全部输出：单个 ```piercode-agent-result fenced JSON block（字段：version、agent_id、status=completed|failed|blocked、summary、result、evidence、files_changed），不嵌套 `piercode-tool`，packet 前后不加说明文字，输出完即结束。coordinator 看不到你的会话，result/evidence 要自包含。"
 )
 
 // OperatingReminder exposes the per-turn operating reminder so the extension

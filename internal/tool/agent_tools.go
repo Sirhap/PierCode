@@ -112,12 +112,12 @@ func NewSpawnAgentTool() Tool {
 			}
 
 			// Schedule an auto-confirmation inject to mitigate SPA hydration races.
-			// This sends a lightweight follow-up after 4 seconds to ensure the seed
+			// This sends a lightweight follow-up after ~90 seconds to ensure the seed
 			// task was properly submitted (the "send button not clicked" issue).
 			scheduleAutoConfirmSpawn(ctx, rec.AgentID, task)
 
 			return fmt.Sprintf(
-				"Dispatched worker %s on %s (tab %d): %s\nThe worker will run autonomously and report back as a <task-notification>. Do not poll or read its tab — end your turn and wait for the callback.%s%s\n\n✅ 已启用自动确认机制（4秒后发送跟进消息确保任务执行）",
+				"Dispatched worker %s on %s (tab %d): %s\nThe worker will run autonomously and report back as a <task-notification>. Do not poll or read its tab — end your turn and wait for the callback.%s%s\n\n✅ 已启用自动确认机制（90秒后发送跟进消息确保任务执行）",
 				rec.AgentID, platform, tab.TabID, desc, dupWarn, activeRosterSuffix(ctx.Agents, ctx.Client.SourceClientID),
 			), nil
 		},
@@ -213,7 +213,7 @@ func NewSendToAgentTool() Tool {
 func NewStopAgentTool() Tool {
 	return &agentTool{
 		name:        "stop_agent",
-		description: "Stop a worker agent you sent in the wrong direction (e.g. the approach is wrong, or requirements changed). Marks it stopped; you can still continue it later with send_to_agent.",
+		description: "Halt a running worker agent and block its further auto-execution (e.g. the approach is wrong, or requirements changed). Marks it stopped; you can still continue it later with send_to_agent.",
 		parameters: map[string]string{
 			"agent_id": "string (required) - the worker's agent_id from spawn_agent",
 		},

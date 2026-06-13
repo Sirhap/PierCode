@@ -33,8 +33,8 @@ func (t *GrepTool) Description() string {
 Usage:
 - pattern is a regular expression (RE2 syntax). Escape literal special chars: ` + "`func\\(`" + ` to match "func(".
 - Use include to filter by file type, e.g. ` + "`*.go`" + ` or ` + "`*.{ts,tsx}`" + `.
-- Use grep to search contents; use glob to find files by name.
-- Narrow the path or include filter for large repos rather than scanning everything.`
+- Use glob to find files by name; use grep to search file contents.
+- Narrow the path/include filter for large repos rather than scanning the whole tree.`
 }
 func (t *GrepTool) Parameters() interface{} {
 	return map[string]string{
@@ -237,7 +237,7 @@ func formatGrepLines(lines []string, limit int) string {
 		count++
 	}
 	if truncated {
-		out = append(out, fmt.Sprintf("(结果已截断，仅显示前 %d 条)", limit))
+		out = append(out, fmt.Sprintf("(results truncated, showing first %d)", limit))
 	}
 	if len(out) == 0 {
 		return "No matches found"

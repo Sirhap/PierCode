@@ -26,7 +26,7 @@ func (t *WriteFileTool) Description() string {
 
 Usage:
 - When to use: creating a new file, or fully replacing one. For partial changes to an existing file, use ` + "`edit`" + ` instead — do not rewrite a whole file to change a few lines.
-- ALWAYS prefer editing an existing file over overwriting it. NEVER create new files unless required.
+- For changing a few lines in an existing file, use ` + "`edit`" + ` instead — write_file is for whole-file creation or replacement.
 - Read an existing file before overwriting it so you do not discard content you cannot see.
 - Only use emojis if the user explicitly requests it.
 - Use mode "append" to add to the end of a file; default overwrites.

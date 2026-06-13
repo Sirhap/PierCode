@@ -25,7 +25,7 @@ func NewUndoTool(config *types.Config) *UndoTool {
 func (t *UndoTool) Name() string { return "undo" }
 
 func (t *UndoTool) Description() string {
-	return "List or revert file snapshots taken before edits. action=list (default) or action=revert with optional id (defaults to the most recent)."
+	return "List or revert file snapshots (auto-created by write_file, edit, multi_edit, apply_patch, and move). action=list (default) or action=revert with optional id (defaults to the most recent)."
 }
 
 func (t *UndoTool) Parameters() interface{} {

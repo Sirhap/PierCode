@@ -24,7 +24,7 @@ func (t *ListDirTool) Name() string {
 }
 
 func (t *ListDirTool) Description() string {
-	return "List directory contents"
+	return "List directory contents — prefer this over running ls via exec_cmd."
 }
 
 func (t *ListDirTool) Parameters() interface{} {
