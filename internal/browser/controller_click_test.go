@@ -762,3 +762,45 @@ func TestClickHoldsBetweenPressAndRelease(t *testing.T) {
 		t.Fatalf("expected a 45ms hold sleep, got %v", slept)
 	}
 }
+
+func TestClickByMarkResolvesToCenter(t *testing.T) {
+	var commands []Command
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		commands = append(commands, cmd)
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		return true
+	})
+	c := newApprovedController(relay)
+	c.SetInputFidelity(InputFidelity{MoveSteps: 1}) // keep event count simple
+	c.tabs.SetDefault(tool.BrowserTab{TabID: 1, URL: "https://example.com"})
+	c.tabs.SetMarks(1, []tool.MarkedElement{{Index: 7, CenterX: 250, CenterY: 140}})
+
+	mark := 7
+	_, err := c.Click(context.Background(), tool.BrowserClickRequest{Mark: &mark})
+	if err != nil {
+		t.Fatalf("mark click err: %v", err)
+	}
+	var pressed map[string]interface{}
+	for _, cmd := range commands {
+		var p map[string]interface{}
+		_ = json.Unmarshal(cmd.Params, &p)
+		if p["type"] == "mousePressed" {
+			pressed = p
+		}
+	}
+	if pressed == nil || pressed["x"] != float64(250) || pressed["y"] != float64(140) {
+		t.Fatalf("expected press at mark-7 center 250,140, got %#v", pressed)
+	}
+}
+
+func TestClickByMarkStaleErrors(t *testing.T) {
+	c := newApprovedController(NewRelayManagerFromSend(func([]byte) bool { return true }))
+	c.tabs.SetDefault(tool.BrowserTab{TabID: 1, URL: "https://example.com"})
+	mark := 99
+	if _, err := c.Click(context.Background(), tool.BrowserClickRequest{Mark: &mark}); err == nil {
+		t.Fatal("expected error for unknown mark index")
+	}
+}

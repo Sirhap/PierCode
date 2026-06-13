@@ -481,6 +481,28 @@ func (c *Controller) collectFrameAXTrees(ctx context.Context, tabID int) []frame
 }
 
 func (c *Controller) Click(ctx context.Context, req tool.BrowserClickRequest) (string, error) {
+	if req.Mark != nil {
+		tab, terr := c.ensureTab(ctx, req.TabID)
+		if terr != nil {
+			return "", terr
+		}
+		marks, ok := c.tabs.Marks(tab.TabID)
+		if !ok {
+			return "", fmt.Errorf("no marks for this tab; call browser_mark first")
+		}
+		var cx, cy float64
+		found := false
+		for _, m := range marks {
+			if m.Index == *req.Mark {
+				cx, cy, found = m.CenterX, m.CenterY, true
+				break
+			}
+		}
+		if !found {
+			return "", fmt.Errorf("mark %d not found; call browser_mark to refresh", *req.Mark)
+		}
+		req.X, req.Y = &cx, &cy
+	}
 	tab, x, y, target, err := c.resolvePoint(ctx, req.TabID, req.Ref, req.Selector, req.SnapshotID, req.X, req.Y)
 	if err != nil {
 		return "", err

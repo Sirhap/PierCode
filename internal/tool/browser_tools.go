@@ -218,6 +218,7 @@ func NewBrowserClickTool() Tool {
 			"selector":   "string (optional) - CSS selector fallback",
 			"x":          "number (optional) - x coordinate fallback",
 			"y":          "number (optional) - y coordinate fallback",
+			"mark":       "number (optional) - click interactive element #n from the last browser_mark",
 			"button":     "string (optional, left|right|middle, default left) - mouse button",
 			"clickCount": "number (optional, 1|2|3, default 1) - number of clicks (2=double, 3=triple)",
 			"tabId":      "number (optional) - controlled tab id",
@@ -248,6 +249,7 @@ func NewBrowserClickTool() Tool {
 				Selector:   stringArg(ctx.Args, "selector"),
 				X:          optionalFloat(ctx.Args, "x"),
 				Y:          optionalFloat(ctx.Args, "y"),
+				Mark:       optionalInt(ctx.Args, "mark"),
 				SnapshotID: stringArg(ctx.Args, "snapshotId"),
 				Button:     button,
 				ClickCount: clickCount,
@@ -508,6 +510,7 @@ func validateClickTarget(args map[string]interface{}) error {
 	selector := stringArg(args, "selector")
 	hasX := optionalFloat(args, "x") != nil
 	hasY := optionalFloat(args, "y") != nil
+	hasMark := optionalInt(args, "mark") != nil
 	count := 0
 	if ref != "" {
 		count++
@@ -521,8 +524,11 @@ func validateClickTarget(args map[string]interface{}) error {
 		}
 		count++
 	}
+	if hasMark {
+		count++
+	}
 	if count != 1 {
-		return fmt.Errorf("provide exactly one target: ref, selector, or x/y")
+		return fmt.Errorf("provide exactly one target: ref, selector, x/y, or mark")
 	}
 	if ref != "" && stringArg(args, "snapshotId") == "" {
 		return fmt.Errorf("snapshotId is required when using ref")

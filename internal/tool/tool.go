@@ -337,6 +337,7 @@ type BrowserClickRequest struct {
 	Selector   string
 	X          *float64
 	Y          *float64
+	Mark       *int   // click interactive element #n from last browser_mark
 	SnapshotID string
 	Button     string // "left" (default), "right", "middle"
 	ClickCount int    // 1 (default), 2 (double), 3 (triple)
