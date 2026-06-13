@@ -79,28 +79,39 @@ describe('phantom cursor renderer (page context)', () => {
     return dom.window.eval(buildPhantomCursorExpression(x, y, type)) as Promise<void>;
   }
 
-  it('creates the cursor element at the given position on first move', async () => {
+  // The cursor now lives inside a CLOSED shadow root on a neutral host element,
+  // so it is intentionally unreachable via document.querySelector. The host is
+  // the only fixed-position, max-z-index div we add; find it that way.
+  function findHost(): HTMLElement | null {
+    const divs = Array.from(dom.window.document.body.querySelectorAll('div')) as HTMLElement[];
+    return divs.find(d => d.style.zIndex === '2147483646' && d.style.position === 'fixed') || null;
+  }
+
+  it('mounts a closed-shadow host on first move (cursor not exposed to the page)', async () => {
     await move(100, 50);
 
-    const el = dom.window.document.getElementById('piercode-phantom-cursor');
-    expect(el).toBeTruthy();
-    expect(el!.style.transform).toBe('translate3d(100px,50px,0)');
-    expect(el!.style.pointerEvents).toBe('none');
-    expect(el!.getAttribute('aria-hidden')).toBe('true');
-    expect(el!.querySelectorAll('svg')).toHaveLength(2);
-    expect(el!.querySelectorAll('path')).toHaveLength(4);
+    // Old #id is gone — the page cannot find the cursor by id anymore.
+    expect(dom.window.document.getElementById('piercode-phantom-cursor')).toBeNull();
+    const host = findHost();
+    expect(host).toBeTruthy();
+    expect(host!.isConnected).toBe(true);
+    // Closed shadow root is not reachable from the host.
+    expect((host as any).shadowRoot).toBeNull();
   });
 
-  it('moves the existing element instead of recreating it', async () => {
+  it('reuses the single host instead of creating another', async () => {
     await move(10, 10);
-    const first = dom.window.document.getElementById('piercode-phantom-cursor');
+    const first = findHost();
 
     await move(200, 300); // JSDOM 不发 transitionend,靠 220ms 兜底 resolve
 
-    const second = dom.window.document.getElementById('piercode-phantom-cursor');
+    const second = findHost();
     expect(second).toBe(first);
-    expect(second!.style.transform).toBe('translate3d(200px,300px,0)');
-    expect(dom.window.document.querySelectorAll('#piercode-phantom-cursor')).toHaveLength(1);
+    // Only one host overlay exists.
+    const hosts = Array.from(dom.window.document.body.querySelectorAll('div')).filter(
+      d => (d as HTMLElement).style.zIndex === '2147483646' && (d as HTMLElement).style.position === 'fixed',
+    );
+    expect(hosts).toHaveLength(1);
   });
 
   it('resolves immediately when the position is unchanged', async () => {
@@ -110,21 +121,21 @@ describe('phantom cursor renderer (page context)', () => {
     expect(Date.now() - start).toBeLessThan(100);
   });
 
-  it('dims to a resident state at idle, then removes the cursor after the remove delay', async () => {
+  it('removes the host overlay after the idle remove delay', async () => {
     vi.useFakeTimers();
     try {
       await move(10, 10);
-      const el = dom.window.document.getElementById('piercode-phantom-cursor')!;
+      const host = findHost()!;
+      expect(host).toBeTruthy();
 
-      // IDLE_HIDE_MS(9000): 降到半透明驻留,仍在 DOM 中
+      // IDLE_HIDE_MS(9000): the cursor dims but the host stays mounted.
       await vi.advanceTimersByTimeAsync(9100);
-      expect(el.isConnected).toBe(true);
-      expect(el.style.opacity).toBe('0.35');
+      expect(host.isConnected).toBe(true);
 
-      // 再过 IDLE_REMOVE_MS(6000): 真正移除
+      // After IDLE_REMOVE_MS(6000) more, the whole host overlay is torn down.
       await vi.advanceTimersByTimeAsync(6100);
-      expect(el.isConnected).toBe(false);
-      expect(dom.window.document.getElementById('piercode-phantom-cursor')).toBeNull();
+      expect(host.isConnected).toBe(false);
+      expect(findHost()).toBeNull();
     } finally {
       vi.useRealTimers();
     }

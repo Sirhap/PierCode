@@ -93,15 +93,15 @@
 - IsSensitive 可配置 override/allowlist（security.go），修文档页/电商测试误伤。
 - **验证**: go test（权限匹配/时效/动作类单测）；手动: 同站第二次点击不再弹窗（always）；evaluate 仍单独问；docs 页加白后不拒。
 
-### Phase 9 — 虚拟光标升级 + tab 组 + 第二梯队收尾（M）
+### Phase 9 — 虚拟光标升级 + 第二梯队收尾（M）
 依赖: 无。
-- **9a 光标升级**（参考 Codex）: closed shadow DOM（防检测 + 样式隔离）、MutationObserver 自愈（SPA 重建恢复）、随机/可配 id、配置开关。phantom-cursor.ts。可加点击涟漪（已有 pcc-ripple）+ "PierCode active" 指示条 + Stop 按钮。
-- **9b tab 组 + favicon 角标**: 自动化 tab 进 chrome.tabGroups 分组 + favicon 角标（需 tabGroups 权限，manifest）。隔离边界 + 用户可见。
-- **9c GIF/录屏**: browser_record——`Page.startScreencast` → 帧 → gif/webm。
-- **9d 元素截图**: browser_screenshot 加 `ref` 参数，按 ref 元素 clip。
-- **9e 网络节流/离线**: browser_emulate 加 Network.emulateNetworkConditions。
-- **9f CSP 回退**: evaluate 在 eval-blocked 页回退直接表达式求值。
-- **验证**: 各项手动 + go test。
+- **9a 光标升级** ✅: closed shadow DOM（防检测 + 样式隔离）、MutationObserver 自愈（SPA 重建恢复）、空闲拆 host+observer；stealthMode 开关接通（开则后台 phantom cursor 整体抑制,无可识别 DOM）。phantom-cursor.ts + background。9 个 cursor 测试改契约后全过。
+- **9f CSP 回退** ✅: runtimeEvaluate 加 `allowUnsafeEvalBlockedByCSP:true`,strict-CSP 页面的 evaluate/find/wait_for_function 不再被 new Function 拦截。
+- **9d 元素截图**: ~~browser_screenshot 加 ref clip~~ **已被 browser_zoom 覆盖**（zoom 按 ref/selector clip 元素区域 + Phase 6 已接 vision 附件）。不重复造。
+- **9b tab 组 + favicon 角标**（延后）: 需 manifest 加 tabGroups 权限,权限面改动单列。
+- **9c GIF/录屏**（延后）: `Page.startScreencast`→帧→gif/webm 是独立大子系统,单列。
+- **9e 网络节流/离线**（延后）: browser_emulate 加 Network.emulateNetworkConditions,niche,单列。
+- **验证**: go test + 420 扩展测试全绿。
 
 ### Phase 10 — iframe / OOPIF（L，单独大件，最后）
 依赖: Phase 5（snapshot）、Phase 2（Input）。无参考配方，自研。

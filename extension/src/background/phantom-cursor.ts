@@ -39,20 +39,44 @@ const RENDERER_SOURCE = `(() => {
       s.appendChild(mkPath({ fill: fill }));
       return s;
     };
-    const ensureKeyframes = () => {
-      if (document.getElementById('${CURSOR_ID}-kf')) return;
+    const ensureKeyframes = (root) => {
+      // Keyframes must live INSIDE the shadow root — a page-level @keyframes is
+      // not visible to elements in a shadow tree.
+      if (!root || root.getElementById && root.getElementById('${CURSOR_ID}-kf')) return;
+      if (root.querySelector && root.querySelector('#${CURSOR_ID}-kf')) return;
       const st = document.createElement('style');
       st.id = '${CURSOR_ID}-kf';
       st.textContent =
         '@keyframes pcc-ripple{0%{transform:translate(-50%,-50%) scale(0.2);opacity:0.85}'
         + '100%{transform:translate(-50%,-50%) scale(1);opacity:0}}'
         + '@keyframes pcc-trail{0%{opacity:0.5}100%{opacity:0}}';
-      (document.head || document.documentElement).appendChild(st);
+      root.appendChild(st);
     };
-    const state = { el: null, arrow: null, x: null, y: null, hideTimer: null, removeTimer: null };
+    const state = { host: null, el: null, arrow: null, x: null, y: null, hideTimer: null, removeTimer: null, observer: null };
+    // The cursor lives inside a CLOSED shadow root on a neutral host element, so
+    // page CSS can't restyle it and a page script can't reach it via the host's
+    // shadowRoot (closed → null). The host carries no identifying id/class.
+    const mountHost = () => {
+      const host = document.createElement('div');
+      host.style.cssText = 'all:initial;position:fixed;top:0;left:0;width:0;height:0;pointer-events:none;z-index:2147483646;';
+      const root = host.attachShadow({ mode: 'closed' });
+      state.host = host;
+      state.root = root;
+      (document.body || document.documentElement).appendChild(host);
+      // Self-heal: if the page removes our host (SPA re-render, sanitizer),
+      // re-attach on the next move() instead of silently vanishing.
+      if (!state.observer && window.MutationObserver && document.body) {
+        state.observer = new MutationObserver(() => {
+          if (state.host && !state.host.isConnected && document.body) {
+            try { document.body.appendChild(state.host); } catch (e) {}
+          }
+        });
+        try { state.observer.observe(document.body, { childList: true }); } catch (e) {}
+      }
+      return root;
+    };
     const create = (x, y) => {
       const c = document.createElement('div');
-      c.id = '${CURSOR_ID}';
       c.setAttribute('aria-hidden', 'true');
       c.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:2147483646;'
         + 'transform:translate3d(' + x + 'px,' + y + 'px,0);'
@@ -95,9 +119,14 @@ const RENDERER_SOURCE = `(() => {
     g.__piercodePhantomCursor = {
       move(x, y, type) {
         if (!document.body) return Promise.resolve();
-        ensureKeyframes();
         if (state.hideTimer) { clearTimeout(state.hideTimer); state.hideTimer = null; }
         if (state.removeTimer) { clearTimeout(state.removeTimer); state.removeTimer = null; }
+        // (Re)mount the closed-shadow host if missing.
+        let root = state.root;
+        if (!state.host || !state.host.isConnected) {
+          root = mountHost();
+        }
+        ensureKeyframes(root);
         const same = state.el !== null && state.x === x && state.y === y;
         const prevX = state.x, prevY = state.y;
         state.x = x; state.y = y;
@@ -107,7 +136,7 @@ const RENDERER_SOURCE = `(() => {
           if (el) el.remove();
           el = create(x, y);
           state.el = el;
-          document.body.appendChild(el);
+          root.appendChild(el);
         }
         el.style.opacity = '1';
         // 移动拖尾:从上一个位置到新位置留一团短暂残影
@@ -119,7 +148,7 @@ const RENDERER_SOURCE = `(() => {
             + 'width:12px;height:12px;border-radius:50%;'
             + 'background:radial-gradient(circle,rgba(91,140,255,0.65),transparent 70%);'
             + 'animation:pcc-trail 320ms ease forwards;';
-          document.body.appendChild(t);
+          root.appendChild(t);
           setTimeout(() => t.remove(), 340);
         }
         if (type === 'mousePressed') pulse(el);
@@ -129,7 +158,12 @@ const RENDERER_SOURCE = `(() => {
           el.style.opacity = '0.35';
           state.removeTimer = setTimeout(() => {
             state.removeTimer = null;
-            if (state.el === el) { el.remove(); state.el = null; state.arrow = null; }
+            if (state.el === el) {
+              el.remove(); state.el = null; state.arrow = null;
+              // Tear down the shadow host + observer so no empty overlay lingers.
+              if (state.observer) { try { state.observer.disconnect(); } catch (e) {} state.observer = null; }
+              if (state.host) { try { state.host.remove(); } catch (e) {} state.host = null; state.root = null; }
+            }
           }, ${IDLE_REMOVE_MS});
         }, ${IDLE_HIDE_MS});
         if (created) return Promise.resolve();

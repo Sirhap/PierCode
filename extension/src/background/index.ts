@@ -10,14 +10,18 @@ import {
   filterDownloadRecords,
   upsertDownloadRecord,
 } from './downloads';
-import { resolveBackgroundInput } from '../settings';
+import { resolveBackgroundInput, resolveStealthMode } from '../settings';
 
 // Cached `backgroundInput` setting (default true): when true, CDP Input.* is
 // dispatched without raising/activating the tab, so a background worker tab is
 // driven without stealing the user's foreground. Refreshed on storage change.
 let backgroundInputEnabled = true;
-chrome.storage.local.get(['backgroundInput'], result => {
+// Cached `stealthMode` (default false): when on, the phantom cursor is
+// suppressed so automation leaves no identifiable overlay in the page DOM.
+let stealthModeEnabled = false;
+chrome.storage.local.get(['backgroundInput', 'stealthMode'], result => {
   backgroundInputEnabled = resolveBackgroundInput(result.backgroundInput);
+  stealthModeEnabled = resolveStealthMode(result.stealthMode);
 });
 
 const AI_PAGE_URLS = [
@@ -425,7 +429,7 @@ async function handleBrowserCommand(msg: BrowserCommand): Promise<unknown> {
     if (!backgroundInputEnabled) {
       await activateTabForInput(msg.tabId);
     }
-    if (msg.method === 'dispatchMouseEvent') {
+    if (msg.method === 'dispatchMouseEvent' && !stealthModeEnabled) {
       await syncPhantomCursor(msg.tabId, params);
     }
   }
@@ -1093,6 +1097,9 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
   }
   if (namespace === 'local' && changes.backgroundInput) {
     backgroundInputEnabled = resolveBackgroundInput(changes.backgroundInput.newValue);
+  }
+  if (namespace === 'local' && changes.stealthMode) {
+    stealthModeEnabled = resolveStealthMode(changes.stealthMode.newValue);
   }
 });
 

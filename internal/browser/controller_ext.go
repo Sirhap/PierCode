@@ -653,6 +653,11 @@ func (c *Controller) runtimeEvaluate(ctx context.Context, tabID int, expression 
 		"returnByValue": returnByValue,
 		"awaitPromise":  awaitPromise,
 		"timeout":       int(timeout / time.Millisecond),
+		// Pages with a strict CSP (script-src without 'unsafe-eval') would block
+		// the new Function(...) used inside our evaluate wrapper. CDP lets a
+		// debugger-injected eval opt out of the page CSP, so evaluate/find/
+		// wait_for_function keep working on CSP-hardened sites.
+		"allowUnsafeEvalBlockedByCSP": true,
 	}
 	rawParams, _ := json.Marshal(params)
 	raw, err := c.relay.SendCommand(ctx, Command{
