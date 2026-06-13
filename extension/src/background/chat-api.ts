@@ -158,6 +158,31 @@ async function qwenDirectFetch(
   return { ok: false, status: res.status, text: async () => t2, body: null }
 }
 
+// ── Sub-agent transient-failure retry + tab-worker fallback ────────────────
+// ChatGPT sub-agents run through the local chatgpt-proxy, which reverse-engineers
+// the sentinel/turnstile gate. That gate is flaky: a blocked page-fetch throws
+// "Could not read data-build from chatgpt.com (blocked?)" (502). Such failures
+// are often transient (a fresh cookie/UA on the next attempt gets through), so we
+// retry the whole sub-agent run a few times before giving up — and on final
+// exhaustion fall back to a real tab-worker (page-context has the full turnstile
+// state the proxy lacks). See memory chatgpt-api-turnstile-wall.
+const SUBAGENT_RETRY_ATTEMPTS = 3
+
+// subAgentErrorIsTransient flags errors worth retrying (and then falling back):
+// proxy block/turnstile (502 + data-build), upstream 5xx, and bare network/timeout.
+function subAgentErrorIsTransient(msg: string): boolean {
+  const m = msg.toLowerCase()
+  return (
+    m.includes('data-build') ||
+    m.includes('blocked') ||
+    m.includes('upstream_error') ||
+    m.includes('turnstile') ||
+    m.includes('502') || m.includes('503') || m.includes('504') ||
+    m.includes('timeout') || m.includes('timed out') ||
+    m.includes('network') || m.includes('failed to fetch')
+  )
+}
+
 interface BuildCtx {
   chatId?: string
   model?: string
@@ -1437,32 +1462,69 @@ async function runSubAgent(
   const message = resume ? '' : buildSubAgentMessage(await fetchWorkerPrompt(), task)
   const { signal, cleanup } = mergedAgentSignal(agentId, currentAbort?.signal)
 
+  // ChatGPT runs through the flaky chatgpt-proxy turnstile gate; retry the whole
+  // run on transient failures, then fall back to a tab-worker. Other platforms
+  // get a single attempt (no retry/fallback) — their failures are not turnstile.
+  const maxAttempts = platform === 'chatgpt' ? SUBAGENT_RETRY_ATTEMPTS : 1
+
   try {
-    const finalText = await runIsolatedConversation({
-      platform,
-      message,
-      model,
-      depth: parentDepth + 1,
-      agentId,
-      abortSignal: signal,
-      originTabId,
-      resume,
-      onCheckpoint: recovery?.onCheckpoint,
-    })
+    let lastErr: unknown
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (signal.aborted) break
+      try {
+        const finalText = await runIsolatedConversation({
+          platform,
+          message,
+          model,
+          depth: parentDepth + 1,
+          agentId,
+          abortSignal: signal,
+          originTabId,
+          resume,
+          onCheckpoint: recovery?.onCheckpoint,
+        })
+        const cancelled = signal.aborted
+        const output = cancelled ? `${finalText}\n\n(已取消)`.trim() : finalText
+        broadcastAgentLifecycle({
+          type: 'CHAT_AGENT_DONE', agentId, status: cancelled ? 'error' : 'done',
+          ...(cancelled ? { error: '已取消' } : {}),
+        }, originTabId)
+        return cancelled
+          ? { call_id: call.call_id, name: call.name, output: output || '(已取消)', success: false }
+          : shapeSubAgentResult(call, finalText)
+      } catch (err) {
+        lastErr = err
+        if (signal.aborted) break
+        const m = err instanceof Error ? err.message : String(err)
+        // Retry only transient proxy/turnstile/network failures; surface real
+        // errors (auth, bad task, business logic) immediately.
+        if (attempt < maxAttempts && subAgentErrorIsTransient(m)) {
+          // Backoff: 0.8s, 1.6s … gives turnstile a fresh cookie/UA window.
+          await new Promise(r => setTimeout(r, 800 * attempt))
+          continue
+        }
+        break
+      }
+    }
+
+    // API path exhausted. For ChatGPT, fall back to a real tab-worker via the Go
+    // /exec spawn_agent (page context has the full turnstile state the proxy lacks).
+    if (platform === 'chatgpt' && !signal.aborted) {
+      broadcastAgentLifecycle({ type: 'CHAT_AGENT_STREAM', agentId, chunk: '\n[proxy 失败，降级到 tab-worker]\n' }, originTabId)
+      const fb = await execTool('spawn_agent', {
+        task,
+        description: String(call.args.description || label),
+        platform: 'chatgpt',
+      }, call.call_id)
+      broadcastAgentLifecycle({
+        type: 'CHAT_AGENT_DONE', agentId, status: fb.success ? 'done' : 'error',
+        ...(fb.success ? {} : { error: fb.output }),
+      }, originTabId)
+      return { call_id: call.call_id, name: call.name, output: fb.output, success: fb.success }
+    }
+
     const cancelled = signal.aborted
-    const output = cancelled ? `${finalText}\n\n(已取消)`.trim() : finalText
-    broadcastAgentLifecycle({
-      type: 'CHAT_AGENT_DONE', agentId, status: cancelled ? 'error' : 'done',
-      ...(cancelled ? { error: '已取消' } : {}),
-    }, originTabId)
-    return cancelled
-      ? { call_id: call.call_id, name: call.name, output: output || '(已取消)', success: false }
-      : shapeSubAgentResult(call, finalText)
-  } catch (err) {
-    const cancelled = signal.aborted
-    const msg = cancelled ? '(已取消)' : `子 agent 失败: ${err instanceof Error ? err.message : String(err)}`
-    // error 文本随 DONE 广播，AgentDock 行能直接显示失败原因（风控/网络/超时），
-    // 不再只有一个裸 ✗。
+    const msg = cancelled ? '(已取消)' : `子 agent 失败: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
     broadcastAgentLifecycle({ type: 'CHAT_AGENT_DONE', agentId, status: 'error', error: msg }, originTabId)
     return { call_id: call.call_id, name: call.name, output: msg, success: false }
   } finally {
