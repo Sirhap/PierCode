@@ -132,11 +132,23 @@ export function findToolBlockElement(sourceEl: Element, data: any): HTMLElement 
   ).filter(el => !el.closest('[data-piercode-key]')); // skip already-decorated
 
   const looksLikeTool = (t: string) => t.includes('"name"') || t.includes('piercode-tool') || t.includes("'name'");
-  // 1) exact call_id match
+  // 1) call_id match — must match the WHOLE call_id value, not a bare substring.
+  // Two consecutive same-tool blocks (e.g. call_ids "screenshot-1" / "screenshot-12")
+  // would mis-match with includes(), so the second block locks onto the first
+  // block's <pre> and its own card never anchors. Match the quoted JSON value
+  // (and the call_id boundary) so a prefix can't steal another block's element.
   if (callId) {
+    const quoted = `"${callId}"`;
     for (const el of candidates) {
       const t = el.textContent || '';
-      if (looksLikeTool(t) && t.includes(callId)) return el;
+      if (looksLikeTool(t) && t.includes(quoted)) return el;
+    }
+    // Fallback: bare call_id but bounded by a non-id char on the right, so
+    // "screenshot-1" doesn't match inside "screenshot-12".
+    const re = new RegExp(escapeRegExp(callId) + '(?![\\w-])');
+    for (const el of candidates) {
+      const t = el.textContent || '';
+      if (looksLikeTool(t) && re.test(t)) return el;
     }
   }
   // 2) name match
@@ -151,6 +163,10 @@ export function findToolBlockElement(sourceEl: Element, data: any): HTMLElement 
     if (looksLikeTool(el.textContent || '')) return el;
   }
   return null;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // toolCardArgPreview 取最有代表性的参数做头行单行预览（Claude Code 的
