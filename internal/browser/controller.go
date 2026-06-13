@@ -1426,38 +1426,40 @@ func (c *Controller) sendKey(ctx context.Context, tabID int, key string) error {
 // land, just without per-key events.
 func (c *Controller) dispatchTypedKeys(ctx context.Context, tabID int, text string) error {
 	for _, r := range text {
-		if r == '\n' || r == '\r' {
-			if err := c.sendNamedKey(ctx, tabID, "Enter", "\r"); err != nil {
-				return err
-			}
-			continue
+		if err := c.sendOneRune(ctx, tabID, r); err != nil {
+			return err
 		}
-		if r == '\t' {
-			if err := c.sendNamedKey(ctx, tabID, "Tab", "\t"); err != nil {
-				return err
-			}
-			continue
-		}
-		// Printable ASCII (and Latin-1) map cleanly to a key event with text.
-		if r >= 0x20 && r < 0x7f {
-			s := string(r)
-			down, _ := json.Marshal(map[string]interface{}{"type": "keyDown", "text": s, "key": s, "unmodifiedText": s})
-			if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: down}, defaultActionTimeout); err != nil {
-				return err
-			}
-			up, _ := json.Marshal(map[string]interface{}{"type": "keyUp", "key": s})
-			if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: up}, defaultActionTimeout); err != nil {
-				return err
-			}
-			continue
-		}
-		// Non-ASCII rune: no reliable key event — insert it so it still lands.
-		ins, _ := json.Marshal(map[string]string{"text": string(r)})
-		if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "insertText", Params: ins}, defaultActionTimeout); err != nil {
+		// 逐字间隔，给受控输入(React onChange 节流、@提及补全、debounce 搜索)留出处理时间。
+		if err := c.sleep(ctx, time.Duration(c.fidelity.TypeCharDelayMS)*time.Millisecond); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sendOneRune 发送单个字符（原来内联在 dispatchTypedKeys 循环里的逻辑）。
+func (c *Controller) sendOneRune(ctx context.Context, tabID int, r rune) error {
+	if r == '\n' || r == '\r' {
+		return c.sendNamedKey(ctx, tabID, "Enter", "\r")
+	}
+	if r == '\t' {
+		return c.sendNamedKey(ctx, tabID, "Tab", "\t")
+	}
+	// Printable ASCII (and Latin-1) map cleanly to a key event with text.
+	if r >= 0x20 && r < 0x7f {
+		s := string(r)
+		down, _ := json.Marshal(map[string]interface{}{"type": "keyDown", "text": s, "key": s, "unmodifiedText": s})
+		if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: down}, defaultActionTimeout); err != nil {
+			return err
+		}
+		up, _ := json.Marshal(map[string]interface{}{"type": "keyUp", "key": s})
+		_, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: up}, defaultActionTimeout)
+		return err
+	}
+	// Non-ASCII rune: no reliable key event — insert it so it still lands.
+	ins, _ := json.Marshal(map[string]string{"text": string(r)})
+	_, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "insertText", Params: ins}, defaultActionTimeout)
+	return err
 }
 
 // sendNamedKey sends a named key (Enter/Tab/…) as a keyDown(text)/keyUp pair.
@@ -1473,40 +1475,66 @@ func (c *Controller) sendNamedKey(ctx context.Context, tabID int, key, text stri
 	return nil
 }
 
-// sendKeyChord sends a modifier+key combination via CDP Input.dispatchKeyEvent.
-// Supported modifiers: "Meta" (macOS Cmd, code=4), "Ctrl" (Windows/Linux, code=2).
-// CDP modifier bitmask: Alt=1, Ctrl=2, Meta=4.
-// Event sequence: modifierDown → keyDown → keyUp → modifierUp (standard key chord order).
-// [Fixed by mimo-v2.5-pro: modifier release value, Ctrl support, key event order]
-func (c *Controller) sendKeyChord(ctx context.Context, tabID int, modifier, key string) error {
-	modifiers := 0
-	switch modifier {
-	case "Meta":
-		modifiers = 4
+// chordModifierBit 把 sendKeyChord 系列用的修饰符名映射为 CDP modifier 位掩码值。
+// CDP: Alt=1, Ctrl=2, Meta=4, Shift=8。
+// （注意：controller_ext.go 另有一个 modifierBit，用 "Control" 而非 "Ctrl"，
+//  服务于 dispatchKeyChord，语义不同，故此处单列。）
+func chordModifierBit(mod string) (int, bool) {
+	switch mod {
+	case "Alt":
+		return 1, true
 	case "Ctrl":
-		modifiers = 2
+		return 2, true
+	case "Meta":
+		return 4, true
+	case "Shift":
+		return 8, true
 	default:
+		return 0, false
+	}
+}
+
+// sendKeyChordMods 发送 修饰符+键：各修饰符 down → 键 down → 键 up → 各修饰符 up(逆序)。
+// 支持 Alt/Ctrl/Meta/Shift 任意组合。
+func (c *Controller) sendKeyChordMods(ctx context.Context, tabID int, mods []string, key string) error {
+	mask := 0
+	for _, m := range mods {
+		bit, ok := chordModifierBit(m)
+		if !ok {
+			return fmt.Errorf("unsupported modifier %q; use Alt, Ctrl, Meta, or Shift", m)
+		}
+		mask |= bit
+	}
+	send := func(ev map[string]interface{}) error {
+		params, _ := json.Marshal(ev)
+		_, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: params}, defaultActionTimeout)
+		return err
+	}
+	for _, m := range mods {
+		if err := send(map[string]interface{}{"type": "keyDown", "key": m, "modifiers": mask}); err != nil {
+			return err
+		}
+	}
+	if err := send(map[string]interface{}{"type": "keyDown", "key": key, "modifiers": mask}); err != nil {
+		return err
+	}
+	if err := send(map[string]interface{}{"type": "keyUp", "key": key, "modifiers": mask}); err != nil {
+		return err
+	}
+	for i := len(mods) - 1; i >= 0; i-- {
+		if err := send(map[string]interface{}{"type": "keyUp", "key": mods[i], "modifiers": mask}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendKeyChord 保留单修饰符 API，委托给 sendKeyChordMods。
+func (c *Controller) sendKeyChord(ctx context.Context, tabID int, modifier, key string) error {
+	if _, ok := chordModifierBit(modifier); !ok {
 		return fmt.Errorf("unsupported modifier %q; use Meta or Ctrl", modifier)
 	}
-	// modifier down
-	paramsDown, _ := json.Marshal(map[string]interface{}{"type": "keyDown", "key": modifier, "modifiers": modifiers})
-	if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: paramsDown}, defaultActionTimeout); err != nil {
-		return err
-	}
-	// key down (with modifier held)
-	paramsKey, _ := json.Marshal(map[string]interface{}{"type": "keyDown", "key": key, "modifiers": modifiers})
-	if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: paramsKey}, defaultActionTimeout); err != nil {
-		return err
-	}
-	// key up (with modifier still held — CDP requires modifiers on keyUp too)
-	paramsKeyUp, _ := json.Marshal(map[string]interface{}{"type": "keyUp", "key": key, "modifiers": modifiers})
-	if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: paramsKeyUp}, defaultActionTimeout); err != nil {
-		return err
-	}
-	// modifier up
-	paramsUp, _ := json.Marshal(map[string]interface{}{"type": "keyUp", "key": modifier, "modifiers": modifiers})
-	_, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchKeyEvent", Params: paramsUp}, defaultActionTimeout)
-	return err
+	return c.sendKeyChordMods(ctx, tabID, []string{modifier}, key)
 }
 
 func centerX(b *Bounds) float64 { return b.X + b.Width/2 }
