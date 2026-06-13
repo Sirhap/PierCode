@@ -1069,17 +1069,6 @@ func uploadPathSummary(paths []string) string {
 	return strings.Join(names, ", ")
 }
 
-func (c *Controller) dispatchMouseMoved(ctx context.Context, tabID int, x, y float64) error {
-	params, _ := json.Marshal(map[string]interface{}{
-		"type":   "mouseMoved",
-		"x":      x,
-		"y":      y,
-		"button": "none",
-	})
-	_, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: params}, defaultActionTimeout)
-	return err
-}
-
 func (c *Controller) dispatchMouseWheel(ctx context.Context, tabID int, x, y, dx, dy float64) error {
 	tick := c.fidelity.WheelTickPx
 	steps := 1
