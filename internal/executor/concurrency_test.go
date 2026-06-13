@@ -287,3 +287,27 @@ func TestGlobalExclusiveStillBlocksScopedWriters(t *testing.T) {
 		t.Fatal("expected the path writer to acquire after the exclusive lock released")
 	}
 }
+
+// TestBrowserBatchHoldsNoLock verifies browser_batch acquires no executor lock,
+// so its re-dispatched items (which take their own locks) cannot deadlock on a
+// recursive RLock and a concurrent exclusive writer is not blocked by the batch.
+func TestBrowserBatchHoldsNoLock(t *testing.T) {
+	e := New(testConfig(t))
+	// browser_batch's lock must be a no-op: taking it then taking a write lock
+	// from another goroutine must not block.
+	unlock := e.lockForTool("browser_batch", map[string]interface{}{}, "/tmp")
+	done := make(chan struct{})
+	go func() {
+		// An exclusive-lock tool must be able to acquire toolMu while the batch
+		// "holds" its (no-op) lock.
+		w := e.lockForTool("todo_write", map[string]interface{}{}, "/tmp")
+		w()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("exclusive writer blocked while browser_batch lock held — batch must hold no lock")
+	}
+	unlock()
+}

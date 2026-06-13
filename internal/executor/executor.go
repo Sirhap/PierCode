@@ -144,6 +144,7 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserClickTool())
 	e.registry.Register(tool.NewBrowserTypeTool())
 	e.registry.Register(tool.NewBrowserClipboardTool())
+	e.registry.Register(tool.NewBrowserBatchTool())
 	e.registry.Register(tool.NewBrowserScreenshotTool())
 	e.registry.Register(tool.NewBrowserWaitTool())
 	e.registry.Register(tool.NewBrowserWaitForFunctionTool())
@@ -264,6 +265,19 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	e.browserMu.RLock()
 	toolCtx.Browser = e.browser
 	e.browserMu.RUnlock()
+	// browser_batch re-dispatches each sub-call through the full pipeline so
+	// per-item validation/approval/locking all apply. Carry the originating
+	// client identity + conversation so approvals route to the same chat.
+	toolCtx.Dispatch = func(name string, args map[string]interface{}) tool.BatchItemResult {
+		sub := &types.ToolRequest{
+			Name:            name,
+			Args:            args,
+			SourceClientID:  req.SourceClientID,
+			ConversationURL: req.ConversationURL,
+		}
+		resp := e.ExecuteWithStream(ctx, sub, streamer)
+		return tool.BatchItemResult{Status: resp.Status, Output: resp.Output, Error: resp.Error}
+	}
 	if streamer != nil {
 		toolCtx.Client.Streamer = func(stream, text string) { streamer(stream, text) }
 	}
@@ -440,6 +454,17 @@ func (e *Executor) lockForTool(name string, args map[string]interface{}, rootDir
 	if t, ok := e.registry.Get(name); ok && toolIsReadOnly(t) {
 		e.toolMu.RLock()
 		return e.toolMu.RUnlock
+	}
+	// browser_batch re-dispatches each of its sub-calls back through Execute,
+	// and every sub-call takes its own lock (shared RLock + per-tab mutex). The
+	// batch itself must therefore hold NO lock here: holding the keyed tab mutex
+	// would self-deadlock on the first item, and even holding toolMu.RLock would
+	// risk a deadlock because Go's RWMutex forbids recursively read-locking on
+	// one goroutine while a writer may block in between (the item's RLock would
+	// queue behind a waiting toolMu.Lock that is itself blocked by the batch's
+	// outer RLock). The per-item locks provide all the ordering guarantees.
+	if strings.EqualFold(strings.TrimSpace(name), "browser_batch") {
+		return func() {}
 	}
 	// Browser write tools mutate browser state, not the filesystem. They hold
 	// the SHARED side of toolMu (so exclusive-lock tools keep their guarantee)

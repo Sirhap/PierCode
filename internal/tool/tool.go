@@ -58,6 +58,19 @@ type Context struct {
 
 	// Tasks groups background-task handoff.
 	Tasks TaskAccess
+
+	// Dispatch, if set, re-runs a single tool call through the executor's full
+	// validate -> approve -> execute pipeline. browser_batch uses it to run its
+	// sub-calls, so each item gets the same gating a standalone call would. Nil
+	// means nested dispatch is unavailable (e.g. a bare &Context{} in tests).
+	Dispatch func(name string, args map[string]interface{}) BatchItemResult
+}
+
+// BatchItemResult is the outcome of one re-dispatched call inside browser_batch.
+type BatchItemResult struct {
+	Status string // "success" or "error"
+	Output string
+	Error  string
 }
 
 type sourceClientIDContextKey struct{}

@@ -26,7 +26,10 @@ func (t *browserTool) Validate(args map[string]interface{}) error { return t.val
 func (t *browserTool) Execute(ctx *Context) *Result {
 	result := &Result{StartTime: time.Now()}
 	defer func() { result.EndTime = time.Now() }()
-	if ctx.Browser == nil {
+	// browser_batch does not touch ctx.Browser itself — it re-dispatches each
+	// sub-call (which performs its own browser check). Requiring a browser handle
+	// here would wrongly block it, so it is exempt from the nil-browser guard.
+	if ctx.Browser == nil && t.name != "browser_batch" {
 		result.Status = "error"
 		result.Error = "browser relay is not configured"
 		return result
