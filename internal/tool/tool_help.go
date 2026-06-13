@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sirhap/piercode/internal/version"
 )
 
 type ToolHelpTool struct {
@@ -96,7 +98,8 @@ func (t *ToolHelpTool) Execute(ctx *Context) *Result {
 		return result
 	}
 	result.Status = "success"
-	result.Output = "Matching PierCode tools:\n" + strings.Join(rows, "\n") + "\n\nCall tool_help with {\"tool\":\"tool_name\"} for detailed parameters."
+	header := fmt.Sprintf("PierCode %s tools:\n", version.Version)
+	result.Output = header + strings.Join(rows, "\n") + "\n\nCall tool_help with {\"tool\":\"tool_name\"} for detailed parameters."
 	return result
 }
 
