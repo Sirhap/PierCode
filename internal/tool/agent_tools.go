@@ -15,7 +15,8 @@ const AgentTabURLParam = "piercode_agent"
 
 // platformURLs maps a coordinator-facing platform name to the base URL the
 // worker tab opens. Keys are matched case-insensitively. An unknown platform is
-// an error; an omitted platform defaults to qwen (see defaultPlatformFor).
+// an error; an omitted platform defaults to the coordinator's own platform, or
+// qwen when that can't be determined (see defaultPlatformFor).
 var platformURLs = map[string]string{
 	"qwen":      "https://chat.qwen.ai/",
 	"chatgpt":   "https://chatgpt.com/",
@@ -59,7 +60,7 @@ func NewSpawnAgentTool() Tool {
 		parameters: map[string]string{
 			"task":        "string (required) - the complete, self-contained task for the worker. It cannot see your conversation; include file paths, context, and what 'done' means.",
 			"description": "string (required) - short 3-5 word summary of what the worker will do",
-			"platform":    "string (optional) - target AI platform for the worker tab: qwen, chatgpt, claude, gemini, kimi, z.ai, aistudio, mimo. Defaults to qwen if omitted.",
+			"platform":    "string (optional) - target AI platform for the worker tab: qwen, chatgpt, claude, gemini, kimi, z.ai, aistudio, mimo. Defaults to your own platform (the page you're running on); qwen if that can't be determined.",
 		},
 		validate: func(args map[string]interface{}) error {
 			if strings.TrimSpace(stringArg(args, "task")) == "" {
@@ -80,7 +81,7 @@ func NewSpawnAgentTool() Tool {
 			desc := strings.TrimSpace(stringArg(ctx.Args, "description"))
 			platform := strings.TrimSpace(stringArg(ctx.Args, "platform"))
 			if platform == "" {
-				platform = defaultPlatformFor(ctx.Client.SourceClientID)
+				platform = defaultPlatformFor(ctx.Client.ConversationURL)
 			}
 
 			// If the caller is itself a worker (a sub-agent spawning a sub-agent),
@@ -300,10 +301,38 @@ func scheduleAutoConfirmSpawn(ctx *Context, agentID, task string) {
 	}()
 }
 
-// defaultPlatformFor picks a fallback platform when the coordinator does not
-// specify one. Without per-client platform tracking we default to qwen (the
-// primary compression+worker target); the coordinator can always override.
-func defaultPlatformFor(_ string) string {
+// platformHostHints maps a substring of an AI page host to a platform key in
+// platformURLs. Ordered longest/most-specific intent first is unnecessary since
+// these hosts don't overlap, but keep entries host-specific to avoid false hits.
+var platformHostHints = []struct{ host, platform string }{
+	{"chatgpt.com", "chatgpt"},
+	{"chat.openai.com", "chatgpt"},
+	{"qwen.ai", "qwen"},
+	{"qwenlm.ai", "qwen"},
+	{"claude.ai", "claude"},
+	{"gemini.google.com", "gemini"},
+	{"aistudio.google.com", "aistudio"},
+	{"kimi.com", "kimi"},
+	{"chat.z.ai", "z.ai"},
+	{"aistudio.xiaomimimo.com", "mimo"},
+}
+
+// defaultPlatformFor picks the worker platform when the coordinator omits one.
+// Preference: open the worker on the SAME platform the coordinator is on (a GPT
+// coordinator spawns a GPT worker), derived from its conversation URL host. Falls
+// back to qwen (the primary compression+worker target) when the host is unknown
+// or empty. The coordinator can always override with the platform arg.
+func defaultPlatformFor(conversationURL string) string {
+	if u, err := url.Parse(strings.TrimSpace(conversationURL)); err == nil {
+		host := strings.ToLower(u.Hostname())
+		if host != "" {
+			for _, h := range platformHostHints {
+				if strings.Contains(host, h.host) {
+					return h.platform
+				}
+			}
+		}
+	}
 	return "qwen"
 }
 
