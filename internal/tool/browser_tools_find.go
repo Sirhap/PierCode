@@ -89,7 +89,19 @@ func NewBrowserZoomTool() Tool {
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("zoom screenshot saved: %s (%d bytes)", resp.FilePath, resp.Bytes), nil
+			out := fmt.Sprintf("zoom screenshot saved: %s (%d bytes)", resp.FilePath, resp.Bytes)
+			// Surface the zoomed image to the model the same way browser_screenshot
+			// does, so the closer-inspection capture is actually viewable instead
+			// of being a file path the model cannot see.
+			if shouldAttachScreenshot(ctx) {
+				shot := BrowserScreenshot{Tab: resp.Tab, Format: "jpeg", Bytes: resp.Bytes, FilePath: resp.FilePath}
+				if status, attachErr := uploadScreenshotAttachment(ctx, shot); attachErr != nil {
+					out += "\nAttachment upload failed: " + attachErr.Error()
+				} else {
+					out += "\nAttachment upload: " + status
+				}
+			}
+			return out, nil
 		},
 	}
 }

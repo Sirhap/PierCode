@@ -691,6 +691,10 @@ func (c *Controller) Screenshot(ctx context.Context, req tool.BrowserScreenshotR
 	if err != nil {
 		return tool.BrowserScreenshot{}, fmt.Errorf("invalid screenshot base64: %w", err)
 	}
+	// Fit the capture inside the vision-token budget (longest-edge + byte cap
+	// with a JPEG quality step-down). Best-effort: a decode failure leaves the
+	// bytes untouched. The format may change to jpeg after the budget pass.
+	decoded, format = budgetScreenshot(decoded, format)
 	size := len(decoded)
 
 	outputDir := strings.TrimSpace(req.OutputDir)
