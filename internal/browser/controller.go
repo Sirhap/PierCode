@@ -1387,23 +1387,22 @@ func (c *Controller) dispatchClick(ctx context.Context, tabID int, x, y float64,
 	if err := c.moveTo(ctx, tabID, x, y, "none", 0); err != nil {
 		return err
 	}
-	for _, typ := range []string{"mousePressed", "mouseReleased"} {
-		params, _ := json.Marshal(map[string]interface{}{
-			"type":   typ,
-			"x":      x,
-			"y":      y,
-			"button": button,
-			"buttons": func() int {
-				if typ == "mousePressed" {
-					return buttons
-				}
-				return 0
-			}(),
-			"clickCount": clickCount,
-		})
-		if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: params}, defaultActionTimeout); err != nil {
-			return err
-		}
+	press, _ := json.Marshal(map[string]interface{}{
+		"type": "mousePressed", "x": x, "y": y, "button": button,
+		"buttons": buttons, "clickCount": clickCount,
+	})
+	if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: press}, defaultActionTimeout); err != nil {
+		return err
+	}
+	if err := c.sleep(ctx, time.Duration(c.fidelity.ClickHoldMS)*time.Millisecond); err != nil {
+		return err
+	}
+	release, _ := json.Marshal(map[string]interface{}{
+		"type": "mouseReleased", "x": x, "y": y, "button": button,
+		"buttons": 0, "clickCount": clickCount,
+	})
+	if _, err := c.relay.SendCommand(ctx, Command{TabID: &tabID, Domain: "Input", Method: "dispatchMouseEvent", Params: release}, defaultActionTimeout); err != nil {
+		return err
 	}
 	return nil
 }

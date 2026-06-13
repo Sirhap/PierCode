@@ -734,3 +734,30 @@ func TestClickInstantSingleMove(t *testing.T) {
 		t.Fatalf("instant mode expected 1 move, got %d", moves)
 	}
 }
+
+func TestClickHoldsBetweenPressAndRelease(t *testing.T) {
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+	c.SetInputFidelity(InputFidelity{MoveSteps: 1, ClickHoldMS: 45})
+	var slept []time.Duration
+	c.sleep = func(ctx context.Context, d time.Duration) error { slept = append(slept, d); return nil }
+
+	if err := c.dispatchClick(context.Background(), 1, 10, 10, "left", 1); err != nil {
+		t.Fatalf("click err: %v", err)
+	}
+	found := false
+	for _, d := range slept {
+		if d == 45*time.Millisecond {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a 45ms hold sleep, got %v", slept)
+	}
+}
