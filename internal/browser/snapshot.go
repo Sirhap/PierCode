@@ -42,6 +42,87 @@ type axValue struct {
 	Value json.RawMessage `json:"value"`
 }
 
+// CompactSnapshotWithFrames renders the main-frame AX tree and then appends each
+// out-of-process child frame's tree, so elements inside cross-origin iframes are
+// included with their own refs (tagged with the originating session). Each frame
+// is rendered as an "iframe (cross-origin)" header followed by its indented
+// subtree. Refs continue the main document's numbering so they stay unique.
+func CompactSnapshotWithFrames(raw json.RawMessage, frames []frameAXTree, tab tool.BrowserTab, snapshotID string, opts tool.SnapshotOptions) (tool.BrowserSnapshot, []RefTarget, error) {
+	snap, refs, err := CompactSnapshot(raw, tab, snapshotID, opts)
+	if err != nil {
+		return snap, refs, err
+	}
+	// A subtree filter (RefID) only applies to the main tree; skip OOPIF frames
+	// when the caller is drilling into a specific main-frame ref.
+	if opts.RefID != "" || len(frames) == 0 {
+		return snap, refs, nil
+	}
+
+	var out strings.Builder
+	out.WriteString(snap.Text)
+	for _, fr := range frames {
+		fopts := opts
+		fopts.RefID = ""
+		// Render the frame tree with refs continuing from the current count.
+		ftext, frefs := renderFrameTree(fr.Raw, len(refs), fopts)
+		if len(frefs) == 0 {
+			continue
+		}
+		fmt.Fprintf(&out, "\n\n[iframe (cross-origin) %s]\n", trimText(fr.URL, 120))
+		out.WriteString(ftext)
+		for i := range frefs {
+			frefs[i].SessionID = fr.SessionID
+		}
+		refs = append(refs, frefs...)
+	}
+	snap.Text = strings.TrimSpace(out.String())
+	snap.RefCount = len(refs)
+	return snap, refs, nil
+}
+
+// renderFrameTree renders one frame's AX tree as an indented block, assigning
+// refs starting at refBase (so they don't collide with the main document).
+func renderFrameTree(raw json.RawMessage, refBase int, opts tool.SnapshotOptions) (string, []RefTarget) {
+	maxNodes := opts.MaxNodes
+	if maxNodes <= 0 {
+		maxNodes = defaultMaxSnapshotNodes
+	}
+	maxChars := opts.MaxChars
+	if maxChars <= 0 {
+		maxChars = maxSnapshotOutputChars
+	}
+	maxDepth := opts.Depth
+	if maxDepth <= 0 {
+		maxDepth = defaultMaxSnapshotDepth
+	}
+	var tree axTreeResponse
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		return "", nil
+	}
+	byID := make(map[string]*axNode, len(tree.Nodes))
+	for i := range tree.Nodes {
+		byID[tree.Nodes[i].NodeID] = &tree.Nodes[i]
+	}
+	var roots []*axNode
+	for i := range tree.Nodes {
+		n := &tree.Nodes[i]
+		if n.ParentID == "" || byID[n.ParentID] == nil {
+			roots = append(roots, n)
+		}
+	}
+	var out strings.Builder
+	refs := make([]RefTarget, 0)
+	state := &snapshotWalk{
+		out: &out, refs: &refs, byID: byID,
+		maxNodes: maxNodes, maxChars: maxChars, maxDepth: maxDepth,
+		emitting: true, refBase: refBase,
+	}
+	for _, root := range roots {
+		state.walk(root, 1) // indent one level under the iframe header
+	}
+	return out.String(), refs
+}
+
 // CompactSnapshot renders the accessibility tree as an indented hierarchy.
 // Parent-child context is preserved (each kept node is indented under its
 // nearest kept ancestor), refs (e0, e1, …) are assigned to actionable nodes,
@@ -130,6 +211,7 @@ type snapshotWalk struct {
 	maxNodes   int
 	maxChars   int
 	maxDepth   int
+	refBase    int // ref numbering offset (so OOPIF frame refs don't collide)
 	shown      int
 	truncated  bool
 	targetRef  string // when non-empty, only emit this ref's subtree
@@ -155,7 +237,7 @@ func (s *snapshotWalk) walk(node *axNode, visualDepth int) {
 		// stay stable whether or not a subtree filter is active.
 		refName := ""
 		if isImportantRole(role) || isFocusable(*node) || isEditable(*node) {
-			refName = fmt.Sprintf("e%d", len(*s.refs))
+			refName = fmt.Sprintf("e%d", s.refBase+len(*s.refs))
 			*s.refs = append(*s.refs, RefTarget{
 				Ref:       refName,
 				NodeID:    node.NodeID,

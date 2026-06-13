@@ -99,3 +99,53 @@ func TestCompactSnapshotMissingRefIDErrors(t *testing.T) {
 		t.Fatal("expected error for unknown refId")
 	}
 }
+
+func TestCompactSnapshotWithFramesMergesOOPIF(t *testing.T) {
+	main := json.RawMessage(`{"nodes":[
+		{"nodeId":"1","role":{"value":"button"},"name":{"value":"MainBtn"},"properties":[{"name":"focusable","value":{"value":true}}]}
+	]}`)
+	frame := json.RawMessage(`{"nodes":[
+		{"nodeId":"1","role":{"value":"textbox"},"name":{"value":"CardNumber"},"properties":[{"name":"focusable","value":{"value":true}}]}
+	]}`)
+	tab := tool.BrowserTab{TabID: 30, URL: "https://shop.example.com", Title: "Checkout"}
+	frames := []frameAXTree{{SessionID: "SESS-STRIPE", URL: "https://js.stripe.com/v3/", Raw: frame}}
+
+	snap, refs, err := CompactSnapshotWithFrames(main, frames, tab, "snap_f", tool.SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("CompactSnapshotWithFrames error: %v", err)
+	}
+	if !strings.Contains(snap.Text, "MainBtn") {
+		t.Fatalf("missing main-frame node: %s", snap.Text)
+	}
+	if !strings.Contains(snap.Text, "iframe (cross-origin)") || !strings.Contains(snap.Text, "CardNumber") {
+		t.Fatalf("OOPIF frame not merged: %s", snap.Text)
+	}
+	// Two refs: main e0, frame e1 (continued numbering, no collision).
+	if len(refs) != 2 {
+		t.Fatalf("expected 2 refs (main + frame), got %d: %+v", len(refs), refs)
+	}
+	if refs[0].SessionID != "" {
+		t.Fatalf("main-frame ref must have empty session, got %q", refs[0].SessionID)
+	}
+	if refs[1].SessionID != "SESS-STRIPE" {
+		t.Fatalf("frame ref must carry its session, got %q", refs[1].SessionID)
+	}
+	if refs[1].Ref != "e1" {
+		t.Fatalf("frame ref should continue numbering as e1, got %q", refs[1].Ref)
+	}
+}
+
+func TestCompactSnapshotWithFramesSkipsFramesUnderRefIDFilter(t *testing.T) {
+	main := json.RawMessage(`{"nodes":[{"nodeId":"1","role":{"value":"button"},"name":{"value":"X"},"properties":[{"name":"focusable","value":{"value":true}}]}]}`)
+	frame := json.RawMessage(`{"nodes":[{"nodeId":"1","role":{"value":"textbox"},"name":{"value":"Hidden"},"properties":[{"name":"focusable","value":{"value":true}}]}]}`)
+	tab := tool.BrowserTab{TabID: 31, URL: "https://example.com", Title: "T"}
+	frames := []frameAXTree{{SessionID: "S", URL: "https://other.com", Raw: frame}}
+	// Drilling into a main-frame ref must not pull in OOPIF frames.
+	snap, _, err := CompactSnapshotWithFrames(main, frames, tab, "snap_rf", tool.SnapshotOptions{RefID: "e0"})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if strings.Contains(snap.Text, "Hidden") {
+		t.Fatalf("OOPIF frame should be skipped under RefID filter: %s", snap.Text)
+	}
+}

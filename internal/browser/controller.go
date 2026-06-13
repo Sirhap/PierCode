@@ -411,12 +411,59 @@ func (c *Controller) Snapshot(ctx context.Context, tabID *int, opts tool.Snapsho
 	}
 	tab.Controlled = true
 	snapshotID := fmt.Sprintf("snap_%d", c.snapSeq.Add(1))
-	snapshot, refs, err := CompactSnapshot(raw, tab, snapshotID, opts)
+	// Pull cross-origin OOPIF child-frame AX trees (best-effort) and merge them
+	// so elements inside cross-origin iframes (Stripe fields, embedded editors)
+	// are visible and clickable. Same-origin frames already appear in the main
+	// tree; this covers the out-of-process ones.
+	frameTrees := c.collectFrameAXTrees(ctx, tab.TabID)
+	snapshot, refs, err := CompactSnapshotWithFrames(raw, frameTrees, tab, snapshotID, opts)
 	if err != nil {
 		return tool.BrowserSnapshot{}, err
 	}
 	c.tabs.StoreSnapshot(tab, snapshotID, refs)
 	return snapshot, nil
+}
+
+// frameAXTree is one OOPIF child frame's accessibility tree plus the session it
+// came from (needed later to resolve/click nodes inside that frame).
+type frameAXTree struct {
+	SessionID string
+	URL       string
+	Raw       json.RawMessage
+}
+
+// collectFrameAXTrees enumerates the tab's attached OOPIF sessions (via the
+// extension's native listFrameSessions) and fetches each one's AX tree on its
+// own session. All best-effort: any failure yields no frame rather than an error
+// (the main-frame snapshot must always succeed).
+func (c *Controller) collectFrameAXTrees(ctx context.Context, tabID int) []frameAXTree {
+	var resp struct {
+		Sessions []struct {
+			SessionID string `json:"sessionId"`
+			URL       string `json:"url"`
+		} `json:"sessions"`
+	}
+	if err := c.sendNative(ctx, "listFrameSessions", map[string]interface{}{"tabId": tabID}, &resp); err != nil {
+		return nil
+	}
+	var out []frameAXTree
+	for _, s := range resp.Sessions {
+		if s.SessionID == "" {
+			continue
+		}
+		raw, err := c.relay.SendCommand(ctx, Command{
+			TabID:     &tabID,
+			SessionID: s.SessionID,
+			Domain:    "Accessibility",
+			Method:    "getFullAXTree",
+			Params:    json.RawMessage(`{}`),
+		}, defaultReadTimeout)
+		if err != nil {
+			continue
+		}
+		out = append(out, frameAXTree{SessionID: s.SessionID, URL: s.URL, Raw: raw})
+	}
+	return out
 }
 
 func (c *Controller) Click(ctx context.Context, req tool.BrowserClickRequest) (string, error) {

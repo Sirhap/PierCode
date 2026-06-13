@@ -6,9 +6,13 @@ import (
 )
 
 type Command struct {
-	Type      string          `json:"type"`
-	ID        string          `json:"id"`
-	TabID     *int            `json:"tabId,omitempty"`
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	TabID *int   `json:"tabId,omitempty"`
+	// SessionID, when set, targets a child CDP session (an OOPIF frame) attached
+	// under the tab's root debugger session via Target.setAutoAttach{flatten}.
+	// Empty = the tab's top-level (page) session.
+	SessionID string          `json:"sessionId,omitempty"`
 	Domain    string          `json:"domain"`
 	Method    string          `json:"method"`
 	Params    json.RawMessage `json:"params,omitempty"`

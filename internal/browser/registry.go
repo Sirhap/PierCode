@@ -15,6 +15,14 @@ type RefTarget struct {
 	Role      string
 	Name      string
 	Bounds    *Bounds
+	// SessionID is the OOPIF child-frame CDP session this node lives in. Empty =
+	// the main (page) session. Set for nodes inside cross-origin iframes so a
+	// later click/type resolves the node on the correct session.
+	SessionID string
+	// FrameOffset is the iframe's viewport-absolute top-left, added to a
+	// frame-relative box to get the real click point (headed-mode coordinate
+	// compensation). Nil for main-frame nodes.
+	FrameOffset *Bounds
 }
 
 type Bounds struct {

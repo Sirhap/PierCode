@@ -51,6 +51,7 @@ type BrowserCommand = {
   type: 'browser_cmd';
   id: string;
   tabId?: number;
+  sessionId?: string;
   domain: string;
   method: string;
   params?: Record<string, unknown>;
@@ -435,7 +436,13 @@ async function handleBrowserCommand(msg: BrowserCommand): Promise<unknown> {
   }
   // 给 CDP 命令加超时，防止扩展 relay 卡死
   const cmdTimeout = Math.max(msg.timeoutMs || 30000, 10000);
-  const sendPromise = chrome.debugger.sendCommand({ tabId: msg.tabId }, `${msg.domain}.${msg.method}`, params);
+  // A sessionId targets a child OOPIF session (flat sessions, Chrome 125+);
+  // omitting it targets the tab's top-level page session. @types/chrome predates
+  // DebuggerSession, so the target is built as a loose object and cast.
+  const target = (msg.sessionId
+    ? { tabId: msg.tabId, sessionId: msg.sessionId }
+    : { tabId: msg.tabId }) as chrome.debugger.Debuggee;
+  const sendPromise = chrome.debugger.sendCommand(target, `${msg.domain}.${msg.method}`, params);
   const timeoutPromise = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error(`CDP command ${msg.domain}.${msg.method} timed out after ${cmdTimeout}ms`)), cmdTimeout)
   );
@@ -470,6 +477,8 @@ async function handleNativeBrowserCommand(method: string, params: Record<string,
       return setViewportOverride(params);
     case 'resizeWindow':
       return resizeWindow(params);
+    case 'listFrameSessions':
+      return { sessions: listFrameSessions(Number(params.tabId)) };
     default:
       throw new Error(`unknown PierCode browser method: ${method}`);
   }
@@ -861,6 +870,10 @@ async function enableDebuggerDomains(tabId: number): Promise<void> {
     ['Page.setLifecycleEventsEnabled', { enabled: true }],
     ['Runtime.enable', {}],
     ['Network.enable', { maxPostDataSize: 65536 }],
+    // Flat-session auto-attach (Chrome 125+) so cross-origin OOPIF child frames
+    // surface as addressable sessions via Target.attachedToTarget. Harmless on
+    // older Chrome (the command simply errors and is ignored).
+    ['Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }],
   ];
   for (const [method, params] of enables) {
     try {
@@ -869,6 +882,35 @@ async function enableDebuggerDomains(tabId: number): Promise<void> {
       // best-effort: ignore per-domain enable failure
     }
   }
+}
+
+// Maps an OOPIF child session to its owning tab + frame metadata, learned from
+// Target.attachedToTarget. Used to (a) enumerate frame sessions for snapshots
+// and (b) recurse auto-attach into nested OOPIFs.
+type FrameSession = { tabId: number; sessionId: string; targetId: string; url: string };
+const frameSessionsByTab = new Map<number, Map<string, FrameSession>>();
+
+function recordFrameSession(tabId: number, fs: FrameSession): void {
+  let m = frameSessionsByTab.get(tabId);
+  if (!m) {
+    m = new Map();
+    frameSessionsByTab.set(tabId, m);
+  }
+  m.set(fs.sessionId, fs);
+}
+
+function dropFrameSession(tabId: number, sessionId: string): void {
+  frameSessionsByTab.get(tabId)?.delete(sessionId);
+}
+
+function clearFrameSessions(tabId: number): void {
+  frameSessionsByTab.delete(tabId);
+}
+
+// listFrameSessions returns the known OOPIF sessions for a tab (for snapshot
+// merging on the Go side, surfaced via a native command).
+function listFrameSessions(tabId: number): FrameSession[] {
+  return Array.from(frameSessionsByTab.get(tabId)?.values() ?? []);
 }
 
 async function ensureAttached(tabId: number) {
@@ -1077,6 +1119,29 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   const tabId = source.tabId;
   if (typeof tabId !== 'number') return;
   if (!attachedTabs.has(tabId)) return;
+
+  // Track OOPIF child sessions (flat sessions). auto-attach is NOT recursive:
+  // attaching to a frame only attaches its direct children, so on each new
+  // child we re-issue setAutoAttach on that child's session to reach grandkids.
+  if (method === 'Target.attachedToTarget') {
+    const p = (params || {}) as { sessionId?: string; targetInfo?: { targetId?: string; type?: string; url?: string } };
+    const ti = p.targetInfo;
+    if (p.sessionId && ti && (ti.type === 'iframe' || ti.type === 'page')) {
+      recordFrameSession(tabId, { tabId, sessionId: p.sessionId, targetId: ti.targetId || '', url: ti.url || '' });
+      // Recurse into this child's own subframes + enable the domains we read.
+      const childTarget = { tabId, sessionId: p.sessionId } as chrome.debugger.Debuggee;
+      void chrome.debugger.sendCommand(childTarget, 'Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }).catch(() => undefined);
+      void chrome.debugger.sendCommand(childTarget, 'DOM.enable', {}).catch(() => undefined);
+      void chrome.debugger.sendCommand(childTarget, 'Accessibility.enable', {}).catch(() => undefined);
+    }
+    return;
+  }
+  if (method === 'Target.detachedFromTarget') {
+    const p = (params || {}) as { sessionId?: string };
+    if (p.sessionId) dropFrameSession(tabId, p.sessionId);
+    return;
+  }
+
   if (!DEBUGGER_EVENTS_TO_RELAY.has(method)) return;
   sendBrowserMessage({
     type: 'browser_event',
@@ -1090,6 +1155,7 @@ chrome.tabs.onRemoved.addListener(tabId => {
   attachedTabs.delete(tabId);
   perTabQueues.delete(tabId);
   workerAgentIdByTabId.delete(tabId);
+  clearFrameSessions(tabId);
   if (controlledTabId === tabId) {
     controlledTabId = null;
     setBrowserRelayStatus({ state: browserWs?.readyState === WebSocket.OPEN ? 'open' : 'closed' });
