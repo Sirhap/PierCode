@@ -29,6 +29,8 @@ func TestFindReturnsScoredResults(t *testing.T) {
 		switch cmd.Domain + "." + cmd.Method {
 		case "Runtime.evaluate":
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(fmt.Sprintf(`{"result":{"type":"string","value":%s}}`, valueJSON))})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -79,6 +81,8 @@ func TestFindEmptyQueryReturnsEmpty(t *testing.T) {
 		switch cmd.Domain + "." + cmd.Method {
 		case "Runtime.evaluate":
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"string","value":"[]"}}`)})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -114,6 +118,8 @@ func TestResizeSendsWindowBounds(t *testing.T) {
 				t.Fatalf("invalid resizeWindow params: %v", err)
 			}
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -166,6 +172,8 @@ func TestFormInputCheckbox(t *testing.T) {
 			}
 			capturedExpression = params.Expression
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"object","value":{"type":"checkbox","checked":true}}}`)})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -216,6 +224,8 @@ func TestFormInputCheckboxPreservesBooleanFalse(t *testing.T) {
 			}
 			capturedExpression = params.Expression
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"object","value":{"type":"checkbox","checked":false}}}`)})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -259,6 +269,8 @@ func TestFormInputContentEditable(t *testing.T) {
 			}
 			capturedExpression = params.Expression
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"object","value":{"type":"contenteditable","text":"hello world"}}}`)})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -322,6 +334,8 @@ func TestZoomCapturesRegion(t *testing.T) {
 				t.Fatalf("invalid screenshot params: %v", err)
 			}
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(fmt.Sprintf(`{"data":"%s"}`, imgBase64))})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -392,6 +406,8 @@ func TestZoomCapturesRefRegion(t *testing.T) {
 				t.Fatalf("invalid screenshot params: %v", err)
 			}
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(fmt.Sprintf(`{"data":"%s"}`, imgBase64))})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -443,6 +459,8 @@ func TestReadConsoleReturnsBufferedMessages(t *testing.T) {
 		case "Runtime.enable":
 			runtimeEnabled = true
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -508,6 +526,8 @@ func TestReadNetworkReturnsBufferedRequests(t *testing.T) {
 		case "Network.enable":
 			networkEnabled = true
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -576,6 +596,8 @@ func TestReadNetworkFormatsStatusTextAndDuration(t *testing.T) {
 		switch cmd.Domain + "." + cmd.Method {
 		case "Network.enable":
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -698,6 +720,8 @@ func TestZoomRespectsOutputDir(t *testing.T) {
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"type":"object","value":{"x":0,"y":0,"width":100,"height":100}}}`)})
 		case "Page.captureScreenshot":
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(fmt.Sprintf(`{"data":"%s"}`, imgBase64))})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		default:
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -747,6 +771,8 @@ func TestFindCarriesIframeCoordinates(t *testing.T) {
 		_ = json.Unmarshal(payload, &cmd)
 		if cmd.Domain+"."+cmd.Method == "Runtime.evaluate" {
 			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(fmt.Sprintf(`{"result":{"type":"string","value":%s}}`, valueJSON))})
+		} else if cmd.Domain+"."+cmd.Method == "PierCode.listFrameSessions" {
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[]}`)})
 		} else {
 			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
 		}
@@ -771,5 +797,60 @@ func TestFindCarriesIframeCoordinates(t *testing.T) {
 	}
 	if r.Frame != "https://example.com/embed" {
 		t.Fatalf("expected frame URL, got %q", r.Frame)
+	}
+}
+
+func TestFindTraversesOOPIFFrames(t *testing.T) {
+	tab := tool.BrowserTab{TabID: 90, URL: "https://app.example.com", Title: "App", Controlled: true}
+	// Main-frame find returns one match; the OOPIF session returns another.
+	mainResults := `[{"ref":"#pay","role":"button","text":"Pay main","score":7}]`
+	frameResults := `[{"ref":"input.card","role":"textbox","text":"Card number","score":7}]`
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		switch cmd.Domain + "." + cmd.Method {
+		case "Runtime.evaluate":
+			// Main session (no sessionId) vs frame session.
+			val := mainResults
+			if cmd.SessionID == "FRAME-1" {
+				val = frameResults
+			}
+			b, _ := json.Marshal(val)
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(fmt.Sprintf(`{"result":{"type":"string","value":%s}}`, string(b)))})
+		case "PierCode.listFrameSessions":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"sessions":[{"sessionId":"FRAME-1","url":"https://js.stripe.com/v3/"}]}`)})
+		case "Accessibility.getFullAXTree":
+			go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"nodes":[]}`)})
+		default:
+			t.Fatalf("unexpected command: %s.%s", cmd.Domain, cmd.Method)
+		}
+		return true
+	})
+	controller := newApprovedController(relay)
+	controller.tabs.SetDefault(tab)
+
+	results, err := controller.Find(context.Background(), tool.BrowserFindRequest{Query: "card", MaxResults: 20})
+	if err != nil {
+		t.Fatalf("Find error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected main + frame match (2), got %d: %+v", len(results), results)
+	}
+	// The frame match must be tagged and have its frame-scoped selector cleared.
+	var frameMatch *tool.BrowserFindResult
+	for i := range results {
+		if strings.Contains(results[i].Text, "in iframe") {
+			frameMatch = &results[i]
+		}
+	}
+	if frameMatch == nil {
+		t.Fatalf("no iframe-tagged match found: %+v", results)
+	}
+	if frameMatch.Ref != "" {
+		t.Fatalf("frame-scoped selector must be cleared, got %q", frameMatch.Ref)
+	}
+	if !strings.Contains(frameMatch.Text, "stripe.com") {
+		t.Fatalf("frame match should name its frame url, got %q", frameMatch.Text)
 	}
 }

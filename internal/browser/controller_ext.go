@@ -689,6 +689,35 @@ func (c *Controller) runtimeEvaluate(ctx context.Context, tabID int, expression 
 	return &out, nil
 }
 
+// runtimeEvaluateOnSession is runtimeEvaluate addressed to a specific CDP session
+// (an OOPIF child frame). Used to run the find/query expression inside a
+// cross-origin iframe's own renderer.
+func (c *Controller) runtimeEvaluateOnSession(ctx context.Context, tabID int, sessionID, expression string, timeout time.Duration) (*runtimeEvalResult, error) {
+	params := map[string]interface{}{
+		"expression":                  expression,
+		"returnByValue":               true,
+		"awaitPromise":                false,
+		"timeout":                     int(timeout / time.Millisecond),
+		"allowUnsafeEvalBlockedByCSP": true,
+	}
+	rawParams, _ := json.Marshal(params)
+	raw, err := c.relay.SendCommand(ctx, Command{
+		TabID:     &tabID,
+		SessionID: sessionID,
+		Domain:    "Runtime",
+		Method:    "evaluate",
+		Params:    rawParams,
+	}, timeout+2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var out runtimeEvalResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Controller) withFileInputObject(ctx context.Context, tabID int, ref, selector, snapshotID string, fn func(objectID string) error) error {
 	var objectID string
 	var release func()

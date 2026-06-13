@@ -32,6 +32,29 @@ func (c *Controller) Find(ctx context.Context, req tool.BrowserFindRequest) ([]t
 	if err := json.Unmarshal([]byte(raw), &results); err != nil {
 		return nil, fmt.Errorf("failed to parse find results: %w", err)
 	}
+	// Also search inside cross-origin iframes: their elements live in separate
+	// renderer sessions the main-frame TreeWalker can't reach. Matches there are
+	// tagged with the frame URL and a note to use browser_snapshot for a ref,
+	// since a frame-scoped CSS selector is not usable from the page.
+	for _, fr := range c.collectFrameAXTrees(ctx, tab.TabID) {
+		fout, ferr := c.runtimeEvaluateOnSession(ctx, tab.TabID, fr.SessionID, expression, defaultReadTimeout)
+		if ferr != nil {
+			continue
+		}
+		var fres []tool.BrowserFindResult
+		if json.Unmarshal([]byte(runtimeValueString(fout)), &fres) != nil {
+			continue
+		}
+		for i := range fres {
+			fres[i].Ref = "" // frame-scoped selector is not usable from the page
+			fres[i].Text = fmt.Sprintf("%s [in iframe %s — use browser_snapshot for a ref]", fres[i].Text, trimText(fr.URL, 80))
+		}
+		results = append(results, fres...)
+		if len(results) >= maxResults {
+			results = results[:maxResults]
+			break
+		}
+	}
 	return results, nil
 }
 
