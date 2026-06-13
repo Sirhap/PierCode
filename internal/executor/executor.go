@@ -146,6 +146,7 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserClipboardTool())
 	e.registry.Register(tool.NewBrowserBatchTool())
 	e.registry.Register(tool.NewBrowserScreenshotTool())
+	e.registry.Register(tool.NewBrowserRecordTool())
 	e.registry.Register(tool.NewBrowserWaitTool())
 	e.registry.Register(tool.NewBrowserWaitForFunctionTool())
 	e.registry.Register(tool.NewBrowserHoverTool())
@@ -574,7 +575,7 @@ func isReadOnlyToolName(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "read_file", "list_dir", "glob", "grep", "web_fetch", "skill", "question", "tool_help",
 		"todo_read", "task_list", "task_output", "browser_tabs", "browser_snapshot",
-		"browser_screenshot", "browser_wait", "browser_wait_for_function", "browser_get_content",
+		"browser_screenshot", "browser_record", "browser_wait", "browser_wait_for_function", "browser_get_content",
 		"browser_get_page_text", "browser_pdf", "browser_console", "browser_network",
 		"browser_find", "browser_get_attributes":
 		return true

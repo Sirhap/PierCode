@@ -235,6 +235,7 @@ type BrowserController interface {
 	Type(ctx context.Context, req BrowserTypeRequest) (string, error)
 	Clipboard(ctx context.Context, req BrowserClipboardRequest) (BrowserClipboardResponse, error)
 	Screenshot(ctx context.Context, req BrowserScreenshotRequest) (BrowserScreenshot, error)
+	RecordGIF(ctx context.Context, req BrowserRecordRequest) (BrowserScreenshot, error)
 	Wait(ctx context.Context, req BrowserWaitRequest) (string, error)
 	WaitForFunction(ctx context.Context, req BrowserWaitForFunctionRequest) (string, error)
 	Hover(ctx context.Context, req BrowserHoverRequest) (string, error)
@@ -336,6 +337,13 @@ type BrowserTypeRequest struct {
 type BrowserGetPageTextRequest struct {
 	TabID    *int
 	MaxChars int
+}
+
+type BrowserRecordRequest struct {
+	TabID      *int
+	Frames     int // number of frames to capture (default 12, max 60)
+	IntervalMS int // delay between frames in ms (default 200, min 50)
+	OutputDir  string
 }
 
 type BrowserClipboardRequest struct {

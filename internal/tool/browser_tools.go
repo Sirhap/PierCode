@@ -388,6 +388,36 @@ func NewBrowserScreenshotTool() Tool {
 	}
 }
 
+func NewBrowserRecordTool() Tool {
+	return &browserTool{
+		name:        "browser_record",
+		readOnly:    true,
+		description: "Record a short animated GIF of the controlled tab by capturing a burst of frames. Use to capture a hover/transition/loading sequence. Saved under .piercode/screenshots as a .gif.",
+		parameters: map[string]string{
+			"frames":     "number (optional, default 12, max 60) - frames to capture",
+			"intervalMs": "number (optional, default 200, min 50) - delay between frames",
+			"tabId":      "number (optional) - controlled tab id",
+		},
+		validate: func(map[string]interface{}) error { return nil },
+		execute: func(ctx *Context) (string, error) {
+			shot, err := ctx.Browser.RecordGIF(ctx.Context, BrowserRecordRequest{
+				TabID:      optionalInt(ctx.Args, "tabId"),
+				Frames:     intArgDefault(ctx.Args, "frames", 0),
+				IntervalMS: intArgDefault(ctx.Args, "intervalMs", 0),
+				OutputDir:  filepath.Join(ctx.EffectiveRootDir(), ".piercode", "screenshots"),
+			})
+			if err != nil {
+				return "", err
+			}
+			out := fmt.Sprintf("recorded gif tabId=%d bytes=%d", shot.Tab.TabID, shot.Bytes)
+			if shot.FilePath != "" {
+				out += "\nSaved to: " + shot.FilePath
+			}
+			return out, nil
+		},
+	}
+}
+
 func shouldAttachScreenshot(ctx *Context) bool {
 	if ctx == nil || ctx.Client.SourceClientID == "" || ctx.Client.BroadcastToClient == nil {
 		return false

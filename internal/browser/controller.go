@@ -732,6 +732,90 @@ func (c *Controller) Screenshot(ctx context.Context, req tool.BrowserScreenshotR
 	return shot, nil
 }
 
+// RecordGIF captures a short animated GIF of the controlled tab by grabbing a
+// burst of JPEG frames at a fixed interval and encoding them. It is a simple,
+// dependency-free recorder (no CDP screencast plumbing): good for capturing a
+// hover/transition/loading sequence. Frames and duration are bounded.
+func (c *Controller) RecordGIF(ctx context.Context, req tool.BrowserRecordRequest) (tool.BrowserScreenshot, error) {
+	tab, err := c.ensureTab(ctx, req.TabID)
+	if err != nil {
+		return tool.BrowserScreenshot{}, err
+	}
+	frames := req.Frames
+	if frames <= 0 {
+		frames = 12
+	}
+	if frames > 60 {
+		frames = 60
+	}
+	intervalMS := req.IntervalMS
+	if intervalMS <= 0 {
+		intervalMS = 200
+	}
+	if intervalMS < 50 {
+		intervalMS = 50
+	}
+	captureParams, _ := json.Marshal(map[string]interface{}{"format": "jpeg", "quality": 60})
+
+	shots := make([][]byte, 0, frames)
+	ticker := time.NewTicker(time.Duration(intervalMS) * time.Millisecond)
+	defer ticker.Stop()
+	for i := 0; i < frames; i++ {
+		raw, capErr := c.relay.SendCommand(ctx, Command{
+			TabID:  &tab.TabID,
+			Domain: "Page",
+			Method: "captureScreenshot",
+			Params: captureParams,
+		}, defaultScreenshotTimeout)
+		if capErr != nil {
+			if len(shots) == 0 {
+				return tool.BrowserScreenshot{}, capErr
+			}
+			break // partial recording is still useful
+		}
+		var out struct {
+			Data string `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &out); err == nil {
+			if decoded, derr := base64.StdEncoding.DecodeString(out.Data); derr == nil {
+				shots = append(shots, decoded)
+			}
+		}
+		if i < frames-1 {
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				return tool.BrowserScreenshot{}, ctx.Err()
+			}
+		}
+	}
+
+	gifBytes, err := encodeGIF(shots, intervalMS/10)
+	if err != nil {
+		return tool.BrowserScreenshot{}, fmt.Errorf("failed to encode gif: %w", err)
+	}
+	if gifBytes == nil {
+		return tool.BrowserScreenshot{}, fmt.Errorf("no frames captured for gif")
+	}
+
+	outputDir := filepath.Clean(strings.TrimSpace(req.OutputDir))
+	if outputDir == "" {
+		return tool.BrowserScreenshot{}, fmt.Errorf("gif output directory is required")
+	}
+	if mkErr := os.MkdirAll(outputDir, 0o755); mkErr != nil {
+		return tool.BrowserScreenshot{}, fmt.Errorf("failed to create gif dir: %w", mkErr)
+	}
+	tmpFile, mkErr := os.CreateTemp(outputDir, "recording-*.gif")
+	if mkErr != nil {
+		return tool.BrowserScreenshot{}, fmt.Errorf("failed to create gif file: %w", mkErr)
+	}
+	defer tmpFile.Close()
+	if _, mkErr = tmpFile.Write(gifBytes); mkErr != nil {
+		return tool.BrowserScreenshot{}, fmt.Errorf("failed to write gif: %w", mkErr)
+	}
+	return tool.BrowserScreenshot{Tab: tab, Format: "gif", Bytes: len(gifBytes), FilePath: tmpFile.Name()}, nil
+}
+
 func (c *Controller) Viewport(ctx context.Context, req tool.BrowserViewportRequest) (string, error) {
 	tab, err := c.ensureTab(ctx, req.TabID)
 	if err != nil {
