@@ -25,6 +25,8 @@ type Controller struct {
 	approvals *ApprovalManager
 	events    *EventBus
 	snapSeq   atomic.Uint64
+	fidelity  InputFidelity
+	sleep     func(ctx context.Context, d time.Duration) error
 }
 
 func NewController(relay *RelayManager, broadcast func([]byte)) *Controller {
@@ -34,6 +36,8 @@ func NewController(relay *RelayManager, broadcast func([]byte)) *Controller {
 		policy:    NewSecurityPolicy(),
 		approvals: NewApprovalManager(broadcast),
 		events:    NewEventBus(),
+		fidelity:  defaultInputFidelity(),
+		sleep:     ctxSleep,
 	}
 }
 
