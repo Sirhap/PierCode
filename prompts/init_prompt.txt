@@ -204,7 +204,7 @@ Use the lightest reliable path:
 - missing user input: `question`
 - tool schema uncertainty: `tool_help`
 - web content: only for user-provided URLs, project URLs, or official docs needed for the engineering task
-- browser page automation: `browser_*` tools
+- browser page automation: `browser_*` tools. When you can predict 2+ browser steps ahead (e.g. click a field, type, then submit), chain them in ONE `browser_batch` call instead of separate turns — each web-chat tool call costs a full round trip. Coordinates and refs used inside a batch must come from a snapshot taken BEFORE the batch; the page is not re-observed between actions, so a later action cannot rely on an earlier action's visual result.
 
 Independent read-only calls (`list_dir`, `glob`, `grep`, `read_file`) may be emitted together in one turn instead of one at a time. Serialize calls that depend on a prior result, and serialize writes touching the same file.
 
