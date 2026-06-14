@@ -43,6 +43,7 @@ func TestBrowserReadOnlyToolsMetadata(t *testing.T) {
 		NewBrowserCookiesTool(), NewBrowserFinalizeTabsTool(), NewBrowserViewportTool(),
 		NewBrowserDownloadsTool(), NewBrowserStorageTool(), NewBrowserSetCookieTool(),
 		NewBrowserWaitForNavigationTool(), NewBrowserEmulateTool(), NewBrowserGetAttributesTool(),
+		NewBrowserMarkTool(),
 	}
 
 	seen := map[string]bool{}
