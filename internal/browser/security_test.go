@@ -179,3 +179,57 @@ func TestIsSensitiveAllowlistOverride(t *testing.T) {
 		t.Fatal("non-allowlisted sensitive domain must still be flagged")
 	}
 }
+
+// TestRegistrableDomainGrantScope pins the per-site grant key behavior: an
+// approval is scoped to the registrable domain (eTLD+1), so every subdomain of
+// a site shares one grant (the "*.domain" wildcard the approval model relies on)
+// while a different site never does. This is what makes "always allow this site"
+// cover www.x.com after the user approved app.x.com.
+func TestRegistrableDomainGrantScope(t *testing.T) {
+	same := []string{
+		"https://app.example.com/a",
+		"https://www.example.com/b",
+		"https://example.com/c",
+		"https://deep.sub.example.com/d",
+	}
+	var first string
+	for i, raw := range same {
+		got, ok := registrableDomain(raw)
+		if !ok {
+			t.Fatalf("registrableDomain(%q) not ok", raw)
+		}
+		if i == 0 {
+			first = got
+		}
+		if got != "example.com" {
+			t.Errorf("registrableDomain(%q)=%q want example.com", raw, got)
+		}
+		if got != first {
+			t.Errorf("subdomains must collapse to one grant key: %q vs %q", got, first)
+		}
+	}
+
+	// Multi-label public suffixes (co.uk) must not collapse to the suffix.
+	if got, _ := registrableDomain("https://shop.example.co.uk/x"); got != "example.co.uk" {
+		t.Errorf("registrableDomain(co.uk)=%q want example.co.uk", got)
+	}
+	// A different site shares no grant key.
+	if got, _ := registrableDomain("https://other.com/x"); got == "example.com" {
+		t.Errorf("different site must not share the example.com grant key")
+	}
+	// IP literals / single-label hosts have no eTLD+1 — they match themselves.
+	if got, ok := registrableDomain("http://127.0.0.1:8080/x"); !ok || got != "127.0.0.1" {
+		t.Errorf("IP literal should map to itself, got %q ok=%v", got, ok)
+	}
+	// IPv6 literal (url.Hostname strips the brackets) must also map to itself.
+	if got, ok := registrableDomain("http://[::1]:8080/x"); !ok || got != "::1" {
+		t.Errorf("IPv6 literal should map to itself, got %q ok=%v", got, ok)
+	}
+	if got, ok := registrableDomain("http://localhost:3000/x"); !ok || got != "localhost" {
+		t.Errorf("localhost should map to itself, got %q ok=%v", got, ok)
+	}
+	// Garbage / empty host is not ok.
+	if _, ok := registrableDomain("not a url"); ok {
+		t.Errorf("unparseable host should return ok=false")
+	}
+}

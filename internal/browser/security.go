@@ -2,6 +2,7 @@ package browser
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -37,10 +38,17 @@ func registrableDomain(raw string) (string, bool) {
 	if host == "" {
 		return "", false
 	}
+	// IP literals must be compared whole. publicsuffix does NOT error on an IPv4
+	// address (it treats 127.0.0.1 as a domain and returns "0.1" — its last two
+	// labels), which would make every x.0.1 host share one grant key. Detect IPs
+	// up front and return them verbatim.
+	if net.ParseIP(host) != nil {
+		return host, true
+	}
 	d, err := publicsuffix.EffectiveTLDPlusOne(host)
 	if err != nil {
-		// IP literals / single-label hosts (localhost) have no eTLD+1; compare
-		// the bare host instead so they still match themselves.
+		// Single-label hosts (localhost) have no eTLD+1; compare the bare host
+		// instead so they still match themselves.
 		return host, true
 	}
 	return d, true
