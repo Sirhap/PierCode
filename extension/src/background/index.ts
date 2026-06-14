@@ -110,6 +110,10 @@ const DEBUGGER_EVENTS_TO_RELAY = new Set([
   'Network.requestWillBeSent',
   'Network.responseReceived',
   'Network.loadingFailed',
+  // Renderer crash: fires when the tab's render process dies. Unlike a closed
+  // tab it triggers neither tabs.onRemoved nor debugger.onDetach, so without
+  // relaying this the controller keeps a stale CDP state for a dead tab.
+  'Inspector.targetCrashed',
 ]);
 
 async function probeBridge(tabId: number): Promise<BridgeProbe> {
@@ -870,6 +874,10 @@ async function enableDebuggerDomains(tabId: number): Promise<void> {
     ['Page.setLifecycleEventsEnabled', { enabled: true }],
     ['Runtime.enable', {}],
     ['Network.enable', { maxPostDataSize: 65536 }],
+    // Subscribe to Inspector.targetCrashed so a renderer crash is surfaced to
+    // the controller (which then marks the tab stale instead of failing every
+    // subsequent browser_* call against dead CDP state).
+    ['Inspector.enable', {}],
     // Flat-session auto-attach (Chrome 125+) so cross-origin OOPIF child frames
     // surface as addressable sessions via Target.attachedToTarget. Harmless on
     // older Chrome (the command simply errors and is ignored).

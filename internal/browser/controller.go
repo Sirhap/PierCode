@@ -86,6 +86,16 @@ func (c *Controller) HandleEvent(event Event) {
 		// All CDP state (DOM, Accessibility) for this tab is now invalid.
 		c.tabs.MarkStale(event.TabID)
 		c.events.ClearDomainTracking(event.TabID)
+	case "Inspector.targetCrashed":
+		// The tab's renderer process crashed. Unlike a closed tab this fires
+		// neither tab_removed nor debugger_detached, so the controller would
+		// otherwise keep treating the tab as live and fail every subsequent
+		// browser_* call against dead CDP state. Invalidate cached snapshots and
+		// domain tracking; a reload/re-attach re-enables the domains.
+		c.tabs.MarkStale(event.TabID)
+		c.events.ClearConsole(event.TabID)
+		c.events.ClearNetwork(event.TabID)
+		c.events.ClearDomainTracking(event.TabID)
 	}
 }
 

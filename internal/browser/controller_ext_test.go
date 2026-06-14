@@ -928,3 +928,26 @@ func TestAssertPointActionableRejectsDisabled(t *testing.T) {
 		t.Fatalf("expected disabled reason surfaced, got %v", err)
 	}
 }
+
+func TestHandleEventTargetCrashedInvalidatesTab(t *testing.T) {
+	relay := NewRelayManagerFromSend(func([]byte) bool { return true })
+	c := NewController(relay, func([]byte) {})
+	const tabID = 7
+
+	// Simulate a controlled tab with live CDP state: enabled domains + a cached
+	// snapshot. A renderer crash must invalidate both.
+	c.events.MarkDomainEnabled(tabID, "Runtime")
+	c.events.MarkDomainEnabled(tabID, "Network")
+	c.tabs.StoreSnapshot(tool.BrowserTab{TabID: tabID, URL: "https://example.com"}, "snap-1", nil)
+
+	c.HandleEvent(Event{Event: "Inspector.targetCrashed", TabID: tabID})
+
+	if c.events.IsDomainEnabled(tabID, "Runtime") || c.events.IsDomainEnabled(tabID, "Network") {
+		t.Fatal("targetCrashed must clear domain tracking so a re-attach re-enables")
+	}
+	// The cached snapshot must be marked stale (refs no longer resolvable on the
+	// crashed/reloaded renderer).
+	if _, err := c.tabs.ResolveRef(tabID, "snap-1", "e0"); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("targetCrashed must mark the tab's snapshot stale, got err=%v", err)
+	}
+}
