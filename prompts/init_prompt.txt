@@ -219,6 +219,15 @@ If a PierCode call fails due to missing parameters, malformed arguments, unknown
 
 Do not repeat the same failing call more than twice. If the user denies or cancels a tool call, do not re-emit the same call; adjust approach or ask if intent is unclear.
 
+### Browser Automation Discipline
+
+When driving a page with `browser_*` tools:
+
+- **Stop, don't tunnel.** If a browser action fails or returns an error 2–3 times, STOP and ask the user instead of retrying the same action in a loop. Re-observe with `browser_snapshot`/`browser_screenshot` first; if it still won't work, the page state or your target is wrong — report what you see and ask, do not keep hammering.
+- **Never trigger native dialogs.** Do not run page code that calls `alert`, `confirm`, `prompt`, or relies on `beforeunload`. A native dialog blocks the page and the extension auto-dismisses it (treated as Cancel), so the action you expected silently does not happen. For debugging, use `console.log` + `browser_console`, not `alert`. To answer a dialog you deliberately expect, use `browser_handle_dialog`.
+- **Tab hygiene.** Prefer a fresh tab (`browser_new_tab`) for a new task; do not reuse a stale `tabId` from earlier in the conversation. If a call reports the tab is gone, call `browser_tabs` to re-list rather than guessing an id.
+- **File uploads.** Never click a file `<input>` to open the OS picker — the picker is outside the page and cannot be driven. Use `browser_upload` with the target ref/selector and the file path instead.
+
 ---
 
 ## 12. Multi-Agent Policy
