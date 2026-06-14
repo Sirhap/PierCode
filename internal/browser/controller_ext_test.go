@@ -775,3 +775,51 @@ func TestDispatchDragHoldsAndInterpolates(t *testing.T) {
 		t.Fatalf("expected 60ms drag-hold sleep")
 	}
 }
+
+func TestGetPageTextReturnsExtractedText(t *testing.T) {
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		// pageTextExpression runs one Runtime.evaluate returning the article text
+		// as a JSON string value (returnByValue=true).
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"value":"Main article body.\nSecond paragraph."}}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+	c.tabs.SetDefault(tool.BrowserTab{TabID: 1, URL: "https://example.com/post"})
+
+	text, err := c.GetPageText(context.Background(), tool.BrowserGetPageTextRequest{})
+	if err != nil {
+		t.Fatalf("GetPageText err: %v", err)
+	}
+	if !strings.Contains(text, "Main article body.") || !strings.Contains(text, "Second paragraph.") {
+		t.Fatalf("expected extracted article text, got %q", text)
+	}
+}
+
+func TestGetPageTextTruncatesToMaxChars(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		data, _ := json.Marshal(map[string]interface{}{"result": map[string]interface{}{"value": long}})
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: data})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+	c.tabs.SetDefault(tool.BrowserTab{TabID: 1, URL: "https://example.com/post"})
+
+	text, err := c.GetPageText(context.Background(), tool.BrowserGetPageTextRequest{MaxChars: 100})
+	if err != nil {
+		t.Fatalf("GetPageText err: %v", err)
+	}
+	if !strings.Contains(text, "[truncated]") {
+		t.Fatalf("expected truncation marker, got len=%d %q", len([]rune(text)), text)
+	}
+	// 100 chars of content + the truncation marker line.
+	if got := len([]rune(strings.TrimSuffix(text, "\n…[truncated]"))); got != 100 {
+		t.Fatalf("expected 100 content runes before marker, got %d", got)
+	}
+}

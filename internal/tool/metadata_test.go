@@ -26,6 +26,7 @@ func TestBrowserReadOnlyToolsMetadata(t *testing.T) {
 		"browser_wait": true, "browser_wait_for_function": true, "browser_get_content": true,
 		"browser_console": true, "browser_network": true, "browser_pdf": true,
 		"browser_find": true, "browser_get_attributes": true,
+		"browser_get_page_text": true,
 	}
 
 	// Every browser tool constructor, built the same way the executor registers them.
@@ -43,7 +44,7 @@ func TestBrowserReadOnlyToolsMetadata(t *testing.T) {
 		NewBrowserCookiesTool(), NewBrowserFinalizeTabsTool(), NewBrowserViewportTool(),
 		NewBrowserDownloadsTool(), NewBrowserStorageTool(), NewBrowserSetCookieTool(),
 		NewBrowserWaitForNavigationTool(), NewBrowserEmulateTool(), NewBrowserGetAttributesTool(),
-		NewBrowserMarkTool(),
+		NewBrowserMarkTool(), NewBrowserGetPageTextTool(),
 	}
 
 	seen := map[string]bool{}
