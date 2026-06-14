@@ -233,3 +233,29 @@ func TestRegistrableDomainGrantScope(t *testing.T) {
 		t.Errorf("unparseable host should return ok=false")
 	}
 }
+
+// TestSameRegistrableHostGuardsCrossSite locks the cross-origin guard's
+// same-site test, including the IP case that the grant-key bug broke: two
+// different IP hosts must NOT be treated as the same site (they previously
+// collapsed to "0.1"), or a navigate could cross between unrelated IPs without
+// tripping the guard.
+func TestSameRegistrableHostGuardsCrossSite(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"https://app.example.com/a", "https://www.example.com/b", true},
+		{"https://example.com", "https://example.com/other", true},
+		{"https://example.com", "https://evil.com", false},
+		{"https://example.co.uk", "https://shop.example.co.uk", true},
+		{"http://127.0.0.1:8080/a", "http://127.0.0.1:9090/b", true},
+		{"http://127.0.0.1/a", "http://8.0.1/b", false}, // regression: must not collapse to "0.1"
+		{"http://localhost/a", "http://127.0.0.1/b", false},
+		{"", "https://example.com", false},
+	}
+	for _, c := range cases {
+		if got := sameRegistrableHost(c.a, c.b); got != c.want {
+			t.Errorf("sameRegistrableHost(%q,%q)=%v want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
