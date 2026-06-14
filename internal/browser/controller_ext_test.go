@@ -823,3 +823,52 @@ func TestGetPageTextTruncatesToMaxChars(t *testing.T) {
 		t.Fatalf("expected 100 content runes before marker, got %d", got)
 	}
 }
+
+func TestAssertPointActionableChecksEnabledAndVisible(t *testing.T) {
+	var payloads []string
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		payloads = append(payloads, string(payload))
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"value":{"ok":true}}}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+
+	if err := c.assertPointActionable(context.Background(), 1, 50, 60); err != nil {
+		t.Fatalf("actionable err: %v", err)
+	}
+	if len(payloads) == 0 {
+		t.Fatal("no hit-test command sent")
+	}
+	probe := strings.Join(payloads, "\n")
+	// The hit-test must reject disabled controls and hidden elements, not just
+	// off-viewport / no-element points (audit #5 visible/enabled).
+	if !strings.Contains(probe, "disabled") {
+		t.Errorf("hit-test expression does not check disabled state")
+	}
+	if !strings.Contains(probe, "visibility") {
+		t.Errorf("hit-test expression does not check visibility")
+	}
+}
+
+func TestAssertPointActionableRejectsDisabled(t *testing.T) {
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		// Page reports the hit element is disabled.
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"result":{"value":{"ok":false,"reason":"the element at the click point is disabled"}}}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+
+	err := c.assertPointActionable(context.Background(), 1, 50, 60)
+	if err == nil {
+		t.Fatal("expected disabled element to be rejected as not actionable")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("expected disabled reason surfaced, got %v", err)
+	}
+}

@@ -1418,6 +1418,16 @@ func (c *Controller) assertPointActionable(ctx context.Context, tabID int, x, y 
   if(x<0||y<0||x>vw||y>vh) return {ok:false, reason:'point ('+Math.round(x)+','+Math.round(y)+') is outside the '+vw+'x'+vh+' viewport — scroll the element into view first'};
   var el=document.elementFromPoint(x,y);
   if(!el) return {ok:false, reason:'no element at the click point — it may be covered or off-screen'};
+  // Reject disabled controls: the click would dispatch but the page ignores it,
+  // which previously read back as a false success.
+  var dis=el.closest('button,input,select,textarea,fieldset,optgroup,option,[disabled],[aria-disabled="true"]');
+  if(dis && (dis.disabled===true || dis.getAttribute('aria-disabled')==='true'))
+    return {ok:false, reason:'the element at the click point is disabled — it will not respond'};
+  // Reject explicitly hidden elements (defensive: a visibility:hidden hit-target
+  // means the visible thing is something else).
+  var cs=getComputedStyle(el);
+  if(cs && (cs.visibility==='hidden' || cs.display==='none'))
+    return {ok:false, reason:'the element at the click point is not visible (visibility/display)'};
   return {ok:true};
 })()`, x, y)
 	out, err := c.runtimeEvaluate(ctx, tabID, expr, false, defaultActionTimeout, true)
