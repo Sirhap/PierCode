@@ -81,8 +81,8 @@ Local Filesystem / Browser CDP
 
 **`internal/tool/`**: Tool implementations (each tool implements the `Tool` interface in `tool.go`)
 - `registry.go`: Thread-safe tool registry (Register/Get/List)
-- Core tools: `exec_cmd`, `read_file`, `write_file`, `edit`, `apply_patch` (multi-file contextual patches), `list_dir`, `glob`, `grep`, `web_fetch`, `skill`, `question`, `todo_write`, `todo_read`, `task_list`, `task_output`, `task_stop`, `send_stdin`, `tool_help` (on-demand tool docs)
-- Browser tools (`browser_tools.go`, `browser_tools_ext.go`, `browser_tools_find.go`): ~25 browser automation tools using CDP via the extension's debugger API. **Tab control**: `controller.go` `ensureTab` resolves the target — explicit `tabId` arg → registry default tab → auto-create. A tab the AI opens itself via `browser_new_tab`/`Navigate` becomes the controlled default and (if an AI page like qwen.ai) is **pre-approved** (`MarkApproved`), so the next `browser_*` call isn't blocked by the AI-page gate — EXCEPT a `spawn_agent` worker tab (URL has `?piercode_agent=`), which stays non-default/uncontrolled (`isWorkerAgentURL`) since it self-drives. The user's OWN existing AI conversation tabs still require explicit `browser_use_tab` approval. `browser_tabs` always surfaces controlled/tracked AI pages regardless of `includeAiPages`; only the user's untracked AI tabs are hidden by default.
+- Core tools: `exec_cmd`, `read_file`, `write_file`, `edit`, `multi_edit`, `apply_patch` (multi-file contextual patches), `move`, `undo`, `list_dir`, `glob`, `grep`, `web_fetch`, `skill`, `question`, `todo_write`, `todo_read`, `task_list`, `task_output`, `task_stop`, `send_stdin`, `tool_help` (on-demand tool docs), `memory_read`/`memory_write`/`memory_forget` (persistent memory)
+- Browser tools (`browser_tools.go`, `browser_tools_ext.go`, `browser_tools_find.go`, `browser_tools_state.go`, `browser_tools_stability.go`): ~44 browser automation tools using CDP via the extension's debugger API. **Tab control**: `controller.go` `ensureTab` resolves the target — explicit `tabId` arg → registry default tab → auto-create. A tab the AI opens itself via `browser_new_tab`/`Navigate` becomes the controlled default and (if an AI page like qwen.ai) is **pre-approved** (`MarkApproved`), so the next `browser_*` call isn't blocked by the AI-page gate — EXCEPT a `spawn_agent` worker tab (URL has `?piercode_agent=`), which stays non-default/uncontrolled (`isWorkerAgentURL`) since it self-drives. The user's OWN existing AI conversation tabs still require explicit `browser_use_tab` approval. `browser_tabs` always surfaces controlled/tracked AI pages regardless of `includeAiPages`; only the user's untracked AI tabs are hidden by default.
 - Multi-agent tools (`agent_tools.go`, `agent_registry.go`): `spawn_agent` / `send_to_agent` / `stop_agent` let a coordinator AI dispatch worker agents into new AI tabs. `AgentRegistry` maps `agent_id → {dispatcher, worker, status}`. Worker page carries `?piercode_agent=<id>` in its tab URL → WS `agent` query → server binds it (`handleWS`) and seeds the `worker`-profile prompt + task via an `inject` message. Worker reports back with a `piercode-agent-result` fenced packet → content detects it → WS `agent_result` → server routes a `<task-notification>` `inject` to the dispatcher (push callback; coordinator never polls). Worker prompt contract lives in `prompts/worker_append.txt` (the `worker` profile).
 - **Sidebar API sub-agents** (a separate system from the web-worker route above): the chat sidebar (`extension/src/sidebar/`) talks to AI platforms directly via API, and its `spawn_agent` runs each sub-agent as an in-memory API sub-conversation (`background/chat-api.ts` `runSubAgent` → `runIsolatedConversation`), with NO browser tab — so none of the web-worker plumbing (Monaco-truncation packet parsing, keep-alive shim, WS `agent_result` routing, URL-migration callback loss) applies. Sub-agents run in parallel and **asynchronously**: a spawn-only turn ends immediately (CHAT_DONE unlocks the sidebar input) while the batch runs detached through the recoverable-batch machinery (`launchSidebarSpawnBatch`; the batch record carries `inject: MainTurnContext`, so checkpoints / keep-alive / SW-restart resume all apply). The finished batch's summary goes to an **idle-injection queue** (`drainInjectionQueue`) that continues the main conversation as a new turn only when no `handleChatRequest` is in flight, so injections never interleave with a user message. Each worker has its own abort via `mergedAgentSignal(agentId, currentAbort?.signal)` (signal-merge of global-stop + per-worker cancel), cancellable from its AgentDock row's ✕ → `CHAT_AGENT_ABORT` → `agentAborts.get(id).abort()`. A sub-agent that itself emits `spawn_agent` gets an explicit rejection tool-result (nesting boundary) instead of a silent drop. Lifecycle events carry `origin: 'sidebar' | 'tab'`; the sidebar drops `'tab'` events so the content-route StatusPanel and the sidebar never cross-render each other's agents. Live status UI is `sidebar/AgentDock.tsx` (top-right badge + drawer; a running row previews its current tool call, expanding a row shows the ⏺/⎿ call tree parsed from the streamed transcript by `subagent-ui.ts` `parseAgentToolCalls`). Once a whole batch is terminal the parent chat gets ONE inline `agentSummary` card (`subagent-ui.ts` `buildAgentSummary` → `MessageView` ⏺/⎿ tree). The content-route equivalent is the StatusPanel's top-right floating agents card (`content/status-panel.ts` `addAgent`/`appendAgentChunk`/`setAgentDone`): `broadcastAgentLifecycle` also routes `CHAT_AGENT_STREAM` to the origin tab, where the card accumulates the transcript and previews the current (last closed) tool call per running agent. The listen route (chatgpt page-driven tab) still awaits spawns inline — it has no injection channel.
 - `tool.go`: `Tool` interface, `Context` struct (10 fields — core: RootDir snapshot, Args, Config; capability groups `Client ClientIO` (Streamer/Broadcast/BroadcastToClient/SourceClientID/ConversationURL, defined in `context_client.go`) and `Tasks TaskAccess` (background-task Runner, in `context_tasks.go`); plus `Browser` + `Agents`. Groups embed by value so a bare `&Context{}` in tests reads `ctx.Client.X` / `ctx.Tasks.Runner` without panic; nil/empty = capability unavailable, nil-checked per field), `BrowserController` interface
@@ -105,19 +105,20 @@ Local Filesystem / Browser CDP
 
 **`internal/types/types.go`**: Shared types (`Config`, `ToolRequest`, `ToolResponse`)
 
-**`prompts/`**: Embedded prompt templates (`init_prompt.txt`, `qwen_append.txt`) via `//go:embed`
+**`prompts/`**: Embedded prompt templates (`init_prompt.txt`, `qwen_append.txt`, `worker_append.txt`) via `//go:embed`
 
 ### Extension Architecture
 
-Built with Vite + React + TypeScript + Tailwind CSS. Five entry points (see `vite.config.ts`):
+Built with Vite + React + TypeScript + Tailwind CSS. Six entry points (see `vite.config.ts` `rollupOptions.input`):
 
 | Entry | Output | Purpose |
 |-------|--------|---------|
 | `src/content/` | `content.js` | Injected into AI pages; detects tool calls, renders approval UI |
 | `src/background/` | `background.js` | Service worker; proxies HTTP to server, manages WebSocket, drives CDP |
 | `src/popup/` | `popup.html` | Extension popup; auth URL input, connection status, relay controls |
-| `src/injected/` | `injected.js` | Page-context script for editor interaction |
-| `src/page-bridge/` | `page-bridge.js` | Bridge between content script and injected script; also installs the keep-alive visibility shim |
+| `src/sidebar/` | `sidebar.html` | Chat sidebar UI; talks to AI platforms directly via API, runs API sub-agents |
+| `src/page-bridge/` | `page-bridge.js` | Bridge to page context; installs the keep-alive visibility shim |
+| `src/offscreen/` | `offscreen.js` | Offscreen document; hidden iframe for qwen bx-ua page-env fetch |
 
 **Platform adapter pattern** (`src/platform-adapters/`): Each supported AI site has its own adapter module. Adapters are matched by URL in priority order in `platform-adapters.ts`.
 
@@ -137,7 +138,7 @@ Currently supported platforms (from manifest + adapters):
 - Qwen (`qwen.ai`, `qwenlm.ai`)
 - Chat Z (`chat.z.ai`)
 - Kimi (`kimi.com`)
-- Claude (`claude.ai`)
+- Claude (`claude.ai`, `free.easychat.top` — Claude-compatible mirror, shares the Claude adapter)
 - ChatGPT (`chatgpt.com`, `chat.openai.com`)
 - Mimo (`aistudio.xiaomimimo.com`)
 
