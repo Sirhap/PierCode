@@ -305,6 +305,12 @@ func TestIsAllowedOrigin(t *testing.T) {
 		{"explicit whitelist match", "https://staging.app", []string{"https://staging.app"}, true},
 		{"whitelist requires exact match", "https://staging.app:443", []string{"https://staging.app"}, false},
 		{"malformed origin rejected", "://broken", nil, false},
+		// CSWSH bypass attempts: an attacker host that merely CONTAINS a loopback
+		// label must not pass the loopback check (Hostname() is compared whole).
+		{"loopback subdomain spoof rejected", "http://127.0.0.1.evil.com", nil, false},
+		{"localhost subdomain spoof rejected", "https://localhost.evil.com", nil, false},
+		{"loopback-prefixed host rejected", "http://127.0.0.1-evil.com", nil, false},
+		{"localhost as suffix rejected", "http://evil.localhost.com", nil, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
