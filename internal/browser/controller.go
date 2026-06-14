@@ -188,6 +188,10 @@ func (c *Controller) NewTab(ctx context.Context, rawURL string) (tool.BrowserTab
 		if isAIPage {
 			c.tabs.MarkApproved(tab.TabID)
 		}
+		// Start capturing console/network from the moment the tab is controlled,
+		// not lazily on first read. Worker tabs (controlled=false) are skipped:
+		// they self-drive and are not the coordinator's target.
+		c.ensureCaptureDomains(ctx, tab.TabID)
 	}
 	tab = c.tabs.Upsert(tab)
 	return tab, nil
@@ -222,6 +226,7 @@ func (c *Controller) UseTab(ctx context.Context, tabID int, reason, callID strin
 	tab = c.tabs.Upsert(tab)
 	// [Fixed by mimo-v2.5-pro: persist AI page approval so downstream tools don't re-block]
 	c.tabs.MarkApproved(tab.TabID)
+	c.ensureCaptureDomains(ctx, tab.TabID)
 	return tab, nil
 }
 
@@ -1092,6 +1097,42 @@ func (c *Controller) Downloads(ctx context.Context, req tool.BrowserDownloadsReq
 
 // ensureTab resolves the target tab for a browser tool call.
 // [Fixed by mimo-v2.5-pro: skip AI page block for tabs approved via browser_use_tab]
+// ensureCaptureDomains eagerly enables the Runtime and Network CDP domains for a
+// tab the moment it comes under control, so console messages and network
+// requests that occur BEFORE the first browser_console/browser_network call are
+// still captured (lazy enable on first read dropped all load-time logs).
+//
+// It is fire-and-forget: each enable runs in its own goroutine with its own
+// timeout so a slow/unresponsive relay can NEVER block the tool path (a
+// synchronous enable would stall every first-touch browser_* call until the
+// relay answers). It is idempotent — EventBus.IsDomainEnabled de-dupes, and a
+// duplicate CDP *.enable is harmless if two calls race. Enable failures are
+// non-fatal (logged): a tab that can't enable Network still works for clicks.
+func (c *Controller) ensureCaptureDomains(_ context.Context, tabID int) {
+	if c.events == nil {
+		return
+	}
+	for _, domain := range []string{"Runtime", "Network"} {
+		if c.events.IsDomainEnabled(tabID, domain) {
+			continue
+		}
+		go func(domain string) {
+			ctx, cancel := context.WithTimeout(context.Background(), defaultReadTimeout)
+			defer cancel()
+			if _, err := c.relay.SendCommand(ctx, Command{
+				TabID:  &tabID,
+				Domain: domain,
+				Method: "enable",
+				Params: json.RawMessage(`{}`),
+			}, defaultReadTimeout); err != nil {
+				log.Printf("[PierCode] eager %s.enable on tab %d failed: %v", domain, tabID, err)
+				return
+			}
+			c.events.MarkDomainEnabled(tabID, domain)
+		}(domain)
+	}
+}
+
 func (c *Controller) ensureTab(ctx context.Context, tabID *int) (tool.BrowserTab, error) {
 	if tabID != nil && *tabID > 0 {
 		tab, err := c.getTab(ctx, *tabID)

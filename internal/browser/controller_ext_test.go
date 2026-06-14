@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -850,6 +851,61 @@ func TestAssertPointActionableChecksEnabledAndVisible(t *testing.T) {
 	}
 	if !strings.Contains(probe, "visibility") {
 		t.Errorf("hit-test expression does not check visibility")
+	}
+}
+
+func TestEnsureCaptureDomainsEnablesEagerlyAndOnce(t *testing.T) {
+	type de struct{ domain, method string }
+	var mu sync.Mutex
+	var seen []de
+	snapshot := func() []de {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make([]de, len(seen))
+		copy(out, seen)
+		return out
+	}
+	var relay *RelayManager
+	relay = NewRelayManagerFromSend(func(payload []byte) bool {
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		mu.Lock()
+		seen = append(seen, de{cmd.Domain, cmd.Method})
+		mu.Unlock()
+		go relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{}`)})
+		return true
+	})
+	c := NewController(relay, func([]byte) {})
+
+	// Enable is fire-and-forget (async), so wait for both domains to be marked
+	// enabled rather than reading `seen` immediately.
+	c.ensureCaptureDomains(context.Background(), 1)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.events.IsDomainEnabled(1, "Runtime") && c.events.IsDomainEnabled(1, "Network") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	hasRuntime, hasNetwork := false, false
+	for _, d := range snapshot() {
+		if d.domain == "Runtime" && d.method == "enable" {
+			hasRuntime = true
+		}
+		if d.domain == "Network" && d.method == "enable" {
+			hasNetwork = true
+		}
+	}
+	if !hasRuntime || !hasNetwork {
+		t.Fatalf("expected eager Runtime.enable + Network.enable, got %+v", snapshot())
+	}
+
+	// Second call must be a no-op (domains already enabled) — no duplicate enables.
+	before := len(snapshot())
+	c.ensureCaptureDomains(context.Background(), 1)
+	time.Sleep(50 * time.Millisecond) // give any erroneous async enable time to fire
+	if got := len(snapshot()); got != before {
+		t.Fatalf("expected no duplicate enables on second call, sent %d extra", got-before)
 	}
 }
 
