@@ -168,8 +168,10 @@ func markCollectorExpression() string {
       role:roleAttr||tag, text:ownText(node), ref:stableSelector(node)});
   }
   function walkDoc(doc,offX,offY,depth){
-    if(!doc||depth>4) return;
-    var walker=doc.createTreeWalker(doc.body||doc.documentElement,NodeFilter.SHOW_ELEMENT,null,false);
+    if(!doc||depth>8) return;
+    // A ShadowRoot has no body/documentElement — use the root itself.
+    var rootEl=doc.body||doc.documentElement||doc;
+    var walker=doc.createTreeWalker(rootEl,NodeFilter.SHOW_ELEMENT,null,false);
     var node;
     while(node=walker.nextNode()){
       if(node.tagName==='IFRAME'||node.tagName==='FRAME'){
@@ -182,6 +184,12 @@ func markCollectorExpression() string {
         continue;
       }
       consider(node,offX,offY);
+      // Descend into an OPEN shadow root (web components). createTreeWalker does
+      // not cross the shadow boundary, so interactive controls inside custom
+      // elements are invisible without this. Closed roots read back null and are
+      // unreachable by design. getBoundingClientRect inside shadow DOM is in the
+      // same viewport coordinate space, so the offset is unchanged.
+      if(node.shadowRoot){ walkDoc(node.shadowRoot,offX,offY,depth+1); }
     }
   }
   walkDoc(document,0,0,0);

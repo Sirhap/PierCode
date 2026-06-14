@@ -58,3 +58,21 @@ func TestMarkOverlayExpressionContainsBadges(t *testing.T) {
 		t.Fatalf("clear expr should remove the overlay host")
 	}
 }
+
+// TestCollectorsPierceShadowDOM pins that both in-page element collectors descend
+// into open shadow roots (web components), so controls inside custom elements are
+// discoverable by browser_find / browser_mark and clickable by mark/ref. The
+// expressions run in the page, not the test, so this asserts the generated JS
+// contains the shadow-root descent rather than executing it.
+func TestCollectorsPierceShadowDOM(t *testing.T) {
+	mark := markCollectorExpression()
+	find := findElementsExpression("button", 10)
+	for name, expr := range map[string]string{"markCollectorExpression": mark, "findElementsExpression": find} {
+		if !strings.Contains(expr, "shadowRoot") {
+			t.Errorf("%s does not descend into shadow roots (no shadowRoot reference)", name)
+		}
+		if !strings.Contains(expr, "walkDoc(node.shadowRoot") {
+			t.Errorf("%s does not recurse walkDoc into node.shadowRoot", name)
+		}
+	}
+}

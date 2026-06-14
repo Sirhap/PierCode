@@ -565,8 +565,10 @@ func findElementsExpression(query string, maxResults int) string {
   // Walk a document, then recurse into its SAME-ORIGIN iframes (cross-origin
   // contentDocument access throws and is skipped). depth-capped to avoid runaway.
   function walkDoc(doc, offX, offY, frameUrl, depth) {
-    if (!doc || depth > 4) return;
-    var walker = doc.createTreeWalker(doc.body || doc.documentElement, NodeFilter.SHOW_ELEMENT, null, false);
+    if (!doc || depth > 8) return;
+    // A ShadowRoot has no body/documentElement — use the root itself.
+    var rootEl = doc.body || doc.documentElement || doc;
+    var walker = doc.createTreeWalker(rootEl, NodeFilter.SHOW_ELEMENT, null, false);
     var node;
     while (node = walker.nextNode()) {
       if (node.tagName === 'IFRAME' || node.tagName === 'FRAME') {
@@ -585,6 +587,11 @@ func findElementsExpression(query string, maxResults int) string {
         continue;
       }
       scoreNode(node, offX, offY, frameUrl);
+      // Descend into an OPEN shadow root so controls inside web components are
+      // findable. createTreeWalker does not cross the shadow boundary; closed
+      // roots read back null and are unreachable by design. Coordinates inside
+      // shadow DOM share the viewport space, so the offset is unchanged.
+      if (node.shadowRoot) { walkDoc(node.shadowRoot, offX, offY, frameUrl, depth + 1); }
     }
   }
   walkDoc(document, 0, 0, '', 0);
