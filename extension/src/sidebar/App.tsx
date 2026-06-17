@@ -29,12 +29,12 @@ import { accumulateBatch, AGENT_FADE_DELAY_MS, AGENT_FADE_DURATION_MS, type SubA
 
 type Platform = 'qwen' | 'chatgpt' | 'claude' | 'openai'
 
-// 'openai' 平台仍存在于后台（chat-api PLATFORMS），但不再提供 UI 入口；
-// 旧 openai 会话仍可从会话列表恢复。
+// 'openai' 和 'claude' 仍存在于类型/后台（chat-api PLATFORMS），但不再提供 UI
+// 入口：claude 的侧边栏 API 路径未经验证，作为协调者时 spawn_agent 走 tab-worker
+// （hasApiClient('claude')=false）。旧会话仍可从会话列表恢复。
 const PLATFORMS: { key: Platform; label: string; icon: string; tip: string }[] = [
   { key: 'qwen', label: 'Qwen', icon: '🔮', tip: '需要已登录 chat.qwen.ai' },
   { key: 'chatgpt', label: 'ChatGPT', icon: '💬', tip: '需要已登录 chatgpt.com' },
-  { key: 'claude', label: 'Claude', icon: '🟣', tip: '需要已登录 claude.ai' },
 ]
 
 const DEFAULT_MODELS: Record<Platform, string> = {

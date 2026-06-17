@@ -1,5 +1,6 @@
 import { browserRelayWsUrl, isAiPageUrl } from './browser-relay-utils';
 import { registerChatApiHandler, setListenSendHook } from './chat-api';
+import { installBrowserAgent } from './browser-agent';
 import { syncPhantomCursor } from './phantom-cursor';
 import {
   DOWNLOAD_STORAGE_KEY,
@@ -1216,6 +1217,14 @@ connectBrowserRelay();
 
 // Register the sidebar chat API handler (SSE streaming + tool auto-exec)
 registerChatApiHandler();
+
+// Register the browser-agent orchestrator (BROWSER_AGENT_* messages + the
+// AI-iframe bridge's runtime.connect port). Independent of the CHAT_*/API
+// sub-agent engine above — disjoint message namespace, its own listeners. The
+// iframe bridge's tool-readback is parsed in-frame and posted as
+// BROWSER_AGENT_TOOLS, so this does NOT register a second api-listen receiver
+// (chat-api already owns that with continueListenTurn).
+installBrowserAgent();
 
 // ── Listen-mode tab driver ───────────────────────────────────────────────────
 //

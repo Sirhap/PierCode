@@ -124,7 +124,14 @@ type Profile struct {
 	Prompt       []byte
 	PromptAppend []byte
 	ToolNames    []string
-	SkillNames   []string
+	// ToolNamePrefixes, when non-empty, additionally admits any tool whose name
+	// has one of these prefixes (e.g. "browser_" for the browser-agent profile,
+	// which must expose the whole browser_* family without hardcoding ~44 names
+	// or coupling this package to the executor registry). A tool passes the
+	// filter if it matches ToolNames OR any prefix here. When BOTH ToolNames and
+	// ToolNamePrefixes are nil, all tools are inherited (back-compat).
+	ToolNamePrefixes []string
+	SkillNames       []string
 	// ContextHandoff, when non-empty, is appended to every AI-originated tool
 	// result for this profile (e.g. Qwen's context-packet migration prompt).
 	// Empty means the profile declares no per-call handoff guidance. Keeping it
@@ -161,6 +168,34 @@ func DefaultProfileRegistry(defaultPrompt []byte) *ProfileRegistry {
 		ID:             "worker",
 		PromptAppend:   prompts.WorkerPromptAppend,
 		ContextHandoff: workerResultPacketReminder,
+	})
+	// Browser-agent profile: the AI hosted in the sidebar's embedded AI iframe
+	// (chatgpt/qwen) that drives the user's real browser via browser_* tools. It
+	// inherits the default prompt and gets the browser-operator role + per-turn
+	// <page-snapshot> protocol via PromptAppend. The SW fetches it once with
+	// GET /prompt?profile=browser-agent and prepends it to the first injected
+	// message (chatgpt/qwen have no system slot). No ContextHandoff: the loop
+	// re-injects a fresh snapshot every turn, so no per-result reminder is needed.
+	// Constrain the rendered {{TOOLS}} list to the browser_* family (+ a couple
+	// of generic helpers) so the prompt's "you have NO filesystem/shell tools"
+	// claim is actually TRUE. Previously ToolNames was nil → FilterTools returned
+	// ALL tools, so the rendered prompt advertised read_file/write_file/exec_cmd/
+	// grep with docs; the model would then emit a non-browser tool which the SW's
+	// rawContent reparse (extractToolCalls, unfiltered) actually EXECUTED against
+	// the sandbox, ungated. ToolNamePrefixes covers the whole browser_* family
+	// without hardcoding ~44 names; tool_help/question stay available as generic
+	// no-side-effect helpers.
+	registry.Register(Profile{
+		ID: "browser-agent",
+		// Use a slim browser-operator base prompt instead of inheriting the default
+		// init prompt (whose §4-§16 are file/git/edit engineering, contradicting the
+		// "no filesystem tools" role). The append adds the operator role + snapshot
+		// protocol. ToolNamePrefixes/ToolNames keep the rendered {{TOOLS}} to the
+		// browser_* family + generic helpers (audit Bug #5, full fix).
+		Prompt:           prompts.BrowserAgentBasePrompt,
+		PromptAppend:     prompts.BrowserAgentPromptAppend,
+		ToolNamePrefixes: []string{"browser_"},
+		ToolNames:        []string{"tool_help", "question"},
 	})
 	return registry
 }
@@ -248,12 +283,30 @@ func (p Profile) renderBodyCached(rootDir string, tools []tool.ToolInfo, skills 
 
 func (p Profile) FilterTools(tools []tool.ToolInfo) []tool.ToolInfo {
 	allowed := allowedNameSet(p.ToolNames)
-	if allowed == nil {
+	// nil ToolNames AND nil prefixes = inherit all (back-compat). A non-nil
+	// allowlist OR any prefix narrows the set.
+	if allowed == nil && len(p.ToolNamePrefixes) == 0 {
 		return tools
+	}
+	prefixes := make([]string, 0, len(p.ToolNamePrefixes))
+	for _, pre := range p.ToolNamePrefixes {
+		if pre = strings.ToLower(strings.TrimSpace(pre)); pre != "" {
+			prefixes = append(prefixes, pre)
+		}
+	}
+	hasPrefix := func(name string) bool {
+		for _, pre := range prefixes {
+			if strings.HasPrefix(name, pre) {
+				return true
+			}
+		}
+		return false
 	}
 	filtered := make([]tool.ToolInfo, 0, len(tools))
 	for _, item := range tools {
-		if _, ok := allowed[strings.ToLower(item.Name)]; ok {
+		lower := strings.ToLower(item.Name)
+		_, named := allowed[lower]
+		if named || hasPrefix(lower) {
 			filtered = append(filtered, item)
 		}
 	}

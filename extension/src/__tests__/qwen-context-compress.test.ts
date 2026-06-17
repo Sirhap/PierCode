@@ -44,6 +44,31 @@ describe('qwen context compression helpers', () => {
     expect(result.text).toContain('已省略');
   });
 
+  it('collapses redundant whitespace losslessly when that alone fits the budget', () => {
+    // Body is mostly blank-line padding + trailing spaces: removing them gets it
+    // under the cap, so NO head/tail truncation happens (content stays intact).
+    const realLine = 'real content line';
+    const padded = (realLine + '   \n\n\n\n').repeat(200); // trailing spaces + 4-newline runs
+    const result = compactToolOutputForChat(padded, padded.length - 1);
+
+    expect(result.compacted).toBe(true);
+    expect(result.text).toContain('折叠多余空白');
+    expect(result.text).not.toContain('已省略'); // not truncated
+    // Every real line survives (lossless).
+    expect((result.text.match(/real content line/g) || []).length).toBe(200);
+    expect(result.text).not.toMatch(/ {3}\n/); // trailing spaces gone
+    expect(result.text).not.toMatch(/\n{3,}/); // blank-line runs collapsed
+  });
+
+  it('does not alter code indentation when collapsing whitespace', () => {
+    const code = '### read_file #x\n' + ('    indented = 1\n        deeper = 2\n'.repeat(50));
+    const padded = code + '\n\n\n\n' + 'x'.repeat(10);
+    const result = compactToolOutputForChat(padded, padded.length - 1);
+    // Leading indentation preserved (only trailing/blank-line whitespace touched).
+    expect(result.text).toContain('    indented = 1');
+    expect(result.text).toContain('        deeper = 2');
+  });
+
   it('estimates mixed text tokens without returning zero for non-empty text', () => {
     expect(estimateTokens('hello 世界')).toBeGreaterThan(0);
   });

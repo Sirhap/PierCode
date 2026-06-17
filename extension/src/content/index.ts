@@ -29,6 +29,7 @@ import {
 import { dispatchEnterAsSendFallback } from './send-fallback';
 import { installUserSendReminder, markProgrammaticSend, isSystemReminderEnabled } from './user-send-reminder';
 import { selectorsForHost } from './platform-selectors';
+import { isBrowserAgentFrame } from './browser-agent-bridge';
 import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
 import { T_PANEL, T_PANEL2, T_LINE, T_DIM, T_TXT, T_GLOW, T_GLOW_SOFT, T_AMBER, T_RED, T_FONT } from './terminal-theme';
 import { hashStr, getToolCallId, ensureToolCallId, renderToolCard, isToolCardLive, initToolCardDeps, streamChunkSubs, streamDoneSubs } from './tool-card';
@@ -61,7 +62,11 @@ let piercodeMasterDisabled = false;
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
-const platformProfile = getAdapterProfileName(platformAdapter);
+// 侧边栏内嵌的 AI iframe（带 ?piercode_browser_agent= 哨兵）用 browser-agent profile，
+// 这样初始化按钮拉取 /prompt?adapter=browser-agent（浏览器操作角色 + browser_* 工具）；
+// 顶层 AI 页（isBrowserAgentFrame=false，要求非顶层帧）保持各自平台 profile。这就是
+// 「初始化提示词按场景区分」的杠杆 —— 同一份 content 代码，iframe 与顶层页拿不同 prompt。
+const platformProfile = isBrowserAgentFrame() ? 'browser-agent' : getAdapterProfileName(platformAdapter);
 
 const MONACO_ID_ATTR = 'data-piercode-monaco-id';
 const MONACO_REQUEST = 'PIERCODE_MONACO_TEXT_REQUEST';
@@ -1411,6 +1416,16 @@ function markExecuted(key: string): void {
 
 async function executeToolCallRaw(toolCall: any): Promise<string | null> {
   if (!checkContext(true)) return null;
+  // question 工具不发服务端 —— 它是「向用户提问」，必须本地弹答复卡显示**问题题目**
+  // 并收集回答（自动执行路径走的就是本函数；之前 question 被原样 POST /exec，用户
+  // 只看到一个空答复框、看不到问题）。回答作为工具结果文本喂回 AI。
+  if (toolCall.name === 'question') {
+    const q: string = toolCall.args?.question ?? toolCall.args?.prompt ?? '';
+    const opts: string[] = parseOptions(toolCall.args?.options);
+    const answer = await showQuestionPopup(q, opts);
+    const callId = getToolCallId(toolCall);
+    return `### question #${callId}\n${answer || '（用户未回答）'}`;
+  }
   const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
   if (!apiUrl) return '请先在插件中配置 API 地址';
   const headers: any = { 'Content-Type': 'application/json' };
@@ -1529,10 +1544,10 @@ async function executeToolCallReturn(toolCall: any, withGuidance = true): Promis
     return { output: answer, stopStream: false, sendable: true };
   }
 
-  // spawn_agent on API-client platforms (qwen/chatgpt/claude/openai) runs the
-  // sub-agent as an in-memory API sub-conversation in the background worker
-  // (NO new tab) and injects the result back into the chat. Other platforms
-  // fall through to /exec, where the server opens a tab-worker (unchanged).
+  // spawn_agent on API-client platforms (qwen/chatgpt) runs the sub-agent as an
+  // in-memory API sub-conversation in the background worker (NO new tab) and
+  // injects the result back into the chat. Other platforms (incl. claude) fall
+  // through to /exec, where the server opens a tab-worker (unchanged).
   if (toolCall.name === 'spawn_agent' && hasApiClient(platformProfile)) {
     const spawn = {
       name: toolCall.name,
@@ -1764,6 +1779,12 @@ function startDOMObserver(_responseSelector: string) {
   // 执行. Force auto-execute on for them regardless of the user's global setting,
   // otherwise the worker's tools never run until the tab is brought to the front.
   let isWorkerPage = !!workerAgentId();
+  // 侧边栏内嵌 AI iframe 也强制自动执行：用户只在 AI 输入框打字，不该每个工具再点
+  // 「执行」。但与 worker 不同 —— 不调 activateResponseSession（人类手动发消息，响应
+  // session gate 会经 onPromptSubmitted 自然翻开），只强制 autoExecute。
+  const isBrowserAgentSidebar = isBrowserAgentFrame();
+  // 任一「强制自动执行」场景：worker 后台标签页 OR 侧边栏 iframe。
+  const forcedAutoExecute = () => isWorkerPage || isBrowserAgentSidebar;
   // Worker pages are driven entirely by server `inject` (never a user-typed
   // prompt), so the response-session gate (`isResponseSessionActive`) might never
   // flip on — which would stop `scanText` from ever running, so the worker's
@@ -1777,6 +1798,10 @@ function startDOMObserver(_responseSelector: string) {
   };
   if (isWorkerPage) {
     applyWorkerBehavior();
+  } else if (isBrowserAgentSidebar) {
+    // 侧边栏 iframe：仅强制 autoExecute，不激活 worker 的无人值守 session。
+    autoExecute = true;
+    flushPendingAutoExecute();
   }
   // The agent id may resolve late (URL query stripped before init; ws-linker
   // recovers it from the background). Re-apply worker behavior when it does.
@@ -1800,17 +1825,17 @@ function startDOMObserver(_responseSelector: string) {
     });
   });
   chrome.storage.local.get(['autoExecute']).then(r => {
-    autoExecute = isWorkerPage ? true : resolveAutoExecute(r.autoExecute);
+    autoExecute = forcedAutoExecute() ? true : resolveAutoExecute(r.autoExecute);
     flushPendingAutoExecute();
   }).catch(() => {
-    autoExecute = isWorkerPage ? true : false;
+    autoExecute = forcedAutoExecute() ? true : false;
     // Flush queued tools even on storage failure — autoExecute is already
     // resolved (to false for non-worker), so flushPendingAutoExecute will
     // only fire manual-execute cards, not silently discard them.
     flushPendingAutoExecute();
   });
   chrome.storage.onChanged.addListener((changes) => {
-    if ('autoExecute' in changes && !isWorkerPage) {
+    if ('autoExecute' in changes && !forcedAutoExecute()) {
       autoExecute = resolveAutoExecute(changes.autoExecute.newValue);
       flushPendingAutoExecute();
     }
@@ -2004,12 +2029,54 @@ function startDOMObserver(_responseSelector: string) {
           ));
         }
 
-        for (let i = 0; i < restItems.length; i++) {
+        // 并行多 tab：同一回合里针对**不同 tab** 的 browser_* 工具可并发执行——
+        // executor 对 browser_* 写工具用「共享 RLock + per-tab 互斥」（internal/executor
+        // sharedPlusKeyed(browserTabKey)），不同 tabId 不互锁，所以并发是安全的且真并行。
+        // 分组规则：按 browser_* 工具的目标 tabId 分桶（不带 tabId = 默认受控 tab，归同
+        // 一桶）；**不同桶并发，桶内串行**（保序，同 tab 上的多步必须有序）。非 browser_*
+        // 工具（write_file/exec_cmd 等，有 stopStream/顺序依赖语义）保持原串行路径。
+        const browserBuckets = new Map<string, typeof restItems>();
+        const serialItems: typeof restItems = [];
+        for (const it of restItems) {
+          const name = it?.data?.name;
+          if (typeof name === 'string' && name.startsWith('browser_') && name !== 'browser_batch') {
+            const tabKey = String(it?.data?.args?.tabId ?? '__default__');
+            const bucket = browserBuckets.get(tabKey);
+            if (bucket) bucket.push(it);
+            else browserBuckets.set(tabKey, [it]);
+          } else {
+            serialItems.push(it);
+          }
+        }
+
+        // guidance 只挂本回合一个工具（AI 看一次操作提醒）。若没有非 browser_* 串行项，
+        // 则把 guidance 挂到最后一个 browser_* 工具上，确保提醒不丢。
+        const browserBucketArr = [...browserBuckets.values()];
+        const guidanceOnBrowser = serialItems.length === 0 && pendingBatch.length === 0;
+        const lastBrowserItem = guidanceOnBrowser && browserBucketArr.length > 0
+          ? browserBucketArr[browserBucketArr.length - 1].slice(-1)[0]
+          : null;
+
+        // 多个不同 tab 桶 → 并发跑各桶（桶内串行）。单桶或无 browser_* 时退化为原串行。
+        if (browserBucketArr.length > 1) {
+          await Promise.all(browserBucketArr.map(bucket => (async () => {
+            for (const it of bucket) {
+              try { await runBatchItem(it, it === lastBrowserItem); } catch { /* 单 tab 失败不拖垮其它 tab */ }
+            }
+          })()));
+        } else if (browserBucketArr.length === 1) {
+          for (const it of browserBucketArr[0]) {
+            try { await runBatchItem(it, it === lastBrowserItem); } catch { /* ignore */ }
+          }
+        }
+
+        // 非 browser_* 工具：原串行语义（guidance 挂最后一个、stopStream 处理）。
+        for (let i = 0; i < serialItems.length; i++) {
           // Carry the server's prompt guidance on at most one tool per turn: the
           // last tool of this drain when nothing else is queued. Other tools opt
           // out so the AI sees the operating reminder once, not once per tool.
-          const withGuidance = i === restItems.length - 1 && pendingBatch.length === 0;
-          const stopStream = await runBatchItem(restItems[i], withGuidance);
+          const withGuidance = i === serialItems.length - 1 && pendingBatch.length === 0;
+          const stopStream = await runBatchItem(serialItems[i], withGuidance);
 
           if (stopStream) {
             clickStopButton();
@@ -3072,5 +3139,14 @@ function isTopFrame(): boolean {
   try { return window.top === window.self; } catch { return false; }
 }
 if (isTopFrame()) {
+  bootstrapGate();
+} else if (isBrowserAgentFrame()) {
+  // 侧边栏内嵌的 AI iframe（chatgpt.com / chat.qwen.ai 带 ?piercode_browser_agent=）。
+  // 新模型：iframe 跑**与顶层 AI 页完全相同**的 content bootstrap（DOM 观察 + scanText +
+  // autoExecute + StatusPanel + 初始化按钮），用户在 AI 自己的输入框说话，AI 吐
+  // piercode-tool，常规自动执行路径直接跑（browser_* 经 /exec→WS→CDP 打到受控 tab）。
+  // 不再走 bridge 注入循环（那套的程序化注入是 "send button never enabled" 的来源）。
+  // platformProfile 已在 line 65 覆盖成 'browser-agent'，故初始化按钮拉浏览器操作 prompt。
+  // 普通页把这些站嵌进 iframe 不带哨兵，不会进此分支。
   bootstrapGate();
 }

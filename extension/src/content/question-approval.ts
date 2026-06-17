@@ -108,6 +108,23 @@ function showBrowserApprovalPopup(msg: {
   activeBrowserApprovalPopups.set(msg.approval_id, panel);
 }
 
+// 高危动作文案特征：脚本执行 / cookie 写 / 文件上传 / 剪贴板 / 弹窗 / 跨域导航。
+// 这些即使用户开了「自动允许浏览器操作」也**绝不**自动放行——auto-approve 是给
+// 点击/输入/滚动这类低危交互省事的，不能成为脚本注入/凭据外泄/跨域跳转的旁路
+// （审计 Bug #4：原实现无条件自动批准一切 server browser_approval_ask，等于让
+// classifyRisk 漏掉的危险动作彻底无人把关）。镜像 server actionClassFor 的分类。
+function isHighRiskBrowserAction(action: string, risk: string): boolean {
+  const s = `${action || ''} ${risk || ''}`;
+  return (
+    /JavaScript|evaluate|脚本|runs page script/i.test(s) ||
+    /cookie/i.test(s) ||
+    /剪贴板|clipboard/i.test(s) ||
+    /上传|upload|uploads a file/i.test(s) ||
+    /弹窗|dialog/i.test(s) ||
+    /新域名|cross-origin|跨域|新的 origin/i.test(s)
+  );
+}
+
 export async function handleBrowserApprovalAsk(msg: {
   approval_id: string;
   call_id?: string;
@@ -117,7 +134,8 @@ export async function handleBrowserApprovalAsk(msg: {
   risk: string;
   options?: string[];
 }) {
-  if (await shouldAutoApproveBrowserActions()) {
+  // auto-approve 仅覆盖低危交互；高危动作始终弹卡等人工确认（Bug #4）。
+  if ((await shouldAutoApproveBrowserActions()) && !isHighRiskBrowserAction(msg.action, msg.risk)) {
     if (msg.call_id) dismissBrowserApprovalPopupForCall(msg.call_id);
     dismissBrowserApprovalPopup(msg.approval_id, msg.call_id);
     const ok = sendBrowserApprovalAnswer(msg.approval_id, true, 'auto approved by extension setting');

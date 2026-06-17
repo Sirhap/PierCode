@@ -222,6 +222,70 @@ func TestProfileRegistryCanFilterToolsAndSkills(t *testing.T) {
 	}
 }
 
+// Bug #5: the browser-agent profile must NOT advertise filesystem/shell tools
+// (its prompt tells the model it has none). ToolNamePrefixes "browser_" plus the
+// generic helpers is the mechanism; this locks the rendered surface.
+func TestBrowserAgentProfileOnlyExposesBrowserTools(t *testing.T) {
+	registry := DefaultProfileRegistry([]byte("default {{TOOLS}}"))
+	profile := registry.Select("browser-agent")
+	tools := []tool.ToolInfo{
+		{Name: "browser_click", Description: "click"},
+		{Name: "browser_navigate", Description: "navigate"},
+		{Name: "tool_help", Description: "help"},
+		{Name: "question", Description: "ask"},
+		{Name: "read_file", Description: "read"},
+		{Name: "write_file", Description: "write"},
+		{Name: "exec_cmd", Description: "shell"},
+		{Name: "grep", Description: "search"},
+	}
+	filtered := profile.FilterTools(tools)
+	got := map[string]bool{}
+	for _, ti := range filtered {
+		got[ti.Name] = true
+	}
+	for _, want := range []string{"browser_click", "browser_navigate", "tool_help", "question"} {
+		if !got[want] {
+			t.Errorf("browser-agent profile should expose %q", want)
+		}
+	}
+	for _, forbidden := range []string{"read_file", "write_file", "exec_cmd", "grep"} {
+		if got[forbidden] {
+			t.Errorf("browser-agent profile must NOT expose filesystem/shell tool %q", forbidden)
+		}
+	}
+
+	// Full #5 fix: the profile uses a slim browser-operator BASE prompt, not the
+	// default init prompt — so the rendered prompt must NOT carry the default's
+	// file/git engineering sections (§5 Scope, §8 Editing, §9 Git Safety…).
+	rendered := string(profile.RenderWithSandbox("/repo", "default", nil, tools, nil))
+	for _, leaked := range []string{"Scope And Minimum Complexity", "Editing And Verification", "Git Safety Floor", "Multi-Agent Policy"} {
+		if strings.Contains(rendered, leaked) {
+			t.Errorf("browser-agent prompt must not inherit default section %q", leaked)
+		}
+	}
+	if !strings.Contains(rendered, "browser") {
+		t.Errorf("browser-agent prompt should describe the browser-operator role")
+	}
+}
+
+// ToolNamePrefixes admits a whole family without hardcoding names; ToolNames and
+// prefixes are unioned.
+func TestFilterToolsPrefixUnion(t *testing.T) {
+	p := Profile{ToolNamePrefixes: []string{"browser_"}, ToolNames: []string{"tool_help"}}
+	tools := []tool.ToolInfo{
+		{Name: "browser_x"}, {Name: "browser_y"}, {Name: "tool_help"}, {Name: "read_file"},
+	}
+	filtered := p.FilterTools(tools)
+	if len(filtered) != 3 {
+		t.Fatalf("expected 3 (2 browser_* + tool_help), got %d: %+v", len(filtered), filtered)
+	}
+	// nil names + nil prefixes inherits all (back-compat).
+	all := Profile{}.FilterTools(tools)
+	if len(all) != len(tools) {
+		t.Fatalf("nil filter should inherit all %d tools, got %d", len(tools), len(all))
+	}
+}
+
 func TestSkillsSubstituteAtPlaceholderWhenPresent(t *testing.T) {
 	profile := Profile{
 		ID:     "default",

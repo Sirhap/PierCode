@@ -554,6 +554,7 @@ func (c *Controller) Click(ctx context.Context, req tool.BrowserClickRequest) (s
 	if err := c.ask(ctx, req.CallID, action+" 页面元素", tab, target, action+" 可能触发页面操作。"); err != nil {
 		return "", err
 	}
+	preOrigin := originOf(tab.URL)
 	if err := c.dispatchClick(ctx, tab.TabID, x, y, button, clickCount); err != nil {
 		return "", err
 	}
@@ -561,7 +562,19 @@ func (c *Controller) Click(ctx context.Context, req tool.BrowserClickRequest) (s
 	if err := c.settle(ctx, tab.TabID); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s %s at %.0f,%.0f in tabId=%d%s", action, target, x, y, tab.TabID, c.switchNote()), nil
+	// A click can navigate (link / JS window.location). Navigate()/go_back raise a
+	// cross-origin approval, but a click-induced navigation routes through here and
+	// would otherwise escape that gate silently (audit Bug #11). Re-read the tab
+	// after settle; if the origin changed cross-origin, surface it in the result so
+	// the agent (and the user, via the result text) sees the navigation happened.
+	originNote := ""
+	if postTab, gerr := c.getTab(ctx, tab.TabID); gerr == nil {
+		postOrigin := originOf(postTab.URL)
+		if preOrigin != "" && postOrigin != "" && postOrigin != preOrigin {
+			originNote = fmt.Sprintf("\nNote: this click navigated the controlled tab cross-origin: %s → %s.", preOrigin, postOrigin)
+		}
+	}
+	return fmt.Sprintf("%s %s at %.0f,%.0f in tabId=%d%s%s", action, target, x, y, tab.TabID, c.switchNote(), originNote), nil
 }
 
 // switchNote returns a one-line note when an automatic controlled-tab switch

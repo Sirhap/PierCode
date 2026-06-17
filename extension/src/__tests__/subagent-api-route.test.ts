@@ -29,12 +29,17 @@ describe('runSubAgentBatch', () => {
 
 describe('hasApiClient', () => {
   it('true for cookie-session platforms', () => {
-    for (const p of ['qwen', 'claude']) expect(hasApiClient(p)).toBe(true)
+    expect(hasApiClient('qwen')).toBe(true)
   })
   it('true for chatgpt (routes through local chatgpt-proxy)', () => {
     // chatgpt: turnstile solved server-side by chatgpt-proxy, exposed as an
     // OpenAI-compatible endpoint; getAuth probes /health and errors if down.
     expect(hasApiClient('chatgpt')).toBe(true)
+  })
+  it('false for claude (sidebar-API path removed; spawn_agent → tab-worker)', () => {
+    // claude.ai web /completion sidebar-API path is unverified and removed, so a
+    // claude coordinator falls through to the Go /exec tab-worker instead.
+    expect(hasApiClient('claude')).toBe(false)
   })
   it('false for platforms without a usable API client', () => {
     for (const p of ['gemini', 'kimi', 'z', 'mimo']) expect(hasApiClient(p)).toBe(false)

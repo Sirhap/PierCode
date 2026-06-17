@@ -408,18 +408,40 @@ export async function compressAndPrepareNewSession(
   return { summary, newContext };
 }
 
+// 折叠纯空白冗余: 安全的无损压缩第一步。只动绝不改变语义的空白——
+//   1) 行尾空白/制表符删掉（trailing whitespace 对任何格式都无意义）
+//   2) 3+ 连续空行折成 1 个空行（保留段落分隔，去掉大段空洞）
+// 故意 *不* 折叠行内空格/缩进：那会破坏代码缩进、diff、对齐表格的语义。
+function collapseToolWhitespace(s: string): string {
+  return s
+    .replace(/[ \t]+$/gm, '')   // 行尾空白
+    .replace(/\n{3,}/g, '\n\n'); // 多空行 → 单空行
+}
+
 // 工具输出压缩: 用于回填到聊天界面的长结果截断
 export function compactToolOutputForChat(output: string, maxChars = 100_000): { text: string; compacted: boolean } {
   if (output.length <= maxChars) return { text: output, compacted: false };
 
-  const sections = splitToolSections(output);
+  // 先做无损去空白：很多 dump（JSON / 文件 / grep）带大量行尾空白和空行，
+  // 折叠后常常就降到阈值以下，无需有损的头尾截断。
+  const collapsed = collapseToolWhitespace(output);
+  if (collapsed.length <= maxChars) {
+    // 仅去空白即达标——标注为已压缩，但内容无损。
+    if (collapsed.length === output.length) return { text: output, compacted: false };
+    return {
+      text: `[PierCode] 工具结果过长，已折叠多余空白后回填（无损）。原始 ${output.length} 字符 → ${collapsed.length} 字符。\n\n${collapsed}`,
+      compacted: true
+    };
+  }
+
+  const sections = splitToolSections(collapsed);
   const budgetPerSection = Math.max(
     4_000,
     Math.floor((maxChars - 2_000) / Math.max(1, sections.length))
   );
   const compactedSections = sections.map(section => compactSection(section, budgetPerSection));
   const text = [
-    `[PierCode] 工具结果过长，已自动压缩后回填。原始长度 ${output.length} 字符，压缩后保留每段开头、结尾和截断说明。`,
+    `[PierCode] 工具结果过长，已折叠空白并截断后回填。原始长度 ${output.length} 字符，去空白后 ${collapsed.length} 字符，再保留每段开头、结尾和截断说明。`,
     '',
     ...compactedSections
   ].join('\n\n');

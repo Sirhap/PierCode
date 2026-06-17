@@ -50,3 +50,51 @@
 /* Sub-agent card fade-out before removal (App.tsx schedules removal after delay). */
 @keyframes agent-fade-out { to { opacity: 0; transform: translateY(-4px); } }
 .agent-fading { animation: agent-fade-out .4s ease forwards; }
+
+/* ── browser-agent action cards (ActionTimeline) ────────────────────────── */
+/* One boxed card per browser_* action: icon + Chinese title + arg + status   */
+/* pill + expandable args/result. Mirrors the content-route tool card.        */
+.cc-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.cc-card-current { border-color: var(--glow); background: var(--glow-soft); }
+.cc-card-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: none; border: none; padding: 0; text-align: left; color: inherit;
+}
+.cc-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.cc-dot-run { background: var(--glow); }
+.cc-dot-ok  { background: var(--dim); }
+.cc-dot-err { background: var(--red); }
+.cc-card-icon { font-size: 13px; line-height: 1; flex-shrink: 0; }
+.cc-card-title { font-weight: 500; color: var(--txt); flex-shrink: 0; }
+.cc-card-arg {
+  color: var(--dim); font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.cc-card-spacer { flex: 1 1 auto; }
+.cc-card-chevron { color: var(--dim); font-size: 10px; flex-shrink: 0; }
+.cc-pill {
+  flex-shrink: 0; font-size: 10px; padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--line); white-space: nowrap;
+}
+.cc-pill-run { color: var(--glow); border-color: var(--glow); }
+.cc-pill-ok  { color: var(--dim); }
+.cc-pill-err { color: var(--red); border-color: var(--red); }
+.cc-card-result {
+  margin-top: 4px; padding-left: 13px; font-size: 11px;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cc-card-detail { margin-top: 6px; padding-left: 13px; }
+.cc-card-pre {
+  margin: 2px 0; padding: 6px 8px; border-radius: 4px;
+  background: var(--bg); border: 1px solid var(--line);
+  font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px;
+  white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto;
+  color: var(--dim);
+}

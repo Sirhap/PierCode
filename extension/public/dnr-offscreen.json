@@ -16,5 +16,46 @@
       "resourceTypes": ["sub_frame"],
       "domainType": "thirdParty"
     }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        { "header": "x-frame-options", "operation": "remove" },
+        { "header": "content-security-policy", "operation": "remove" },
+        { "header": "content-security-policy-report-only", "operation": "remove" },
+        { "header": "frame-ancestors", "operation": "remove" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||chatgpt.com/",
+      "resourceTypes": ["sub_frame"],
+      "domainType": "thirdParty"
+    }
+  },
+  {
+    "id": 3,
+    "priority": 2,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        { "header": "x-frame-options", "operation": "remove" },
+        { "header": "content-security-policy", "operation": "remove" },
+        { "header": "content-security-policy-report-only", "operation": "remove" },
+        { "header": "x-content-security-policy", "operation": "remove" },
+        { "header": "frame-options", "operation": "remove" },
+        { "header": "cross-origin-opener-policy", "operation": "remove" },
+        { "header": "cross-origin-embedder-policy", "operation": "remove" },
+        { "header": "cross-origin-resource-policy", "operation": "remove" },
+        { "header": "cross-origin-opener-policy-report-only", "operation": "remove" },
+        { "header": "cross-origin-embedder-policy-report-only", "operation": "remove" }
+      ]
+    },
+    "condition": {
+      "requestDomains": ["chatgpt.com", "chat.openai.com", "chat.qwen.ai", "qwen.ai", "qwenlm.ai"],
+      "resourceTypes": ["sub_frame"]
+    }
   }
 ]

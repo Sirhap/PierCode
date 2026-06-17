@@ -41,23 +41,8 @@ describe('openai buildBody reasoning → reasoning_effort', () => {
   })
 })
 
-describe('claude buildBody → claude.ai web /completion shape', () => {
-  it('posts prompt + root parent uuid on the first turn', () => {
-    const b = body('claude', {})
-    expect(b.prompt).toBe('hi')
-    expect(b.parent_message_uuid).toBe('00000000-0000-4000-8000-000000000000')
-    expect(b.rendering_mode).toBe('messages')
-    expect(b.attachments).toEqual([])
-    // The web endpoint has no public-API fields — sending them 400s.
-    expect(b).not.toHaveProperty('messages')
-    expect(b).not.toHaveProperty('model')
-    expect(b).not.toHaveProperty('thinking')
-  })
-  it('threads parentId as parent_message_uuid', () => {
-    const b = JSON.parse(PLATFORMS.claude.buildBody('hi', 'uuid-123'))
-    expect(b.parent_message_uuid).toBe('uuid-123')
-  })
-})
+// claude removed from sidebar-API (PLATFORMS no longer has a 'claude' entry); it
+// is now a web-detection-only platform, so there is no buildBody to assert on.
 
 describe('chatgpt buildBody reasoning → model slug (via chatgpt-proxy, OpenAI shape)', () => {
   it('default uses gpt-5', () => {
