@@ -101,6 +101,18 @@ describe('conversation-scope', () => {
     expect(a2).toBe(a1);
   });
 
+  // Same as above but a TRUE reload (full sessionStorage incl. scope_id slot, which
+  // holds conv-b's id after visiting it). Opening conv-a DIRECTLY (no transient flash)
+  // must still resolve to conv-a's id via the scope map, not the global slot's conv-b id.
+  it('direct-opens an older conversation after a full reload with its own id', () => {
+    const a1 = getConversationKey('https://claude.ai/chat/conv-a');
+    const b1 = getConversationKey('https://claude.ai/chat/conv-b');
+    expect(b1).not.toBe(a1);
+    __resetForRealRefresh();
+    const a2 = getConversationKey('https://claude.ai/chat/conv-a');
+    expect(a2).toBe(a1);
+  });
+
   it('keeps the migration-bound stable URL mapped to the transient-born scope id across revisits', () => {
     const born = getConversationKey('https://claude.ai/new');
     getConversationKey('https://claude.ai/chat/uuid-m'); // migration binds uuid-m -> born id
