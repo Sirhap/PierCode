@@ -18,7 +18,7 @@
  */
 
 import { extractToolCalls } from './chat-api'
-import { dispatchBrowserTool, READONLY_TOOLS } from './browser/dispatch'
+import { dispatchBrowserTool, TOOL_TABLE } from './browser/dispatch'
 import { formatToolResults } from '../parser'
 import { buildPageSnapshot, composeTurnPrompt } from './page-snapshot'
 
@@ -387,10 +387,11 @@ async function execBrowserTool(
   signal?: AbortSignal,
 ): Promise<ToolResult> {
   const cid = callId || `bagent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-  // Read-only browser tools run in-SW (Phase 1 migration): same process, no /exec, so
-  // they work even with the Go server down and never traverse the cross-browser WS.
-  // Interactive/write tools still POST /exec until their phase.
-  if (READONLY_TOOLS.has(name)) {
+  // Browser tools that have been migrated to in-SW execution run here (same process,
+  // no /exec): they work with the Go server down and never traverse the cross-browser
+  // WS. dispatchBrowserTool applies the same per-tab lock + sensitivity/approval gates.
+  // Tools not yet migrated fall through to the /exec POST below.
+  if (TOOL_TABLE.has(name)) {
     const r = await dispatchBrowserTool(name, args, cid)
     return { call_id: cid, name, output: r.output, success: r.success }
   }

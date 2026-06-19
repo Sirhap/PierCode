@@ -37,7 +37,7 @@ import { scheduleResultEchoDecoration } from './tool-result-echo';
 import { showToast } from './toast';
 import { attachInputListener, initEditorCompletionDeps, getEditorText, effectiveFillMethod } from './editor-completion';
 import { ensureAttachmentUploadDispatcher, initAttachmentUploadDeps } from './attachment-upload';
-import { showRemoteQuestionPopup, dismissRemoteQuestionPopup, handleBrowserApprovalAsk, dismissBrowserApprovalPopupForCall, showQuestionPopup, dismissBrowserApprovalPopup, initQuestionApprovalDeps } from './question-approval';
+import { showRemoteQuestionPopup, dismissRemoteQuestionPopup, handleBrowserApprovalAsk, dismissBrowserApprovalPopupForCall, showQuestionPopup, dismissBrowserApprovalPopup, initQuestionApprovalDeps, installBrowserApprovalRuntimeListener } from './question-approval';
 import { TIMING } from './timing';
 import { DOM_EXTRACT } from './dom-extract-config';
 
@@ -420,13 +420,19 @@ function shouldPromptCompressionAgain(usedTokens: number): boolean {
 // 是否对当前平台启用上下文压缩。目前 Qwen + ChatGPT 已验证 DOM 捕获/新会话注入；
 // 其余平台默认关闭，避免误触发把没追踪全的上下文压坏。
 const COMPRESSION_PLATFORMS = new Set(['qwen', 'chatgpt']);
-// browser_* tools migrated to in-SW execution (skip /exec). Phase 1 = read-only tools.
-// Kept in sync with extension/src/background/browser/register.ts read list. Inlined
-// here (not imported) because content.js is a classic MV3 script that cannot ESM-import.
+// browser_* tools migrated to in-SW execution (skip /exec). Phases 1 (read-only) + 2
+// (interactive) so far. Kept in sync with register.ts. Inlined (not imported) because
+// content.js is a classic MV3 script that cannot ESM-import.
 const PHASE1_SW_BROWSER_TOOLS = new Set([
+  // read-only
   'browser_snapshot', 'browser_tabs', 'browser_screenshot', 'browser_find', 'browser_console',
   'browser_network', 'browser_get_content', 'browser_get_page_text', 'browser_pdf', 'browser_record',
   'browser_wait', 'browser_wait_for_function', 'browser_get_attributes',
+  // interactive
+  'browser_click', 'browser_type', 'browser_hover', 'browser_scroll', 'browser_select',
+  'browser_press_key', 'browser_drag', 'browser_focus', 'browser_navigate', 'browser_new_tab',
+  'browser_use_tab', 'browser_go_back', 'browser_go_forward', 'browser_reload', 'browser_mark',
+  'browser_handle_dialog', 'browser_wait_for_navigation', 'browser_resize', 'browser_viewport', 'browser_emulate',
 ]);
 function isCompressionPlatform(): boolean {
   return COMPRESSION_PLATFORMS.has(platformAdapter.name);
@@ -1153,6 +1159,9 @@ function bootstrapContentScript() {
   // 仍由本文件实现。必须在任何 observer 启动前完成。
   initToolCardDeps({ executeToolCallRaw, markExecuted, fillAndSend, ensureStreamDispatchers });
   initQuestionApprovalDeps({ getEditorEl: () => querySelectorFirst(getSiteConfig().editor) });
+  // SW-direct browser_* approval: card driven by chrome.runtime BROWSER_APPROVAL_ASK
+  // (no WS hop), replies BROWSER_APPROVAL_ANSWER to the service worker.
+  installBrowserApprovalRuntimeListener();
   initAttachmentUploadDeps({
     checkContext,
     bgFetch,

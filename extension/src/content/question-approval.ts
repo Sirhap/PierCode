@@ -56,6 +56,11 @@ export function dismissRemoteQuestionPopup(callID: string) {
   activeQuestionPopups.delete(callID);
 }
 
+// answerFn lets the card reply over either transport: the WS path passes
+// sendBrowserApprovalAnswer (server-mediated); the SW-direct path passes a
+// chrome.runtime.sendMessage sender. Default = WS for backward compatibility.
+type ApprovalAnswerFn = (approvalId: string, approved: boolean, reason: string, scope: string) => void;
+
 function showBrowserApprovalPopup(msg: {
   approval_id: string;
   call_id?: string;
@@ -64,7 +69,7 @@ function showBrowserApprovalPopup(msg: {
   target: string;
   risk: string;
   options?: string[];
-}) {
+}, answerFn: ApprovalAnswerFn = sendBrowserApprovalAnswer) {
   const existing = activeBrowserApprovalPopups.get(msg.approval_id);
   if (existing) existing.remove();
   if (msg.call_id) dismissBrowserApprovalPopupForCall(msg.call_id);
@@ -89,7 +94,7 @@ function showBrowserApprovalPopup(msg: {
       const a = answer.trim();
       const isSession = a === sessionLabel;
       const approved = a === '允许' || a === '1' || isSession;
-      sendBrowserApprovalAnswer(
+      answerFn(
         msg.approval_id,
         approved,
         approved ? '' : 'user rejected browser action',
@@ -99,7 +104,7 @@ function showBrowserApprovalPopup(msg: {
       activeBrowserApprovalPopups.delete(msg.approval_id);
     },
     onCancel: () => {
-      sendBrowserApprovalAnswer(msg.approval_id, false, 'user cancelled browser action');
+      answerFn(msg.approval_id, false, 'user cancelled browser action', '');
       activeBrowserApprovalPopups.delete(msg.approval_id);
     },
   });
@@ -151,6 +156,53 @@ export function dismissBrowserApprovalPopupForCall(callID: string) {
     el.remove();
     activeBrowserApprovalPopups.delete(approvalID);
   }
+}
+
+// ── SW-direct approval (browser_* runs in the service worker, no WS) ──────────
+// The SW sends BROWSER_APPROVAL_ASK via chrome.runtime.sendMessage; the card replies
+// BROWSER_APPROVAL_ANSWER the same way (routed into ApprovalManager.deliver in the SW).
+// Reuses the identical card + auto-approve + high-risk policy as the WS path.
+function sendBrowserApprovalAnswerRuntime(approvalId: string, approved: boolean, reason: string, scope: string): void {
+  try { chrome.runtime.sendMessage({ type: 'BROWSER_APPROVAL_ANSWER', approvalId, approved, reason, scope }); } catch { /* SW gone */ }
+}
+
+async function handleBrowserApprovalAskRuntime(msg: {
+  approvalId: string; callId?: string; action: string; target?: string; risk?: string;
+  options?: string[]; host?: string; actionClass?: string;
+}): Promise<void> {
+  const action = msg.action || 'browser action';
+  const risk = msg.risk || '此操作会改变网页状态。';
+  // auto-approve only low-risk interaction; high-risk always prompts (mirror Bug #4).
+  if ((await shouldAutoApproveBrowserActions()) && !isHighRiskBrowserAction(action, `${risk} ${msg.actionClass || ''}`)) {
+    sendBrowserApprovalAnswerRuntime(msg.approvalId, true, 'auto approved by extension setting', '');
+    showToast(`已自动允许浏览器操作：${action}`, 2500);
+    return;
+  }
+  showBrowserApprovalPopup({
+    approval_id: msg.approvalId,
+    call_id: msg.callId,
+    action,
+    tab: msg.host ? { url: msg.host } : undefined,
+    target: msg.target || msg.host || '(unknown)',
+    risk,
+    options: msg.options,
+  }, sendBrowserApprovalAnswerRuntime);
+}
+
+/** Install the runtime listener for SW-direct browser approval. Idempotent. */
+let runtimeApprovalListenerInstalled = false;
+export function installBrowserApprovalRuntimeListener(): void {
+  if (runtimeApprovalListenerInstalled) return;
+  runtimeApprovalListenerInstalled = true;
+  try {
+    chrome.runtime.onMessage.addListener(msg => {
+      if (msg?.type === 'BROWSER_APPROVAL_ASK' && typeof msg.approvalId === 'string') {
+        void handleBrowserApprovalAskRuntime(msg);
+      } else if (msg?.type === 'BROWSER_APPROVAL_DONE' && typeof msg.approvalId === 'string') {
+        dismissBrowserApprovalPopup(msg.approvalId, msg.callId);
+      }
+    });
+  } catch { /* no runtime */ }
 }
 
 export function dismissBrowserApprovalPopup(approvalID: string, callID?: string) {
