@@ -197,4 +197,12 @@ describe('runBrowserAgentLoop lifecycle', () => {
     expect(classifyRisk('browser_exec', {}).highRisk).toBe(false);
     expect(classifyRisk('browser_file_input', {}).highRisk).toBe(false);
   });
+
+  it('gates form_input/select/drag page-mutators on the sidebar route (were unprompted)', () => {
+    // These are in the content route's APPROVAL_TOOLS; classifyRisk must also flag them
+    // or the browser-agent (which sets skipApproval) runs them with NO user approval.
+    expect(classifyRisk('browser_form_input', { selector: '#name', value: 'x' }).highRisk).toBe(true);
+    expect(classifyRisk('browser_select', { selector: '#s', value: 'a' }).highRisk).toBe(true);
+    expect(classifyRisk('browser_drag', { fromSelector: '#a', toSelector: '#b' }).highRisk).toBe(true);
+  });
 });

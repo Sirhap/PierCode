@@ -996,7 +996,12 @@ const browserCdpSend = async (
   if (typeof anyTarget.tabId === 'number') await ensureAttached(anyTarget.tabId);
   return chrome.debugger.sendCommand(target, method, params ?? {});
 };
-initController({ send: browserCdpSend });
+initController({
+  send: browserCdpSend,
+  // Expose the SW's OOPIF session registry so browser_snapshot can include cross-origin
+  // child frames' elements (FrameSession is structurally {sessionId, url, …}).
+  listFrameSessions: (tabId: number) => listFrameSessions(tabId).map(fs => ({ sessionId: fs.sessionId, url: fs.url })),
+});
 registerBrowserTools();
 
 async function activateTabForInput(tabId: number): Promise<void> {

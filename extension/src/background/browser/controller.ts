@@ -34,7 +34,15 @@ type DispatchFn = (name: string, args: Record<string, unknown>, callId: string, 
 let dispatchRef: DispatchFn | null = null
 export function setBatchDispatcher(fn: DispatchFn): void { dispatchRef = fn }
 
-export interface ControllerDeps { send?: SendFn; fidelity?: InputFidelity; sleep?: Sleep }
+// A cross-origin (OOPIF) child frame session, as tracked by the SW's flat-session
+// auto-attach (background/index.ts frameSessionsByTab). listFrameSessions is injected so
+// the controller can include those frames' elements in a snapshot without importing
+// index.ts (which would create a cycle). Defaults to none → main frame only.
+export interface FrameSessionInfo { sessionId: string; url: string }
+export interface ControllerDeps {
+  send?: SendFn; fidelity?: InputFidelity; sleep?: Sleep
+  listFrameSessions?: (tabId: number) => FrameSessionInfo[]
+}
 
 export function makeController(deps: ControllerDeps = {}) {
   const cdp: Cdp = makeCdp(deps.send)
@@ -95,7 +103,20 @@ export function makeController(deps: ControllerDeps = {}) {
       await ensureDomain(tab.tabId, 'Accessibility')
       const raw = await cdp.sendCommand(target(tab.tabId), 'Accessibility', 'getFullAXTree')
       const id = `snap${++snapSeq}`
-      const r = compactSnapshotWithFrames(raw, [], tab, id, { refId: args.refId, depth: args.depth })
+      // Include cross-origin (OOPIF) child frames so elements inside embedded payment
+      // forms / docs are visible + clickable (mirrors Go controller.go collectFrameAXTrees).
+      // A subtree filter (refId) only applies to the main tree, so skip frames then.
+      const frames: { raw: any; sessionId: string; url: string }[] = []
+      if (!args.refId) {
+        for (const fs of deps.listFrameSessions?.(tab.tabId) ?? []) {
+          try {
+            const childTarget = { tabId: tab.tabId, sessionId: fs.sessionId } as Debuggee
+            const fraw = await cdp.sendCommand(childTarget, 'Accessibility', 'getFullAXTree')
+            frames.push({ raw: fraw, sessionId: fs.sessionId, url: fs.url })
+          } catch { /* frame detached / not enabled — skip it */ }
+        }
+      }
+      const r = compactSnapshotWithFrames(raw, frames, tab, id, { refId: args.refId, depth: args.depth })
       registry.storeSnapshot(tab.tabId, id, r.refs)
       return r.text || '(empty snapshot)'
     },

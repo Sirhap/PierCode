@@ -44,6 +44,36 @@ describe('controller read-only', () => {
     expect(ctl.registry.resolveRef(1, anyRef)).toBeNull()
   })
 
+  it('snapshot includes OOPIF child-frame elements with continued refs + sessionId', async () => {
+    const { makeController } = await import('../../background/browser/controller')
+    // main frame: RootWebArea + button "Submit"; child frame: a textbox "Card number".
+    const mainTree = {
+      nodes: [
+        { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Pay' }, childIds: ['2'], backendDOMNodeId: 1 },
+        { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'Submit' }, childIds: [], backendDOMNodeId: 2 },
+      ],
+    }
+    const frameTree = {
+      nodes: [
+        { nodeId: 'f1', role: { value: 'textbox' }, name: { value: 'Card number' }, childIds: [], backendDOMNodeId: 50 },
+      ],
+    }
+    const send = vi.fn(async (t: any, method: string) => {
+      if (method === 'Accessibility.getFullAXTree') return t.sessionId === 'sess-A' ? frameTree : mainTree
+      return {}
+    })
+    const ctl = makeController({ send, listFrameSessions: () => [{ sessionId: 'sess-A', url: 'https://pay.stripe.com/f' }] })
+    const out = await ctl.snapshot({ tabId: 1 })
+    expect(out).toContain('button "Submit"')
+    expect(out).toContain('iframe (cross-origin)')
+    expect(out).toContain('textbox "Card number"')
+    // the child-frame ref must resolve AND carry the child session for later clicks.
+    // RootWebArea isn't an actionable role (no ref); button=e0, frame textbox=e1.
+    const cardRef = ctl.registry.resolveRef(1, 'e1')
+    expect(cardRef?.name).toBe('Card number')
+    expect(cardRef?.sessionId).toBe('sess-A')
+  })
+
   it('tabs: lists this browser tabs (no fanout)', async () => {
     const { makeController } = await import('../../background/browser/controller')
     const ctl = makeController({ send: vi.fn(async () => ({})) })

@@ -169,7 +169,20 @@ export function classifyRisk(
     case 'browser_handle_dialog':
       return { highRisk: true, reason: 'handles a page dialog' }
     case 'browser_attachment_upload':
+    case 'browser_upload':
       return { highRisk: true, reason: 'uploads a file' }
+    // Page mutators that are in the content route's APPROVAL_TOOLS but previously fell to
+    // `default: safe` here — so the sidebar browser-agent ran them UNPROMPTED (it sets
+    // skipApproval, bypassing the server gate, and relied solely on classifyRisk). Each
+    // writes arbitrary state into the page: form_input sets input/contenteditable values,
+    // select changes a <select>, drag performs a real drag-drop (can trigger reorders/
+    // uploads). Mirror APPROVAL_TOOLS so the two gates can't drift again.
+    case 'browser_form_input':
+      return { highRisk: true, reason: 'sets a form field value' }
+    case 'browser_select':
+      return { highRisk: true, reason: 'changes a dropdown selection' }
+    case 'browser_drag':
+      return { highRisk: true, reason: 'performs a drag-and-drop' }
 
     case 'browser_batch': {
       const actions = Array.isArray(args.actions) ? args.actions : []
