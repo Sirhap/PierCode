@@ -1,6 +1,13 @@
 // Screenshot vision-token budget (OffscreenCanvas) + GIF encode (gifenc) + base64
 // passthrough for PDF. Replaces Go's image/gif/jpeg stdlib + filesystem writes:
 // the SW has no filesystem, so everything returns a base64 dataURL.
+//
+// gifenc is imported statically (not dynamic import()) on purpose: a dynamic import
+// makes Vite emit a vite-preload-helper chunk that gets statically pulled into
+// content.js, breaking the classic-MV3-content-script guard (content-build.test.ts).
+// See memory: sidebar-tiktoken-content-chunk-leak. Static import keeps gifenc in
+// background.js only.
+import { GIFEncoder, quantize, applyPalette } from 'gifenc'
 
 /** Pure: target dims that cap the longest side at maxDim, preserving aspect.
  *  Port of screenshot_budget.go downscaleBox. */
@@ -40,7 +47,6 @@ export async function budgetScreenshot(base64: string, mime: string, maxDim: num
 
 /** Assemble base64 PNG frames into an animated GIF dataURL. Port of screenshot_gif.go. */
 export async function encodeGif(frames: string[], mime = 'image/png', delayMs = 200): Promise<string> {
-  const { GIFEncoder, quantize, applyPalette } = await import('gifenc')
   const enc = GIFEncoder()
   for (const f of frames) {
     const bmp = await base64ToBitmap(f, mime)

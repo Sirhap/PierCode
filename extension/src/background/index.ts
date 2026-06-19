@@ -2,6 +2,10 @@ import { browserRelayWsUrl, isAiPageUrl } from './browser-relay-utils';
 import { registerChatApiHandler, setListenSendHook } from './chat-api';
 import { installBrowserAgent } from './browser-agent';
 import { syncPhantomCursor } from './phantom-cursor';
+import { initController, getController } from './browser/controller';
+import { registerBrowserTools } from './browser/register';
+import { dispatchBrowserTool } from './browser/dispatch';
+import { approval as browserApproval } from './browser/approval-singleton';
 import {
   DOWNLOAD_STORAGE_KEY,
   MAX_DOWNLOAD_RECORDS,
@@ -950,6 +954,21 @@ async function ensureAttached(tabId: number) {
   }
 }
 
+// ── SW-direct browser tool execution ────────────────────────────────────────
+// browser_* tools run inside this SW (no /exec round-trip): each SW only sees its
+// own browser's tabs, so the old cross-browser WS broadcast race cannot happen.
+// The controller's low-level CDP transport ensures the debugger is attached (+ its
+// domains enabled) before issuing the command, mirroring the relay path.
+const browserCdpSend = async (
+  target: chrome.debugger.Debuggee, method: string, params?: object,
+): Promise<any> => {
+  const anyTarget = target as { tabId?: number; sessionId?: string };
+  if (typeof anyTarget.tabId === 'number') await ensureAttached(anyTarget.tabId);
+  return chrome.debugger.sendCommand(target, method, params ?? {});
+};
+initController({ send: browserCdpSend });
+registerBrowserTools();
+
 async function activateTabForInput(tabId: number): Promise<void> {
   const tab = await chrome.tabs.get(tabId);
   if (typeof tab.windowId === 'number') {
@@ -1034,6 +1053,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     ensureContentScripts()
       .then(sendResponse)
       .catch(error => sendResponse({ tabs: 0, injected: 0, loaded: 0, wsConnected: 0, failed: 1, error: String(error) }));
+    return true;
+  }
+  if (msg.type === 'EXEC_BROWSER_TOOL') {
+    const callId = msg.callId || `bsw-${Date.now()}`;
+    dispatchBrowserTool(msg.name, msg.args || {}, callId)
+      .then(sendResponse)
+      .catch(e => sendResponse({ callId, name: msg.name, output: String(e), error: String(e), success: false }));
+    return true;
+  }
+  if (msg.type === 'BROWSER_APPROVAL_ANSWER') {
+    browserApproval.deliver({ approvalId: msg.approvalId, approved: msg.approved, reason: msg.reason, scope: msg.scope });
+    sendResponse({ ok: true });
     return true;
   }
   if (msg.type === 'GET_BRIDGE_STATUS') {
@@ -1151,6 +1182,37 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     return;
   }
 
+  // Feed console/network CDP events into the SW controller's EventBus so
+  // browser_console / browser_network can read them without the Go server.
+  if (method === 'Runtime.consoleAPICalled') {
+    const p = (params || {}) as { type?: string; args?: Array<{ value?: unknown; description?: string }> };
+    getController().events.recordConsole(tabId, {
+      level: p.type || 'log',
+      text: (p.args || []).map(a => (a.value != null ? String(a.value) : a.description || '')).join(' '),
+    });
+  } else if (method === 'Runtime.exceptionThrown') {
+    const p = (params || {}) as { exceptionDetails?: { text?: string; exception?: { description?: string } } };
+    getController().events.recordConsole(tabId, {
+      level: 'error',
+      text: p.exceptionDetails?.exception?.description || p.exceptionDetails?.text || 'uncaught exception',
+    });
+  } else if (method === 'Network.responseReceived') {
+    const p = (params || {}) as { requestId?: string; response?: { url?: string; status?: number } };
+    getController().events.recordNetwork(tabId, {
+      requestId: p.requestId || '',
+      url: p.response?.url || '',
+      method: 'GET',
+      status: p.response?.status,
+    });
+  } else if (method === 'Network.requestWillBeSent') {
+    const p = (params || {}) as { requestId?: string; request?: { url?: string; method?: string } };
+    getController().events.recordNetwork(tabId, {
+      requestId: p.requestId || '',
+      url: p.request?.url || '',
+      method: p.request?.method || 'GET',
+    });
+  }
+
   if (!DEBUGGER_EVENTS_TO_RELAY.has(method)) return;
   sendBrowserMessage({
     type: 'browser_event',
@@ -1165,6 +1227,10 @@ chrome.tabs.onRemoved.addListener(tabId => {
   perTabQueues.delete(tabId);
   workerAgentIdByTabId.delete(tabId);
   clearFrameSessions(tabId);
+  // SW controller: drop this tab's snapshots/refs/console/network so a recycled
+  // tabId can't resolve a stale ref (the ref-staleness invariant across tab death).
+  getController().registry.clearDefault(tabId);
+  getController().events.clearTab(tabId);
   if (controlledTabId === tabId) {
     controlledTabId = null;
     setBrowserRelayStatus({ state: browserWs?.readyState === WebSocket.OPEN ? 'open' : 'closed' });

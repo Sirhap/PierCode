@@ -7,7 +7,7 @@ type Debuggee = chrome.debugger.Debuggee
 
 const q = (s: string) => JSON.stringify(s)
 
-export interface FindRequest { tabId: number; query: string; limit?: number }
+export interface FindRequest { tabId?: number; query: string; limit?: number }
 export interface FoundElement { ref: string; role: string; text: string; score: number; x?: number; y?: number; frame?: string }
 
 export function findElementsExpr(query: string, maxResults: number): string {
