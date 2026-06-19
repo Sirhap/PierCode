@@ -120,6 +120,16 @@ describe('controller interactive', () => {
     await expect(ctl.resolveTabForGate({ tabId: 6 }, 'browser_click')).rejects.toThrow(/AI conversation tab/)
   })
 
+  it('finalize_tabs is not blocked by the AI-page gate (it closes tabs, ignores the target)', async () => {
+    ;(globalThis as any).chrome.tabs.get = vi.fn(async () => ({ id: 7, url: 'https://chatgpt.com/c/9', title: 'GPT' }))
+    ;(globalThis as any).chrome.tabs.remove = vi.fn(async () => {})
+    const { makeController } = await import('../../background/browser/controller')
+    const ctl = makeController({ send: async () => ({}), sleep: noSleep })
+    await expect(ctl.resolveTabForGate({ tabId: 7 }, 'browser_finalize_tabs')).resolves.toMatchObject({ tabId: 7 })
+    const out = await ctl.finalizeTabs({ close: [7] })
+    expect(out).toContain('finalized 1/1')
+  })
+
   it('waitForNavigation resolves when a main-frame nav event lands', async () => {
     const { makeController } = await import('../../background/browser/controller')
     const ctl = makeController({ send: async () => ({}), sleep: noSleep })

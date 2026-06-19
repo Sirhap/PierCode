@@ -78,11 +78,16 @@ export function makeController(deps: ControllerDeps = {}) {
 
   const api = {
     registry, events, security,
-    // exported for the dispatch gate to pre-resolve a tab (Phase 2). The tab-establishing
-    // tools skip the AI-page gate (they ARE the approval path; gating them deadlocks).
+    // exported for the dispatch gate to pre-resolve a tab (Phase 2). Some tools must
+    // skip the AI-page gate during pre-resolution:
+    //  - use_tab/new_tab ESTABLISH control (they ARE the approval path; gating deadlocks).
+    //  - finalize_tabs CLOSES tabs by an explicit id list and ignores the resolved
+    //    default tab entirely, so blocking on "the default tab is an AI page" is a false
+    //    deadlock. It still gets its approval prompt via runGates.
+    // (zoom/cookies/etc. genuinely act on the target tab, so they stay gated.)
     async resolveTabForGate(args: { tabId?: number }, toolName?: string): Promise<BrowserTab> {
-      const establishing = toolName === 'browser_use_tab' || toolName === 'browser_new_tab'
-      return ensureTab(args, establishing)
+      const skipAIGate = toolName === 'browser_use_tab' || toolName === 'browser_new_tab' || toolName === 'browser_finalize_tabs'
+      return ensureTab(args, skipAIGate)
     },
 
     async snapshot(args: { tabId?: number; coordinates?: boolean; refId?: string; depth?: number }): Promise<string> {
