@@ -1,7 +1,9 @@
-// Tool-name router + per-tab serialization lock. Phase 0 builds the routing +
-// concurrency primitive; the security/approval gates are wired in Phase 2 once the
-// controller singleton exists. Tools register into TOOL_TABLE in their phases.
+// Tool-name router + per-tab serialization lock + security/approval gates.
+// Tools register into TOOL_TABLE in their phases (via register.ts).
 import type { ExecResult } from './types'
+import { getController } from './controller'
+import { approval } from './approval-singleton'
+import { runGates } from './gates'
 
 /** Port of executor.go:528 browserTabKey: tabId>0 → "tab:<id>", else "tab:default". */
 export function browserTabKey(args: Record<string, unknown>): string {
@@ -29,7 +31,8 @@ export const READONLY_TOOLS = new Set<string>()           // filled in phases 1-
 
 const lock = new KeyedLock()
 
-/** Entry point the onMessage handler calls. Routes + locks + invokes the method. */
+/** Entry point the onMessage handler calls. Per-tab lock → gates → method.
+ *  Read-only tools skip the gates (no tab pre-resolution, no approval). */
 export async function dispatchBrowserTool(
   name: string, args: Record<string, unknown>, callId: string,
 ): Promise<ExecResult> {
@@ -37,7 +40,16 @@ export async function dispatchBrowserTool(
   if (!method) return { callId, name, output: `unknown browser tool: ${name}`, error: 'unknown tool', success: false }
   const key = browserTabKey(args)
   try {
-    const output = await lock.run(key, () => method(args))
+    const output = await lock.run(key, async () => {
+      if (!READONLY_TOOLS.has(name)) {
+        const c = getController()
+        // Pre-resolve the tab so the gate can check sensitivity + the AI-page gate
+        // fires once (ensureTab) before any mutating CDP is issued.
+        const tab = await c.resolveTabForGate(args as { tabId?: number })
+        await runGates({ name, tab, callId, approval, security: c.security })
+      }
+      return method(args)
+    })
     return { callId, name, output, success: true }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

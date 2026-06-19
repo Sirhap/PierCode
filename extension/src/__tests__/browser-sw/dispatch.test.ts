@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { browserTabKey, KeyedLock, dispatchBrowserTool, TOOL_TABLE } from '../../background/browser/dispatch'
+import { browserTabKey, KeyedLock, dispatchBrowserTool, TOOL_TABLE, READONLY_TOOLS } from '../../background/browser/dispatch'
 
 describe('dispatch lock + key', () => {
   it('browserTabKey: tabId → tab:<id>, missing → tab:default', () => {
@@ -26,10 +26,13 @@ describe('dispatch lock + key', () => {
     expect(r.output).toContain('unknown browser tool')
   })
   it('dispatchBrowserTool: registered tool runs under the lock', async () => {
+    // mark read-only so it skips the gates (which would need chrome.tabs)
     TOOL_TABLE.set('browser_test_echo', async (a) => `echo:${JSON.stringify(a)}`)
+    READONLY_TOOLS.add('browser_test_echo')
     const r = await dispatchBrowserTool('browser_test_echo', { tabId: 2 }, 'c2')
     expect(r.success).toBe(true)
     expect(r.output).toContain('echo:')
     TOOL_TABLE.delete('browser_test_echo')
+    READONLY_TOOLS.delete('browser_test_echo')
   })
 })
