@@ -101,7 +101,18 @@ async function hasOffscreen(): Promise<boolean> {
   }
 }
 
-async function ensureOffscreen(): Promise<void> {
+// Tear down a stale/half-loaded offscreen document so the next ensureOffscreen rebuilds
+// it from scratch. Used by the ready-timeout retry: a qwen iframe that didn't signal
+// ready in time (slow/blocked load, SW-restart race) is more likely to recover from a
+// fresh document than from re-pinging a wedged one.
+async function closeOffscreen(): Promise<void> {
+  iframeReady = false
+  creating = null
+  readyWaiters.splice(0)   // drop stale resolvers from the timed-out attempt
+  try { await chrome.offscreen.closeDocument() } catch { /* none open / already closing */ }
+}
+
+async function ensureOffscreenOnce(): Promise<void> {
   installListener()
   if (await hasOffscreen()) {
     // 文档已在,但 iframe 可能尚未 ready(SW 重启场景)。等一次 ready。
@@ -125,6 +136,22 @@ async function ensureOffscreen(): Promise<void> {
     await waitForReady()
   })()
   return creating
+}
+
+async function ensureOffscreen(): Promise<void> {
+  try {
+    await ensureOffscreenOnce()
+  } catch (e) {
+    // The qwen iframe is flaky to load (risk-control page); a single rebuild clears most
+    // transient ready-timeouts. If the rebuild also fails, surface a clearer message.
+    if (!(e instanceof Error) || !/未在 30s 内就绪/.test(e.message)) throw e
+    await closeOffscreen()
+    try {
+      await ensureOffscreenOnce()
+    } catch {
+      throw new Error('qwen 风控页(offscreen 隐藏 iframe)两次都未在 30s 内加载就绪——可能 chat.qwen.ai 不可达/加载过慢,或需要在 qwen 网页重新登录。稍后重试或先在 qwen 标签页确认能正常打开。')
+    }
+  }
 }
 
 async function pingForReady(): Promise<void> {
