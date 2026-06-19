@@ -534,6 +534,12 @@ function isMac(): boolean {
 // AI page's chat input as an attachment when we know the origin tab, otherwise return
 // the dataURL inline. Attachment delivery avoids blasting a multi-KB base64 string into
 // the model's text context (token cost) and mirrors the Go WS attachment flow.
+// Monotonic media counter so successive screenshots/pdfs/recordings get DISTINCT
+// attachment filenames. A fixed `screenshot.jpg` made every capture share one name —
+// the AI page (and the user) couldn't tell shots apart, and some pages dedupe/overwrite
+// a re-added same-named file. Seeded once; bumped per delivery.
+let mediaSeq = 0
+
 async function deliverMedia(dataUrl: string, label: string, originTabId?: number): Promise<string> {
   const comma = dataUrl.indexOf(',')
   if (comma < 0) return dataUrl
@@ -542,7 +548,7 @@ async function deliverMedia(dataUrl: string, label: string, originTabId?: number
   const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream'
   const ext = mime === 'image/png' ? 'png' : mime === 'image/jpeg' ? 'jpg'
     : mime === 'image/gif' ? 'gif' : mime === 'application/pdf' ? 'pdf' : 'bin'
-  const name = `${label}.${ext}`
+  const name = `${label}-${++mediaSeq}.${ext}`
   if (typeof originTabId === 'number') {
     const injected = await injectAttachment(originTabId, b64, name, mime)
     if (injected) return `uploaded ${label} (${name}) to the current AI chat page as an attachment`

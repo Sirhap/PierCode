@@ -76,6 +76,13 @@ describe('controller read-only', () => {
     expect(sendMessage.mock.calls[0][0]).toBe(99)              // targeted to origin tab
     expect(sendMessage.mock.calls[0][1].type).toBe('BROWSER_ATTACHMENT_UPLOAD')
     expect(out).toMatch(/uploaded/i)
+    // Successive captures must get DISTINCT filenames (a fixed screenshot.jpg made the
+    // page dedupe/overwrite and the AI couldn't tell shots apart).
+    await ctl.screenshot({ tabId: 1, __originTabId: 99 } as any)
+    const name1 = sendMessage.mock.calls[0][1].name
+    const name2 = sendMessage.mock.calls[1][1].name
+    expect(name1).not.toBe(name2)
+    expect(name1).toMatch(/^screenshot-\d+\.(png|jpg)$/)
   })
 
   it('screenshot returns dataURL inline when no origin tab', async () => {
