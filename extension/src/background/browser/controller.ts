@@ -97,19 +97,7 @@ export function makeController(deps: ControllerDeps = {}) {
       const tab = await ensureTab(args)
       const out = await cdp.sendCommand(target(tab.tabId), 'Page', 'captureScreenshot', { format: 'png' })
       const dataUrl = await budgetScreenshot(out.data, 'image/png', args.maxDim ?? 1000)
-      const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
-      const mime = dataUrl.startsWith('data:image/png') ? 'image/png' : 'image/jpeg'
-      const name = `screenshot.${mime === 'image/png' ? 'png' : 'jpg'}`
-      // Mirror Go: inject the screenshot into the AI page's chat input as an attachment.
-      // Targets the origin tab (the AI page that called the tool) so it lands in the
-      // right conversation; falls back to returning the dataURL inline if no origin tab
-      // or injection fails (Go server absent / page has no file input).
-      const origin = args.__originTabId
-      if (typeof origin === 'number') {
-        const injected = await injectAttachment(origin, b64, name, mime)
-        if (injected) return 'uploaded screenshot to the current AI chat page as an attachment'
-      }
-      return dataUrl
+      return deliverMedia(dataUrl, 'screenshot', args.__originTabId)
     },
 
     async find(args: { tabId?: number; query: string; limit?: number }): Promise<string> {
@@ -177,13 +165,13 @@ export function makeController(deps: ControllerDeps = {}) {
       return 'waitForFunction timed out'
     },
 
-    async pdf(args: { tabId?: number }): Promise<string> {
+    async pdf(args: { tabId?: number; __originTabId?: number }): Promise<string> {
       const tab = await ensureTab(args)
       const out = await cdp.sendCommand(target(tab.tabId), 'Page', 'printToPDF', {})
-      return `data:application/pdf;base64,${out.data}`
+      return deliverMedia(`data:application/pdf;base64,${out.data}`, 'page', args.__originTabId)
     },
 
-    async record(args: { tabId?: number; frames?: number; delayMs?: number }): Promise<string> {
+    async record(args: { tabId?: number; frames?: number; delayMs?: number; __originTabId?: number }): Promise<string> {
       const tab = await ensureTab(args)
       const n = Math.min(Math.max(args.frames ?? 6, 1), 30)
       const delay = args.delayMs ?? 200
@@ -193,7 +181,7 @@ export function makeController(deps: ControllerDeps = {}) {
         shots.push(out.data)
         if (i < n - 1) await new Promise(r => setTimeout(r, delay))
       }
-      return encodeGif(shots, 'image/png', delay)
+      return deliverMedia(await encodeGif(shots, 'image/png', delay), 'recording', args.__originTabId)
     },
 
     // ── interactive (Phase 2) ────────────────────────────────────────────────
@@ -470,11 +458,12 @@ export function makeController(deps: ControllerDeps = {}) {
       return String(r)
     },
 
-    async zoom(args: { tabId?: number }): Promise<string> {
+    async zoom(args: { tabId?: number; __originTabId?: number }): Promise<string> {
       const tab = await ensureTab(args)
       // Region screenshot — capture full and budget down (clip-rect refinement TODO).
       const out = await cdp.sendCommand(target(tab.tabId), 'Page', 'captureScreenshot', { format: 'png' })
-      return budgetScreenshot(out.data, 'image/png', 1200)
+      const dataUrl = await budgetScreenshot(out.data, 'image/png', 1200)
+      return deliverMedia(dataUrl, 'zoom', args.__originTabId)
     },
 
     async finalizeTabs(args: { tabId?: number; close?: number[] }): Promise<string> {
@@ -526,6 +515,26 @@ export function makeController(deps: ControllerDeps = {}) {
 
 function isMac(): boolean {
   try { return /mac/i.test((navigator as any).platform || (navigator as any).userAgentData?.platform || '') } catch { return false }
+}
+
+// Deliver a captured media dataURL (screenshot/zoom/record/pdf): inject it into the
+// AI page's chat input as an attachment when we know the origin tab, otherwise return
+// the dataURL inline. Attachment delivery avoids blasting a multi-KB base64 string into
+// the model's text context (token cost) and mirrors the Go WS attachment flow.
+async function deliverMedia(dataUrl: string, label: string, originTabId?: number): Promise<string> {
+  const comma = dataUrl.indexOf(',')
+  if (comma < 0) return dataUrl
+  const b64 = dataUrl.slice(comma + 1)
+  const mimeMatch = /^data:([^;,]+)/.exec(dataUrl)
+  const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream'
+  const ext = mime === 'image/png' ? 'png' : mime === 'image/jpeg' ? 'jpg'
+    : mime === 'image/gif' ? 'gif' : mime === 'application/pdf' ? 'pdf' : 'bin'
+  const name = `${label}.${ext}`
+  if (typeof originTabId === 'number') {
+    const injected = await injectAttachment(originTabId, b64, name, mime)
+    if (injected) return `uploaded ${label} (${name}) to the current AI chat page as an attachment`
+  }
+  return dataUrl
 }
 
 // Inject a base64 image into the AI page's chat input as an attachment, by asking
