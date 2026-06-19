@@ -156,8 +156,17 @@ func DefaultProfileRegistry(defaultPrompt []byte) *ProfileRegistry {
 	// Keep adapter-specific profiles centralized here. Profiles should use
 	// trusted embedded prompt bytes, not files from the writable workspace.
 	registry := NewProfileRegistry(defaultPrompt)
+	// Qwen profile: a slim Qwen-specific BASE prompt (not the generic init prompt)
+	// whose §1 leads with the strongest "piercode-tool is the only transport, never a
+	// Qwen native tool" rule — Qwen's function-calling RLHF otherwise reaches for its
+	// own code_interpreter/web_search when it sees the generic prompt's tooling
+	// context. PromptAppend adds only the context-packet handoff (the native-tool
+	// guidance now lives in the base, so it isn't duplicated). {{TOOLS}} renders the
+	// compact route index (names + one-line purpose, not full schema); detailed
+	// parameters come from tool_help on demand.
 	registry.Register(Profile{
 		ID:           "qwen",
+		Prompt:       prompts.QwenBasePrompt,
 		PromptAppend: prompts.QwenPromptAppend,
 	})
 	// Worker profile: a sub-agent dispatched into its own AI tab. It inherits

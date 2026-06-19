@@ -538,7 +538,7 @@ func TestHandlePrompt(t *testing.T) {
 		}
 	})
 
-	t.Run("qwen adapter inherits default prompt and appends qwen guidance", func(t *testing.T) {
+	t.Run("qwen adapter uses the slim qwen base prompt and appends context-packet guidance", func(t *testing.T) {
 		s := testServer(t)
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/prompt?adapter=qwen", nil)
@@ -548,20 +548,23 @@ func TestHandlePrompt(t *testing.T) {
 			t.Errorf("expected 200, got %d", w.Code)
 		}
 		body := w.Body.Bytes()
-		if bytes.Contains(body, []byte("{{SYSTEM_INFO}}")) || bytes.Contains(body, []byte("{{TOOLS}}")) {
+		if bytes.Contains(body, []byte("{{SYSTEM_INFO}}")) || bytes.Contains(body, []byte("{{TOOLS}}")) || bytes.Contains(body, []byte("{{SKILLS}}")) {
 			t.Errorf("expected placeholders to be rendered, got %s", string(body))
 		}
+		// The qwen base still advertises the local toolset via {{TOOLS}} (compact route
+		// index), so a local tool like exec_cmd appears.
 		if !bytes.Contains(body, []byte("exec_cmd")) {
-			t.Errorf("expected default profile to include tool docs")
+			t.Errorf("expected qwen profile to render the local tool index (exec_cmd)")
 		}
-		if !bytes.Contains(body, []byte("Qwen Native Tools vs. Local Work")) {
-			t.Errorf("expected qwen profile to include qwen guidance")
+		// §1 must carry the strongest anti-native-tool transport rule.
+		if !bytes.Contains(body, []byte("never a Qwen native tool")) ||
+			!bytes.Contains(body, []byte("code_interpreter")) {
+			t.Errorf("expected qwen profile to lead with the anti-native-tool transport rule")
 		}
 		if !bytes.Contains(body, []byte("does not exist")) {
 			t.Errorf("expected qwen profile to address host-native missing-tool errors")
 		}
-		if !bytes.Contains(body, []byte("ordinary visible final-answer Markdown")) ||
-			!bytes.Contains(body, []byte("not a Qwen tool, function, plugin, MCP server")) {
+		if !bytes.Contains(body, []byte("visible final-answer Markdown")) {
 			t.Errorf("expected qwen profile to force visible markdown instead of host-native calls")
 		}
 		if !bytes.Contains(body, []byte("PierCode Context Packet Handoff")) ||

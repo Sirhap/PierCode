@@ -8,6 +8,16 @@ var DefaultPrompt []byte
 //go:embed qwen_append.txt
 var QwenPromptAppend []byte
 
+// QwenBasePrompt is a slim, Qwen-specific base prompt used as the qwen profile's
+// Prompt INSTEAD of inheriting DefaultPrompt. Qwen's function-calling RLHF makes it
+// reach for its own native tools (code_interpreter/web_search) when it sees the
+// generic init prompt's tooling context, so this base leads with the strongest
+// possible "piercode-tool is the ONLY transport, never a Qwen native tool" rule and
+// keeps the {{TOOLS}}/{{SKILLS}} placeholders (compact route index, not full schema).
+//
+//go:embed qwen_base.txt
+var QwenBasePrompt []byte
+
 //go:embed worker_append.txt
 var WorkerPromptAppend []byte
 
