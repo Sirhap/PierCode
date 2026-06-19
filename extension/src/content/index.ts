@@ -420,6 +420,14 @@ function shouldPromptCompressionAgain(usedTokens: number): boolean {
 // 是否对当前平台启用上下文压缩。目前 Qwen + ChatGPT 已验证 DOM 捕获/新会话注入；
 // 其余平台默认关闭，避免误触发把没追踪全的上下文压坏。
 const COMPRESSION_PLATFORMS = new Set(['qwen', 'chatgpt']);
+// browser_* tools migrated to in-SW execution (skip /exec). Phase 1 = read-only tools.
+// Kept in sync with extension/src/background/browser/register.ts read list. Inlined
+// here (not imported) because content.js is a classic MV3 script that cannot ESM-import.
+const PHASE1_SW_BROWSER_TOOLS = new Set([
+  'browser_snapshot', 'browser_tabs', 'browser_screenshot', 'browser_find', 'browser_console',
+  'browser_network', 'browser_get_content', 'browser_get_page_text', 'browser_pdf', 'browser_record',
+  'browser_wait', 'browser_wait_for_function', 'browser_get_attributes',
+]);
 function isCompressionPlatform(): boolean {
   return COMPRESSION_PLATFORMS.has(platformAdapter.name);
 }
@@ -1425,6 +1433,21 @@ async function executeToolCallRaw(toolCall: any): Promise<string | null> {
     const answer = await showQuestionPopup(q, opts);
     const callId = getToolCallId(toolCall);
     return `### question #${callId}\n${answer || '（用户未回答）'}`;
+  }
+  // browser_* read-only tools now run inside the service worker (no /exec round-trip):
+  // each SW only sees its own browser's tabs, so two Chromes on one server can't race.
+  // Phase 1 routes only the read-only browser tools; interactive/write still go to Go
+  // until their migration phase. chrome.runtime.sendMessage (no ESM import) keeps
+  // content.js a classic MV3 script (content-build.test.ts). Set inlined per the
+  // "content no settings import" constraint.
+  if (typeof toolCall.name === 'string' && PHASE1_SW_BROWSER_TOOLS.has(toolCall.name)) {
+    const callId = getToolCallId(toolCall);
+    const r: any = await new Promise(res => chrome.runtime.sendMessage(
+      { type: 'EXEC_BROWSER_TOOL', name: toolCall.name, args: toolCall.args || {}, callId, conversationUrl: location.href },
+      res));
+    if (!r) return '[PierCode] 浏览器工具无响应';
+    const out = r.output || r.error || '[PierCode] 空响应';
+    return `### ${toolCall.name} #${callId}\n${out}`;
   }
   const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
   if (!apiUrl) return '请先在插件中配置 API 地址';
