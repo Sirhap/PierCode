@@ -48,8 +48,12 @@ export function makeController(deps: ControllerDeps = {}) {
   function target(tabId: number): Debuggee { return { tabId } }
   async function settle(_tabId: number): Promise<void> { if (settleMs > 0) await new Promise(r => setTimeout(r, settleMs)) }
 
-  // Resolve the target tab; enforce the AI-page gate (hard refuse).
-  async function ensureTab(args: { tabId?: number }): Promise<BrowserTab> {
+  // Resolve the target tab; enforce the AI-page gate (hard refuse) unless allowAIPage.
+  // allowAIPage is set for the tab-ESTABLISHING tools (browser_use_tab / browser_new_tab)
+  // whose whole purpose is to grant control of (or open) a tab — gating them would
+  // deadlock: the gate tells the model to "use browser_use_tab", but then blocks
+  // browser_use_tab itself.
+  async function ensureTab(args: { tabId?: number }, allowAIPage = false): Promise<BrowserTab> {
     let id = (typeof args.tabId === 'number' && args.tabId > 0) ? args.tabId : registry.default()
     if (id == null) {
       const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
@@ -58,7 +62,7 @@ export function makeController(deps: ControllerDeps = {}) {
     }
     const t = await chrome.tabs.get(id)
     const tab: BrowserTab = { tabId: id, url: t.url || '', title: safeTitle(t.title || '') }
-    if (isAIPage(tab.url) && !registry.isApproved(id)) {
+    if (!allowAIPage && isAIPage(tab.url) && !registry.isApproved(id)) {
       throw new Error('refusing to control AI conversation tab by default; use browser_use_tab and approve explicitly')
     }
     registry.upsertTab(tab)
@@ -74,8 +78,12 @@ export function makeController(deps: ControllerDeps = {}) {
 
   const api = {
     registry, events, security,
-    // exported for the dispatch gate to pre-resolve a tab (Phase 2)
-    async resolveTabForGate(args: { tabId?: number }): Promise<BrowserTab> { return ensureTab(args) },
+    // exported for the dispatch gate to pre-resolve a tab (Phase 2). The tab-establishing
+    // tools skip the AI-page gate (they ARE the approval path; gating them deadlocks).
+    async resolveTabForGate(args: { tabId?: number }, toolName?: string): Promise<BrowserTab> {
+      const establishing = toolName === 'browser_use_tab' || toolName === 'browser_new_tab'
+      return ensureTab(args, establishing)
+    },
 
     async snapshot(args: { tabId?: number; coordinates?: boolean; refId?: string; depth?: number }): Promise<string> {
       const tab = await ensureTab(args)

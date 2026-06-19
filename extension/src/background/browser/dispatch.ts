@@ -56,8 +56,10 @@ export async function dispatchBrowserTool(
       if (!READONLY_TOOLS.has(name)) {
         const c = getController()
         // Pre-resolve the tab so the gate can check sensitivity + the AI-page gate
-        // fires once (ensureTab) before any mutating CDP is issued.
-        const tab = await c.resolveTabForGate(args as { tabId?: number })
+        // fires once (ensureTab) before any mutating CDP is issued. Pass the tool name
+        // so the tab-establishing tools (use_tab/new_tab) skip the AI-page gate — gating
+        // them would deadlock (the gate's remedy IS browser_use_tab).
+        const tab = await c.resolveTabForGate(args as { tabId?: number }, name)
         await runGates({ name, tab, callId, approval, security: c.security, originTabId: opts.originTabId, skipApproval: opts.skipApproval })
       }
       return method(args)

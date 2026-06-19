@@ -100,6 +100,26 @@ describe('controller interactive', () => {
     await expect(ctl.scroll({ tabId: 1, ref: 'e9' })).rejects.toThrow(/stale or unknown/)
   })
 
+  it('use_tab on an AI-page tab is NOT blocked by the AI-page gate (it grants control)', async () => {
+    ;(globalThis as any).chrome.tabs.get = vi.fn(async () => ({ id: 5, url: 'https://chatgpt.com/c/9', title: 'GPT' }))
+    const { makeController } = await import('../../background/browser/controller')
+    const ctl = makeController({ send: async () => ({}), sleep: noSleep })
+    // resolveTabForGate is what dispatch calls before the tool; for use_tab it must pass.
+    await expect(ctl.resolveTabForGate({ tabId: 5 }, 'browser_use_tab')).resolves.toMatchObject({ tabId: 5 })
+    // and the tool itself marks it approved + controlled
+    const out = await ctl.useTab({ tabId: 5 })
+    expect(out).toContain('controlling tabId=5')
+    expect(ctl.registry.isApproved(5)).toBe(true)
+    expect(ctl.registry.default()).toBe(5)
+  })
+
+  it('a non-establishing tool on an unapproved AI-page tab IS still blocked', async () => {
+    ;(globalThis as any).chrome.tabs.get = vi.fn(async () => ({ id: 6, url: 'https://chatgpt.com/c/9', title: 'GPT' }))
+    const { makeController } = await import('../../background/browser/controller')
+    const ctl = makeController({ send: async () => ({}), sleep: noSleep })
+    await expect(ctl.resolveTabForGate({ tabId: 6 }, 'browser_click')).rejects.toThrow(/AI conversation tab/)
+  })
+
   it('waitForNavigation resolves when a main-frame nav event lands', async () => {
     const { makeController } = await import('../../background/browser/controller')
     const ctl = makeController({ send: async () => ({}), sleep: noSleep })
