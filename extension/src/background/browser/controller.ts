@@ -14,7 +14,7 @@ import { find } from './find'
 import { budgetScreenshot, encodeGif } from './image'
 import {
   getContentExpr, pageTextExpr, waitSelectorExpr, waitForFunctionExpr, getAttributesExpr,
-  selectExpr,
+  selectExpr, storageExpr, formInputExpr, clipboardReadExpr, clipboardWriteExpr, uploadDataTransferExpr,
 } from './in-page-js'
 import { resolvePoint, assertPointActionable } from './ref-resolve'
 import { Input, parseKeyChord, DEFAULT_FIDELITY, type InputFidelity } from './input'
@@ -25,6 +25,14 @@ import { safeTitle, type BrowserTab } from './types'
 type Debuggee = chrome.debugger.Debuggee
 type SendFn = (t: Debuggee, m: string, p?: object) => Promise<any>
 type Sleep = (ms: number) => Promise<void>
+
+// browser_batch re-dispatches sub-calls through the gated dispatcher. We inject it via
+// a setter (called from register.ts) rather than importing ./dispatch here, so there's
+// no controller→dispatch static edge (which would make Vite emit a shared preload-helper
+// chunk that leaks into the classic-script content.js). See content-build.test.ts.
+type DispatchFn = (name: string, args: Record<string, unknown>, callId: string) => Promise<{ output: string; success: boolean }>
+let dispatchRef: DispatchFn | null = null
+export function setBatchDispatcher(fn: DispatchFn): void { dispatchRef = fn }
 
 export interface ControllerDeps { send?: SendFn; fidelity?: InputFidelity; sleep?: Sleep }
 
@@ -379,6 +387,94 @@ export function makeController(deps: ControllerDeps = {}) {
       if (args.locale) { await cdp.sendCommand(target(tab.tabId), 'Emulation', 'setLocaleOverride', { locale: args.locale }); applied.push('locale') }
       if (args.offline != null) { await cdp.sendCommand(target(tab.tabId), 'Network', 'emulateNetworkConditions', { offline: args.offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 }); applied.push(args.offline ? 'offline' : 'online') }
       return applied.length ? `emulating: ${applied.join(', ')}` : 'no emulation options provided'
+    },
+
+    // ── write / high-risk (Phase 3) ──────────────────────────────────────────
+    // High-risk tools (evaluate/cookies/clipboard/upload) are approval-gated by
+    // their action class in dispatch.ts before reaching here.
+
+    async evaluate(args: { tabId?: number; expression: string }): Promise<string> {
+      const tab = await ensureTab(args)
+      const wrapped = `(function(){ var __r = (${args.expression}); return JSON.stringify(__r === undefined ? null : __r); })()`
+      const r = await cdp.runtimeEvaluate(target(tab.tabId), wrapped)
+      registry.markStale(tab.tabId)
+      return typeof r === 'string' ? r : JSON.stringify(r)
+    },
+
+    async storage(args: { tabId?: number; area?: 'local' | 'session'; op: string; key?: string; value?: string }): Promise<string> {
+      const tab = await ensureTab(args)
+      const r = await cdp.runtimeEvaluate(target(tab.tabId), storageExpr(args.area ?? 'local', args.op, args.key, args.value))
+      return typeof r === 'string' ? r : JSON.stringify(r)
+    },
+
+    async formInput(args: { tabId?: number; selector: string; kind: 'text' | 'checkbox' | 'radio' | 'contenteditable'; value: string }): Promise<string> {
+      const tab = await ensureTab(args)
+      const r = await cdp.runtimeEvaluate(target(tab.tabId), formInputExpr(args.selector, args.kind, args.value))
+      registry.markStale(tab.tabId)
+      return String(r)
+    },
+
+    async clipboard(args: { tabId?: number; op: 'read' | 'write'; text?: string }): Promise<string> {
+      const tab = await ensureTab(args)
+      const expr = args.op === 'write' ? clipboardWriteExpr(args.text ?? '') : clipboardReadExpr()
+      return String(await cdp.runtimeEvaluate(target(tab.tabId), expr))
+    },
+
+    async cookies(args: { tabId?: number; url?: string }): Promise<string> {
+      const tab = await ensureTab(args)
+      const list = await chrome.cookies.getAll({ url: args.url ?? tab.url })
+      return list.map(c => `${c.name}=${c.value}`).join('\n') || '(no cookies)'
+    },
+
+    async setCookie(args: { url: string; name: string; value: string; domain?: string; path?: string }): Promise<string> {
+      await chrome.cookies.set({ url: args.url, name: args.name, value: args.value, domain: args.domain, path: args.path })
+      return `set cookie ${args.name}`
+    },
+
+    async downloads(_args: Record<string, unknown>): Promise<string> {
+      const items = await chrome.downloads.search({ limit: 20, orderBy: ['-startTime'] })
+      return items.map(d => `${d.filename || d.url} (${d.state})`).join('\n') || '(no downloads)'
+    },
+
+    async upload(args: { tabId?: number; selector: string; fileName: string; base64?: string; mime?: string }): Promise<string> {
+      const tab = await ensureTab(args)
+      // SW has no filesystem: caller must supply base64 bytes (no local path).
+      if (!args.base64) return 'upload requires base64 file bytes (local paths are unsupported in the extension service worker)'
+      const r = await cdp.runtimeEvaluate(target(tab.tabId),
+        uploadDataTransferExpr(args.selector, args.fileName, args.base64, args.mime ?? 'application/octet-stream'))
+      registry.markStale(tab.tabId)
+      return String(r)
+    },
+
+    async zoom(args: { tabId?: number }): Promise<string> {
+      const tab = await ensureTab(args)
+      // Region screenshot — capture full and budget down (clip-rect refinement TODO).
+      const out = await cdp.sendCommand(target(tab.tabId), 'Page', 'captureScreenshot', { format: 'png' })
+      return budgetScreenshot(out.data, 'image/png', 1200)
+    },
+
+    async finalizeTabs(args: { tabId?: number; close?: number[] }): Promise<string> {
+      const ids = args.close ?? []
+      let closed = 0
+      for (const id of ids) {
+        try { await chrome.tabs.remove(id); closed++ } catch { /* already gone */ }
+        registry.clearDefault(id)
+      }
+      return `finalized ${closed}/${ids.length} tabs`
+    },
+
+    async batch(args: { tabId?: number; actions: Array<{ name: string; input?: Record<string, unknown> }> }): Promise<string> {
+      // Re-dispatch each sub-call through the full gated path. Uses the module-level
+      // `dispatchRef` (set by register.ts) instead of importing ./dispatch here — a
+      // controller→dispatch static import would force Vite to emit a shared
+      // vite-preload-helper chunk that leaks into content.js (content-build.test.ts).
+      if (!dispatchRef) return 'browser_batch unavailable (dispatcher not wired)'
+      const out: string[] = []
+      for (const a of args.actions ?? []) {
+        const r = await dispatchRef(a.name, { tabId: args.tabId, ...(a.input ?? {}) }, '')
+        out.push(`### ${a.name}\n${r.output}`)
+      }
+      return out.join('\n\n') || '(empty batch)'
     },
   }
 

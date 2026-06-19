@@ -2,8 +2,8 @@
 // startup (background/index.ts). Kept separate from dispatch.ts so the router stays
 // free of a controller import, and separate from controller.ts so the controller
 // stays free of a dispatch import — register.ts is the single wiring seam.
-import { TOOL_TABLE, READONLY_TOOLS, type ToolMethod } from './dispatch'
-import { getController } from './controller'
+import { TOOL_TABLE, READONLY_TOOLS, dispatchBrowserTool, type ToolMethod } from './dispatch'
+import { getController, setBatchDispatcher } from './controller'
 
 let registered = false
 
@@ -12,6 +12,9 @@ export function registerBrowserTools(): void {
   if (registered) return
   registered = true
   const c = getController()
+  // Wire browser_batch's re-dispatcher (avoids a controller→dispatch import; see
+  // setBatchDispatcher in controller.ts for why).
+  setBatchDispatcher(dispatchBrowserTool)
 
   const read: Array<[string, ToolMethod]> = [
     ['browser_snapshot', a => c.snapshot(a)],
@@ -54,4 +57,27 @@ export function registerBrowserTools(): void {
     ['browser_emulate', a => c.emulate(a as any)],
   ]
   for (const [name, fn] of interactive) TOOL_TABLE.set(name, fn)
+
+  // Write / high-risk (Phase 3) — high-risk ones approval-gated in dispatch.ts.
+  const write: Array<[string, ToolMethod]> = [
+    ['browser_evaluate', a => c.evaluate(a as any)],
+    ['browser_storage', a => c.storage(a as any)],
+    ['browser_form_input', a => c.formInput(a as any)],
+    ['browser_clipboard', a => c.clipboard(a as any)],
+    ['browser_cookies', a => c.cookies(a as any)],
+    ['browser_set_cookie', a => c.setCookie(a as any)],
+    ['browser_downloads', a => c.downloads(a)],
+    ['browser_upload', a => c.upload(a as any)],
+    ['browser_zoom', a => c.zoom(a as any)],
+    ['browser_finalize_tabs', a => c.finalizeTabs(a as any)],
+    ['browser_batch', a => c.batch(a as any)],
+  ]
+  for (const [name, fn] of write) TOOL_TABLE.set(name, fn)
+  // browser_batch bypasses the OUTER gate (no tab pre-resolution, no double lock): each
+  // re-dispatched sub-call runs its own gate + per-tab lock. Mark it read-only so the
+  // dispatcher skips the wrapper gate (mirrors Go browser_batch taking no lock).
+  READONLY_TOOLS.add('browser_batch')
+  // browser_downloads is a pure read of chrome.downloads (no tab, no mutation) — skip
+  // the gate too. browser_cookies stays gated (sensitive credential read).
+  READONLY_TOOLS.add('browser_downloads')
 }
