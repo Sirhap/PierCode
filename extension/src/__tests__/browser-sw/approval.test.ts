@@ -21,6 +21,14 @@ describe('ApprovalManager', () => {
     await m.ask({ host: 'x.com', actionClass: 'interact', action: 'click', callId: 'c3' })
     expect(send).not.toHaveBeenCalled()
   })
+  it('originTabId is forwarded to send (targeted, not broadcast)', async () => {
+    const send = vi.fn()
+    const m = new ApprovalManager(send)
+    void m.ask({ host: 'x.com', actionClass: 'interact', action: 'click', callId: 'c', originTabId: 77 })
+    // send(msg, originTabId) — second arg carries the target tab
+    expect(send.mock.calls[0][1]).toBe(77)
+  })
+
   it('reject throws with reason', async () => {
     const send = vi.fn()
     const m = new ApprovalManager(send)

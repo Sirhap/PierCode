@@ -59,6 +59,36 @@ describe('controller read-only', () => {
     expect(await ctl.getPageText({ tabId: 1 })).toBe('hello world')
   })
 
+  it('screenshot injects as attachment when origin tab accepts', async () => {
+    const sendMessage = vi.fn((..._a: any[]) => Promise.resolve({ ok: true }))
+    ;(globalThis as any).chrome.tabs.sendMessage = sendMessage
+    // OffscreenCanvas/createImageBitmap aren't in jsdom; stub budgetScreenshot's path
+    // by making captureScreenshot tiny + under budget so it returns the PNG dataURL
+    // without re-encoding (budgetTargetDims keeps it, no canvas needed).
+    ;(globalThis as any).createImageBitmap = vi.fn(async () => ({ width: 10, height: 10, close() {} }))
+    ;(globalThis as any).fetch = vi.fn(async () => ({ blob: async () => new Blob() }))
+    const { makeController } = await import('../../background/browser/controller')
+    const send = vi.fn(async (_t: any, fq: string) =>
+      fq === 'Page.captureScreenshot' ? { data: 'iVBORw0KGgo=' } : {})
+    const ctl = makeController({ send })
+    const out = await ctl.screenshot({ tabId: 1, __originTabId: 99 } as any)
+    expect(sendMessage).toHaveBeenCalled()
+    expect(sendMessage.mock.calls[0][0]).toBe(99)              // targeted to origin tab
+    expect(sendMessage.mock.calls[0][1].type).toBe('BROWSER_ATTACHMENT_UPLOAD')
+    expect(out).toMatch(/uploaded/i)
+  })
+
+  it('screenshot returns dataURL inline when no origin tab', async () => {
+    ;(globalThis as any).createImageBitmap = vi.fn(async () => ({ width: 10, height: 10, close() {} }))
+    ;(globalThis as any).fetch = vi.fn(async () => ({ blob: async () => new Blob() }))
+    const { makeController } = await import('../../background/browser/controller')
+    const send = vi.fn(async (_t: any, fq: string) =>
+      fq === 'Page.captureScreenshot' ? { data: 'iVBORw0KGgo=' } : {})
+    const ctl = makeController({ send })
+    const out = await ctl.screenshot({ tabId: 1 })
+    expect(out).toMatch(/^data:image\//)
+  })
+
   it('AI-page tab without approval is refused', async () => {
     ;(globalThis as any).chrome.tabs.get = vi.fn(async () => ({ id: 1, url: 'https://chatgpt.com/c/1', title: 'GPT' }))
     const { makeController } = await import('../../background/browser/controller')

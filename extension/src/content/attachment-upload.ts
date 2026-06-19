@@ -50,6 +50,36 @@ export function ensureAttachmentUploadDispatcher() {
   });
 }
 
+// SW-direct screenshot attachment: the service worker already holds the image bytes
+// (from CDP Page.captureScreenshot), so it sends them straight here — no /attachments
+// fetch. Reuses the same file-input/paste/drop injection as the WS path. Replies
+// {ok} so the SW knows whether to fall back to returning the dataURL inline.
+let runtimeAttachmentListenerInstalled = false;
+export function installAttachmentRuntimeListener() {
+  if (runtimeAttachmentListenerInstalled) return;
+  runtimeAttachmentListenerInstalled = true;
+  try {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (msg?.type !== 'BROWSER_ATTACHMENT_UPLOAD' || typeof msg.base64 !== 'string') return;
+      (async () => {
+        try {
+          const file = new File([base64ToArrayBuffer(msg.base64)], msg.name || 'screenshot.png', {
+            type: msg.mime || 'image/png', lastModified: Date.now(),
+          });
+          await attachFileToCurrentChat(file);
+          showToast(`截图已作为附件添加：${file.name}`, 3000);
+          sendResponse({ ok: true });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          showToast(`截图附件上传失败：${message}`, 5000);
+          sendResponse({ ok: false, error: message });
+        }
+      })();
+      return true;   // async sendResponse
+    });
+  } catch { /* no runtime */ }
+}
+
 async function fetchScreenshotAttachment(path: string): Promise<AttachmentPayload> {
   if (!deps.checkContext(true)) throw new Error('扩展上下文已失效');
   const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);

@@ -36,7 +36,7 @@ import { hashStr, getToolCallId, ensureToolCallId, renderToolCard, isToolCardLiv
 import { scheduleResultEchoDecoration } from './tool-result-echo';
 import { showToast } from './toast';
 import { attachInputListener, initEditorCompletionDeps, getEditorText, effectiveFillMethod } from './editor-completion';
-import { ensureAttachmentUploadDispatcher, initAttachmentUploadDeps } from './attachment-upload';
+import { ensureAttachmentUploadDispatcher, initAttachmentUploadDeps, installAttachmentRuntimeListener } from './attachment-upload';
 import { showRemoteQuestionPopup, dismissRemoteQuestionPopup, handleBrowserApprovalAsk, dismissBrowserApprovalPopupForCall, showQuestionPopup, dismissBrowserApprovalPopup, initQuestionApprovalDeps, installBrowserApprovalRuntimeListener } from './question-approval';
 import { TIMING } from './timing';
 import { DOM_EXTRACT } from './dom-extract-config';
@@ -1148,6 +1148,9 @@ function bootstrapContentScript() {
   // SW-direct browser_* approval: card driven by chrome.runtime BROWSER_APPROVAL_ASK
   // (no WS hop), replies BROWSER_APPROVAL_ANSWER to the service worker.
   installBrowserApprovalRuntimeListener();
+  // SW-direct screenshot attachment: inject image bytes the SW captured into the chat
+  // input (BROWSER_ATTACHMENT_UPLOAD), reusing the file-input/paste/drop pipeline.
+  installAttachmentRuntimeListener();
   initAttachmentUploadDeps({
     checkContext,
     bgFetch,

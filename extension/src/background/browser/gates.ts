@@ -43,6 +43,8 @@ export interface GateCtx {
   callId: string
   approval: ApprovalManager
   security: SecurityPolicy
+  originTabId?: number   // AI-page tab to show the approval card on (targeted, not broadcast)
+  skipApproval?: boolean // caller gates approval itself (browser-agent route); keep sensitivity refuse
 }
 
 /** Run the security + approval gates. Throws to abort the tool (refusal/rejection). */
@@ -52,9 +54,9 @@ export async function runGates(ctx: GateCtx): Promise<void> {
     throw new Error(`${ctx.name} refused on sensitive payment/financial page`)
   }
   // Action approval for the tools that require it.
-  if (APPROVAL_TOOLS.has(ctx.name)) {
+  if (!ctx.skipApproval && APPROVAL_TOOLS.has(ctx.name)) {
     let host = ''
     try { host = new URL(ctx.tab.url).hostname } catch { /* opaque */ }
-    await ctx.approval.ask({ host, actionClass: actionClassFor(ctx.name), action: ctx.name, callId: ctx.callId })
+    await ctx.approval.ask({ host, actionClass: actionClassFor(ctx.name), action: ctx.name, callId: ctx.callId, originTabId: ctx.originTabId })
   }
 }

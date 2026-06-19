@@ -30,6 +30,24 @@ describe('gates', () => {
     expect(approval.ask.mock.calls[0][0].host).toBe('x.com')
   })
 
+  it('skipApproval bypasses the prompt but keeps sensitivity refuse', async () => {
+    const approval = { ask: vi.fn(async () => {}) } as any
+    // sensitive + skipApproval → still hard-refuses (refusal is not an approval)
+    await expect(runGates({ name: 'browser_click', tab: { tabId: 1, url: 'https://bank.com', title: '' },
+      callId: 'c', approval, security: { isSensitive: () => true } as any, skipApproval: true })).rejects.toThrow(/sensitive/)
+    // non-sensitive + skipApproval → no prompt
+    await runGates({ name: 'browser_click', tab: { tabId: 1, url: 'https://x.com', title: '' },
+      callId: 'c', approval, security: { isSensitive: () => false } as any, skipApproval: true })
+    expect(approval.ask).not.toHaveBeenCalled()
+  })
+
+  it('originTabId flows into approval.ask', async () => {
+    const approval = { ask: vi.fn(async () => {}) } as any
+    await runGates({ name: 'browser_click', tab: { tabId: 1, url: 'https://x.com', title: '' },
+      callId: 'c', approval, security: { isSensitive: () => false } as any, originTabId: 55 })
+    expect(approval.ask.mock.calls[0][0].originTabId).toBe(55)
+  })
+
   it('read tools are not in APPROVAL_TOOLS', () => {
     expect(APPROVAL_TOOLS.has('browser_snapshot')).toBe(false)
     expect(APPROVAL_TOOLS.has('browser_click')).toBe(true)

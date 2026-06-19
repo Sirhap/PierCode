@@ -389,10 +389,13 @@ async function execBrowserTool(
   const cid = callId || `bagent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   // Browser tools that have been migrated to in-SW execution run here (same process,
   // no /exec): they work with the Go server down and never traverse the cross-browser
-  // WS. dispatchBrowserTool applies the same per-tab lock + sensitivity/approval gates.
-  // Tools not yet migrated fall through to the /exec POST below.
+  // WS. dispatchBrowserTool applies the per-tab lock + sensitivity hard-refuse. We pass
+  // skipApproval because the browser-agent loop already gates high-risk actions via its
+  // own classifyRisk → BROWSER_AGENT_APPROVAL round-trip (avoids a double prompt). No
+  // originTabId: the agent drives a web-AI tab, so there's no chat input to attach a
+  // screenshot into — screenshots return the dataURL inline.
   if (TOOL_TABLE.has(name)) {
-    const r = await dispatchBrowserTool(name, args, cid)
+    const r = await dispatchBrowserTool(name, args, cid, { skipApproval: true })
     return { call_id: cid, name, output: r.output, success: r.success }
   }
   try {

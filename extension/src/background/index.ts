@@ -1057,7 +1057,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg.type === 'EXEC_BROWSER_TOOL') {
     const callId = msg.callId || `bsw-${Date.now()}`;
-    dispatchBrowserTool(msg.name, msg.args || {}, callId)
+    // The sender tab IS the AI page that emitted the tool — approval cards + the
+    // screenshot attachment target this tab only (no broadcast to other AI tabs).
+    const originTabId = _sender?.tab?.id;
+    dispatchBrowserTool(msg.name, msg.args || {}, callId, { originTabId })
       .then(sendResponse)
       .catch(e => sendResponse({ callId, name: msg.name, output: String(e), error: String(e), success: false }));
     return true;

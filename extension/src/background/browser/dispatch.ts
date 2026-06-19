@@ -31,13 +31,25 @@ export const READONLY_TOOLS = new Set<string>()           // filled in phases 1-
 
 const lock = new KeyedLock()
 
+export interface DispatchOpts {
+  // The AI-page tab the call came from (content route: the sender tab). Stamped onto
+  // args as `__originTabId` so approval prompts + the screenshot attachment target THAT
+  // tab only, instead of broadcasting to every AI tab.
+  originTabId?: number
+  // The browser-agent sidebar route runs its OWN classifyRisk → BROWSER_AGENT_APPROVAL
+  // gate before dispatching, so it sets skipApproval to avoid a second prompt. The
+  // sensitivity hard-refuse still applies (it is not an approval, it is a refusal).
+  skipApproval?: boolean
+}
+
 /** Entry point the onMessage handler calls. Per-tab lock → gates → method.
  *  Read-only tools skip the gates (no tab pre-resolution, no approval). */
 export async function dispatchBrowserTool(
-  name: string, args: Record<string, unknown>, callId: string,
+  name: string, args: Record<string, unknown>, callId: string, opts: DispatchOpts = {},
 ): Promise<ExecResult> {
   const method = TOOL_TABLE.get(name)
   if (!method) return { callId, name, output: `unknown browser tool: ${name}`, error: 'unknown tool', success: false }
+  if (typeof opts.originTabId === 'number') args = { ...args, __originTabId: opts.originTabId }
   const key = browserTabKey(args)
   try {
     const output = await lock.run(key, async () => {
@@ -46,7 +58,7 @@ export async function dispatchBrowserTool(
         // Pre-resolve the tab so the gate can check sensitivity + the AI-page gate
         // fires once (ensureTab) before any mutating CDP is issued.
         const tab = await c.resolveTabForGate(args as { tabId?: number })
-        await runGates({ name, tab, callId, approval, security: c.security })
+        await runGates({ name, tab, callId, approval, security: c.security, originTabId: opts.originTabId, skipApproval: opts.skipApproval })
       }
       return method(args)
     })

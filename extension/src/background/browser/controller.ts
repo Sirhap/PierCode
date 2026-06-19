@@ -30,7 +30,7 @@ type Sleep = (ms: number) => Promise<void>
 // a setter (called from register.ts) rather than importing ./dispatch here, so there's
 // no controller→dispatch static edge (which would make Vite emit a shared preload-helper
 // chunk that leaks into the classic-script content.js). See content-build.test.ts.
-type DispatchFn = (name: string, args: Record<string, unknown>, callId: string) => Promise<{ output: string; success: boolean }>
+type DispatchFn = (name: string, args: Record<string, unknown>, callId: string, opts?: { originTabId?: number; skipApproval?: boolean }) => Promise<{ output: string; success: boolean }>
 let dispatchRef: DispatchFn | null = null
 export function setBatchDispatcher(fn: DispatchFn): void { dispatchRef = fn }
 
@@ -93,10 +93,23 @@ export function makeController(deps: ControllerDeps = {}) {
       return list.map(t => `#${t.id} ${safeTitle(t.title || '')} — ${t.url}`).join('\n') || '(no tabs)'
     },
 
-    async screenshot(args: { tabId?: number; maxDim?: number }): Promise<string> {
+    async screenshot(args: { tabId?: number; maxDim?: number; __originTabId?: number }): Promise<string> {
       const tab = await ensureTab(args)
       const out = await cdp.sendCommand(target(tab.tabId), 'Page', 'captureScreenshot', { format: 'png' })
-      return budgetScreenshot(out.data, 'image/png', args.maxDim ?? 1000)
+      const dataUrl = await budgetScreenshot(out.data, 'image/png', args.maxDim ?? 1000)
+      const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+      const mime = dataUrl.startsWith('data:image/png') ? 'image/png' : 'image/jpeg'
+      const name = `screenshot.${mime === 'image/png' ? 'png' : 'jpg'}`
+      // Mirror Go: inject the screenshot into the AI page's chat input as an attachment.
+      // Targets the origin tab (the AI page that called the tool) so it lands in the
+      // right conversation; falls back to returning the dataURL inline if no origin tab
+      // or injection fails (Go server absent / page has no file input).
+      const origin = args.__originTabId
+      if (typeof origin === 'number') {
+        const injected = await injectAttachment(origin, b64, name, mime)
+        if (injected) return 'uploaded screenshot to the current AI chat page as an attachment'
+      }
+      return dataUrl
     },
 
     async find(args: { tabId?: number; query: string; limit?: number }): Promise<string> {
@@ -463,15 +476,16 @@ export function makeController(deps: ControllerDeps = {}) {
       return `finalized ${closed}/${ids.length} tabs`
     },
 
-    async batch(args: { tabId?: number; actions: Array<{ name: string; input?: Record<string, unknown> }> }): Promise<string> {
+    async batch(args: { tabId?: number; actions: Array<{ name: string; input?: Record<string, unknown> }>; __originTabId?: number }): Promise<string> {
       // Re-dispatch each sub-call through the full gated path. Uses the module-level
       // `dispatchRef` (set by register.ts) instead of importing ./dispatch here — a
       // controller→dispatch static import would force Vite to emit a shared
       // vite-preload-helper chunk that leaks into content.js (content-build.test.ts).
       if (!dispatchRef) return 'browser_batch unavailable (dispatcher not wired)'
       const out: string[] = []
+      const opts = { originTabId: args.__originTabId }   // propagate the AI-page tab to sub-calls
       for (const a of args.actions ?? []) {
-        const r = await dispatchRef(a.name, { tabId: args.tabId, ...(a.input ?? {}) }, '')
+        const r = await dispatchRef(a.name, { tabId: args.tabId, ...(a.input ?? {}) }, '', opts)
         out.push(`### ${a.name}\n${r.output}`)
       }
       return out.join('\n\n') || '(empty batch)'
@@ -501,6 +515,21 @@ export function makeController(deps: ControllerDeps = {}) {
 
 function isMac(): boolean {
   try { return /mac/i.test((navigator as any).platform || (navigator as any).userAgentData?.platform || '') } catch { return false }
+}
+
+// Inject a base64 image into the AI page's chat input as an attachment, by asking
+// the content script on `tabId` to run its existing file-input/paste/drop pipeline.
+// Returns true if the page accepted it. Mirrors the Go WS browser_attachment_upload
+// flow, but the bytes are already in hand (no server fetch).
+async function injectAttachment(tabId: number, base64: string, name: string, mime: string): Promise<boolean> {
+  try {
+    const r: any = await chrome.tabs.sendMessage(tabId, {
+      type: 'BROWSER_ATTACHMENT_UPLOAD', base64, name, mime,
+    })
+    return !!r?.ok
+  } catch {
+    return false   // no content script / page rejected → caller falls back to dataURL
+  }
 }
 function namedKeyText(key: string): string {
   if (key === 'Enter') return '\r'
