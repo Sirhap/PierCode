@@ -118,7 +118,72 @@ describe('conversation-scope', () => {
     // ...and re-observing the same conversation returns its stable key.
     expect(getConversationKey('https://chat.qwen.ai/c/xyz')).toBe(b);
   });
+
+  // Reproduce the user-reported "refresh re-runs every tool" bug: a REAL browser
+  // refresh preserves ALL of sessionStorage (scope_id included), unlike the lighter
+  // __resetForReload above which drops scope_id and falls back to the scope MAP. If
+  // the scope id is not stable across a full-sessionStorage reload, the exec-dedup key
+  // (${scopeId}:${name}:${callId}) changes and every already-run tool re-executes.
+  it('keeps the scope id stable across a FULL-sessionStorage reload (real refresh)', () => {
+    const before = getConversationKey('https://chat.qwen.ai/c/deep-convo');
+    __resetForRealRefresh();
+    const after = getConversationKey('https://chat.qwen.ai/c/deep-convo');
+    expect(after).toBe(before);
+  });
+
+  // Same, but the user visited another conversation earlier in the session, so the
+  // global scope_id slot holds the OTHER conversation's id at refresh time.
+  it('keeps the scope id stable on real refresh even if another convo was last viewed', () => {
+    const a = getConversationKey('https://chat.qwen.ai/c/aaa');
+    getConversationKey('https://chat.qwen.ai/c/bbb'); // global scope_id slot now = bbb's id
+    // User navigates back to A and refreshes there (full sessionStorage kept).
+    getConversationKey('https://chat.qwen.ai/c/aaa');
+    __resetForRealRefresh();
+    const a2 = getConversationKey('https://chat.qwen.ai/c/aaa');
+    expect(a2).toBe(a);
+  });
+
+  // The exact lifecycle of a first tool call: executed while still on the transient
+  // /new surface (key minted there), then the SPA migrates to /c/<uuid>, then the user
+  // hits F5 — landing directly on /c/<uuid> with full sessionStorage. The dedup key
+  // must equal the one used at execution time on /new, or the first tool re-runs.
+  it('keeps the /new-era scope id after migration AND a real refresh on the stable URL', () => {
+    const atExec = getConversationKey('https://chat.qwen.ai/');          // transient new-chat
+    getConversationKey('https://chat.qwen.ai/c/migrated-uuid');           // SPA migration
+    __resetForRealRefresh();                                              // F5
+    const afterRefresh = getConversationKey('https://chat.qwen.ai/c/migrated-uuid');
+    expect(afterRefresh).toBe(atExec);
+  });
+
+  // THE user-reported bug: a deep, established conversation gets a stable id. On F5,
+  // qwen's SPA momentarily shows the transient landing URL ('/') BEFORE routing back to
+  // /c/<uuid>. If a scan fires during that transient window, observeConversationURL sees
+  // a transient URL and resetScopeId() mints a NEW id — so the dedup key for every
+  // already-executed tool changes and they ALL re-run. The id must survive a
+  // refresh that transits through the transient surface.
+  it('keeps the stable scope id when a real refresh transits through the transient URL', () => {
+    // Establish a deep conversation (NOT born from /new in this load — just opened it).
+    const established = getConversationKey('https://chat.qwen.ai/c/deep');
+    __resetForRealRefresh();
+    // F5: qwen briefly shows '/' before the SPA restores /c/deep.
+    getConversationKey('https://chat.qwen.ai/');                 // transient flash
+    const afterRefresh = getConversationKey('https://chat.qwen.ai/c/deep');
+    expect(afterRefresh).toBe(established);                       // must NOT have rotated
+  });
 });
+
+// __resetForRealRefresh emulates a TRUE browser refresh: in-memory module state is
+// cleared but the ENTIRE sessionStorage (aliases + scope map + scope id) is preserved,
+// exactly as Chrome keeps it across F5.
+function __resetForRealRefresh(): void {
+  const saved: Record<string, string> = {};
+  for (const k of ['piercode_conversation_aliases', 'piercode_conversation_scope_map', 'piercode_conversation_scope_id']) {
+    const v = sessionStorage.getItem(k);
+    if (v !== null) saved[k] = v;
+  }
+  __resetConversationScopeForTest();
+  for (const [k, v] of Object.entries(saved)) sessionStorage.setItem(k, v);
+}
 
 // __resetForReload clears only the in-memory module state, leaving sessionStorage
 // intact — emulating a tab refresh where the alias set must survive.

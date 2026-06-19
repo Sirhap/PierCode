@@ -189,12 +189,22 @@ export function observeConversationURL(value?: string | URL | LocationLike): str
 
   const previous = observedConversationURL;
   if (previous !== current) {
-    if (isTransientConversationURL(current)) {
-      // Landed on a fresh new-chat surface: this starts a *new* conversation.
-      // Drop the old aliases so a stale /chat/<old> no longer matches, and mint a
-      // fresh scope id for the new conversation.
+    if (isTransientConversationURL(current) && previous) {
+      // Landed on a fresh new-chat surface FROM somewhere else in this session: the
+      // user deliberately started a *new* conversation. Drop the old aliases so a
+      // stale /chat/<old> no longer matches, and mint a fresh scope id.
       conversationAliasSet = new Set([current]);
       resetScopeId();
+    } else if (isTransientConversationURL(current)) {
+      // Transient URL as the FIRST observation after a page load (`!previous`). This is
+      // almost always a REFRESH FLASH — qwen/claude momentarily show '/' (or '/new')
+      // before the SPA restores /c/<uuid>. Do NOT resetScopeId here: that would rotate
+      // an established conversation's id, so every already-executed tool's dedup key
+      // changes and they ALL re-run after a refresh (user-reported bug). Keep the
+      // persisted scope id; the imminent migration to the stable URL binds it. A
+      // genuine cold-start new chat keeps the freshly-minted id either way.
+      conversationAliasSet.add(current);
+      ensureScopeId();
     } else if (previous && isTransientConversationURL(previous)) {
       // Migration: /new -> /chat/<uuid>. Keep the transient predecessor as an
       // alias of the now-stable conversation so server pushes tagged with the
