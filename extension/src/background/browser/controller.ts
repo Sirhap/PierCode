@@ -249,13 +249,24 @@ export function makeController(deps: ControllerDeps = {}) {
 
     async scroll(args: { tabId?: number; ref?: string; selector?: string; deltaX?: number; deltaY?: number; x?: number; y?: number }): Promise<string> {
       const tab = await ensureTab(args)
-      // ref/selector → scrollIntoView; else mouse-wheel at point (or viewport center).
-      if (args.ref || args.selector) {
-        const expr = args.selector
-          ? `(()=>{const el=document.querySelector(${JSON.stringify(args.selector)});if(!el)return 'not found';el.scrollIntoView({block:'center'});return 'ok';})()`
-          : null
-        if (expr) { await cdp.runtimeEvaluate(target(tab.tabId), expr); registry.markStale(tab.tabId); return 'scrolled into view' }
+      // selector → scrollIntoView via querySelector.
+      if (args.selector) {
+        const expr = `(()=>{const el=document.querySelector(${JSON.stringify(args.selector)});if(!el)return 'not found';el.scrollIntoView({block:'center'});return 'ok';})()`
+        const r = await cdp.runtimeEvaluate(target(tab.tabId), expr)
+        registry.markStale(tab.tabId)
+        return r === 'ok' ? 'scrolled into view' : `selector ${args.selector} not found`
       }
+      // ref → DOM.scrollIntoViewIfNeeded on its backend node (works for OOPIF too).
+      if (args.ref) {
+        const t = registry.resolveRef(tab.tabId, args.ref)
+        if (!t) throw new Error(`ref ${args.ref} is stale or unknown; take a fresh browser_snapshot`)
+        const tgt: Debuggee = t.sessionId ? ({ tabId: tab.tabId, sessionId: t.sessionId } as Debuggee) : target(tab.tabId)
+        try { await cdp.sendCommand(tgt, 'DOM', 'scrollIntoViewIfNeeded', { backendNodeId: t.backendId }) }
+        catch { /* fall through to wheel below */ }
+        registry.markStale(tab.tabId)
+        return 'scrolled ref into view'
+      }
+      // else mouse-wheel at point (or viewport center).
       const dx = args.deltaX ?? 0
       const dy = args.deltaY ?? DEFAULT_FIDELITY.wheelTickPx
       const px = args.x ?? 200, py = args.y ?? 200
@@ -327,13 +338,13 @@ export function makeController(deps: ControllerDeps = {}) {
       return `controlling tabId=${args.tabId} (${tab.url})`
     },
 
-    async navigate(args: { tabId?: number; url: string }): Promise<string> {
+    async navigate(args: { tabId?: number; url: string; __originTabId?: number }): Promise<string> {
       const tab = await ensureTab(args)
       const navErr = checkNavigate(args.url)
       if (navErr) throw new Error(navErr)
       if (!sameRegistrableHost(tab.url, args.url)) {
         let host = ''; try { host = new URL(args.url).hostname } catch { /* */ }
-        await approval.ask({ host, actionClass: 'interact', action: 'browser_navigate 跨域导航', callId: '' })
+        await approval.ask({ host, actionClass: 'interact', action: 'browser_navigate 跨域导航', callId: '', originTabId: args.__originTabId })
       }
       await cdp.sendCommand(target(tab.tabId), 'Page', 'enable')
       await cdp.sendCommand(target(tab.tabId), 'Page', 'navigate', { url: args.url })
@@ -342,8 +353,8 @@ export function makeController(deps: ControllerDeps = {}) {
       return `navigated tabId=${tab.tabId} to ${args.url}`
     },
 
-    async goBack(args: { tabId?: number }): Promise<string> { return navHistory(args, -1) },
-    async goForward(args: { tabId?: number }): Promise<string> { return navHistory(args, +1) },
+    async goBack(args: { tabId?: number; __originTabId?: number }): Promise<string> { return navHistory(args, -1) },
+    async goForward(args: { tabId?: number; __originTabId?: number }): Promise<string> { return navHistory(args, +1) },
 
     async reload(args: { tabId?: number; hard?: boolean }): Promise<string> {
       const tab = await ensureTab(args)
@@ -493,7 +504,7 @@ export function makeController(deps: ControllerDeps = {}) {
   }
 
   // Cross-origin-gated history navigation (port controller_ext.go navigateHistory).
-  async function navHistory(args: { tabId?: number }, dir: -1 | 1): Promise<string> {
+  async function navHistory(args: { tabId?: number; __originTabId?: number }, dir: -1 | 1): Promise<string> {
     const tab = await ensureTab(args)
     const hist = await cdp.sendCommand(target(tab.tabId), 'Page', 'getNavigationHistory')
     const entries = hist.entries as Array<{ id: number; url: string }>
@@ -503,7 +514,7 @@ export function makeController(deps: ControllerDeps = {}) {
     const dest = entries[targetIdx]
     if (!sameRegistrableHost(tab.url, dest.url)) {
       let host = ''; try { host = new URL(dest.url).hostname } catch { /* */ }
-      await approval.ask({ host, actionClass: 'interact', action: '历史导航到新域名', callId: '' })
+      await approval.ask({ host, actionClass: 'interact', action: '历史导航到新域名', callId: '', originTabId: args.__originTabId })
     }
     await cdp.sendCommand(target(tab.tabId), 'Page', 'navigateToHistoryEntry', { entryId: dest.id })
     registry.markStale(tab.tabId)

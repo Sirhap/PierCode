@@ -1214,6 +1214,15 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       url: p.request?.url || '',
       method: p.request?.method || 'GET',
     });
+  } else if (method === 'Page.frameNavigated') {
+    // Resolve a pending browser_wait_for_navigation: only main-frame nav counts
+    // (a subframe navigating is not "the page navigated"). parentId absent = main.
+    const p = (params || {}) as { frame?: { url?: string; parentId?: string } };
+    if (p.frame && !p.frame.parentId) getController().events.handleNavEvent(tabId, { url: p.frame.url || '' });
+  } else if (method === 'Page.javascriptDialogOpening') {
+    // Surface the dialog to a pending browser_handle_dialog waiter (if any).
+    const p = (params || {}) as { message?: string; type?: string; url?: string };
+    getController().events.handleDialogEvent(tabId, { message: p.message || '', dialogType: p.type || '', url: p.url || '' });
   }
 
   if (!DEBUGGER_EVENTS_TO_RELAY.has(method)) return;

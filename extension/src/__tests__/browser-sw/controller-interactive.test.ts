@@ -78,4 +78,36 @@ describe('controller interactive', () => {
     expect(calls.some(c => c.includes('Meta'))).toBe(true)
     expect(calls.some(c => c === 'keyDown:Backspace' || c.startsWith('keyDown:Backspace'))).toBe(true)
   })
+
+  it('scroll by ref uses DOM.scrollIntoViewIfNeeded on the backend node', async () => {
+    const { makeController } = await import('../../background/browser/controller')
+    const sent: string[] = []
+    const send = vi.fn(async (_t: any, fq: string) => {
+      sent.push(fq)
+      if (fq === 'Accessibility.getFullAXTree') return AX_TREE
+      return {}
+    })
+    const ctl = makeController({ send, sleep: noSleep })
+    await ctl.snapshot({ tabId: 1 })                        // creates ref e0
+    const r = await ctl.scroll({ tabId: 1, ref: 'e0' })
+    expect(sent).toContain('DOM.scrollIntoViewIfNeeded')    // not a blind mouse-wheel
+    expect(r).toMatch(/ref into view/)
+  })
+
+  it('scroll by stale ref throws (does not silently wheel)', async () => {
+    const { makeController } = await import('../../background/browser/controller')
+    const ctl = makeController({ send: async () => ({}), sleep: noSleep })
+    await expect(ctl.scroll({ tabId: 1, ref: 'e9' })).rejects.toThrow(/stale or unknown/)
+  })
+
+  it('waitForNavigation resolves when a main-frame nav event lands', async () => {
+    const { makeController } = await import('../../background/browser/controller')
+    const ctl = makeController({ send: async () => ({}), sleep: noSleep })
+    const p = ctl.waitForNavigation({ tabId: 1, timeoutMs: 2000 })
+    // ensureTab awaits chrome.tabs.get, so the waiter registers a couple microtasks
+    // in; let those flush before simulating the index.ts onEvent feed.
+    await new Promise(r => setTimeout(r, 5))
+    ctl.events.handleNavEvent(1, { url: 'https://x.com/after' })   // Page.frameNavigated, main frame
+    await expect(p).resolves.toMatch(/navigation complete/)
+  })
 })
