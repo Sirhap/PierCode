@@ -687,6 +687,15 @@ async function getAuth(platform: string): Promise<AuthResult | { error: string }
 
 async function execTool(name: string, args: Record<string, unknown>, callId?: string): Promise<ToolResult> {
   callId = callId || `sidebar-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  // NOTE: browser_* tools execute SW-natively now (EXEC_BROWSER_TOOL → dispatchBrowserTool)
+  // on the content + browser-agent routes. This API-sidebar route still POSTs to /exec, so
+  // a browser_* call here would hit the disabled Go relay and fail. We deliberately do NOT
+  // route to dispatchBrowserTool here: importing ./browser/dispatch from chat-api (even
+  // dynamically) shifts Vite's chunk boundary and pulls dispatch→controller→gifenc into a
+  // shared chunk that content.js then references, breaking the classic-MV3 content-script
+  // guard (content-build.test.ts; see memory sidebar-tiktoken-content-chunk-leak). The
+  // API-sidebar/sub-agent profiles are not expected to emit browser_*; if that changes,
+  // route via a chrome.runtime message to the SW's own EXEC_BROWSER_TOOL handler (no import).
   try {
     const { apiUrl, authToken } = await chrome.storage.local.get(['apiUrl', 'authToken'])
     if (!apiUrl || !authToken) {

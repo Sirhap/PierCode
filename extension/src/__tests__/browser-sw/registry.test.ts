@@ -41,4 +41,20 @@ describe('TabRegistry', () => {
     reg.markApproved(3)
     expect(reg.isApproved(3)).toBe(true)
   })
+
+  it('clearDefault wipes ALL per-tab state (security: a recycled tab id must not stay approved)', () => {
+    const reg = new TabRegistry()
+    reg.setDefault({ tabId: 9, url: 'https://x.com', title: 'X' })
+    reg.markApproved(9)
+    reg.storeSnapshot(9, 's', { e0: ref('e0') })
+    reg.setMarks(9, [{ mark: 1, role: 'button', name: 'go', bounds: { x: 0, y: 0, width: 1, height: 1 } }])
+    reg.setLastPointer(9, { x: 5, y: 5 })
+    reg.clearDefault(9)
+    // Chrome reuses tab ids; if approved/snapshots leaked, a NEW AI tab reusing id 9 would
+    // be silently pre-approved (AI-page gate bypassed) and resolve stale refs.
+    expect(reg.isApproved(9)).toBe(false)
+    expect(reg.resolveRef(9, 'e0')).toBeNull()
+    expect(reg.marks(9)).toBeNull()
+    expect(reg.lastPointerOf(9)).toBeNull()
+  })
 })

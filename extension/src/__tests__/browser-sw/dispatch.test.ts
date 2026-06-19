@@ -20,6 +20,16 @@ describe('dispatch lock + key', () => {
     await Promise.all([slow('tab:1', 'C', 20), slow('tab:2', 'D', 20)])
     expect(order.slice(0, 2).sort()).toEqual(['C-start', 'D-start'])
   })
+
+  it('KeyedLock: a rejected op does NOT poison the key (next op still runs)', async () => {
+    // Load-bearing invariant: if a failing browser_click wedged its tab's lock, every
+    // later op on that tab would hang — re-introducing the deadlock class the migration
+    // removed. The caller still sees the rejection; the chain tail must not.
+    const lock = new KeyedLock()
+    await expect(lock.run('tab:1', async () => { throw new Error('boom') })).rejects.toThrow('boom')
+    const r = await lock.run('tab:1', async () => 'ok')
+    expect(r).toBe('ok')
+  })
   it('dispatchBrowserTool: unknown tool → error result', async () => {
     const r = await dispatchBrowserTool('browser_nope', {}, 'c1')
     expect(r.success).toBe(false)

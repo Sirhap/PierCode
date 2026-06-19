@@ -63,4 +63,18 @@ describe('controller write', () => {
     const out = await ctl.batch({ tabId: 1, actions: [{ name: 'browser_get_page_text', input: {} }] })
     expect(out).toContain('browser_get_page_text')
   })
+
+  it('batch does NOT bypass gates: a sensitive sub-action is still refused', async () => {
+    // browser_batch skips the OUTER gate (READONLY), but each sub-call re-enters
+    // dispatchBrowserTool and re-runs the sensitivity hard-refuse. A click inside a batch
+    // on a checkout page must still be refused — batch is not a gate-bypass vector.
+    ;(globalThis as any).chrome.tabs.get = vi.fn(async () => ({ id: 1, url: 'https://shop.com/checkout', title: 'Pay' }))
+    const { makeController, initController } = await import('../../background/browser/controller')
+    const { registerBrowserTools } = await import('../../background/browser/register')
+    initController({ send: async () => ({}) })
+    registerBrowserTools()
+    const ctl = makeController({ send: async () => ({}) })
+    const out = await ctl.batch({ tabId: 1, actions: [{ name: 'browser_click', input: { x: 5, y: 5 } }] })
+    expect(out).toMatch(/sensitive/i)   // the sub-call's refusal surfaces in the batch output
+  })
 })
