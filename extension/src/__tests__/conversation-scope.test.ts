@@ -170,6 +170,23 @@ describe('conversation-scope', () => {
     const afterRefresh = getConversationKey('https://chat.qwen.ai/c/deep');
     expect(afterRefresh).toBe(established);                       // must NOT have rotated
   });
+
+  // THE second user-reported variant: reload the EXTENSION, then OPEN AN OLDER
+  // conversation from the list. After reload, content cold-loads; qwen flashes '/'
+  // (which carries the GLOBAL last-used scope id = the LAST conversation's id), then the
+  // SPA restores the older conversation B. B has its own id in the scope map. The flash
+  // must NOT overwrite B's id with the last conversation's id, or all of B's tools re-run.
+  it('opening an OLDER conversation after extension reload keeps THAT conversation id', () => {
+    const idA = getConversationKey('https://chat.qwen.ai/c/aaa');   // conversation A
+    const idB = getConversationKey('https://chat.qwen.ai/c/bbb');   // conversation B (last viewed)
+    expect(idB).not.toBe(idA);
+    // Extension reload: in-memory cleared, ALL sessionStorage kept (scope_id slot = idB).
+    __resetForRealRefresh();
+    // User opens the OLDER conversation A from the list; qwen flashes '/' first.
+    getConversationKey('https://chat.qwen.ai/');                   // flash carries idB
+    const reopenedA = getConversationKey('https://chat.qwen.ai/c/aaa');
+    expect(reopenedA).toBe(idA);                                   // must be A's id, not idB
+  });
 });
 
 // __resetForRealRefresh emulates a TRUE browser refresh: in-memory module state is

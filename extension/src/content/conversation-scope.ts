@@ -206,14 +206,25 @@ export function observeConversationURL(value?: string | URL | LocationLike): str
       conversationAliasSet.add(current);
       ensureScopeId();
     } else if (previous && isTransientConversationURL(previous)) {
-      // Migration: /new -> /chat/<uuid>. Keep the transient predecessor as an
-      // alias of the now-stable conversation so server pushes tagged with the
-      // original /new URL still resolve to this page. The scope id is unchanged
-      // (same conversation), so exec-dedup stays stable across the flip. Bind
-      // the now-known stable URL to it so a later revisit reuses the same id.
+      // Migration from a transient predecessor to a stable URL. Two cases share this
+      // branch and MUST be told apart by the scope map:
+      //  (a) genuine /new -> /chat/<uuid> first-message migration: the stable URL is
+      //      brand new, has no map entry, so we keep the id minted on /new.
+      //  (b) reload-flash: content reloaded, qwen flashed '/' (branch above carried the
+      //      GLOBAL last-used scope id), then the SPA restored an OLDER conversation the
+      //      user opened. That older conversation already has its OWN id in the scope
+      //      map. We must reuse THAT, not the flash-carried global id — otherwise the old
+      //      conversation's dedup keys all change and every tool re-runs on re-mount.
+      // So: prefer the per-URL mapped id; fall back to the carried id only when unmapped.
       conversationAliasSet.add(previous);
       conversationAliasSet.add(current);
-      ensureScopeId();
+      const mapped = scopeIdForURL(current);
+      if (mapped && mapped !== conversationScopeId) {
+        conversationScopeId = mapped;
+        persistScopeId();
+      } else {
+        ensureScopeId();
+      }
       bindScopeIdToURL(current, conversationScopeId);
     } else if (!previous && conversationAliasSet.has(current)) {
       // Fresh load (e.g. tab refresh) and the persisted alias set already knows
