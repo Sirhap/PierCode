@@ -24,6 +24,13 @@ let backgroundInputEnabled = true;
 // Cached `stealthMode` (default false): when on, the phantom cursor is
 // suppressed so automation leaves no identifiable overlay in the page DOM.
 let stealthModeEnabled = false;
+// SW-direct browser execution (default ON). browser_* tools execute inside THIS
+// service worker (EXEC_BROWSER_TOOL → dispatchBrowserTool), so each SW only ever
+// touches its own browser's tabs. The legacy Go→WS browser_cmd relay — where the Go
+// server broadcasts a CDP command to EVERY connected browser-relay — is therefore
+// disabled: it was the cross-browser leak (Chrome's browser_new_tab opening a tab in
+// Edge too). Flip to false only to debug the old relay path.
+const SW_DIRECT_BROWSER = true;
 chrome.storage.local.get(['backgroundInput', 'stealthMode'], result => {
   backgroundInputEnabled = resolveBackgroundInput(result.backgroundInput);
   stealthModeEnabled = resolveStealthMode(result.stealthMode);
@@ -377,6 +384,20 @@ async function connectBrowserRelay() {
     try {
       const msg = JSON.parse(event.data) as BrowserCommand;
       if (msg.type === 'browser_cmd') {
+        // browser_* tools now execute SW-natively (EXEC_BROWSER_TOOL → dispatchBrowserTool),
+        // so the legacy Go→WS CDP-relay path is dead. CRITICAL: a Go /exec browser tool
+        // with an unknown tabId BROADCASTS browser_cmd to EVERY connected browser-relay
+        // (ws.go SendBrowserCommand → SendToRole), so if multiple browsers (e.g. Chrome +
+        // Edge) obey it, one browser's browser_new_tab opens a tab in ALL of them. We must
+        // NOT execute relayed commands anymore. Reply with an error so Go's pending
+        // SendCommand resolves immediately (no 30s hang) instead of silently dropping.
+        if (SW_DIRECT_BROWSER) {
+          sendBrowserResult({
+            type: 'browser_result', id: msg.id, success: false,
+            error: 'browser tools run in the extension service worker now; the Go relay path is disabled (set SW_DIRECT_BROWSER=false to re-enable legacy relay)',
+          });
+          return;
+        }
         const key = typeof msg.tabId === 'number' ? msg.tabId : 0;
         const run = shouldBypassTabQueue(msg)
           ? handleBrowserCommand(msg)
