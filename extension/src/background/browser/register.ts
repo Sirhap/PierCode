@@ -29,4 +29,29 @@ export function registerBrowserTools(): void {
     ['browser_record', a => c.record(a)],
   ]
   for (const [name, fn] of read) { TOOL_TABLE.set(name, fn); READONLY_TOOLS.add(name) }
+
+  // Interactive (Phase 2) — gated (sensitivity + approval) in dispatch.ts.
+  const interactive: Array<[string, ToolMethod]> = [
+    ['browser_click', a => c.click(a as any)],
+    ['browser_type', a => c.type(a as any)],
+    ['browser_hover', a => c.hover(a as any)],
+    ['browser_scroll', a => c.scroll(a as any)],
+    ['browser_select', a => c.select(a as any)],
+    ['browser_press_key', a => c.pressKey(a as any)],
+    ['browser_drag', a => c.drag(a as any)],
+    ['browser_focus', a => c.focus(a as any)],
+    ['browser_navigate', a => c.navigate(a as any)],
+    ['browser_new_tab', a => c.newTab(a as any)],
+    ['browser_use_tab', a => c.useTab(a as any)],
+    ['browser_go_back', a => c.goBack(a)],
+    ['browser_go_forward', a => c.goForward(a)],
+    ['browser_reload', a => c.reload(a as any)],
+    ['browser_mark', a => c.mark(a)],
+    ['browser_handle_dialog', a => c.handleDialog(a as any)],
+    ['browser_wait_for_navigation', a => c.waitForNavigation(a as any)],
+    ['browser_resize', a => c.resize(a as any)],
+    ['browser_viewport', a => c.viewport(a as any)],
+    ['browser_emulate', a => c.emulate(a as any)],
+  ]
+  for (const [name, fn] of interactive) TOOL_TABLE.set(name, fn)
 }

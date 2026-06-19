@@ -8,26 +8,37 @@
 import { makeCdp, type Cdp } from './cdp'
 import { TabRegistry } from './registry'
 import { EventBus } from './events'
-import { SecurityPolicy, isAIPage } from './security'
+import { SecurityPolicy, isAIPage, checkNavigate, sameRegistrableHost, originOf } from './security'
 import { compactSnapshotWithFrames } from './snapshot'
 import { find } from './find'
 import { budgetScreenshot, encodeGif } from './image'
-import { getContentExpr, pageTextExpr, waitSelectorExpr, waitForFunctionExpr, getAttributesExpr } from './in-page-js'
+import {
+  getContentExpr, pageTextExpr, waitSelectorExpr, waitForFunctionExpr, getAttributesExpr,
+  selectExpr,
+} from './in-page-js'
+import { resolvePoint, assertPointActionable } from './ref-resolve'
+import { Input, parseKeyChord, DEFAULT_FIDELITY, type InputFidelity } from './input'
+import { markCollectorExpr, buildMarkOverlayExpr, parseMarks } from './marks'
+import { approval } from './approval-singleton'
 import { safeTitle, type BrowserTab } from './types'
 
 type Debuggee = chrome.debugger.Debuggee
 type SendFn = (t: Debuggee, m: string, p?: object) => Promise<any>
+type Sleep = (ms: number) => Promise<void>
 
-export interface ControllerDeps { send?: SendFn }
+export interface ControllerDeps { send?: SendFn; fidelity?: InputFidelity; sleep?: Sleep }
 
 export function makeController(deps: ControllerDeps = {}) {
   const cdp: Cdp = makeCdp(deps.send)
   const registry = new TabRegistry()
   const events = new EventBus()
   const security = new SecurityPolicy()
+  const input = new Input(cdp, { fidelity: deps.fidelity ?? DEFAULT_FIDELITY, sleep: deps.sleep, registry })
+  const settleMs = 0  // mirror default fidelity SettleMS=0; per-tab settle is a no-op
   let snapSeq = 0
 
   function target(tabId: number): Debuggee { return { tabId } }
+  async function settle(_tabId: number): Promise<void> { if (settleMs > 0) await new Promise(r => setTimeout(r, settleMs)) }
 
   // Resolve the target tab; enforce the AI-page gate (hard refuse).
   async function ensureTab(args: { tabId?: number }): Promise<BrowserTab> {
@@ -163,8 +174,242 @@ export function makeController(deps: ControllerDeps = {}) {
       }
       return encodeGif(shots, 'image/png', delay)
     },
+
+    // ── interactive (Phase 2) ────────────────────────────────────────────────
+    // Sensitivity + approval gates run in dispatch.ts before these; each mutating
+    // method ends with registry.markStale so a stale ref can't be clicked next.
+
+    async click(args: { tabId?: number; ref?: string; selector?: string; mark?: number; x?: number; y?: number; button?: 'left' | 'right' | 'middle'; clickCount?: number }): Promise<string> {
+      const tab = await ensureTab(args)
+      const { point, sessionId } = await resolvePoint(cdp, registry, target(tab.tabId), { tabId: tab.tabId, ref: args.ref, selector: args.selector, mark: args.mark, x: args.x, y: args.y })
+      const tgt: Debuggee = sessionId ? ({ tabId: tab.tabId, sessionId } as Debuggee) : target(tab.tabId)
+      // Skip elementFromPoint for iframe targets (topmost at the point is the <iframe>).
+      if (!sessionId) await assertPointActionable(cdp, tgt, point)
+      const button = args.button ?? 'left'
+      const preOrigin = originOf(tab.url)
+      await input.dispatchClick(tgt, tab.tabId, point.x, point.y, button, args.clickCount ?? 1)
+      registry.markStale(tab.tabId)
+      await settle(tab.tabId)
+      let note = ''
+      try {
+        const t = await chrome.tabs.get(tab.tabId)
+        const postOrigin = originOf(t.url || '')
+        if (preOrigin && postOrigin && postOrigin !== preOrigin) {
+          note = `\nNote: this click navigated the controlled tab cross-origin: ${preOrigin} → ${postOrigin}.`
+        }
+      } catch { /* tab gone */ }
+      const verb = button === 'right' ? 'right-clicked' : (args.clickCount === 2 ? 'double-clicked' : 'clicked')
+      return `${verb} at ${Math.round(point.x)},${Math.round(point.y)} in tabId=${tab.tabId}${note}`
+    },
+
+    async type(args: { tabId?: number; ref?: string; selector?: string; x?: number; y?: number; text: string; clear?: boolean; submit?: boolean }): Promise<string> {
+      const tab = await ensureTab(args)
+      const { point, sessionId } = await resolvePoint(cdp, registry, target(tab.tabId), { tabId: tab.tabId, ref: args.ref, selector: args.selector, x: args.x, y: args.y })
+      const tgt: Debuggee = sessionId ? ({ tabId: tab.tabId, sessionId } as Debuggee) : target(tab.tabId)
+      await input.dispatchClick(tgt, tab.tabId, point.x, point.y, 'left', 1)   // focus
+      if (args.clear) {
+        const selectAll = isMac() ? ['Meta'] : ['Ctrl']
+        await input.sendKeyChordMods(tgt, selectAll, 'a')
+        await input.sendNamedKey(tgt, 'Backspace', '')
+      }
+      await input.dispatchTypedKeys(tgt, args.text)
+      if (args.submit) await input.sendNamedKey(tgt, 'Enter', '\r')
+      registry.markStale(tab.tabId)
+      return `typed ${[...args.text].length} chars into tabId=${tab.tabId}`
+    },
+
+    async hover(args: { tabId?: number; ref?: string; selector?: string; x?: number; y?: number }): Promise<string> {
+      const tab = await ensureTab(args)
+      const { point, sessionId } = await resolvePoint(cdp, registry, target(tab.tabId), { tabId: tab.tabId, ref: args.ref, selector: args.selector, x: args.x, y: args.y })
+      const tgt: Debuggee = sessionId ? ({ tabId: tab.tabId, sessionId } as Debuggee) : target(tab.tabId)
+      await input.moveTo(tgt, tab.tabId, point.x, point.y, 'none', 0)
+      return `hovered at ${Math.round(point.x)},${Math.round(point.y)}`
+    },
+
+    async scroll(args: { tabId?: number; ref?: string; selector?: string; deltaX?: number; deltaY?: number; x?: number; y?: number }): Promise<string> {
+      const tab = await ensureTab(args)
+      // ref/selector → scrollIntoView; else mouse-wheel at point (or viewport center).
+      if (args.ref || args.selector) {
+        const expr = args.selector
+          ? `(()=>{const el=document.querySelector(${JSON.stringify(args.selector)});if(!el)return 'not found';el.scrollIntoView({block:'center'});return 'ok';})()`
+          : null
+        if (expr) { await cdp.runtimeEvaluate(target(tab.tabId), expr); registry.markStale(tab.tabId); return 'scrolled into view' }
+      }
+      const dx = args.deltaX ?? 0
+      const dy = args.deltaY ?? DEFAULT_FIDELITY.wheelTickPx
+      const px = args.x ?? 200, py = args.y ?? 200
+      await input.dispatchMouseWheel(target(tab.tabId), px, py, dx, dy)
+      registry.markStale(tab.tabId)
+      return `scrolled (${dx},${dy})`
+    },
+
+    async select(args: { tabId?: number; selector: string; by?: 'value' | 'label' | 'index'; value: string }): Promise<string> {
+      const tab = await ensureTab(args)
+      const r = await cdp.runtimeEvaluate(target(tab.tabId), selectExpr(args.selector, args.by ?? 'value', args.value))
+      registry.markStale(tab.tabId)
+      return String(r)
+    },
+
+    async pressKey(args: { tabId?: number; key: string }): Promise<string> {
+      const tab = await ensureTab(args)
+      const { mods, key } = parseKeyChord(args.key)
+      if (mods.length) await input.sendKeyChordMods(target(tab.tabId), mods, key)
+      else await input.sendNamedKey(target(tab.tabId), key, namedKeyText(key))
+      registry.markStale(tab.tabId)
+      return `pressed ${args.key}`
+    },
+
+    async drag(args: { tabId?: number; fromRef?: string; fromSelector?: string; fromX?: number; fromY?: number; toRef?: string; toSelector?: string; toX?: number; toY?: number }): Promise<string> {
+      const tab = await ensureTab(args)
+      const a = await resolvePoint(cdp, registry, target(tab.tabId), { tabId: tab.tabId, ref: args.fromRef, selector: args.fromSelector, x: args.fromX, y: args.fromY })
+      const b = await resolvePoint(cdp, registry, target(tab.tabId), { tabId: tab.tabId, ref: args.toRef, selector: args.toSelector, x: args.toX, y: args.toY })
+      const tgt = target(tab.tabId)
+      await input.moveTo(tgt, tab.tabId, a.point.x, a.point.y, 'none', 0)
+      await cdp.sendCommand(tgt, 'Input', 'dispatchMouseEvent', { type: 'mousePressed', x: a.point.x, y: a.point.y, button: 'left', buttons: 1, clickCount: 1 })
+      await input.moveTo(tgt, tab.tabId, b.point.x, b.point.y, 'left', 1)
+      await cdp.sendCommand(tgt, 'Input', 'dispatchMouseEvent', { type: 'mouseReleased', x: b.point.x, y: b.point.y, button: 'left', buttons: 0, clickCount: 1 })
+      registry.markStale(tab.tabId)
+      return `dragged ${Math.round(a.point.x)},${Math.round(a.point.y)} → ${Math.round(b.point.x)},${Math.round(b.point.y)}`
+    },
+
+    async focus(args: { tabId?: number; ref?: string; selector?: string }): Promise<string> {
+      const tab = await ensureTab(args)
+      const sel = args.selector
+      const expr = sel
+        ? `(()=>{const el=document.querySelector(${JSON.stringify(sel)});if(!el)return 'not found';el.focus();return 'ok';})()`
+        : `(()=>'need a selector')()`
+      const r = await cdp.runtimeEvaluate(target(tab.tabId), expr)
+      return String(r)
+    },
+
+    async newTab(args: { url?: string }): Promise<string> {
+      const url = args.url ?? 'about:blank'
+      const navErr = checkNavigate(url)
+      if (navErr) throw new Error(navErr)
+      const t = await chrome.tabs.create({ url, active: false })
+      if (t.id == null) throw new Error('failed to create tab')
+      const isWorker = /[?&]piercode_agent=/.test(url)
+      registry.markCreated(t.id)
+      if (!isWorker) {
+        registry.setDefault({ tabId: t.id, url, title: safeTitle(t.title || '') })
+        if (isAIPage(url)) registry.markApproved(t.id)   // AI page the AI opened itself
+      }
+      return `opened tabId=${t.id} url=${url}`
+    },
+
+    async useTab(args: { tabId: number; reason?: string }): Promise<string> {
+      const t = await chrome.tabs.get(args.tabId)
+      const tab: BrowserTab = { tabId: args.tabId, url: t.url || '', title: safeTitle(t.title || '') }
+      registry.markApproved(args.tabId)      // approval already granted via gate (browser_use_tab)
+      registry.markClaimed(args.tabId)
+      registry.setDefault(tab)
+      return `controlling tabId=${args.tabId} (${tab.url})`
+    },
+
+    async navigate(args: { tabId?: number; url: string }): Promise<string> {
+      const tab = await ensureTab(args)
+      const navErr = checkNavigate(args.url)
+      if (navErr) throw new Error(navErr)
+      if (!sameRegistrableHost(tab.url, args.url)) {
+        let host = ''; try { host = new URL(args.url).hostname } catch { /* */ }
+        await approval.ask({ host, actionClass: 'interact', action: 'browser_navigate 跨域导航', callId: '' })
+      }
+      await cdp.sendCommand(target(tab.tabId), 'Page', 'enable')
+      await cdp.sendCommand(target(tab.tabId), 'Page', 'navigate', { url: args.url })
+      registry.markStale(tab.tabId)
+      registry.upsertTab({ tabId: tab.tabId, url: args.url, title: tab.title })
+      return `navigated tabId=${tab.tabId} to ${args.url}`
+    },
+
+    async goBack(args: { tabId?: number }): Promise<string> { return navHistory(args, -1) },
+    async goForward(args: { tabId?: number }): Promise<string> { return navHistory(args, +1) },
+
+    async reload(args: { tabId?: number; hard?: boolean }): Promise<string> {
+      const tab = await ensureTab(args)
+      await cdp.sendCommand(target(tab.tabId), 'Page', 'reload', { ignoreCache: !!args.hard })
+      registry.markStale(tab.tabId)
+      return `reloaded tabId=${tab.tabId}`
+    },
+
+    async mark(args: { tabId?: number }): Promise<string> {
+      const tab = await ensureTab(args)
+      const raw = await cdp.runtimeEvaluate(target(tab.tabId), markCollectorExpr())
+      const marks = parseMarks(raw)
+      registry.setMarks(tab.tabId, marks)
+      await cdp.runtimeEvaluate(target(tab.tabId), buildMarkOverlayExpr(marks))
+      return marks.map(m => `[${m.index}] ${m.role} ${JSON.stringify(m.text)} @(${m.cx},${m.cy})`).join('\n') || '(no interactive elements)'
+    },
+
+    async handleDialog(args: { tabId?: number; accept?: boolean; promptText?: string }): Promise<string> {
+      const tab = await ensureTab(args)
+      await cdp.sendCommand(target(tab.tabId), 'Page', 'handleJavaScriptDialog', {
+        accept: args.accept !== false, promptText: args.promptText,
+      })
+      return `dialog ${args.accept !== false ? 'accepted' : 'dismissed'}`
+    },
+
+    async waitForNavigation(args: { tabId?: number; timeoutMs?: number }): Promise<string> {
+      const tab = await ensureTab(args)
+      try { await events.waitForNav(tab.tabId, args.timeoutMs ?? 10000); registry.markStale(tab.tabId); return 'navigation complete' }
+      catch (e) { return e instanceof Error ? e.message : String(e) }
+    },
+
+    async resize(args: { width: number; height: number; tabId?: number }): Promise<string> {
+      const tab = await ensureTab(args)
+      const t = await chrome.tabs.get(tab.tabId)
+      if (typeof t.windowId === 'number') await chrome.windows.update(t.windowId, { width: args.width, height: args.height })
+      return `resized window to ${args.width}x${args.height}`
+    },
+
+    async viewport(args: { tabId?: number; width?: number; height?: number; deviceScaleFactor?: number; mobile?: boolean; clear?: boolean }): Promise<string> {
+      const tab = await ensureTab(args)
+      if (args.clear) { await cdp.sendCommand(target(tab.tabId), 'Emulation', 'clearDeviceMetricsOverride'); return 'viewport override cleared' }
+      await cdp.sendCommand(target(tab.tabId), 'Emulation', 'setDeviceMetricsOverride', {
+        width: args.width ?? 1280, height: args.height ?? 800,
+        deviceScaleFactor: args.deviceScaleFactor ?? 1, mobile: !!args.mobile,
+      })
+      return `viewport set ${args.width ?? 1280}x${args.height ?? 800}`
+    },
+
+    async emulate(args: { tabId?: number; userAgent?: string; locale?: string; timezone?: string; offline?: boolean }): Promise<string> {
+      const tab = await ensureTab(args)
+      const applied: string[] = []
+      if (args.userAgent) { await cdp.sendCommand(target(tab.tabId), 'Emulation', 'setUserAgentOverride', { userAgent: args.userAgent }); applied.push('userAgent') }
+      if (args.timezone) { await cdp.sendCommand(target(tab.tabId), 'Emulation', 'setTimezoneOverride', { timezoneId: args.timezone }); applied.push('timezone') }
+      if (args.locale) { await cdp.sendCommand(target(tab.tabId), 'Emulation', 'setLocaleOverride', { locale: args.locale }); applied.push('locale') }
+      if (args.offline != null) { await cdp.sendCommand(target(tab.tabId), 'Network', 'emulateNetworkConditions', { offline: args.offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 }); applied.push(args.offline ? 'offline' : 'online') }
+      return applied.length ? `emulating: ${applied.join(', ')}` : 'no emulation options provided'
+    },
   }
+
+  // Cross-origin-gated history navigation (port controller_ext.go navigateHistory).
+  async function navHistory(args: { tabId?: number }, dir: -1 | 1): Promise<string> {
+    const tab = await ensureTab(args)
+    const hist = await cdp.sendCommand(target(tab.tabId), 'Page', 'getNavigationHistory')
+    const entries = hist.entries as Array<{ id: number; url: string }>
+    const idx = hist.currentIndex as number
+    const targetIdx = idx + dir
+    if (targetIdx < 0 || targetIdx >= entries.length) return dir < 0 ? 'no back history' : 'no forward history'
+    const dest = entries[targetIdx]
+    if (!sameRegistrableHost(tab.url, dest.url)) {
+      let host = ''; try { host = new URL(dest.url).hostname } catch { /* */ }
+      await approval.ask({ host, actionClass: 'interact', action: '历史导航到新域名', callId: '' })
+    }
+    await cdp.sendCommand(target(tab.tabId), 'Page', 'navigateToHistoryEntry', { entryId: dest.id })
+    registry.markStale(tab.tabId)
+    return `${dir < 0 ? 'back' : 'forward'} to ${dest.url}`
+  }
+
   return api
+}
+
+function isMac(): boolean {
+  try { return /mac/i.test((navigator as any).platform || (navigator as any).userAgentData?.platform || '') } catch { return false }
+}
+function namedKeyText(key: string): string {
+  if (key === 'Enter') return '\r'
+  if (key === 'Tab') return '\t'
+  return key.length === 1 ? key : ''
 }
 
 export type Controller = ReturnType<typeof makeController>
