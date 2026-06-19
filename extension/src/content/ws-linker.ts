@@ -7,6 +7,12 @@ let reconnectTimer: number | null = null;
 let configuredApiUrl = '';
 let configuredToken = '';
 let connectionSeq = 0;
+// Consecutive failed reconnects. The Go server is now OPTIONAL (browser_* runs in the
+// SW; the WS only carries question/approval/agent callbacks), so when it's simply not
+// running we must NOT retry forever and spam the console. Cap the attempts; reset to 0
+// on a successful open, and allow a fresh round when auth changes (connectWithStoredAuth).
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
 const PAGE_CLIENT_ID = getOrCreateClientId();
 // Worker pages persist their agent id here so it survives the AI site's SPA
 // rewriting location.search (e.g. claude.ai/new -> /chat/<uuid>).
@@ -301,6 +307,7 @@ async function connectWithStoredAuth(info: { apiUrl: string; token: string }) {
   if (current.apiUrl !== info.apiUrl || current.token !== info.token) {
     return;
   }
+  reconnectAttempts = 0;   // a deliberate (re)connect from stored auth gets a fresh round
   connectWebSocket(info.apiUrl, info.token);
 }
 
@@ -695,6 +702,7 @@ function connectWebSocket(apiUrl: string, token: string) {
       console.log("[PierCode] ✅ WebSocket 已连接");
       setBridgeStatus('open', apiUrl);
       window.dispatchEvent(new CustomEvent("PIERCODE_BACKEND_CONNECTED"));
+      reconnectAttempts = 0;   // connected → allow a fresh round of retries next drop
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -765,6 +773,16 @@ function connectWebSocket(apiUrl: string, token: string) {
       ws = null;
       if (seq !== connectionSeq) return;
       setBridgeStatus('closed', apiUrl);
+      // Stop retrying once the cap is hit — the Go server is optional, so an absent
+      // server must not produce an infinite 3s reconnect loop. A later config/auth
+      // change (connectWithStoredAuth) or popup reconnect resets the counter and
+      // starts a fresh round; tools that need the server surface a clear error instead.
+      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        console.warn(`[PierCode] WebSocket 重连已达上限(${MAX_RECONNECT_ATTEMPTS} 次)，停止重连。浏览器工具仍可用(在扩展内执行)；如需文件/shell 工具请启动 PierCode 服务后在扩展里重连。`);
+        setBridgeStatus('not_configured', apiUrl);
+        return;
+      }
+      reconnectAttempts++;
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
         getAuthInfo().then(async (info) => {

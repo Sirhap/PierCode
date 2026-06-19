@@ -418,6 +418,15 @@ async function connectBrowserRelay() {
       browserPingTimer = null;
     }
     setBrowserRelayStatus({ state: 'closed' });
+    // Stop after a finite number of attempts: the Go server is optional now (browser_*
+    // runs in this SW), so an absent server must not reconnect forever. A config/auth
+    // change (connectBrowserRelay from storage.onChanged) resets browserReconnectAttempt
+    // and starts a fresh round. Backoff caps the delay; this caps the count.
+    const MAX_BROWSER_RECONNECT = 6;
+    if (browserReconnectAttempt >= MAX_BROWSER_RECONNECT) {
+      setBrowserRelayStatus({ state: 'not_configured', lastError: 'browser relay reconnect cap reached; start the PierCode server and reconnect from the popup' });
+      return;
+    }
     const delays = [1000, 3000, 5000, 10000, 30000];
     const delay = delays[Math.min(browserReconnectAttempt++, delays.length - 1)];
     if (browserReconnectTimer) clearTimeout(browserReconnectTimer);
