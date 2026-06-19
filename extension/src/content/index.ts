@@ -1585,6 +1585,22 @@ async function executeToolCallReturn(toolCall: any, withGuidance = true): Promis
     return { output: '', stopStream: false, sendable: true, alreadyInjected: true };
   }
 
+  // All browser_* tools run inside the service worker (no /exec round-trip) — same as
+  // executeToolCallRaw. This is the batch-loop execution path (streaming/DOM auto-exec),
+  // so the guard must live here too or browser_* falls through to /exec and fails with
+  // HTTP 0 when the Go server is down. chrome.runtime.sendMessage keeps content.js a
+  // classic MV3 script (no ESM import; content-build.test.ts). Prefix covers every
+  // browser_* incl. browser_batch / browser_attachment_upload.
+  if (typeof toolCall.name === 'string' && toolCall.name.startsWith('browser_')) {
+    if (!checkContext(true)) return { output: '', stopStream: false, sendable: false };
+    const callId = getToolCallId(toolCall);
+    const r: any = await new Promise(res => chrome.runtime.sendMessage(
+      { type: 'EXEC_BROWSER_TOOL', name: toolCall.name, args: toolCall.args || {}, callId, conversationUrl: location.href },
+      res));
+    if (!r) return { output: '[PierCode] 浏览器工具无响应', stopStream: false, sendable: true };
+    return { output: r.output || r.error || '[PierCode] 空响应', stopStream: false, sendable: true };
+  }
+
   try {
     if (!checkContext(true)) return { output: '', stopStream: false, sendable: false };
     const { authToken, apiUrl } = await chrome.storage.local.get(['authToken', 'apiUrl']);
