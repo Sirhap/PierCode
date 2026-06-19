@@ -1,12 +1,13 @@
 // Port of internal/browser/registry.go. THE invariant: any mutating action calls
 // markStale(), which marks all cached snapshots' refs stale; resolveRef() on a
 // stale snapshot fails. Snapshots capped at 3 per tab (newest kept).
-import type { BrowserTab, RefTarget, Point, Bounds } from './types'
+import type { BrowserTab, RefTarget, Point } from './types'
+import type { MarkedElement } from './marks'
 
 interface SnapshotCache { id: string; refs: Record<string, RefTarget>; stale: boolean; createdAt: number }
 const MAX_SNAPSHOTS = 3
 
-export interface MarkedElement { mark: number; role: string; name: string; bounds: Bounds }
+export type { MarkedElement }
 
 export class TabRegistry {
   private defaultId: number | null = null

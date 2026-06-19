@@ -58,9 +58,9 @@ export async function resolvePoint(
   }
   if (req.mark != null) {
     const marks = reg.marks(req.tabId)
-    const m = marks?.find(x => x.mark === req.mark)
+    const m = marks?.find(x => x.index === req.mark)
     if (!m) throw new Error(`mark ${req.mark} unknown; run browser_mark first`)
-    return { point: { x: m.bounds.x + m.bounds.width / 2, y: m.bounds.y + m.bounds.height / 2 }, sessionId: '' }
+    return { point: { x: m.cx, y: m.cy }, sessionId: '' }
   }
   if (req.selector) {
     const rect = await cdp.runtimeEvaluate(target, selectorRectExpr(req.selector))
