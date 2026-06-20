@@ -20,6 +20,7 @@ import { resolvePoint, assertPointActionable } from './ref-resolve'
 import { Input, parseKeyChord, DEFAULT_FIDELITY, type InputFidelity } from './input'
 import { markCollectorExpr, buildMarkOverlayExpr, parseMarks } from './marks'
 import { approval } from './approval-singleton'
+import { GATE_BYPASS_AI_PAGE_TOOLS } from './gates'
 import { safeTitle, type BrowserTab } from './types'
 
 type Debuggee = chrome.debugger.Debuggee
@@ -94,8 +95,7 @@ export function makeController(deps: ControllerDeps = {}) {
     //    deadlock. It still gets its approval prompt via runGates.
     // (zoom/cookies/etc. genuinely act on the target tab, so they stay gated.)
     async resolveTabForGate(args: { tabId?: number }, toolName?: string): Promise<BrowserTab> {
-      const skipAIGate = toolName === 'browser_use_tab' || toolName === 'browser_new_tab' || toolName === 'browser_finalize_tabs'
-      return ensureTab(args, skipAIGate)
+      return ensureTab(args, !!toolName && GATE_BYPASS_AI_PAGE_TOOLS.has(toolName))
     },
 
     async snapshot(args: { tabId?: number; coordinates?: boolean; refId?: string; depth?: number }): Promise<string> {
@@ -554,7 +554,9 @@ function isMac(): boolean {
 // Deliver a captured media dataURL (screenshot/zoom/record/pdf): inject it into the
 // AI page's chat input as an attachment when we know the origin tab, otherwise return
 // the dataURL inline. Attachment delivery avoids blasting a multi-KB base64 string into
-// the model's text context (token cost) and mirrors the Go WS attachment flow.
+// the model's text context (token cost); the SW holds the bytes from CDP and sends them
+// to the content script (BROWSER_ATTACHMENT_UPLOAD), which runs the file-input/paste/drop
+// injection — no Go server / no /attachments fetch (unlike the old WS attachment path).
 // Monotonic media counter so successive screenshots/pdfs/recordings get DISTINCT
 // attachment filenames. A fixed `screenshot.jpg` made every capture share one name —
 // the AI page (and the user) couldn't tell shots apart, and some pages dedupe/overwrite

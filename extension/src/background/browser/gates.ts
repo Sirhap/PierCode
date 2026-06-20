@@ -37,6 +37,16 @@ export const APPROVAL_TOOLS = new Set([
   'browser_finalize_tabs', 'browser_zoom',
 ])
 
+// Tools that ESTABLISH/manage tab control and must SKIP the AI-page gate during the
+// dispatcher's tab pre-resolution. Gating them deadlocks (use_tab/new_tab ARE the
+// approval path; the gate's remedy is "use browser_use_tab") or is a false block
+// (finalize_tabs closes tabs by an explicit id list and ignores the resolved tab).
+// They still get their normal approval prompt via APPROVAL_TOOLS. Centralized here so a
+// newly-added tab-management tool can't silently re-introduce the gate deadlock.
+export const GATE_BYPASS_AI_PAGE_TOOLS = new Set([
+  'browser_use_tab', 'browser_new_tab', 'browser_finalize_tabs',
+])
+
 export interface GateCtx {
   name: string
   tab: BrowserTab

@@ -38,6 +38,3 @@ export function makeCdp(send: SendFn = defaultSend): Cdp {
     },
   }
 }
-
-// Module-level default instance for production use.
-export const cdp = makeCdp()

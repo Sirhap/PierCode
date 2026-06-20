@@ -118,13 +118,18 @@ export function findElementsExpr(query: string, maxResults: number): string {
 })()`
 }
 
+function sortByScore(els: FoundElement[]): FoundElement[] {
+  return els.slice().sort((a, b) => b.score - a.score)
+}
+
 export async function find(cdp: Cdp, target: Debuggee, req: FindRequest): Promise<FoundElement[]> {
   const limit = req.limit ?? 20
   const rawMain = await cdp.runtimeEvaluate(target, findElementsExpr(req.query, limit))
   const main: FoundElement[] = typeof rawMain === 'string' ? JSON.parse(rawMain) : (rawMain ?? [])
-  // OOPIF cross-origin frames run on child sessions — the controller merges those
-  // in via session targets; here we return the main-document results (which already
-  // include same-origin iframes walked in-page). Cross-origin merge is layered by
-  // the controller passing additional session targets.
-  return main.sort((a, b) => b.score - a.score).slice(0, limit)
+  // The in-page expression already sorts + slices its own results. The re-sort here is
+  // for the OOPIF case: when cross-origin child-frame results are merged in (the
+  // controller passes additional session targets), the combined list must be re-ranked
+  // and re-capped across frames — a per-frame sort isn't enough. For a single frame this
+  // is a no-op on already-sorted data.
+  return sortByScore(main).slice(0, limit)
 }
