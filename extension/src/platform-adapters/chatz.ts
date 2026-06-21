@@ -1,3 +1,4 @@
+import { attachCompletionDetection } from './completion';
 import { extractCodeMirror6Text, pushPierCodeTool } from './shared';
 import type { PlatformAdapter } from './types';
 
@@ -5,6 +6,10 @@ export const chatZAdapter: PlatformAdapter = {
   name: 'chatz',
   match: () => location.hostname.includes('chat.z.ai'),
   newSessionUrl: () => `${location.protocol}//${location.host}/`,
+  // #15: Chat Z's stop control is a text "停止" button (Tailwind-churned class),
+  // so completion detection benefits from the shared stop-gone + settle +
+  // signature timing rather than a brittle per-render selector check.
+  ...attachCompletionDetection(),
   responseSelector: '#response-content-container',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';

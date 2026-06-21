@@ -168,6 +168,34 @@ describe('parseJsonFenceToolCall', () => {
     const result = parseJsonFenceToolCall('{"name":"question","call_id":"d8j3m","args":{"question":"choose","options":["a","b"]}}');
     expect(result?.args.options).toEqual(['a', 'b']);
   });
+
+  // ── #16 optional purpose field (backward-compatible) ──────────────────────
+  it('exposes an optional purpose when the model provides one', () => {
+    const result = parseJsonFenceToolCall('{"name":"read_file","call_id":"p1","purpose":"inspect the config","args":{"path":"cfg.json"}}');
+    expect(result).not.toBeNull();
+    expect(result!.purpose).toBe('inspect the config');
+    expect(result!.name).toBe('read_file');
+    expect(result!.args.path).toBe('cfg.json');
+  });
+
+  it('parses unchanged (no purpose key) when the fence omits purpose', () => {
+    // Exact-shape assertion: a fence without purpose must NOT gain a purpose key,
+    // so downstream toEqual checks and dedup hashing stay byte-for-byte identical.
+    const result = parseJsonFenceToolCall('{"name":"list_dir","call_id":"p2","args":{"path":"."}}');
+    expect(result).toEqual({ name: 'list_dir', callId: 'p2', args: { path: '.' } });
+    expect('purpose' in result!).toBe(false);
+  });
+
+  it('ignores a non-string purpose (treated as absent)', () => {
+    const result = parseJsonFenceToolCall('{"name":"glob","purpose":123,"args":{"pattern":"*.ts"}}');
+    expect(result).toEqual({ name: 'glob', callId: null, args: { pattern: '*.ts' } });
+    expect('purpose' in result!).toBe(false);
+  });
+
+  it('ignores an empty/whitespace purpose (treated as absent)', () => {
+    const result = parseJsonFenceToolCall('{"name":"glob","purpose":"   ","args":{"pattern":"*.ts"}}');
+    expect('purpose' in result!).toBe(false);
+  });
 });
 
 // ── parseXmlToolCall ───────────────────────────────────────────────────────
@@ -331,6 +359,113 @@ describe('tryParseToolJSON', () => {
     const result = tryParseToolJSON('{"name":"exec_cmd","args":{"command":"echo a,}"}}');
     expect(result).not.toBeNull();
     expect(result.args.command).toBe('echo a,}');
+  });
+});
+
+// ── #13 JSON repair engine: smart quotes / single-quote / brace completion ──
+// New string-aware repairs layered onto the existing chain. Each must (a) only
+// trigger when a strict parse fails, (b) never mutate inside a real string
+// literal, and (c) only be accepted when the result looksLikeToolCall.
+
+describe('tryParseToolJSON — smart/curly quote normalization', () => {
+  it('normalizes curly double quotes used as JSON delimiters', () => {
+    // U+201C … U+201D around keys/values (a frequent copy-paste / model slip).
+    const result = tryParseToolJSON('{“name”:“exec_cmd”,“args”:{“command”:“ls”}}');
+    expect(result).not.toBeNull();
+    expect(result.name).toBe('exec_cmd');
+    expect(result.args.command).toBe('ls');
+  });
+
+  it('normalizes curly quotes mixed with straight quotes', () => {
+    const result = tryParseToolJSON('{"name":“read_file”,"args":{"path":“README.md”}}');
+    expect(result).not.toBeNull();
+    expect(result.name).toBe('read_file');
+    expect(result.args.path).toBe('README.md');
+  });
+
+  it('does not rewrite a curly quote that sits inside a straight-quoted string value', () => {
+    // The smart quotes here are legitimate content of an already-valid string —
+    // they must be preserved verbatim, not converted to ASCII delimiters.
+    const result = tryParseToolJSON('{"name":"exec_cmd","args":{"command":"echo “hi”, two trailing commas,}"}}');
+    expect(result).not.toBeNull();
+    expect(result.args.command).toBe('echo “hi”, two trailing commas,}');
+  });
+});
+
+describe('tryParseToolJSON — single-quoted JSON', () => {
+  it("converts single-quoted keys and values to double-quoted", () => {
+    const result = tryParseToolJSON("{'name':'list_dir','args':{'path':'.'}}");
+    expect(result).not.toBeNull();
+    expect(result.name).toBe('list_dir');
+    expect(result.args.path).toBe('.');
+  });
+
+  it('keeps an apostrophe inside a double-quoted string untouched', () => {
+    const result = tryParseToolJSON('{"name":"exec_cmd","args":{"command":"echo it\'s fine"}}');
+    expect(result).not.toBeNull();
+    expect(result.args.command).toBe("echo it's fine");
+  });
+
+  it('escapes a double quote that appears inside a converted single-quoted value', () => {
+    const result = tryParseToolJSON("{'name':'exec_cmd','args':{'command':'echo \"hi\"'}}");
+    expect(result).not.toBeNull();
+    expect(result.args.command).toBe('echo "hi"');
+  });
+});
+
+describe('tryParseToolJSON — missing closing brace completion', () => {
+  it('completes a truncated final object missing its closing braces', () => {
+    const result = tryParseToolJSON('{"name":"read_file","args":{"path":"README.md"');
+    expect(result).not.toBeNull();
+    expect(result.name).toBe('read_file');
+    expect(result.args.path).toBe('README.md');
+  });
+
+  it('closes a dangling open string then the braces', () => {
+    const result = tryParseToolJSON('{"name":"list_dir","args":{"path":"src');
+    expect(result).not.toBeNull();
+    expect(result.name).toBe('list_dir');
+    expect(result.args.path).toBe('src');
+  });
+
+  it('completes an unclosed array and object together', () => {
+    const result = tryParseToolJSON('{"name":"question","args":{"options":["a","b"');
+    expect(result).not.toBeNull();
+    expect(result.args.options).toEqual(['a', 'b']);
+  });
+
+  it('does not accept a completion that yields a non-tool-call', () => {
+    // No `name` field → looksLikeToolCall guard rejects even after brace completion.
+    expect(tryParseToolJSON('{"args":{"path":"x"')).toBeNull();
+  });
+
+  it('does not treat a brace inside a string as structural when completing', () => {
+    const result = tryParseToolJSON('{"name":"exec_cmd","args":{"command":"echo {nested"');
+    expect(result).not.toBeNull();
+    expect(result.args.command).toBe('echo {nested');
+  });
+});
+
+describe('parseJsonFenceToolCall — new repairs flow through the fence parser', () => {
+  it('parses a fenced object that uses curly quotes', () => {
+    const result = parseJsonFenceToolCall('{“name”:“list_dir”,“call_id”:“q1”,“args”:{“path”:“.”}}');
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe('list_dir');
+    expect(result!.callId).toBe('q1');
+  });
+
+  it('parses a fenced single-quoted object', () => {
+    const result = parseJsonFenceToolCall("{'name':'read_file','call_id':'r9','args':{'path':'X'}}");
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe('read_file');
+    expect(result!.args.path).toBe('X');
+  });
+
+  it('parses a fenced object truncated before its closing braces', () => {
+    const result = parseJsonFenceToolCall('{"name":"glob","call_id":"g1","args":{"pattern":"**/*.go"');
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe('glob');
+    expect(result!.args.pattern).toBe('**/*.go');
   });
 });
 

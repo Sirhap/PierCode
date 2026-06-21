@@ -1,3 +1,4 @@
+import { attachCompletionDetection } from './completion';
 import {
   extractMonacoText,
   hasPierCodeAgentResultClass,
@@ -52,6 +53,10 @@ export const qwenAdapter: PlatformAdapter = {
   name: 'qwen',
   match: () => location.hostname.includes('qwen.ai') || location.hostname.includes('qwenlm.ai'),
   newSessionUrl: () => `${location.protocol}//${location.host}/`,
+  // #15: Qwen keeps the stop button in the DOM after streaming (just disabled),
+  // and Monaco virtualization makes text jitter — both invite false completion.
+  // Use the shared stop-gone + settle + signature timing.
+  ...attachCompletionDetection(),
   responseSelector: '.qwen-chat-message-assistant, .response-message-content.phase-answer',
   userSelector: '.qwen-chat-message-user, .user-message',
   extractText: (el: Element, buf: string[]): boolean => {

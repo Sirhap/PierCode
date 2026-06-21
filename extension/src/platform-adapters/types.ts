@@ -1,3 +1,5 @@
+import type { CompletionObservation } from './completion';
+
 export interface PlatformAdapter {
   name: string;
   // 检测当前页面是否匹配该平台。
@@ -13,7 +15,19 @@ export interface PlatformAdapter {
   // 该平台"新建对话"的 URL，用于压缩后把上下文迁移到新会话。
   // 未实现时回退 host 根路径（见 getAdapterNewSessionUrl）。
   newSessionUrl?: () => string;
+  // #15 完成检测（可选）。仅在历史上误判流式结束的平台上挂载（qwen/chatgpt/
+  // mimo/aistudio/chatz 等 stop 态歧义站点）。调用方传入它已知的 stopVisible
+  // （来自 content 的 PLATFORM_SELECTORS stop 选择器），本方法只负责"stop 消失 +
+  // 文本沉降 + 签名去重"的时序判定，返回本次观察是否使该回合刚好判为完成。
+  // 各 adapter 保留自己的选择器知识；时序逻辑集中在 ./completion 共享状态机。
+  detectComplete?: (obs: CompletionObservation, now?: number) => boolean;
+  // 重置完成检测状态（如会话切换）。挂了 detectComplete 的 adapter 才会提供。
+  resetCompletion?: () => void;
 }
+
+// CompletionObservation re-exported via the adapter type so callers (content) can
+// import a single module. Defined in ./completion (the pure timing state machine).
+export type { CompletionObservation } from './completion';
 
 export interface ExtractedCodeText {
   text: string;

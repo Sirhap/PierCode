@@ -321,6 +321,20 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
     return d;
   }
 
+  // #16: optional intent line. When the model supplied a `purpose`, surface it as
+  // a short ⎿ line right under the header (above the args) so the user reads WHY
+  // the tool runs before approving. Absent purpose → nothing rendered (the card
+  // looks exactly as before).
+  const purpose = typeof data.purpose === 'string' ? data.purpose.trim() : '';
+  if (purpose) {
+    const purposeLine = subLine();
+    const ptxt = document.createElement('span');
+    ptxt.style.cssText = 'flex:0 1 auto;min-width:0;white-space:pre-wrap;word-break:break-word';
+    ptxt.textContent = purpose;
+    purposeLine.appendChild(ptxt);
+    card.appendChild(purposeLine);
+  }
+
   // 参数详情：⎿ 参数 ▸ 折叠行，点击展开键值列表。
   const details = document.createElement('details');
   details.style.cssText = 'margin:1px 0 0 14px';

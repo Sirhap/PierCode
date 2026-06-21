@@ -1,3 +1,4 @@
+import { attachCompletionDetection } from './completion';
 import { pushPierCodeTool } from './shared';
 import type { PlatformAdapter } from './types';
 
@@ -5,6 +6,10 @@ export const aiStudioAdapter: PlatformAdapter = {
   name: 'aistudio',
   match: () => location.hostname.includes('aistudio.google.com'),
   newSessionUrl: () => `${location.protocol}//${location.host}/prompts/new_chat`,
+  // #15: AI Studio's Run/Stop are the SAME button distinguished only by text,
+  // so CSS can't express the stop state cleanly (see PLATFORM_SELECTORS) — a
+  // settle + signature transition is the reliable completion signal.
+  ...attachCompletionDetection(),
   responseSelector: 'ms-chat-turn',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';

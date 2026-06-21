@@ -167,10 +167,16 @@ export function parseJsonFenceToolCall(jsonStr: string): any | null {
   // silently dropped.
   const obj = tryParseToolJSON(jsonStr);
   if (!obj || !obj.name || typeof obj.name !== 'string') return null;
+  // #16: carry an OPTIONAL purpose (intent line shown on the approval card) only
+  // when the model actually provided a non-empty string. Backward-compatible: a
+  // fence without purpose yields the exact same {name, callId, args} shape as
+  // before, so dedup hashing and toEqual consumers are unaffected.
+  const purpose = typeof obj.purpose === 'string' && obj.purpose.trim() ? obj.purpose.trim() : undefined;
   return {
     name: obj.name,
     callId: obj.call_id || obj.callId || null,
-    args: obj.args || {}
+    args: obj.args || {},
+    ...(purpose !== undefined ? { purpose } : {}),
   };
 }
 
@@ -218,6 +224,28 @@ export function parseXmlToolCall(raw: string, decodeHTMLEntities: (s: string) =>
   return { name, args, callId };
 }
 
+// REPAIR_CHAIN is the ordered list of progressive JSON repairs tried after a
+// strict parse fails. Each step is string-aware (never mutates inside a string
+// literal) and composes the cheaper structural fixes (smart→ASCII quotes,
+// single→double quotes, trailing-comma strip, missing-brace completion) so a
+// payload needing several slips fixed at once still parses. Shared by
+// tryParseToolJSON (gated on looksLikeToolCall) and tryParseLenientJSON (no gate).
+const REPAIR_CHAIN: ((s: string) => string)[] = [
+  stripTrailingCommas,
+  repairUnescapedQuotes,
+  (s) => repairUnescapedQuotes(stripTrailingCommas(s)),
+  // #13 additions — quote-shape normalizers run first so the later repairs see
+  // ASCII-quoted JSON, then brace completion patches a truncated final object.
+  normalizeSmartQuotes,
+  (s) => stripTrailingCommas(normalizeSmartQuotes(s)),
+  singleToDoubleQuotes,
+  (s) => stripTrailingCommas(singleToDoubleQuotes(s)),
+  (s) => singleToDoubleQuotes(normalizeSmartQuotes(s)),
+  completeMissingBraces,
+  (s) => completeMissingBraces(stripTrailingCommas(normalizeSmartQuotes(s))),
+  (s) => completeMissingBraces(stripTrailingCommas(singleToDoubleQuotes(normalizeSmartQuotes(s)))),
+];
+
 export function tryParseToolJSON(raw: string): any | null {
   // 将非断空格替换为普通空格（Monaco Editor 的 &nbsp; 会被 textContent 转为  ）
   const normalized = raw.replace(/ /g, ' ');
@@ -225,12 +253,7 @@ export function tryParseToolJSON(raw: string): any | null {
 
   // 渐进式修复：每一步在前一步基础上叠加，命中即返回。所有修复都是字符串感知的
   // （不动字符串字面量内部），且只在结果"看起来像工具调用"时才采纳，避免静默错位。
-  const repairs: ((s: string) => string)[] = [
-    stripTrailingCommas,
-    repairUnescapedQuotes,
-    (s) => repairUnescapedQuotes(stripTrailingCommas(s)),
-  ];
-  for (const repair of repairs) {
+  for (const repair of REPAIR_CHAIN) {
     try {
       const parsed = JSON.parse(repair(normalized));
       if (looksLikeToolCall(parsed)) return parsed;
@@ -245,12 +268,7 @@ export function tryParseToolJSON(raw: string): any | null {
 export function tryParseLenientJSON(raw: string): any | null {
   const normalized = raw.replace(/ /g, ' ');
   try { return JSON.parse(normalized); } catch {}
-  const repairs: ((s: string) => string)[] = [
-    stripTrailingCommas,
-    repairUnescapedQuotes,
-    (s) => repairUnescapedQuotes(stripTrailingCommas(s)),
-  ];
-  for (const repair of repairs) {
+  for (const repair of REPAIR_CHAIN) {
     try { return JSON.parse(repair(normalized)); } catch {}
   }
   return null;
@@ -304,6 +322,127 @@ function repairUnescapedQuotes(input: string): string {
     result += ch;
   }
   return result;
+}
+
+// normalizeSmartQuotes converts curly/smart quotes that the model used as JSON
+// delimiters into their ASCII forms (U+201C/U+201D → ", U+2018/U+2019 → '). It
+// is string-aware: once an ASCII double-quoted string has opened, smart quotes
+// inside it are legitimate content (e.g. `"echo “hi”"`) and are left verbatim;
+// only smart quotes sitting in STRUCTURAL position become ASCII delimiters. The
+// straight-quote escape state tracks `\` so an escaped `\"` doesn't toggle.
+function normalizeSmartQuotes(input: string): string {
+  let result = '';
+  let inString = false; // inside an ASCII (") string literal
+  let escaped = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (inString) {
+      result += ch;
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; result += ch; continue; }
+    // Structural position: fold smart quotes to ASCII.
+    if (ch === '“' || ch === '”') { result += '"'; continue; }
+    if (ch === '‘' || ch === '’') { result += "'"; continue; }
+    result += ch;
+  }
+  return result;
+}
+
+// singleToDoubleQuotes rewrites single-quoted JSON (a frequent model slip:
+// `{'name':'x'}`) into valid double-quoted JSON. String-aware: a `'` that
+// appears INSIDE an already-open ASCII double-quoted string is a literal
+// apostrophe and is preserved; only a `'` in structural position opens a
+// single-quoted string whose delimiters become `"` and whose inner `"`
+// characters are escaped to `\"`. Backslash escapes inside either string flavor
+// are passed through so `\'` / `\"` don't mis-toggle the state.
+function singleToDoubleQuotes(input: string): string {
+  let result = '';
+  let inDouble = false; // inside a "…" string
+  let inSingle = false; // inside a '…' string being converted
+  let escaped = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (inDouble) {
+      result += ch;
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (inSingle) {
+      if (escaped) {
+        // Preserve the escape, but `\'` becomes a plain ' inside the new "…".
+        if (ch === "'") result += "'"; else result += '\\' + ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === "'") { result += '"'; inSingle = false; continue; }
+      if (ch === '"') { result += '\\"'; continue; } // escape inner double quote
+      result += ch;
+      continue;
+    }
+    if (ch === '"') { inDouble = true; result += ch; continue; }
+    if (ch === "'") { inSingle = true; result += '"'; continue; }
+    result += ch;
+  }
+  // A `\` that opened just before EOF inside a single-quoted string: drop the
+  // dangling escape rather than emit an invalid trailing backslash.
+  if (inSingle && escaped) result += '\\';
+  return result;
+}
+
+// completeMissingBraces patches a truncated FINAL object: when generation cut off
+// mid-stream the closing `}`/`]` (and possibly a dangling open string) never
+// arrived. String-aware scan tracks the bracket stack and whether a string is
+// still open; it then appends a closing `"` if needed followed by the unwound
+// `}`/`]` in reverse order. Braces/brackets inside string values are content and
+// never counted. A balanced input is returned unchanged.
+//
+// Conservatism contract: PierCode's content scan already drops genuinely
+// incomplete fences via extractFenceToolCalls (brace-match) + hasIncompleteToolFence
+// + settle-retry, so this repair is a last-resort backstop, NOT the streaming
+// gate. To avoid resurrecting a call that is still mid-stream, it REFUSES to
+// complete when the truncation point is still "expecting a value": the last
+// significant (non-string, non-whitespace) char is an opener `{`/`[`, a `,`, or a
+// `:` — e.g. `{"name":"x","args":{` (empty args incoming). Completion only fires
+// when the tail is a finished value/string/`}`/`]`, where only closers are missing
+// (e.g. `{"name":"read_file","args":{"path":"README.md"`).
+function completeMissingBraces(input: string): string {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  let lastSignificant = ''; // last structural char seen outside a string
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (inString) {
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === '"') { inString = false; lastSignificant = '"'; }
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (/\s/.test(ch)) continue;
+    if (ch === '{') stack.push('}');
+    else if (ch === '[') stack.push(']');
+    else if (ch === '}' || ch === ']') stack.pop();
+    lastSignificant = ch;
+  }
+  if (!inString && stack.length === 0) return input; // already balanced
+  // Mid-value truncation → still streaming; refuse (leave it to settle-retry).
+  if (!inString && (lastSignificant === '{' || lastSignificant === '[' || lastSignificant === ',' || lastSignificant === ':')) {
+    return input;
+  }
+  let suffix = '';
+  // A string left open at EOF (e.g. truncated mid-value) — close it first. A
+  // trailing lone backslash would escape our closing quote, so neutralize it.
+  if (inString) suffix += (escaped ? '\\' : '') + '"';
+  for (let i = stack.length - 1; i >= 0; i--) suffix += stack[i];
+  return input + suffix;
 }
 
 function looksLikeToolCall(v: any): boolean {
