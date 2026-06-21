@@ -27,6 +27,38 @@ interface AttachmentPayload {
   bytes?: number;
 }
 
+// ── #8 init-context-too-long → attachment upload ────────────────────────────
+// When the init/system prompt is longer than a platform's input-box wall, typing
+// it gets truncated. Instead we drop it in as a .txt attachment (the editor reads
+// uploaded files fully). These leaf helpers carry the threshold decision + file
+// shaping; uploadInitPromptAsAttachment reuses the same file-input/paste/drop
+// injection as the screenshot path.
+
+/** Default character ceiling above which the init prompt is uploaded instead of
+ *  typed. Conservative — most chat inputs accept far more, but a few platforms
+ *  silently clip very long pastes. Callers may pass a per-platform override. */
+export const INIT_ATTACHMENT_THRESHOLD = 16000;
+
+/** Pure decision: should `text` be uploaded as an attachment rather than typed?
+ *  A non-positive / missing `limit` means "no wall" → never upload (preserves
+ *  the default type-it behaviour on platforms with no known limit). */
+export function shouldUploadInitAsAttachment(text: string, limit: number | undefined): boolean {
+  if (!limit || limit <= 0) return false;
+  return text.length > limit;
+}
+
+/** Wrap text into a named text/plain File for attachment upload. */
+export function buildTextAttachmentFile(text: string, name = 'piercode-init.txt'): File {
+  return new File([text], name, { type: 'text/plain', lastModified: Date.now() });
+}
+
+/** Upload `text` as a .txt attachment into the current chat (init-prompt
+ *  fallback). Throws if no upload entry point is found, so the caller can fall
+ *  back to typing. */
+export async function uploadInitPromptAsAttachment(text: string, name = 'piercode-init.txt'): Promise<void> {
+  await attachFileToCurrentChat(buildTextAttachmentFile(text, name));
+}
+
 let attachmentUploadDispatcherRegistered = false;
 
 export function ensureAttachmentUploadDispatcher() {

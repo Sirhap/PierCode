@@ -28,6 +28,7 @@ import {
 } from './qwen-settings';
 import { dispatchEnterAsSendFallback } from './send-fallback';
 import { installUserSendReminder, markProgrammaticSend, isSystemReminderEnabled } from './user-send-reminder';
+import { messageHasPierCodeTrigger } from './explicit-trigger';
 import { selectorsForHost } from './platform-selectors';
 import { isBrowserAgentFrame } from './browser-agent-bridge';
 import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
@@ -36,7 +37,7 @@ import { hashStr, getToolCallId, ensureToolCallId, renderToolCard, isToolCardLiv
 import { scheduleResultEchoDecoration } from './tool-result-echo';
 import { showToast } from './toast';
 import { attachInputListener, initEditorCompletionDeps, getEditorText, effectiveFillMethod } from './editor-completion';
-import { ensureAttachmentUploadDispatcher, initAttachmentUploadDeps, installAttachmentRuntimeListener } from './attachment-upload';
+import { ensureAttachmentUploadDispatcher, initAttachmentUploadDeps, installAttachmentRuntimeListener, shouldUploadInitAsAttachment, uploadInitPromptAsAttachment, INIT_ATTACHMENT_THRESHOLD } from './attachment-upload';
 import { showRemoteQuestionPopup, dismissRemoteQuestionPopup, handleBrowserApprovalAsk, dismissBrowserApprovalPopupForCall, showQuestionPopup, dismissBrowserApprovalPopup, initQuestionApprovalDeps, installBrowserApprovalRuntimeListener } from './question-approval';
 import { TIMING } from './timing';
 import { DOM_EXTRACT } from './dom-extract-config';
@@ -59,6 +60,12 @@ function resolveBatchQuietMs(value: unknown): number {
 // 总开关（storage key `extensionEnabled`）：false = 整个插件在 AI 页面不生效。
 // 启动时为 false 则完全不 bootstrap；运行中切关则停检测/卸 UI（见 bootstrapGate）。
 let piercodeMasterDisabled = false;
+
+// #10 显式触发模式（storage key `explicitTriggerMode`，默认 OFF）。开启后：仅当用户
+// 本回合消息带 /piercode 或 @piercode 前缀，scanText 才检测工具块；默认关闭时保持
+// 原全扫描行为不变。lastUserMessageHadTrigger 由 onPromptSubmitted 按每条用户消息更新。
+let explicitTriggerMode = false;
+let lastUserMessageHadTrigger = false;
 
 // 获取当前平台适配器
 const platformAdapter: PlatformAdapter = getPlatformAdapter();
@@ -1168,6 +1175,9 @@ function bootstrapContentScript() {
     getNativeSetter,
     onPromptSubmitted: (text) => {
       activateResponseSession();
+      // #10: record whether THIS turn's user message carried a /piercode|@piercode
+      // trigger, so scanText can gate detection when explicitTriggerMode is on.
+      lastUserMessageHadTrigger = messageHasPierCodeTrigger(text);
       const now = Date.now();
       if (text === lastPromptText && now - lastPromptAt < 1500) return;
       lastPromptText = text;
@@ -1190,6 +1200,19 @@ function bootstrapContentScript() {
     });
   } catch {
     // storage 不可用时保持默认（非隐身），不阻塞初始化。
+  }
+  // #10 启动时读取显式触发模式 + 运行中实时跟随（默认 false → 全扫描）。
+  try {
+    chrome.storage?.local?.get(['explicitTriggerMode'], (result) => {
+      explicitTriggerMode = result?.explicitTriggerMode === true;
+    });
+    chrome.storage?.onChanged?.addListener((changes, area) => {
+      if (area === 'local' && 'explicitTriggerMode' in changes) {
+        explicitTriggerMode = changes.explicitTriggerMode.newValue === true;
+      }
+    });
+  } catch {
+    // storage 不可用时保持默认（关闭），不阻塞初始化。
   }
   // 状态面板：显示操作状态/提供商/token/受控 tab。
   // 用 queueMicrotask 延后：startTokenRefresh / tokenThreshold 依赖的 const/let
@@ -2193,6 +2216,11 @@ function startDOMObserver(_responseSelector: string) {
     // packet-hash dedup inside maybeForwardAgentResult.
     maybeForwardAgentResult(text, processed);
 
+    // #10 显式触发模式：开启且本回合用户消息没带 /piercode|@piercode 前缀时，跳过工具
+    // 检测（默认关闭 → 不进此分支，全扫描行为不变）。worker 页自驱动、任务由 coordinator
+    // 注入而非用户带前缀，故 worker 不受此门控影响；worker 结果转发已在上面完成。
+    if (explicitTriggerMode && !lastUserMessageHadTrigger && !workerAgentId()) return;
+
     // ── Phase 0: 直接从 DOM 提取 tool 代码块（Qwen Monaco Editor 专用） ──
     if (sourceEl && platformAdapter.name === 'qwen') {
       let parsedQwenTool = false;
@@ -2791,6 +2819,17 @@ async function fetchInitPromptForCurrentProfile(): Promise<string> {
   return resp.body;
 }
 
+// #8: per-platform char ceiling for the init prompt before it is uploaded as a
+// .txt attachment instead of typed (some inputs silently clip very long pastes).
+// 0 = no wall (type it). Inlined here (content/index.ts must not import settings).
+function initAttachmentLimitForPlatform(): number {
+  switch (platformAdapter.name) {
+    // aistudio uses a real system-instructions field (handled separately) → no wall.
+    case 'aistudio': return 0;
+    default: return INIT_ATTACHMENT_THRESHOLD;
+  }
+}
+
 async function sendInitPrompt() {
   const prompt = await fetchInitPromptForCurrentProfile();
   if (!prompt) { alert('获取初始化提示词失败'); return; }
@@ -2798,6 +2837,23 @@ async function sendInitPrompt() {
   if (location.hostname.includes('aistudio.google.com')) {
     await fillAiStudioSystemInstructions(prompt);
     return;
+  }
+
+  // #8 init-context-too-long: if the prompt exceeds this platform's input wall,
+  // upload it as a .txt attachment (typed it would be truncated), then send a
+  // short pointer so the model reads the file. On any upload failure, fall back
+  // to typing the full prompt (best-effort).
+  if (shouldUploadInitAsAttachment(prompt, initAttachmentLimitForPlatform())) {
+    try {
+      await uploadInitPromptAsAttachment(prompt, 'piercode-init.txt');
+      await fillAndSend(
+        '初始化提示词较长，已作为附件 piercode-init.txt 上传。请先完整阅读该附件内容并据此初始化，然后按其中的握手要求回复。',
+        true,
+      );
+      return;
+    } catch (err) {
+      console.warn('[PierCode] 初始化提示词附件上传失败，回退为直接输入:', err);
+    }
   }
 
   fillAndSend(prompt, true);

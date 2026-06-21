@@ -808,9 +808,44 @@ export function partitionSpawnCalls(calls: ToolCall[]): { spawns: ToolCall[]; no
   return { spawns, normal }
 }
 
+/** #18 web_task split + viewport-first guidance (nanobrowser planner strategy,
+ *  conceptual — no import). Woven into every sub-agent's first message so a
+ *  worker (a) answers a non-web task directly instead of driving the browser for
+ *  a whole wasted round, and (b) when it DOES use the browser, prefers the
+ *  visible viewport over scrolling the whole page. Kept short on purpose. */
+export const SUBAGENT_WEB_GUIDANCE =
+  '【任务分流与浏览策略】\n' +
+  '- web_task 判断：先判断这是不是「需要操作网页」的任务。若不需要（纯本地文件/代码/命令，或你已掌握答案），直接用 piercode-tool 本地工具或纯文本完成，不要为此驱动浏览器——省一整轮。\n' +
+  '- 仅当确实需要浏览网页时才用 browser_* 工具，并优先处理当前视口（viewport）内可见的内容；滚动是最后手段，一次最多滚一页，不要一上来就滚到底。\n' +
+  '- 已知确切 URL 就直连，不要先去搜索。'
+
 /** Compose the first message of a sub-agent conversation. */
 export function buildSubAgentMessage(workerPrompt: string, task: string): string {
-  return `${workerPrompt}\n\n任务：${task}`
+  return `${workerPrompt}\n\n${SUBAGENT_WEB_GUIDANCE}\n\n任务：${task}`
+}
+
+/** #9 Planner/Navigator asymmetric model selection. Resolve which model a
+ *  spawned sub-agent should run, given the spawn call's optional `model`/`role`
+ *  args and the batch (coordinator's own) model. Backward compatible: with
+ *  neither field set it returns `batchModel` unchanged (homogeneous workers).
+ *
+ *  - explicit `model` (a non-empty string) always wins, so a coordinator can run
+ *    a strong model for planning and dispatch a cheaper one for execution
+ *    (nanobrowser's planner/navigator split — conceptual, no import).
+ *  - `role` is advisory: 'planner' keeps the strong coordinator model;
+ *    'navigator'/'worker' (and any unknown role) fall back to the batch model
+ *    rather than fabricate a cheaper slug we can't know — set `model` to pick
+ *    one explicitly. */
+export function resolveSpawnModel(
+  args: Record<string, unknown>,
+  batchModel: string | undefined,
+): string | undefined {
+  const raw = args?.model
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim()
+    if (trimmed) return trimmed
+  }
+  return batchModel
 }
 
 /** Shape a sub-agent's final assistant text into a ToolResult for the parent. */
@@ -1455,6 +1490,9 @@ async function runSubAgent(
   const agentId = recovery?.agentId ?? `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   const label = String(call.args.label || 'agent')
   const task = String(call.args.task || call.args.prompt || '')
+  // #9: a spawn may pick its own model/role (planner strong, navigator cheap).
+  // Unset → the coordinator's batch model (homogeneous, today's behaviour).
+  const agentModel = resolveSpawnModel(call.args, model)
 
   if (parentDepth >= MAX_AGENT_DEPTH) {
     return shapeSubAgentResult(call, `(子 agent 嵌套超过上限 ${MAX_AGENT_DEPTH}，已拒绝)`)
@@ -1484,7 +1522,7 @@ async function runSubAgent(
         const finalText = await runIsolatedConversation({
           platform,
           message,
-          model,
+          model: agentModel,
           depth: parentDepth + 1,
           agentId,
           abortSignal: signal,
