@@ -1788,6 +1788,14 @@ function renderContextPacketCard(packet: PierCodeContextPacket, sourceEl: Elemen
 
 function startDOMObserver(_responseSelector: string) {
   const processed = new Set<string>();
+  // Keys whose runBatchItem is currently IN FLIGHT (started, not yet finished).
+  // isExecuted()/markExecuted() bracket an `await executeToolCallReturn`, so two
+  // copies of the same tool key running concurrently (e.g. spawn_agent items in
+  // the same Promise.all, or a card orphaned + re-queued into the same batch) both
+  // pass the isExecuted guard before either marks executed → the tool fires twice
+  // (duplicate sub-agents / double side effects). This synchronous in-flight set,
+  // added before the first await and cleared in finally, makes the second copy bail.
+  const executingKeys = new Set<string>();
   const ignoredPreSessionContainers = new WeakSet<Element>();
   // 内容脚本初始化那一刻就已存在的回复容器（历史对话）。任何在此之后**新出现**
   // 的回复容器都视为本会话的新回复 —— 无论它来自插件注入、用户直接在网页里
@@ -2163,31 +2171,42 @@ function startDOMObserver(_responseSelector: string) {
         // and returns whether the stream should be stopped.
         const runBatchItem = async (item: typeof batch[number], withGuidance: boolean): Promise<boolean> => {
           const { data: toolCall, key } = item;
-          if (isExecuted(key)) return false;
+          // Synchronous double-execution guard: bail if already executed OR a twin
+          // copy is mid-flight (claimed below before its await). Both checks happen
+          // before any await, so concurrent Promise.all items can't both pass.
+          if (isExecuted(key) || executingKeys.has(key)) return false;
+          executingKeys.add(key);
 
-          // 更新卡片状态为"执行中..."
-          const cardEl = document.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`);
-          const btnEl = cardEl?.querySelector('button') as HTMLButtonElement | null;
-          if (btnEl) { btnEl.disabled = true; btnEl.textContent = '执行中...'; }
+          try {
+            // 更新卡片状态为"执行中..."
+            const cardEl = document.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`);
+            const btnEl = cardEl?.querySelector('button') as HTMLButtonElement | null;
+            if (btnEl) { btnEl.disabled = true; btnEl.textContent = '执行中...'; }
 
-          const { output, stopStream, sendable, alreadyInjected } = await executeToolCallReturn(toolCall, withGuidance);
-          if (sendable) {
-            markExecuted(key);
+            const { output, stopStream, sendable, alreadyInjected } = await executeToolCallReturn(toolCall, withGuidance);
+            if (sendable) {
+              markExecuted(key);
+            }
+            // alreadyInjected tools (spawn_agent's API route) filled + submitted
+            // their own result via injectToolResult; don't re-queue it here.
+            if (sendable && !alreadyInjected && output.trim()) {
+              const callId = getToolCallId(toolCall);
+              const c = item.container;
+              let arr = outputsByContainer.get(c);
+              if (!arr) { arr = []; outputsByContainer.set(c, arr); }
+              arr.push(`### ${toolCall.name} #${callId}\n${output}`);
+              activeOutputContainers.add(c);
+            }
+
+            // 更新卡片状态为"已执行"
+            if (btnEl) btnEl.textContent = sendable ? '✅ 已执行' : '请刷新页面';
+            return stopStream;
+          } finally {
+            // Release the in-flight claim so a genuine LATER re-run (after this turn,
+            // not a concurrent twin) can proceed. isExecuted/markExecuted still bars
+            // a real repeat for sendable tools via persistent storage.
+            executingKeys.delete(key);
           }
-          // alreadyInjected tools (spawn_agent's API route) filled + submitted
-          // their own result via injectToolResult; don't re-queue it here.
-          if (sendable && !alreadyInjected && output.trim()) {
-            const callId = getToolCallId(toolCall);
-            const c = item.container;
-            let arr = outputsByContainer.get(c);
-            if (!arr) { arr = []; outputsByContainer.set(c, arr); }
-            arr.push(`### ${toolCall.name} #${callId}\n${output}`);
-            activeOutputContainers.add(c);
-          }
-
-          // 更新卡片状态为"已执行"
-          if (btnEl) btnEl.textContent = sendable ? '✅ 已执行' : '请刷新页面';
-          return stopStream;
         };
 
         // spawn_agent dispatches are independent (each just opens a worker tab /

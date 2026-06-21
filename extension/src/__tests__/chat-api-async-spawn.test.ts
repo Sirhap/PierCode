@@ -241,6 +241,53 @@ describe('injection queue idle gating', () => {
   })
 })
 
+describe('injection queue concurrent-drain race (#5)', () => {
+  it('a second drain during the first injection’s storage-await does NOT drain concurrently', async () => {
+    // Reproduces the fixed race: handleChatRequest bumps mainTurnDepth, but the
+    // master-switch read `await chrome.storage.local.get(['extensionEnabled'])`
+    // sits at the top. If the depth bump were AFTER that await, a second
+    // enqueueInjection firing while the first injection is suspended on the read
+    // would see depth still 0, pass the guard, and drain a 2nd item concurrently.
+    // With the bump moved BEFORE the await, the second drain is correctly gated.
+    const st = __injectionStateForTest()
+    st.setMainContext({ platform: 'openai', chatId: 'c1', parentId: 'p1', model: 'gpt-4o' })
+
+    // Gate the master-switch storage read so the first injection's
+    // handleChatRequest parks exactly at that await until we release it.
+    let releaseStorage!: () => void
+    const storageGate = new Promise<void>(r => { releaseStorage = r })
+    ;(globalThis as any).chrome.storage.local.get = async (key: any) => {
+      // Only the master-switch probe is gated; other reads resolve immediately.
+      if (Array.isArray(key) && key.includes('extensionEnabled')) {
+        await storageGate
+        return {}
+      }
+      return { openaiApiKey: 'k', openaiBaseUrl: 'http://api.test' }
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => sseResponse('继续') as any))
+    try {
+      // Two finished batches enqueue back-to-back. The first kicks off a real
+      // handleChatRequest which parks on storageGate; the second must NOT proceed.
+      st.enqueue('汇总A', { platform: 'openai', chatId: 'c1', parentId: 'p1', model: 'gpt-4o' })
+      st.enqueue('汇总B', { platform: 'openai', chatId: 'c1', parentId: 'p1', model: 'gpt-4o' })
+
+      // Let microtasks settle: the first drain has started handleChatRequest (now
+      // parked on storageGate), the second enqueue's drain attempt should bail
+      // because mainTurnDepth was bumped synchronously to 1 before the await.
+      await new Promise(r => setTimeout(r, 20))
+      expect(st.queue).toHaveLength(1)                       // B still queued
+      expect(types().filter(t => t === 'CHAT_CONTINUING')).toHaveLength(1)
+
+      // Release the first injection; it finishes, depth → 0, finally drains B.
+      releaseStorage()
+      await waitFor(() => st.queue.length === 0)
+      await waitFor(() => types().filter(t => t === 'CHAT_CONTINUING').length >= 2)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
 describe('injection conversation binding', () => {
   it('injects into the conversation that spawned the batch, not a newer unrelated one', async () => {
     const st = __injectionStateForTest()

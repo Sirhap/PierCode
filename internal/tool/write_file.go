@@ -63,6 +63,11 @@ func (t *WriteFileTool) Execute(ctx *Context) *Result {
 	}
 
 	if mode == "append" {
+		// Snapshot the prior state before appending so `undo` can restore it —
+		// append is destructive (mutates the file) exactly like overwrite, so it
+		// must snapshot too; otherwise undo after an append reverts to a stale
+		// earlier snapshot (or finds none) and silently drops the appended content.
+		_ = snapshotPaths(ctx.EffectiveRootDir(), "write_file", safePath)
 		if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {
 			result.Status = "error"
 			result.Error = err.Error()

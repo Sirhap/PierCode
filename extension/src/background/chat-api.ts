@@ -1238,6 +1238,7 @@ export function __injectionStateForTest(): {
   queue: Array<{ message: string; ctx: MainTurnContext }>
   setMainContext: (ctx: MainTurnContext | null) => void
   setTurnDepth: (n: number) => void
+  enqueue: (message: string, ctx: MainTurnContext) => void
   drain: () => void
   reset: () => void
 } {
@@ -1245,6 +1246,7 @@ export function __injectionStateForTest(): {
     queue: pendingInjections,
     setMainContext: (ctx) => { lastMainContext = ctx },
     setTurnDepth: (n) => { mainTurnDepth = n },
+    enqueue: enqueueInjection,
     drain: drainInjectionQueue,
     reset: () => {
       pendingInjections.length = 0
@@ -1255,18 +1257,26 @@ export function __injectionStateForTest(): {
 }
 
 export async function handleChatRequest(params: ChatRequestParams): Promise<void> {
-  // 插件总开关：关闭时拒绝整个对话回合（含其触发的子 agent / 工具执行）。
-  try {
-    const { extensionEnabled } = await chrome.storage.local.get(['extensionEnabled'])
-    if (extensionEnabled === false) {
-      broadcast({ type: 'CHAT_ERROR', error: 'PierCode 插件已停用（在 popup 中打开总开关后重试）' })
-      return
-    }
-  } catch {
-    // storage 不可用时按开启处理。
-  }
+  // mainTurnDepth MUST be bumped SYNCHRONOUSLY, before the first await below.
+  // drainInjectionQueue() fires this via `void handleChatRequest()` and relies on
+  // the guard `mainTurnDepth > 0` to serialize injections. If the increment sat
+  // after the `await chrome.storage.local.get` (the master-switch read), a second
+  // batch finishing during that await would see depth still 0, pass the guard, and
+  // drain a second injection concurrently — interleaving two continuation turns.
+  // Incrementing here (no await before it) closes that window entirely: JS is
+  // single-threaded, so the synchronous bump completes before control yields.
   mainTurnDepth++
   try {
+    // 插件总开关：关闭时拒绝整个对话回合（含其触发的子 agent / 工具执行）。
+    try {
+      const { extensionEnabled } = await chrome.storage.local.get(['extensionEnabled'])
+      if (extensionEnabled === false) {
+        broadcast({ type: 'CHAT_ERROR', error: 'PierCode 插件已停用（在 popup 中打开总开关后重试）' })
+        return
+      }
+    } catch {
+      // storage 不可用时按开启处理。
+    }
     await handleChatRequestInner(params)
   } finally {
     mainTurnDepth--

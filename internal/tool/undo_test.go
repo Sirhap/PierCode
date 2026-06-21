@@ -55,6 +55,32 @@ func TestUndoRevertWriteNewFileDeletes(t *testing.T) {
 	}
 }
 
+func TestUndoRevertAppendRestoresPriorContent(t *testing.T) {
+	cfg := testConfig(t)
+	p := filepath.Join(cfg.RootDir, "log.txt")
+	os.WriteFile(p, []byte("line1\n"), 0644)
+
+	// append mode must snapshot the prior state (like overwrite) so undo can
+	// restore it — otherwise the appended content is silently kept on revert.
+	wr := NewWriteFileTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+		"path": "log.txt", "content": "line2\n", "mode": "append",
+	}))
+	if wr.Status != "success" {
+		t.Fatalf("append failed: %s", wr.Error)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "line1\nline2\n" {
+		t.Fatalf("append didn't apply: %q", got)
+	}
+
+	ur := NewUndoTool(cfg).Execute(testCtx(cfg, map[string]interface{}{"action": "revert"}))
+	if ur.Status != "success" {
+		t.Fatalf("undo failed: %s", ur.Error)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "line1\n" {
+		t.Fatalf("undo should restore pre-append content, got %q", got)
+	}
+}
+
 func TestUndoList(t *testing.T) {
 	cfg := testConfig(t)
 	os.WriteFile(filepath.Join(cfg.RootDir, "f.txt"), []byte("a\n"), 0644)
