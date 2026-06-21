@@ -70,3 +70,6 @@ chatgpt-proxy/dist/
 
 # reverse-engineered reference porting specs (local only, not committed)
 tmp/
+
+# Built Go server binary (compiled output — never commit)
+/server
