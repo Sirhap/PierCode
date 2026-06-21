@@ -261,6 +261,75 @@ func TestEditPreservesLFLineEndings(t *testing.T) {
 	}
 }
 
+func TestEditDryRunDoesNotWrite(t *testing.T) {
+	cfg := testConfig(t)
+	p := filepath.Join(cfg.RootDir, "dry.txt")
+	original := []byte("line one\nline two\nline three\n")
+	if err := os.WriteFile(p, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := NewEditTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+		"path": "dry.txt", "old_string": "line two", "new_string": "LINE TWO", "dry_run": true,
+	}))
+	if res.Status != "success" {
+		t.Fatalf("dry_run edit should succeed: %s", res.Error)
+	}
+	// File must be byte-identical on disk.
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("dry_run must not modify the file.\n got: %q\nwant: %q", got, original)
+	}
+	// Output must report the would-be change and mark it as a dry run.
+	if !strings.Contains(res.Output, "dry run") {
+		t.Fatalf("expected dry-run marker in output, got %q", res.Output)
+	}
+	if !strings.Contains(res.Output, "LINE TWO") {
+		t.Fatalf("expected the change to be reported, got %q", res.Output)
+	}
+}
+
+func TestEditDryRunFalseStillWrites(t *testing.T) {
+	cfg := testConfig(t)
+	p := filepath.Join(cfg.RootDir, "wet.txt")
+	if err := os.WriteFile(p, []byte("a\nb\nc\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	res := NewEditTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+		"path": "wet.txt", "old_string": "b", "new_string": "B", "dry_run": false,
+	}))
+	if res.Status != "success" {
+		t.Fatalf("edit failed: %s", res.Error)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "a\nB\nc\n" {
+		t.Fatalf("dry_run=false must write as before, got %q", got)
+	}
+	if strings.Contains(res.Output, "dry run") {
+		t.Fatalf("non-dry-run output must not carry the dry-run marker, got %q", res.Output)
+	}
+}
+
+func TestEditDryRunReportsErrorWithoutWriting(t *testing.T) {
+	cfg := testConfig(t)
+	p := filepath.Join(cfg.RootDir, "nomatch.txt")
+	original := []byte("only this\n")
+	if err := os.WriteFile(p, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+	res := NewEditTool(cfg).Execute(testCtx(cfg, map[string]interface{}{
+		"path": "nomatch.txt", "old_string": "MISSING", "new_string": "X", "dry_run": true,
+	}))
+	if res.Status != "error" {
+		t.Fatalf("expected error for unmatched old_string, got %s", res.Status)
+	}
+	if got, _ := os.ReadFile(p); !bytes.Equal(got, original) {
+		t.Fatalf("dry_run error must not modify the file, got %q", got)
+	}
+}
+
 func TestEditCRLFReplaceAllCount(t *testing.T) {
 	cfg := testConfig(t)
 	p := filepath.Join(cfg.RootDir, "c.txt")

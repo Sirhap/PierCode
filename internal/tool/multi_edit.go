@@ -31,8 +31,9 @@ func (t *MultiEditTool) Description() string {
 
 func (t *MultiEditTool) Parameters() interface{} {
 	return map[string]string{
-		"path":  "string (required) - file path",
-		"edits": "array (required) - objects with old_string (required), new_string (required), replace_all (bool, optional); applied in order",
+		"path":    "string (required) - file path",
+		"edits":   "array (required) - objects with old_string (required), new_string (required), replace_all (bool, optional); applied in order",
+		"dry_run": "bool (optional, default false) - compute and report the change without writing the file",
 	}
 }
 
@@ -70,6 +71,7 @@ func (t *MultiEditTool) Execute(ctx *Context) *Result {
 	defer func() { result.EndTime = time.Now() }()
 
 	path, _ := ctx.Args["path"].(string)
+	dryRun, _ := ctx.Args["dry_run"].(bool)
 	ops, err := parseMultiEditOps(ctx.Args["edits"])
 	if err != nil {
 		result.Status = "error"
@@ -113,16 +115,29 @@ func (t *MultiEditTool) Execute(ctx *Context) *Result {
 	}
 
 	out := restoreLineStyle(content, style)
-	// Snapshot the prior state before writing so `undo` can restore it.
-	_ = snapshotPaths(ctx.EffectiveRootDir(), "multi_edit", safePath)
-	if err := os.WriteFile(safePath, []byte(out), 0644); err != nil {
-		result.Status = "error"
-		result.Error = err.Error()
-		return result
+	// dry_run: report the would-be change but leave the file byte-identical on
+	// disk (mirrors apply_patch / edit). All ops ran against the in-memory string
+	// above, so we only skip the snapshot + write here.
+	if !dryRun {
+		// Snapshot the prior state before writing so `undo` can restore it.
+		_ = snapshotPaths(ctx.EffectiveRootDir(), "multi_edit", safePath)
+		if err := os.WriteFile(safePath, []byte(out), 0644); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
 	}
 
 	result.Status = "success"
-	result.Output = fmt.Sprintf("已对 %s 应用 %d 处编辑（共 %d 次替换）", path, len(ops), total)
+	if dryRun {
+		// Reuse the shared dry-run summary (path + line delta), then append the
+		// edit/replacement counts so the preview matches multi_edit's real-run
+		// message detail.
+		result.Output = formatEditSummary(path, "", "", total, false, original, out, true) +
+			fmt.Sprintf(" — %d 处编辑（共 %d 次替换）", len(ops), total)
+	} else {
+		result.Output = fmt.Sprintf("已对 %s 应用 %d 处编辑（共 %d 次替换）", path, len(ops), total)
+	}
 	return result
 }
 

@@ -178,6 +178,17 @@ func DefaultProfileRegistry(defaultPrompt []byte) *ProfileRegistry {
 		PromptAppend:   prompts.WorkerPromptAppend,
 		ContextHandoff: workerResultPacketReminder,
 	})
+	// ChatGPT profile: inherits the default prompt + all tools (no narrowing),
+	// but appends a warning that ChatGPT's native python/python_user_visible tool
+	// is a no-op here (it emits placeholder output with no real fs/shell/network),
+	// so every local action must go through visible piercode-tool blocks. The
+	// content script already fetches the prompt with ?adapter=chatgpt (the chatgpt
+	// adapter's profile name is "chatgpt"), so Select("chatgpt") routes here with
+	// no extension change needed.
+	registry.Register(Profile{
+		ID:           "chatgpt",
+		PromptAppend: prompts.ChatGPTPromptAppend,
+	})
 	// Browser-agent profile: the AI hosted in the sidebar's embedded AI iframe
 	// (chatgpt/qwen) that drives the user's real browser via browser_* tools. It
 	// inherits the default prompt and gets the browser-operator role + per-turn
@@ -249,8 +260,11 @@ func (p Profile) Render(rootDir string, tools []tool.ToolInfo, skills []skill.In
 func (p Profile) RenderWithSandbox(rootDir, permissionMode string, additionalAllowedDirs []string, tools []tool.ToolInfo, skills []skill.Info) []byte {
 	body := p.renderBodyCached(rootDir, tools, skills)
 	// Stamp the volatile timestamp + sandbox info last so the cached body can be
-	// reused across calls within the same minute / tool set.
+	// reused across calls within the same minute / tool set. The project-rules
+	// file (CLAUDE.md/AGENTS.md) lives on disk and can change, so it is also
+	// substituted here rather than baked into the cached body.
 	out := strings.ReplaceAll(string(body), systemInfoPlaceholder, BuildSystemInfo(rootDir, permissionMode, additionalAllowedDirs))
+	out = strings.ReplaceAll(out, projectRulesPlaceholder, BuildProjectRules(rootDir))
 	out = memory.AppendMemoryDoc(out, rootDir)
 	return []byte(out)
 }

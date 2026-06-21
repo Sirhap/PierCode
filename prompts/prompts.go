@@ -8,6 +8,14 @@ var DefaultPrompt []byte
 //go:embed qwen_append.txt
 var QwenPromptAppend []byte
 
+// ChatGPTPromptAppend warns the ChatGPT-hosted model that its native
+// python/python_user_visible analysis tool is a no-op in this environment
+// (placeholder output, no real fs/shell/network) and that all local work must
+// go through visible piercode-tool blocks. Appended via the "chatgpt" profile.
+//
+//go:embed chatgpt_append.txt
+var ChatGPTPromptAppend []byte
+
 // QwenBasePrompt is a slim, Qwen-specific base prompt used as the qwen profile's
 // Prompt INSTEAD of inheriting DefaultPrompt. Qwen's function-calling RLHF makes it
 // reach for its own native tools (code_interpreter/web_search) when it sees the

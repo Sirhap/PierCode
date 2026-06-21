@@ -9,13 +9,70 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sirhap/piercode/internal/security"
 	"github.com/sirhap/piercode/internal/tool"
 )
 
 func Render(template []byte, rootDir string, tools []tool.ToolInfo) []byte {
 	content := renderBody(template, tools)
 	content = strings.ReplaceAll(content, "{{SYSTEM_INFO}}", BuildSystemInfo(rootDir, "", nil))
+	content = strings.ReplaceAll(content, projectRulesPlaceholder, BuildProjectRules(rootDir))
 	return []byte(content)
+}
+
+// projectRulesPlaceholder is replaced with the workspace's own agent rules file
+// (CLAUDE.md or AGENTS.md at RootDir) so a repo can steer the model's behavior.
+// Like {{SYSTEM_INFO}} it carries content that lives on disk and can change, so
+// it is substituted AFTER any render cache lookup rather than baked into the
+// cached body. When neither file exists it renders empty (no leftover token).
+const projectRulesPlaceholder = "{{PROJECT_RULES}}"
+
+// projectRulesFiles lists the workspace rule files to look for, in priority
+// order. CLAUDE.md wins over AGENTS.md when both are present (matches the
+// convention that a Claude-specific file is the more intentional choice).
+var projectRulesFiles = []string{"CLAUDE.md", "AGENTS.md"}
+
+// projectRulesMaxBytes caps how much of the rule file is injected so an
+// oversized CLAUDE.md cannot blow up the prompt. The first ~8KB is plenty for
+// project conventions; anything longer is truncated with a marker.
+const projectRulesMaxBytes = 8 * 1024
+
+// BuildProjectRules reads the workspace's agent-rules file (CLAUDE.md, then
+// AGENTS.md) from RootDir and returns it wrapped for injection, or "" when none
+// exists. SECURITY: the file is read only via security.SafePath against rootDir
+// (relative name, symlink-resolved, must stay inside the sandbox), so this can
+// never read outside the validated workspace.
+func BuildProjectRules(rootDir string) string {
+	if strings.TrimSpace(rootDir) == "" {
+		return ""
+	}
+	for _, name := range projectRulesFiles {
+		safePath, err := security.SafePath(rootDir, name)
+		if err != nil {
+			continue
+		}
+		raw, err := os.ReadFile(safePath)
+		if err != nil {
+			continue
+		}
+		body := string(raw)
+		truncated := false
+		if len(body) > projectRulesMaxBytes {
+			body = body[:projectRulesMaxBytes]
+			truncated = true
+		}
+		body = strings.TrimRight(body, "\n")
+		if strings.TrimSpace(body) == "" {
+			continue
+		}
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "## 项目规则 (%s)\n\n这是本仓库自带的 AI 行为约定，优先级高于通用指南；与之冲突时以此为准。\n\n%s", name, body)
+		if truncated {
+			sb.WriteString("\n\n…（项目规则已截断，仅注入前 8KB）")
+		}
+		return sb.String()
+	}
+	return ""
 }
 
 // renderBody substitutes the cacheable placeholders (currently {{TOOLS}}) and

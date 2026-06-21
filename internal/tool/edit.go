@@ -41,6 +41,7 @@ func (t *EditTool) Parameters() interface{} {
 		"old_string":  "string (required) - text to replace",
 		"new_string":  "string (required) - replacement text",
 		"replace_all": "bool (optional) - replace all occurrences (default false)",
+		"dry_run":     "bool (optional, default false) - compute and report the change without writing the file",
 	}
 }
 
@@ -63,6 +64,7 @@ func (t *EditTool) Execute(ctx *Context) *Result {
 	oldStr, _ := ctx.Args["old_string"].(string)
 	newStr, _ := ctx.Args["new_string"].(string)
 	replaceAll, _ := ctx.Args["replace_all"].(bool)
+	dryRun, _ := ctx.Args["dry_run"].(bool)
 
 	safePath, err := ctx.ResolvePath(path)
 	if err != nil {
@@ -128,22 +130,91 @@ func (t *EditTool) Execute(ctx *Context) *Result {
 		}
 	}
 
-	// Snapshot the prior state before writing so `undo` can restore it.
-	_ = snapshotPaths(ctx.EffectiveRootDir(), "edit", safePath)
-	if err := os.WriteFile(safePath, outBytes, 0644); err != nil {
-		result.Status = "error"
-		result.Error = err.Error()
-		return result
+	// dry_run: report the would-be change but leave the file byte-identical on
+	// disk (mirrors apply_patch's dry_run). Everything above is pure computation,
+	// so we only skip the snapshot + write here.
+	if !dryRun {
+		// Snapshot the prior state before writing so `undo` can restore it.
+		_ = snapshotPaths(ctx.EffectiveRootDir(), "edit", safePath)
+		if err := os.WriteFile(safePath, outBytes, 0644); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
 	}
 
 	result.Status = "success"
-	if replaceAll && count > 1 {
-		result.Output = fmt.Sprintf("已替换 %d 处 '%s' → '%s'", count, oldStr, newStr)
-	} else {
-		result.Output = fmt.Sprintf("已替换 '%s' → '%s'", oldStr, newStr)
-	}
+	result.Output = formatEditSummary(path, oldStr, newStr, count, replaceAll, originalContent, string(outBytes), dryRun)
 	result.EndTime = time.Now()
 	return result
+}
+
+// formatEditSummary describes the result of an edit/multi_edit. On a dry run it
+// is prefixed with "dry run: " and carries a per-file line delta (+added
+// -removed) like apply_patch's formatPatchSummary, so the model can preview the
+// effect; on a real run it keeps the original concise replacement message.
+// oldStr/newStr/count/replaceAll describe a single-string edit (edit tool);
+// multi_edit passes an empty oldStr to render only the path + line delta.
+func formatEditSummary(path, oldStr, newStr string, count int, replaceAll bool, before, after string, dryRun bool) string {
+	if !dryRun {
+		if oldStr == "" {
+			// multi_edit's own message takes over on the success path.
+			return ""
+		}
+		if replaceAll && count > 1 {
+			return fmt.Sprintf("已替换 %d 处 '%s' → '%s'", count, oldStr, newStr)
+		}
+		return fmt.Sprintf("已替换 '%s' → '%s'", oldStr, newStr)
+	}
+
+	added, removed := lineDelta(before, after)
+	var b strings.Builder
+	b.WriteString("dry run: ")
+	if oldStr == "" {
+		fmt.Fprintf(&b, "would edit %s (+%d -%d)", path, added, removed)
+	} else if replaceAll && count > 1 {
+		fmt.Fprintf(&b, "would replace %d occurrences in %s (+%d -%d): '%s' → '%s'", count, path, added, removed, oldStr, newStr)
+	} else {
+		fmt.Fprintf(&b, "would edit %s (+%d -%d): '%s' → '%s'", path, added, removed, oldStr, newStr)
+	}
+	return b.String()
+}
+
+// lineDelta reports how many lines differ between before and after as an
+// added/removed pair, computed from the length of their common prefix and
+// suffix of whole lines (the same shape apply_patch reports per hunk). It is a
+// summary for preview, not a full diff.
+func lineDelta(before, after string) (added, removed int) {
+	bLines := splitLinesForDelta(before)
+	aLines := splitLinesForDelta(after)
+	// Common leading lines.
+	head := 0
+	for head < len(bLines) && head < len(aLines) && bLines[head] == aLines[head] {
+		head++
+	}
+	// Common trailing lines (not overlapping the head).
+	tail := 0
+	for tail < len(bLines)-head && tail < len(aLines)-head &&
+		bLines[len(bLines)-1-tail] == aLines[len(aLines)-1-tail] {
+		tail++
+	}
+	removed = len(bLines) - head - tail
+	added = len(aLines) - head - tail
+	return added, removed
+}
+
+// splitLinesForDelta splits content into lines for the line-delta count,
+// dropping a single trailing empty element produced by a final newline so a
+// trailing "\n" doesn't register as an extra line.
+func splitLinesForDelta(s string) []string {
+	if s == "" {
+		return nil
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────

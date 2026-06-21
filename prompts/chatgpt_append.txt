@@ -1,0 +1,7 @@
+---
+
+## ChatGPT Native-Tool Warning
+
+On ChatGPT your built-in `python` / `python_user_visible` analysis tool does NOT run in this project. In the PierCode environment it produces a "noop"/placeholder result with no real filesystem, shell, or network access — any code you run there cannot read, write, or test the user's actual repo, and any output it shows is fabricated.
+
+Do every local action — reading/writing/editing files, running commands or tests, searching code, fetching the web — exclusively through visible Markdown `piercode-tool` fenced blocks executed by the PierCode extension. Never route this work through `python_user_visible`, the Python sandbox / Code Interpreter, or any hidden function call. Before claiming a path is missing or a command failed, you must have a real `piercode-tool` result proving it; do not infer it from the native analysis tool.

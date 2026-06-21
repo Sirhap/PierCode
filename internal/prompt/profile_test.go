@@ -411,6 +411,32 @@ func TestWorkerProfileCarriesResultPacketContract(t *testing.T) {
 	}
 }
 
+func TestChatGPTProfileWarnsAgainstNativePythonTool(t *testing.T) {
+	registry := DefaultProfileRegistry(prompts.DefaultPrompt)
+	profile := registry.Select("chatgpt")
+	if profile.ID != "chatgpt" {
+		t.Fatalf("expected chatgpt profile, got %q", profile.ID)
+	}
+
+	rendered := string(profile.Render("C:/repo", nil, nil))
+	// The append must warn against the native python_user_visible / python tool.
+	if !strings.Contains(rendered, "python_user_visible") {
+		t.Fatalf("chatgpt prompt should warn about python_user_visible, got tail %q", tail(rendered))
+	}
+	if !strings.Contains(rendered, "piercode-tool") {
+		t.Fatalf("chatgpt prompt should direct work through piercode-tool, got tail %q", tail(rendered))
+	}
+	// It inherits the default prompt body (append, not replace).
+	if !strings.Contains(rendered, "PierCode") {
+		t.Fatalf("chatgpt prompt should inherit the default prompt body, got tail %q", tail(rendered))
+	}
+	// Inherits all tools (no narrowing): a non-browser tool still renders.
+	withTools := string(profile.Render("C:/repo", []tool.ToolInfo{{Name: "read_file", Description: "read a file"}}, nil))
+	if !strings.Contains(withTools, "read_file") {
+		t.Fatalf("chatgpt profile should inherit all tools, got tail %q", tail(withTools))
+	}
+}
+
 func TestProfileRenderAppendsMemoryOutsideCache(t *testing.T) {
 	root := t.TempDir()
 	memDir := filepath.Join(root, ".piercode")
