@@ -2,7 +2,17 @@
 
 > 调研日期: 2026-06-17
 > 方法: 拉三个最相关开源项目的 README/源码实拆,非凭记忆。
-> 配套 TaskList #1–#10(同序号)。
+> 配套 TaskList #1–#18(同序号)。
+>
+> **2026-06-21 状态复核 + 落地位置重定向**:本文档原写于 browser_* 从 Go 迁移到扩展
+> service worker **之前**,所有 browser_* 项的"落地 `internal/browser/controller*.go`"
+> **已失效** —— browser_* 现全在 `extension/src/background/browser/*`(SW 直执行,见
+> memory `browser-sw-direct-migration`;Go `internal/browser/` 仅剩 CDP 中继,工具定义层
+> 已标 Deprecated)。下面逐项落地路径已改写为 SW。同时按全项目 grep 标注真实现状。
+>
+> **现状概览(18 项)**:✅ 已实现 1(#14)· 🟡 部分 3(#6/#7/#11)· ❌ 真缺 14。
+> 最高 ROI 缺口:#1 Outcome Contract(Skyvern 实证 +17pt)→ #2 Ralph 降级链 → #5 Circuit
+> Breaker;#13 JSON 修复 + #14 稳定窗口打 fence-truncation 痛点。
 
 ## 对标项目定位
 
@@ -22,68 +32,68 @@ PierCode 独特组合 = **网页 AI(非 API)输出工具 fence → 扩展检测 
 
 ### 🥇 第一优先(browser_* 核心可靠性,配合 SW-direct 迁移一起设计)
 
-**#1 · Outcome Contract — 工具返回真实结果枚举**
+**#1 · Outcome Contract — 工具返回真实结果枚举** ❌ 缺
 - 来源: openchrome
 - 借鉴: 工具返回 `SUCCESS / SILENT_CLICK / WRONG_ELEMENT` 真实交互结果,非默认"猜成功了"。配 Outcome Contract 做断言式校验,无需 LLM 判断。
-- 现状: browser_* 点击后若未生效,网页 AI 不知道,无法自纠。
-- 落地: `internal/browser/controller*.go` 点击/输入类工具加结果判定(点后校验 DOM 变化/焦点/可见性),返回结构化 outcome 字段。
+- 现状(2026-06-21 验): browser_* 点击后若未生效,网页 AI 不知道,无法自纠。`extension/src/background/browser/input.ts` + `controller.ts` 仅做 settle/跨域检测,**无结构化 outcome 判定**。
+- 落地(SW): `extension/src/background/browser/{controller,input,marks}.ts` 点击/输入类方法加结果判定(点后校验 DOM 变化/焦点/可见性/aria-state/URL 变化),返回结构化 outcome 字段(SUCCESS/SILENT_CLICK/WRONG_ELEMENT 等枚举)。参考 openchrome `utils/ralph/outcome-classifier.ts` 的 `SUCCESS_PATTERNS`/`TOOLTIP_PATTERNS` 正则(见附录 C)。
 - **这是 #2/#4/#5 的信号源,先做。**
 
-**#2 · Ralph 交互瀑布 — 点击 7 级降级**
+**#2 · Ralph 交互瀑布 — 点击 7 级降级** ❌ 缺
 - 来源: openchrome
 - 借鉴: AX click → CSS 选择器 → CDP 坐标 → JS 执行 → 键盘 → 裸鼠标 → 升级人工。每级失败自动降级。
-- 现状: 点击疑似单路径,失败即失败。
-- 落地: browser click/type 工具内实现降级链,每级靠 #1 的 outcome 判定是否生效。最高 ROI 之一。
+- 现状(2026-06-21 验): `extension/src/background/browser/controller.ts` 点击单路径,失败即失败,**无降级链**。
+- 落地(SW): `extension/src/background/browser/{controller,input,ref-resolve}.ts` 内实现降级链,每级靠 #1 的 outcome 判定是否生效。openchrome `utils/ralph/ralph-engine.ts` 有完整 8 级参考实现(见附录 C),直接对照写 TS。最高 ROI 之一,依赖 #1。
 
 ### 🥈 第二优先(缺口明显 / 省网页轮次)
 
-**#3 · 读 repo 的 CLAUDE.md/AGENTS.md 自动注入**
+**#3 · 读 repo 的 CLAUDE.md/AGENTS.md 自动注入** ❌ 缺
 - 来源: webcode/WebMCP
 - 借鉴: 读 workspace 根的 AGENTS.md/CLAUDE.md 定制 AI 行为。
-- 现状: 缺。工程 agent 标配。
-- 落地: `internal/prompt/` 渲染时,RootDir 存在 CLAUDE.md/AGENTS.md 则读入作 `{{PROJECT_RULES}}` 占位注入 init_prompt。改动小。
+- 现状(2026-06-21 验): `internal/prompt/profile.go` 无 CLAUDE.md/AGENTS.md 读取,workspace 根规则文件未注入。工程 agent 标配。
+- 落地(Go — prompt 渲染仍在 Go,不受 SW 迁移影响): `internal/prompt/` 渲染时,RootDir 存在 CLAUDE.md/AGENTS.md 则读入作 `{{PROJECT_RULES}}` 占位注入 init_prompt。改动小。
 
-**#4 · Hint Engine 雏形 — server 内拦错误模式**
-- 来源: openchrome(30+ 规则)
-- 借鉴: server 侧拦 错误→恢复 模式,不走 LLM 往返就纠正(虚拟化列表/遮挡/未加载等)。
-- 现状: 无。
-- 落地: browser 工具执行后插一层规则检查,命中常见失败把修正提示拼进工具结果。先做 5–10 条高频规则。**对白嫖网页 AI 的 ROI 最高(省订阅额度+延迟)。**
+**#4 · Hint Engine 雏形 — SW 内拦错误模式** ❌ 缺
+- 来源: openchrome(11 条规则,见附录 C)
+- 借鉴: 在执行侧拦 错误→恢复 模式,不走 LLM 往返就纠正(虚拟化列表/遮挡/未加载等)。
+- 现状(2026-06-21 验): 全项目无 HintRule/hintEngine 实现。
+- 落地(SW): browser 工具执行后插一层规则检查(`extension/src/background/browser/dispatch.ts` 是天然挂点),命中常见失败把修正提示拼进工具结果。openchrome `hints/` 的 `HintRule = {name, priority, maxSeverity, match(ctx)}` + fireCounts one-shot 架构可直接抄(见附录 C)。先做 5–10 条高频规则。**对白嫖网页 AI 的 ROI 最高(省订阅额度+延迟)。** 依赖 #1 的失败信号。
 
-**#5 · Circuit Breaker — 3 级失败隔离**
+**#5 · Circuit Breaker — 3 级失败隔离** ❌ 缺
 - 来源: openchrome
 - 借鉴: element/page/global 三级断路器,永久坏元素不无限重试,超阈值升级/停止。
-- 现状: 已有 renderer-crash 恢复(c8566de)+ targetCrashed 处理,缺"防 AI 对坏元素死磕"层。
-- 落地: controller 加 element/tab/global 维度失败计数与熔断,超阈值返回明确"不可用"。依赖 #1 的失败信号。
+- 现状(2026-06-21 验): 全项目无 circuitBreaker/HALF_OPEN 逻辑(仅 i18n 文案提及)。已有 renderer-crash 恢复(c8566de)+ targetCrashed 处理,缺"防 AI 对坏元素死磕"层。
+- 落地(SW): `extension/src/background/browser/controller.ts`(或新 `circuit-breaker.ts`)加 element/tab/global 维度失败计数与熔断,超阈值返回明确"不可用"。openchrome `utils/ralph/circuit-breaker.ts` 三 scope + `CLOSED→OPEN→HALF_OPEN` + 冷却自重置(element 2min/page 1min/global 5min)是完整参考(见附录 C)。依赖 #1 的失败信号。
 
 ### 🥉 第三优先(局部增强 / 中期)
 
-**#6 · closed shadow root 穿透补全**
+**#6 · closed shadow root 穿透补全** 🟡 部分
 - 来源: openchrome(穿 open+closed)
-- 现状: commit 2e4452c 已穿 open shadow root,仅 open。
-- 落地: element collectors 用 CDP DOM pierce / backendNodeId 路径穿 closed。补已有工作缺口。
+- 现状(2026-06-21 验): `extension/src/background/browser/marks.ts:22` 已穿 open shadow root,**closed 未穿**。
+- 落地(SW): `extension/src/background/browser/{marks,snapshot,ref-resolve}.ts` 的 element collectors 用 CDP DOM pierce / backendNodeId 路径穿 closed。补已有工作缺口。
 
-**#7 · backendNodeId 稳定寻址 + DOM 序列化 token 压缩对标**
+**#7 · backendNodeId 稳定寻址 + DOM 序列化 token 压缩对标** 🟡 部分
 - 来源: openchrome(DOM mode 紧凑文本+affordance 标记,5–15x 压缩;元素带稳定 backendNodeId 跨调用)
-- 现状: 已有 accessibility snapshot(`internal/browser/snapshot.go`)。
-- 落地: (1) 评估当前 snapshot token 占用 vs openchrome 紧凑格式;(2) 元素引用改用稳定 backendNodeId,使同一元素跨多次调用一致寻址,避免快照刷新后引用失效。
+- 现状(2026-06-21 验): 已有 accessibility snapshot(`extension/src/background/browser/snapshot.ts`)+ backendNodeId 寻址(`ref-resolve.ts`)。**未做** openchrome 紧凑格式压缩对标评估。
+- 落地(SW): (1) 评估当前 `snapshot.ts` token 占用 vs openchrome 紧凑格式;(2) 确认 `ref-resolve.ts` 元素引用用稳定 backendNodeId,使同一元素跨多次调用一致寻址,避免快照刷新后引用失效。
 
-**#8 · init context 超长转附件上传**
+**#8 · init context 超长转附件上传** ❌ 缺
 - 来源: webcode/WebMCP
 - 借鉴: init context 超输入框上限时转附件,用户确认后发送。
-- 现状: init prompt 直接塞输入框,网页有长度墙。
-- 落地: content/platform-adapter 注入 init prompt 时,超平台上限则走文件/附件上传(各 adapter 已有上传能力)绕过长度墙。
+- 现状(2026-06-21 验): init prompt 直接塞输入框,网页有长度墙,无转附件机制。
+- 落地(content): `extension/src/content/` 注入 init prompt 时,超平台上限则走文件/附件上传(各 adapter + `content/attachment-upload.ts` 已有上传能力)绕过长度墙。
 
-**#9 · Planner/Navigator 分层选模型(非对称)**
+**#9 · Planner/Navigator 分层选模型(非对称)** ❌ 缺
 - 来源: nanobrowser
 - 借鉴: Planner(强模型规划)+ Navigator(弱模型执行)非对称角色,按性能层分配模型,省钱又稳。
-- 现状: 侧边栏 API 子 agent(`background/chat-api.ts` runSubAgent)同质 worker。
-- 落地: spawn_agent 可指定 role/model,coordinator 强模型出计划、worker 便宜模型执行。中期,先把同质架构验稳。
+- 现状(2026-06-21 验): 全项目无 plannerLLM/navigatorLLM;侧边栏 API 子 agent(`extension/src/background/chat-api.ts` runSubAgent)是同质 worker。
+- 落地(SW chat-api): spawn_agent 可指定 role/model,coordinator 强模型出计划、worker 便宜模型执行。nanobrowser `executor.ts` 周期规划循环(每 planningInterval 步才跑 Planner)可抄(见附录 C)。中期,先把同质架构验稳。
 
-**#10 · 显式触发前缀 /piercode @piercode(可选模式)**
+**#10 · 显式触发前缀 /piercode @piercode(可选模式)** ❌ 缺
 - 来源: webcode/WebMCP(/webcode、@webcode 显式触发)
 - 借鉴: 显式前缀触发,减少 fence 误检 + 用户控制启用时机。
-- 现状: 靠扫 piercode-tool fence,有 session-gating 误检历史。
-- 落地: 加可选"显式触发模式",仅当用户消息带前缀才激活该轮检测,作默认全扫描的补充开关。低优先,体验向。
+- 现状(2026-06-21 验): 靠扫 piercode-tool fence,有 session-gating 误检历史,无显式前缀模式。
+- 落地(content): `extension/src/content/index.ts` 加可选"显式触发模式",仅当用户消息带前缀才激活该轮检测,作默认全扫描的补充开关。低优先,体验向。
 
 ---
 
@@ -175,9 +185,9 @@ PierCode 现状:靠用户自己装扩展进日常 Chrome。你的 keep-alive 走
 - ProfileRegistry 工具过滤粒度
 
 ### webcode 借鉴净增量(去重已有后,真正该做的)
-1. **#11 edit dryRun 干跑预览** ← edit_file 的 dryRun
-2. **#3 读 CLAUDE.md/AGENTS.md** ← 项目规则层(唯一 prompt 缺口)
-3. **#12 ChatGPT python_user_visible 警告** ← 平台坑
+1. **#11 edit dryRun 干跑预览** 🟡 部分 ← edit_file 的 dryRun。现状(2026-06-21 验): `internal/tool/apply_patch.go` 已支持 `dry_run`,但 `edit`/`multi_edit`/`write_file` 无。落地(Go): 给后三者补 dryRun 参数,返回将改的 diff 不落盘。
+2. **#3 读 CLAUDE.md/AGENTS.md** ❌ ← 项目规则层(唯一 prompt 缺口)
+3. **#12 ChatGPT python_user_visible 警告** ❌ ← 平台坑。现状: 全项目无此警告。落地(Go): `internal/prompt/profile.go` 的 ChatGPT profile 加 PromptAppend 约束,或 `prompts/` 加 chatgpt 专属片段。
 4. (可选)路径拒绝措辞更明确 / Bootstrap-only 工具隔离 — 低优先,未建任务
 
 ---
@@ -203,34 +213,39 @@ background/session_health.ts          # 会话健康
 
 ### 源码级净增量(逐个对照 PierCode 现状)
 
-**#13 · JSON 修复引擎 ⭐⭐**(`modules/jsonRepair/`)
+**#13 · JSON 修复引擎 ⭐⭐**(`modules/jsonRepair/`)❌ 缺
 - `parseModelJson`: strict `JSON.parse` → 失败则 `buildRepairCandidates` 生成多候选逐个试。
 - 松散语法容错: 单引号→双引号、尾逗号、智能引号 `“”`→`""`、缺闭合补全。保留原始 error 指向模型输出。
-- **PierCode**: memory `fence-truncation-phantom-tool` 只有花括号配对(commit a52844b)= 结构判定。**无松散语法修复**。网页 AI 常出智能引号/尾逗号(尤其中文输入法)→ 真增量,与花括号配对互补。
+- **PierCode 现状(2026-06-21 验)**: memory `fence-truncation-phantom-tool` 只有花括号配对(commit a52844b)= 结构判定。**无松散语法修复**。网页 AI 常出智能引号/尾逗号(尤其中文输入法)→ 真增量,与花括号配对互补。
+- 落地(content): `extension/src/content/` 的 fence 解析器(parser)在 `JSON.parse` 失败时插一层 repair 候选生成,移植 webcode `modules/jsonRepair/`(TS→TS,直接搬)。
 
-**#14 · 稳定化复查窗口 ⭐⭐**(`content/tool_call_tracker.ts`,`STABILIZATION_TIMEOUT_MS=3000`)
+**#14 · 稳定化复查窗口 ⭐⭐**(`content/tool_call_tracker.ts`,`STABILIZATION_TIMEOUT_MS=3000`)✅ 已实现(可强化)
 - JSON 流式残缺时**不立刻判错**,记块文本+时间戳,文本 3s 不变才回填协议错误。文本变了重置。
 - 源码中文注释直说:"把仍在生成的工具调用误判为失败"。
 - request 身份: 显式 request_id → 否则 `req_auto_{msgIdx}_{blockIdx}_{hash(sig)}` 合成;dataset 缓存签名/scope,文本没变复用 id = 去重。
-- **PierCode**: 你花括号配对=结构判定;webcode 时间稳定窗口=时序判定。**两者互补,可叠加**。
+- **PierCode 现状(2026-06-21 验)**: `extension/src/content/index.ts` 的 `scheduleSettleRetry` 已实现 600ms settle 窗口(等价机制,见 [投资报告](investigation-batch-state-race.md))。**核心已有**,只是窗口 600ms < webcode 3s。花括号配对=结构判定 + settle 窗口=时序判定,两者已叠加。
+- 可选强化: 把 settle 窗口对"仍在变的残缺 JSON"延长到 ~3s(文本变了重置),进一步减少流式误判。低优先(核心已解决)。
 
-**#15 · 完成检测状态机 ⭐**(`content/completion_notifier.ts`)
+**#15 · 完成检测状态机 ⭐**(`content/completion_notifier.ts`)❌ 缺
 - idle 判定 = **stop 按钮消失**(`isStopButtonVisible`),非靠文本停。
 - `COMPLETION_SETTLE_MS=600` 沉降:idle 后等 600ms 再确认(防流式抖动)。
 - signature = `messageIndex:hash(text)`,start→end 签名变了才算新回合完成。
 - `notifiedCompletionKeys` Set 去重 + cooldown(1000ms)+ 上限 200 FIFO 驱逐。
-- **PierCode**: 各 adapter 自检 streaming 结束,有 `session-gating` 误检史。这套 stop按钮+沉降+签名更稳。
+- **PierCode 现状(2026-06-21 验)**: 各 adapter 自检 streaming 结束,无 `isStopButtonVisible`+沉降统一机制,有 `session-gating` 误检史(memory `session-gating-tool-detection`)。这套 stop按钮+沉降+签名更稳。
+- 落地(content/adapters): 各 `platform-adapters/*.ts` 的完成检测统一到"stop 按钮消失 + 600ms 沉降 + 签名去重"。直接打 session-gating 误检根因。
 
-**#16 · purpose 必填 + 顶层键白名单 ⭐**(`modules/toolCallProtocol.ts`)
+**#16 · purpose 必填 + 顶层键白名单 ⭐**(`modules/toolCallProtocol.ts`)❌ 缺
 - 工具调用 envelope: `{mcp_action:"call", name, purpose, arguments, request_id}`。
 - **purpose 必填**(逼 AI 说明意图,审批卡可读+减乱调)。
 - 顶层键白名单,多余键报错。校验失败回喂结构化 issues + 标准格式示例让模型重出。
-- **PierCode**: piercode-tool fence DSL(非 JSON envelope)。**按自己格式适配 purpose + 畸形结构纠错回喂**,别照搬 mcp_action 信封。
+- **PierCode 现状(2026-06-21 验)**: piercode-tool fence DSL(非 JSON envelope),无强制 purpose 字段、无畸形结构回喂。
+- 落地(content + prompt): `extension/src/content/` parser 加可选 purpose 字段 + 畸形结构纠错回喂(按自己 fence 格式,**别照搬 mcp_action 信封**);prompt 协议说明加 purpose 约定。
 
-**#17 · 命令级审批粒度 ⭐**(`content/approval_policy.ts` + `command_approval.ts`)
+**#17 · 命令级审批粒度 ⭐**(`content/approval_policy.ts` + `command_approval.ts`)❌ 缺
 - 命令工具审批分 3 档持久化: `command-exact:`(精确串)/ `command-executable:`(可执行档,如 git 全放)/ `command-prefix:`(前缀档,如 `go test` 全放)。
 - 用户批一次选档,存储;再来命中免批。
-- **PierCode**: exec_cmd 靠 IsDangerousCommand 黑名单 + 每次批。**"记住此命令/可执行/前缀"持久化 = 减重复审批**。
+- **PierCode 现状(2026-06-21 验)**: exec_cmd 靠 `internal/security/sandbox.go` IsDangerousCommand 黑名单 + 每次批,无档位记忆。**"记住此命令/可执行/前缀"持久化 = 减重复审批**。
+- 落地(content 审批 UI + 存储): exec_cmd 审批卡加"记住此命令/可执行/前缀"档位选择,存 `chrome.storage`,命中免批。
 - ⚠️ 安全: prefix 档防 `go test; rm -rf` 拼接绕过 → 匹配基于解析后可执行+参数,非裸字符串前缀。
 
 **虚拟列表跳过**(`content/virtualized_history_skip.ts`)— 节流日志,标记虚拟化来源旧调用别重跑。PierCode conversation-scope `isExecuted` 去重应已覆盖(memory `live-verify-batch-isolation`),未单独建任务。
@@ -246,29 +261,38 @@ background/session_health.ts          # 会话健康
 
 ---
 
-## 任务总览(截至 2026-06-19)
+## 任务总览(状态截至 2026-06-21,落地层按 SW 迁移后重定向)
 
-| # | 标题 | 来源 | 优先级 |
-|---|------|------|--------|
-| 1 | browser_* Outcome Contract | openchrome | 🥇 |
-| 2 | browser_* Ralph 交互瀑布 | openchrome | 🥇 |
-| 3 | 读 CLAUDE.md/AGENTS.md 注入 | webcode | 🥈 |
-| 4 | browser_* Hint Engine | openchrome | 🥈 |
-| 5 | browser_* Circuit Breaker | openchrome | 🥈 |
-| 6 | closed shadow root 穿透 | openchrome | 🥉 |
-| 7 | backendNodeId 寻址 + DOM 压缩 | openchrome | 🥉 |
-| 8 | init 超长转附件 | webcode | 🥉 |
-| 9 | Planner/Navigator 分层 | nanobrowser | 🥉 |
-| 10 | 显式触发前缀 | webcode | 低 |
-| 11 | edit dryRun 预览 | webcode | 🥈 |
-| 12 | ChatGPT python_user_visible 警告 | webcode | 🥈 |
-| 13 | JSON 修复引擎 | webcode 源码 | 🥇 |
-| 14 | 稳定化复查防截断 | webcode 源码 | 🥇 |
-| 15 | 完成检测状态机 | webcode 源码 | 🥈 |
-| 16 | purpose 必填 + 键校验 | webcode 源码 | 🥈 |
-| 17 | 命令级审批粒度 | webcode 源码 | 🥈 |
+> 状态: ✅ 已实现 · 🟡 部分 · ❌ 真缺。落地层: SW=`extension/src/background/browser/*`,content=`extension/src/content/*`,Go=`internal/*`。
+
+| # | 标题 | 来源 | 优先级 | 状态 | 落地层 |
+|---|------|------|--------|------|--------|
+| 1 | browser_* Outcome Contract | openchrome | 🥇 | ❌ | SW |
+| 2 | browser_* Ralph 交互瀑布 | openchrome | 🥇 | ❌ | SW |
+| 3 | 读 CLAUDE.md/AGENTS.md 注入 | webcode | 🥈 | ❌ | Go(prompt) |
+| 4 | browser_* Hint Engine | openchrome | 🥈 | ❌ | SW |
+| 5 | browser_* Circuit Breaker | openchrome | 🥈 | ❌ | SW |
+| 6 | closed shadow root 穿透 | openchrome | 🥉 | 🟡 | SW |
+| 7 | backendNodeId 寻址 + DOM 压缩 | openchrome | 🥉 | 🟡 | SW |
+| 8 | init 超长转附件 | webcode | 🥉 | ❌ | content |
+| 9 | Planner/Navigator 分层 | nanobrowser | 🥉 | ❌ | SW(chat-api) |
+| 10 | 显式触发前缀 | webcode | 低 | ❌ | content |
+| 11 | edit dryRun 预览 | webcode | 🥈 | 🟡 | Go(tool) |
+| 12 | ChatGPT python_user_visible 警告 | webcode | 🥈 | ❌ | Go(prompt) |
+| 13 | JSON 修复引擎 | webcode 源码 | 🥇 | ❌ | content |
+| 14 | 稳定化复查防截断 | webcode 源码 | 🥇 | ✅ | content |
+| 15 | 完成检测状态机 | webcode 源码 | 🥈 | ❌ | content(adapters) |
+| 16 | purpose 必填 + 键校验 | webcode 源码 | 🥈 | ❌ | content+prompt |
+| 17 | 命令级审批粒度 | webcode 源码 | 🥈 | ❌ | content(审批) |
+| 18 | web_task 分流 + viewport-first | nanobrowser | 🥉 | ❌ | SW(chat-api)+prompt |
+
+**进度汇总(18 项)**:✅ 已实现 1(#14)· 🟡 部分 3(#6/#7/#11)· ❌ 真缺 14。
+
+**重定向说明**: 原文档所有 browser_* 项落地写 `internal/browser/controller*.go`,SW 迁移后已改为 `extension/src/background/browser/*`(见顶部 2026-06-21 复核说明)。Go 仅 #3/#11/#12(prompt 渲染 + 文件工具,未迁移)落地仍在 Go。
 
 **webcode 贡献 9 项**(#3/#8/#10/#11/#12/#13/#14/#15/#16/#17)— 确实"很多细节可借鉴",尤其源码层 #13/#14(直接打你 fence-truncation 痛点)。
+
+**起做顺序建议**: #1(Outcome,信号源 + Skyvern 实证 +17pt)→ #2(Ralph 降级链,依赖 #1)→ #5(Circuit Breaker,依赖 #1);并行 #13(JSON 修复)+ #15(完成检测,治 session-gating);低成本快赢 #3/#12(prompt 改动小)。
 
 ---
 
