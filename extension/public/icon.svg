@@ -1,56 +1,66 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
   <defs>
-    <!-- Gradient 1: Primary blue-cyan -->
-    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#0099cc;stop-opacity:1" />
+    <!-- P body: royal blue -->
+    <linearGradient id="pBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4A7BFF"/>
+      <stop offset="100%" stop-color="#2B5BE0"/>
     </linearGradient>
-    
-    <!-- Gradient 2: Accent cyan-teal -->
-    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#64ffda;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#00bfa5;stop-opacity:1" />
+    <!-- Ripple stream: cyan -> blue -->
+    <linearGradient id="ripple" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3BC8F5"/>
+      <stop offset="100%" stop-color="#5B9BF5"/>
     </linearGradient>
-    
-    <!-- Glow filter -->
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
-      <feMerge>
-        <feMergeNode in="coloredBlur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
   </defs>
-  
-  <!-- Background circle (subtle) -->
-  <circle cx="64" cy="64" r="60" fill="url(#grad1)" opacity="0.1"/>
-  
-  <!-- Main P letterform - bold and modern -->
-  <path d="M 32 24 
-           L 72 24 
-           C 92 24, 96 32, 96 44 
-           C 96 56, 92 64, 72 64 
-           L 52 64 
-           L 52 104 
-           L 32 104 
-           Z" 
-        fill="url(#grad1)" 
-        filter="url(#glow)"/>
-  
-  <!-- Horizontal bridge/pier lines -->
-  <rect x="32" y="64" width="24" height="4" fill="url(#grad2)" opacity="0.9"/>
-  <rect x="32" y="84" width="24" height="4" fill="url(#grad2)" opacity="0.9"/>
-  
-  <!-- Accent dots representing connection points -->
-  <circle cx="44" cy="34" r="3" fill="#64ffda"/>
-  <circle cx="44" cy="54" r="3" fill="#64ffda"/>
-  
-  <!-- Subtle code bracket accent -->
-  <path d="M 84 84 L 92 92 L 84 100" 
-        stroke="#64ffda" 
-        stroke-width="3" 
-        fill="none" 
-        stroke-linecap="round" 
-        stroke-linejoin="round"
-        opacity="0.7"/>
+
+  <!--
+    PierCode mark: a royal-blue "P" whose bowl frames a </> code glyph,
+    whose stem dissolves into a cyan ripple stream, all resting on a pier.
+    P (Pier) + </> (Code) + ripples (波纹) + dock (Pier).
+  -->
+
+  <!-- P letterform: a wide rounded bowl on a stem, with a large rounded
+       interior hole. even-odd fill leaves the hole transparent so the
+       </> glyph reads on a clean background. -->
+  <path fill="url(#pBlue)" fill-rule="evenodd" d="
+    M 36 16
+    h 30
+    a 32 32 0 0 1 0 64
+    h -18
+    v 30
+    h -24
+    V 16
+    Z
+    M 55 31
+    h 8
+    a 10 10 0 0 1 10 10
+    v 12
+    a 10 10 0 0 1 -10 10
+    h -8
+    a 10 10 0 0 1 -10 -10
+    v -12
+    a 10 10 0 0 1 10 -10
+    Z
+  "/>
+
+  <!-- code glyph </> floating in the bowl hole, dark navy -->
+  <g stroke="#16233F" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <polyline points="59,41 51,47 59,53"/>
+    <polyline points="68,41 76,47 68,53"/>
+    <line x1="66" y1="40" x2="61" y2="54"/>
+  </g>
+
+  <!-- ripple stream: bold layered waves sweeping from the P stem down to the pier -->
+  <g fill="none" stroke-linecap="round">
+    <path stroke="url(#ripple)" stroke-width="9"  d="M 38 86 C 44 100, 66 100, 88 104"/>
+    <path stroke="#9FE3FA"     stroke-width="6"  d="M 40 96 C 47 106, 66 106, 84 109"/>
+    <path stroke="url(#ripple)" stroke-width="7"  d="M 38 104 C 46 112, 66 112, 80 113"/>
+  </g>
+
+  <!-- pier / dock: deck + three pilings, dark navy -->
+  <g fill="#16233F">
+    <rect x="30" y="106" width="68" height="7" rx="3"/>
+    <rect x="38" y="113" width="7" height="13" rx="2"/>
+    <rect x="60" y="113" width="7" height="13" rx="2"/>
+    <rect x="82" y="113" width="7" height="13" rx="2"/>
+  </g>
 </svg>
