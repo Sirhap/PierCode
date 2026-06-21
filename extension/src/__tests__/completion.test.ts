@@ -184,3 +184,55 @@ describe('attachCompletionDetection wiring', () => {
     expect(chatGPTAdapter.detectComplete!({ stopVisible: false, messageIndex: 0, text: 'shared text' }, COMPLETION_SETTLE_MS)).toBe(true);
   });
 });
+
+// ── per-container detectors: the regression that broke #15 ──────────────────
+// content/index.ts mints ONE createCompletionDetector() PER response container
+// rather than reusing the adapter's single page-wide detectComplete. This test
+// pins WHY: a single shared detector tracks ONE pendingSig/stableSince, so two
+// concurrently-streaming containers (distinct text) trample each other's settle
+// window — under a shared instance no turn ever settles until the caller's 15s
+// deadlock guard fires. Independent per-container instances settle correctly.
+describe('#15 per-container isolation (multi-container streaming)', () => {
+  it('a SINGLE shared detector cannot settle two interleaved turns (the bug)', () => {
+    const shared = createCompletionDetector();
+    // Both containers idle (stop gone) but with different text → different sigs.
+    // They are observed alternately every 200ms, the way scheduleFinalSubmit ticks
+    // every active container per reschedule.
+    let firedA = false, firedB = false;
+    for (let t = 0; t <= 2000; t += 200) {
+      // Container A observation, then container B — each overwrites pendingSig.
+      firedA = shared.observe({ stopVisible: false, messageIndex: 0, text: 'answer A' }, t) || firedA;
+      firedB = shared.observe({ stopVisible: false, messageIndex: 1, text: 'answer B' }, t) || firedB;
+    }
+    // Neither ever settles: every A obs resets B's window and vice-versa.
+    expect(firedA).toBe(false);
+    expect(firedB).toBe(false);
+  });
+
+  it('per-container detectors each settle independently (the fix)', () => {
+    const detA = createCompletionDetector();
+    const detB = createCompletionDetector();
+    let firedA = false, firedB = false;
+    for (let t = 0; t <= 2000; t += 200) {
+      firedA = detA.observe({ stopVisible: false, messageIndex: 0, text: 'answer A' }, t) || firedA;
+      firedB = detB.observe({ stopVisible: false, messageIndex: 1, text: 'answer B' }, t) || firedB;
+    }
+    // Each detector sees only its own stable signature → both settle.
+    expect(firedA).toBe(true);
+    expect(firedB).toBe(true);
+  });
+
+  it('reset() on a per-container detector lets a follow-up turn re-confirm identical text', () => {
+    // Mirrors releaseCompletion(): after a cycle submits, the detector is reset so a
+    // follow-up turn rendered into the SAME container with byte-identical text is not
+    // suppressed by the prior cycle's signature lingering in `notified`.
+    const det = createCompletionDetector();
+    det.observe({ stopVisible: false, messageIndex: 0, text: 'same' }, 0);
+    expect(det.observe({ stopVisible: false, messageIndex: 0, text: 'same' }, COMPLETION_SETTLE_MS)).toBe(true);
+    // Without reset, the identical signature is suppressed forever.
+    expect(det.observe({ stopVisible: false, messageIndex: 0, text: 'same' }, 5000)).toBe(false);
+    det.reset();
+    det.observe({ stopVisible: false, messageIndex: 0, text: 'same' }, 6000);
+    expect(det.observe({ stopVisible: false, messageIndex: 0, text: 'same' }, 6000 + COMPLETION_SETTLE_MS)).toBe(true);
+  });
+});
