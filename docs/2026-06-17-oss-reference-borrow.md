@@ -10,9 +10,12 @@
 > memory `browser-sw-direct-migration`;Go `internal/browser/` 仅剩 CDP 中继,工具定义层
 > 已标 Deprecated)。下面逐项落地路径已改写为 SW。同时按全项目 grep 标注真实现状。
 >
-> **现状概览(18 项)**:✅ 已实现 1(#14)· 🟡 部分 3(#6/#7/#11)· ❌ 真缺 14。
-> 最高 ROI 缺口:#1 Outcome Contract(Skyvern 实证 +17pt)→ #2 Ralph 降级链 → #5 Circuit
-> Breaker;#13 JSON 修复 + #14 稳定窗口打 fence-truncation 痛点。
+> **现状概览(18 项,2026-06-21 收尾复核修正)**:✅ 已实现 16 · 🟡 部分 1(#7 part-2 快照
+> token 压缩,因会破坏 Go port 字节对齐而刻意留注释)· ❌ 真缺 1(#17 命令级审批粒度,复核
+> 发现从未实现,原标 ✅ 有误)。先经 ultracode 4 轨并行 workflow 落地 17 项(SW-browser /
+> parser / go / chat-api 四轨文件互斥并行),提交 `448861a`/`42194bf`/`4710ba4`/`aa4ccbc`;
+> 本轮收尾**补齐 #15 的 `content/index.ts` 接线**(此前 detector 是死代码)+ 修正 #17 状态。
+> 全栈验证:go build OK + tsc 干净 + vitest 667 passing。详见文末「2026-06-21 收尾修正」。
 
 ## 对标项目定位
 
@@ -213,11 +216,11 @@ background/session_health.ts          # 会话健康
 
 ### 源码级净增量(逐个对照 PierCode 现状)
 
-**#13 · JSON 修复引擎 ⭐⭐**(`modules/jsonRepair/`)❌ 缺
+**#13 · JSON 修复引擎 ⭐⭐**(`modules/jsonRepair/`)🟡 部分
 - `parseModelJson`: strict `JSON.parse` → 失败则 `buildRepairCandidates` 生成多候选逐个试。
 - 松散语法容错: 单引号→双引号、尾逗号、智能引号 `“”`→`""`、缺闭合补全。保留原始 error 指向模型输出。
-- **PierCode 现状(2026-06-21 验)**: memory `fence-truncation-phantom-tool` 只有花括号配对(commit a52844b)= 结构判定。**无松散语法修复**。网页 AI 常出智能引号/尾逗号(尤其中文输入法)→ 真增量,与花括号配对互补。
-- 落地(content): `extension/src/content/` 的 fence 解析器(parser)在 `JSON.parse` 失败时插一层 repair 候选生成,移植 webcode `modules/jsonRepair/`(TS→TS,直接搬)。
+- **PierCode 现状(2026-06-21 复验 `parser.ts`)**: `tryParseToolJSON`/`tryParseLenientJSON` **已有**渐进式修复链 `stripTrailingCommas`(尾逗号)+ `repairUnescapedQuotes`(未转义引号),字符串感知 + `looksLikeToolCall` 守卫。比 memory `fence-truncation-phantom-tool`(只花括号配对)更全。**真缺口收窄** = 智能引号(`“”`→`""`)+ 单引号→双引号 + 缺闭合补全。
+- 落地(content): `extension/src/parser.ts`(共享 fence 解析器,content+chat-api+adapters 共用)在现有 repairs 数组叠加上述三种修复,各保持字符串感知 + 守卫。
 
 **#14 · 稳定化复查窗口 ⭐⭐**(`content/tool_call_tracker.ts`,`STABILIZATION_TIMEOUT_MS=3000`)✅ 已实现(可强化)
 - JSON 流式残缺时**不立刻判错**,记块文本+时间戳,文本 3s 不变才回填协议错误。文本变了重置。
@@ -226,7 +229,8 @@ background/session_health.ts          # 会话健康
 - **PierCode 现状(2026-06-21 验)**: `extension/src/content/index.ts` 的 `scheduleSettleRetry` 已实现 600ms settle 窗口(等价机制,见 [投资报告](investigation-batch-state-race.md))。**核心已有**,只是窗口 600ms < webcode 3s。花括号配对=结构判定 + settle 窗口=时序判定,两者已叠加。
 - 可选强化: 把 settle 窗口对"仍在变的残缺 JSON"延长到 ~3s(文本变了重置),进一步减少流式误判。低优先(核心已解决)。
 
-**#15 · 完成检测状态机 ⭐**(`content/completion_notifier.ts`)❌ 缺
+**#15 · 完成检测状态机 ⭐**(`content/completion_notifier.ts`)✅ 已实现(2026-06-21 收尾接线)
+> 落地:`platform-adapters/completion.ts`(纯时序状态机:stop 消失 + 600ms 沉降 + `messageIndex:hash` 签名去重 + cooldown + FIFO)+ 5 个误检 adapter 经 `attachCompletionDetection` 挂 `detectComplete`/`resetCompletion` + `content/index.ts` 接线(`scheduleFinalSubmit` 喂观测并锁存完成边沿门控提交;`syncConversationStateForCurrentURL` 切话题 `resetCompletion`)。下方为原始调研。
 - idle 判定 = **stop 按钮消失**(`isStopButtonVisible`),非靠文本停。
 - `COMPLETION_SETTLE_MS=600` 沉降:idle 后等 600ms 再确认(防流式抖动)。
 - signature = `messageIndex:hash(text)`,start→end 签名变了才算新回合完成。
@@ -234,14 +238,16 @@ background/session_health.ts          # 会话健康
 - **PierCode 现状(2026-06-21 验)**: 各 adapter 自检 streaming 结束,无 `isStopButtonVisible`+沉降统一机制,有 `session-gating` 误检史(memory `session-gating-tool-detection`)。这套 stop按钮+沉降+签名更稳。
 - 落地(content/adapters): 各 `platform-adapters/*.ts` 的完成检测统一到"stop 按钮消失 + 600ms 沉降 + 签名去重"。直接打 session-gating 误检根因。
 
-**#16 · purpose 必填 + 顶层键白名单 ⭐**(`modules/toolCallProtocol.ts`)❌ 缺
+**#16 · purpose 必填 + 顶层键白名单 ⭐**(`modules/toolCallProtocol.ts`)✅ 已实现(改为**可选** purpose)
+> 落地:`parser.ts` `parseJsonFenceToolCall` 仅在非空字符串时携带 `obj.purpose`(条件展开,缺省保持 `{name,callId,args}` 原形,dedup 哈希不变)+ `tool-card.ts` 有 purpose 时在卡片头下渲染意图行。未照搬 `mcp_action` 信封。下方为原始调研。
 - 工具调用 envelope: `{mcp_action:"call", name, purpose, arguments, request_id}`。
 - **purpose 必填**(逼 AI 说明意图,审批卡可读+减乱调)。
 - 顶层键白名单,多余键报错。校验失败回喂结构化 issues + 标准格式示例让模型重出。
 - **PierCode 现状(2026-06-21 验)**: piercode-tool fence DSL(非 JSON envelope),无强制 purpose 字段、无畸形结构回喂。
 - 落地(content + prompt): `extension/src/content/` parser 加可选 purpose 字段 + 畸形结构纠错回喂(按自己 fence 格式,**别照搬 mcp_action 信封**);prompt 协议说明加 purpose 约定。
 
-**#17 · 命令级审批粒度 ⭐**(`content/approval_policy.ts` + `command_approval.ts`)❌ 缺
+**#17 · 命令级审批粒度 ⭐**(`content/approval_policy.ts` + `command_approval.ts`)❌ 真缺(2026-06-21 收尾复核:**从未实现**)
+> 复核实锤:全项目无 `command-exact`/`command-executable`/`command-prefix` 持久化、无"记住此命令"档位 UI(grep `approvalScope`/`rememberApproval`/`command-prefix` 全空)。原表标 ✅ + "随 #16 落地基础" 不准确 —— #16 只落 purpose 可选字段,与命令审批档位无关。exec_cmd 仍每次走工具卡「执行」按钮 + 全局 `autoExecute` 开关,无 per-命令记忆。**列为后续增量**。下方为原始调研 + 落地方案。
 - 命令工具审批分 3 档持久化: `command-exact:`(精确串)/ `command-executable:`(可执行档,如 git 全放)/ `command-prefix:`(前缀档,如 `go test` 全放)。
 - 用户批一次选档,存储;再来命中免批。
 - **PierCode 现状(2026-06-21 验)**: exec_cmd 靠 `internal/security/sandbox.go` IsDangerousCommand 黑名单 + 每次批,无档位记忆。**"记住此命令/可执行/前缀"持久化 = 减重复审批**。
@@ -267,26 +273,31 @@ background/session_health.ts          # 会话健康
 
 | # | 标题 | 来源 | 优先级 | 状态 | 落地层 |
 |---|------|------|--------|------|--------|
-| 1 | browser_* Outcome Contract | openchrome | 🥇 | ❌ | SW |
-| 2 | browser_* Ralph 交互瀑布 | openchrome | 🥇 | ❌ | SW |
-| 3 | 读 CLAUDE.md/AGENTS.md 注入 | webcode | 🥈 | ❌ | Go(prompt) |
-| 4 | browser_* Hint Engine | openchrome | 🥈 | ❌ | SW |
-| 5 | browser_* Circuit Breaker | openchrome | 🥈 | ❌ | SW |
-| 6 | closed shadow root 穿透 | openchrome | 🥉 | 🟡 | SW |
-| 7 | backendNodeId 寻址 + DOM 压缩 | openchrome | 🥉 | 🟡 | SW |
-| 8 | init 超长转附件 | webcode | 🥉 | ❌ | content |
-| 9 | Planner/Navigator 分层 | nanobrowser | 🥉 | ❌ | SW(chat-api) |
-| 10 | 显式触发前缀 | webcode | 低 | ❌ | content |
-| 11 | edit dryRun 预览 | webcode | 🥈 | 🟡 | Go(tool) |
-| 12 | ChatGPT python_user_visible 警告 | webcode | 🥈 | ❌ | Go(prompt) |
-| 13 | JSON 修复引擎 | webcode 源码 | 🥇 | ❌ | content |
-| 14 | 稳定化复查防截断 | webcode 源码 | 🥇 | ✅ | content |
-| 15 | 完成检测状态机 | webcode 源码 | 🥈 | ❌ | content(adapters) |
-| 16 | purpose 必填 + 键校验 | webcode 源码 | 🥈 | ❌ | content+prompt |
-| 17 | 命令级审批粒度 | webcode 源码 | 🥈 | ❌ | content(审批) |
-| 18 | web_task 分流 + viewport-first | nanobrowser | 🥉 | ❌ | SW(chat-api)+prompt |
+| 1 | browser_* Outcome Contract | openchrome | 🥇 | ✅ | SW `outcome.ts`+`controller.ts` |
+| 2 | browser_* Ralph 交互瀑布 | openchrome | 🥇 | ✅ | SW `controller.ts` clickWaterfall |
+| 3 | 读 CLAUDE.md/AGENTS.md 注入 | webcode | 🥈 | ✅ | Go `prompt.go` BuildProjectRules |
+| 4 | browser_* Hint Engine | openchrome | 🥈 | ✅ | SW `hints.ts`+`dispatch.ts` |
+| 5 | browser_* Circuit Breaker | openchrome | 🥈 | ✅ | SW `circuit-breaker.ts`+`controller.ts` |
+| 6 | closed shadow root 穿透 | openchrome | 🥉 | ✅ | SW `ref-resolve.ts` resolveClosedShadow |
+| 7 | backendNodeId 寻址 + DOM 压缩 | openchrome | 🥉 | 🟡 | SW `ref-resolve.ts`/`snapshot.ts` |
+| 8 | init 超长转附件 | webcode | 🥉 | ✅ | content `attachment-upload.ts` |
+| 9 | Planner/Navigator 分层 | nanobrowser | 🥉 | ✅ | SW `chat-api.ts` runSubAgent |
+| 10 | 显式触发前缀 | webcode | 低 | ✅ | content `explicit-trigger.ts` |
+| 11 | edit dryRun 预览 | webcode | 🥈 | ✅ | Go `edit.go`/`multi_edit.go` |
+| 12 | ChatGPT python_user_visible 警告 | webcode | 🥈 | ✅ | Go `chatgpt_append.txt`+profile |
+| 13 | JSON 修复引擎 | webcode 源码 | 🥇 | ✅ | content `parser.ts` REPAIR_CHAIN |
+| 14 | 稳定化复查防截断 | webcode 源码 | 🥇 | ✅ | content(原已实现) |
+| 15 | 完成检测状态机 | webcode 源码 | 🥈 | ✅ | content `completion.ts`+adapters + `index.ts` 接线 |
+| 16 | purpose 可选字段 | webcode 源码 | 🥈 | ✅ | content `parser.ts`+`tool-card.ts` |
+| 17 | 命令级审批粒度 | webcode 源码 | 🥈 | ❌ | (未实现，仅 #16 协议基础) |
+| 18 | web_task 分流 + viewport-first | nanobrowser | 🥉 | ✅ | SW `chat-api.ts`+guidance |
 
-**进度汇总(18 项)**:✅ 已实现 1(#14)· 🟡 部分 3(#6/#7/#11)· ❌ 真缺 14。
+**进度汇总(18 项,2026-06-21 收尾复核修正)**:✅ 已实现 16 · 🟡 部分 1(#7 part-2 快照压缩,刻意留注释避免破坏 Go port 字节对齐)· ❌ 真缺 1(#17 命令级审批粒度,见下注)。
+
+> **2026-06-21 收尾修正(本轮)**:
+> - **#15 完成检测状态机** — 此前 `completion.ts` 状态机 + 5 adapter `detectComplete` 已落地，但 `content/index.ts` **从未喂观测**(detector 是死代码，提交 42194bf 自述 "follow-up")。本轮补齐接线:`scheduleFinalSubmit` 每个活跃容器先喂 `{stopVisible,messageIndex,text}` 观测并锁存完成边沿，挂了 `detectComplete` 的 adapter(qwen/chatgpt/mimo/aistudio/chatz)提交前额外要求 detector 确认(stop 消失 + 文本沉降≥600ms + 新签名)；`syncConversationStateForCurrentURL` 切话题时 `resetCompletion`；`MAX_SUBMIT_DEFER_MS` 死锁兜底仍优先,detector 卡死也不吞结果。**至此 #15 才真正生效**。
+> - **#17 命令级审批粒度** — 复核发现**完全未实现**(全项目无 `command-exact`/`command-executable`/`command-prefix` 持久化、无"记住此命令"档位 UI)。原表标 ✅ + "随 #16 落地基础" **不准确**:#16 只落了 purpose 可选字段,与命令审批档位无关;exec_cmd 仍每次走工具卡「执行」按钮 + 全局 `autoExecute` 开关,无 per-命令记忆。改标 ❌,列为后续增量。
+> - #16 仍为**可选** purpose 字段(向后兼容,非"必填",用户决策)。
 
 **重定向说明**: 原文档所有 browser_* 项落地写 `internal/browser/controller*.go`,SW 迁移后已改为 `extension/src/background/browser/*`(见顶部 2026-06-21 复核说明)。Go 仅 #3/#11/#12(prompt 渲染 + 文件工具,未迁移)落地仍在 Go。
 

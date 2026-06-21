@@ -1,6 +1,10 @@
 import { TOOL_RE, parseJsonFenceToolCall, parseXmlToolCall, tryParseToolJSON, parseAgentResultPacket, formatToolResults, toolDedupHash, extractFenceToolCalls, hasIncompleteToolFence } from '../parser';
 import { hasApiClient } from './platform-caps';
 import { extractMonacoText, findQwenPierCodeBody, getAdapterNewSessionUrl, getAdapterProfileName, getPlatformAdapter, PlatformAdapter } from '../platform-adapters';
+// #15: COMPLETION_SETTLE_MS from the pure (dependency-free) completion state-machine
+// leaf — safe for the classic MV3 content bundle (no ../settings pull-in). Used to
+// pace the detector's re-tick cadence when awaiting a turn-completion confirmation.
+import { COMPLETION_SETTLE_MS } from '../platform-adapters/completion';
 import { initWsLinker, onToolDone, onToolStream, onQuestionAsk, onQuestionCancel, onBrowserApprovalAsk, onBrowserApprovalDone, sendAIResponseLog, sendUserPromptLog, getPierCodeClientId, workerAgentId, isWorkerStopped, sendAgentResult, injectToolResult } from './ws-linker';
 import { isConversationURLForCurrentPage, observeConversationURL, getConversationKey } from './conversation-scope';
 import { maybeTruncate } from './result-truncate';
@@ -447,6 +451,10 @@ function syncConversationStateForCurrentURL(): void {
   qwenConversationCtx = conversationCtxByURL.get(current) ?? null;
   if (qwenConversationCtx) touchConversationContext(current);
   handledContextPacketHashes.clear();
+  // #15: a new conversation surface is a fresh turn-completion timeline — drop the
+  // detector's settle/signature/dedup state so a stale "already reported" signature
+  // from the previous conversation can't suppress the first completion here.
+  platformAdapter.resetCompletion?.();
   // New conversation surface: forget any pending compression confirm prompt.
   compressionConfirmPending = false;
   compressionPromptedAtTokens = 0;
@@ -1910,6 +1918,18 @@ function startDOMObserver(_responseSelector: string) {
   const outputsByContainer = new WeakMap<Element, string[]>();
   const activeOutputContainers = new Set<Element>();
   const submitDeferByContainer = new WeakMap<Element, number>();
+  // #15: per-container stable message index. The shared completion detector signs
+  // each turn as `messageIndex:hash(text)`, so two response containers holding
+  // byte-identical text (rare, but e.g. an identical regenerated answer) still
+  // count as distinct turns. WeakMap keyed by the container element; assigned once
+  // on first sight, monotonic per page.
+  const containerMsgIndex = new WeakMap<Element, number>();
+  let nextContainerMsgIndex = 0;
+  function messageIndexFor(container: Element): number {
+    let idx = containerMsgIndex.get(container);
+    if (idx === undefined) { idx = nextContainerMsgIndex++; containerMsgIndex.set(container, idx); }
+    return idx;
+  }
   let lastResponseMutationAt = 0;
   let lastAutoToolSeenAt = 0;
   // 静默窗口：流式输出停止后等待 quietMs 再触发批量执行/提交。
@@ -1932,6 +1952,30 @@ function startDOMObserver(_responseSelector: string) {
   // 仍判断流是否真的结束；未结束则顺延，把同一响应的多个工具结果攒成一批提交。
   function isResponseGenerating(): boolean {
     return !!findStopElement(getSiteConfig());
+  }
+
+  // #15: feed the shared completion-detection state machine (the one each opted-in
+  // adapter spread via attachCompletionDetection) one observation for `container`,
+  // and remember whether it has confirmed THIS turn complete. The detector returns
+  // true only on the edge observation that transitions to complete (stop gone +
+  // text stable for the settle window + a not-yet-reported signature), so a single
+  // latch per container records that edge for scheduleFinalSubmit to consult on
+  // later ticks. Adapters WITHOUT detectComplete (no stop-state ambiguity) are
+  // unaffected — turnConfirmedComplete stays false and the existing
+  // isResponseGenerating/settle gating runs alone.
+  const turnCompleteConfirmed = new WeakSet<Element>();
+  function observeTurnCompletion(container: Element): void {
+    const detect = platformAdapter.detectComplete;
+    if (!detect) return;
+    const fired = detect({
+      stopVisible: isResponseGenerating(),
+      messageIndex: messageIndexFor(container),
+      text: getCleanText(container),
+    });
+    if (fired) turnCompleteConfirmed.add(container);
+  }
+  function turnConfirmedComplete(container: Element): boolean {
+    return !platformAdapter.detectComplete || turnCompleteConfirmed.has(container);
   }
 
   function scheduleBatchExecution() {
@@ -1982,9 +2026,15 @@ function startDOMObserver(_responseSelector: string) {
       // 每个响应容器独立累积/提交：B 响应的结果不会混进 A 响应的提交（问题 E）。
       // fillAndSend 是 async 且内部 await focusTab + clickSendWhenReady（Qwen 可达 90s），
       // 同 tick 提交两个容器会抢同一个聊天输入框，故循环内 await 串行提交。
+      // #15: tick the completion detector for every active container BEFORE the
+      // submit decision, so it accumulates settle observations on each reschedule
+      // and latches the complete-edge. No-op for adapters without detectComplete.
+      let awaitingCompletionConfirm = false;
+      for (const c of Array.from(activeOutputContainers)) observeTurnCompletion(c);
+
       for (const c of Array.from(activeOutputContainers)) {
         const arr = outputsByContainer.get(c);
-        if (!arr || arr.length === 0) { activeOutputContainers.delete(c); continue; }
+        if (!arr || arr.length === 0) { activeOutputContainers.delete(c); turnCompleteConfirmed.delete(c); continue; }
 
         // 顺延起点按容器记录：自该容器首个待提交结果产生起最多顺延 MAX_SUBMIT_DEFER_MS，
         // 防 stopBtn 误判导致 isResponseGenerating 恒 true 而永不提交。
@@ -1996,11 +2046,24 @@ function startDOMObserver(_responseSelector: string) {
         if (!deferredTooLong && stillGenerating) continue;
         // settle 窗口未到 → 顺延。
         if (!deferredTooLong && settleRemainingMs > 0) continue;
+        // #15: opted-in adapters additionally require the shared completion detector
+        // to have CONFIRMED this turn (stop gone + text stable ≥600ms + fresh
+        // signature) before submitting — this is the precise signal that fixes the
+        // session-gating misdetection history. Adapters without detectComplete pass
+        // through (turnConfirmedComplete → true). The MAX_SUBMIT_DEFER_MS deadlock
+        // guard still wins, so a stuck detector can never swallow tool results.
+        if (!deferredTooLong && !turnConfirmedComplete(c)) { awaitingCompletionConfirm = true; continue; }
 
         const combinedOutput = arr.join('\n\n');
         outputsByContainer.delete(c);
         activeOutputContainers.delete(c);
         submitDeferByContainer.delete(c);
+        // #15: consume the completion latch on submit. If the SPA later reuses this
+        // container element for a NEW accumulation cycle, that turn must re-confirm
+        // on its own settle rather than inheriting this turn's stale `true`.
+        // (containerMsgIndex is intentionally NOT cleared — the message index is a
+        // stable per-element id, only the per-cycle confirmation resets.)
+        turnCompleteConfirmed.delete(c);
         if (combinedOutput) {
           await fillAndSend(prepareToolOutputForChat(combinedOutput), true);
         }
@@ -2011,6 +2074,12 @@ function startDOMObserver(_responseSelector: string) {
       if (activeOutputContainers.size > 0) {
         if (settleRemainingMs > 0 && !isResponseGenerating()) {
           submitTimer = setTimeout(() => { submitTimer = null; scheduleFinalSubmit(); }, settleRemainingMs);
+        } else if (awaitingCompletionConfirm) {
+          // #15: settle elapsed and not generating, but the detector hasn't yet
+          // held the signature long enough to confirm. Re-tick after its settle
+          // window so a second same-signature observation crosses COMPLETION_SETTLE_MS
+          // and fires, instead of busy-looping the detector with sub-settle gaps.
+          submitTimer = setTimeout(() => { submitTimer = null; scheduleFinalSubmit(); }, COMPLETION_SETTLE_MS);
         } else {
           scheduleFinalSubmit();
         }
