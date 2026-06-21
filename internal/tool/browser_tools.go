@@ -1,3 +1,14 @@
+// Package-level note: the browser_* tool DEFINITIONS in this file and its
+// siblings (browser_tools_ext.go, _find.go, _stability.go, _state.go) are
+// DEPRECATED. All browser automation now runs inside the extension service
+// worker (extension/src/background/browser/*), reached from the content script
+// via the EXEC_BROWSER_TOOL message — NOT via /exec. The content script no
+// longer dispatches any browser_* call to this Go layer, and the SW ignores the
+// legacy Go→WS browser_cmd relay (see commit aaf965f), so commands emitted here
+// reach no browser. These factories stay registered only so an out-of-band
+// /exec client keeps a stable tool surface; new work belongs in the SW package.
+// The live, still-used Go browser code is internal/browser/* (the CDP relay that
+// carries browser_result / browser_event / browser_approval over WS).
 package tool
 
 import (
@@ -9,6 +20,14 @@ import (
 	"time"
 )
 
+// browserTool defines a single browser_* tool for the Go-side /exec path.
+//
+// Deprecated: browser automation moved to the extension service worker
+// (extension/src/background/browser/*). The content script routes every
+// browser_* call there via EXEC_BROWSER_TOOL, and the SW ignores the legacy
+// Go→WS browser_cmd relay, so a command dispatched through a browserTool reaches
+// no browser. Kept registered for /exec surface stability only; do not add tools
+// here — add them in the SW package instead.
 type browserTool struct {
 	name        string
 	description string

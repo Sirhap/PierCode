@@ -1,3 +1,6 @@
+// Deprecated: these browser_* tool definitions are superseded by the extension
+// service worker (extension/src/background/browser/*). See the package note in
+// browser_tools.go. Commands dispatched here reach no browser.
 package tool
 
 import (

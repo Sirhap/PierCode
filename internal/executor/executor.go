@@ -136,6 +136,12 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewTaskOutputTool())
 	e.registry.Register(tool.NewTaskStopTool())
 	e.registry.Register(tool.NewSendStdinTool())
+	// DEPRECATED browser_* registrations: the content script routes every
+	// browser_* call to the extension service worker (EXEC_BROWSER_TOOL), not
+	// to /exec, so these tools are effectively unreachable in normal operation
+	// (the SW also ignores the legacy Go→WS browser_cmd relay). They remain
+	// registered only for /exec surface stability. New browser tools belong in
+	// extension/src/background/browser/*, not here. See browser_tools.go.
 	e.registry.Register(tool.NewBrowserTabsTool())
 	e.registry.Register(tool.NewBrowserNewTabTool())
 	e.registry.Register(tool.NewBrowserUseTabTool())
