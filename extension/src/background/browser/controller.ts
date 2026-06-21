@@ -16,11 +16,13 @@ import {
   getContentExpr, pageTextExpr, waitSelectorExpr, waitForFunctionExpr, getAttributesExpr,
   selectExpr, storageExpr, formInputExpr, clipboardReadExpr, clipboardWriteExpr, uploadDataTransferExpr,
 } from './in-page-js'
-import { resolvePoint, assertPointActionable } from './ref-resolve'
+import { resolvePoint, assertPointActionable, resolveRefObject, resolveSelectorObject } from './ref-resolve'
 import { Input, parseKeyChord, DEFAULT_FIDELITY, type InputFidelity } from './input'
 import { markCollectorExpr, buildMarkOverlayExpr, parseMarks } from './marks'
 import { approval } from './approval-singleton'
 import { GATE_BYPASS_AI_PAGE_TOOLS } from './gates'
+import { classifyOutcome, outcomeSnapshotExpr, parsePageSig, formatOutcome, type PageSig, type Outcome } from './outcome'
+import { CircuitBreaker, elementKey } from './circuit-breaker'
 import { safeTitle, type BrowserTab } from './types'
 
 type Debuggee = chrome.debugger.Debuggee
@@ -51,11 +53,94 @@ export function makeController(deps: ControllerDeps = {}) {
   const events = new EventBus()
   const security = new SecurityPolicy()
   const input = new Input(cdp, { fidelity: deps.fidelity ?? DEFAULT_FIDELITY, sleep: deps.sleep, registry })
+  const breaker = new CircuitBreaker()   // item #5: element/page/global fail-fast for dead targets
   const settleMs = 0  // mirror default fidelity SettleMS=0; per-tab settle is a no-op
   let snapSeq = 0
 
   function target(tabId: number): Debuggee { return { tabId } }
   async function settle(_tabId: number): Promise<void> { if (settleMs > 0) await new Promise(r => setTimeout(r, settleMs)) }
+
+  // ── Outcome Contract (item #1) ────────────────────────────────────────────
+  // Capture a compact page signature for the before/after interaction probe.
+  // Best-effort: a restricted page or detached frame returns null (→ UNKNOWN,
+  // which is suppressed from the annotation). Never throws — observation-only.
+  async function captureSig(tgt: Debuggee, point?: { x: number; y: number }): Promise<PageSig | null> {
+    try { return parsePageSig(await cdp.runtimeEvaluate(tgt, outcomeSnapshotExpr(point))) }
+    catch { return null }
+  }
+  // Append the structured outcome to a tool's output text. UNKNOWN is dropped so we
+  // don't spam noise on every interaction; SUCCESS/SILENT_CLICK/WRONG_ELEMENT annotate.
+  function annotateOutcome(out: string, before: PageSig | null, after: PageSig | null, action: 'click' | 'type' | 'select'): string {
+    const r = classifyOutcome(before, after, action)
+    const o: Outcome = r.outcome
+    if (o === 'UNKNOWN') return out
+    return out + formatOutcome(r)
+  }
+
+  // ── Ralph interaction waterfall (item #2) ─────────────────────────────────
+  // After the primary coordinate click yields a SILENT_CLICK outcome, degrade
+  // through cheaper-to-noisier tiers, re-probing the outcome after each:
+  //   raw CDP coordinate → JS element.click()+dispatchEvent → keyboard focus+Enter/Space.
+  // Caps total tier attempts and a wall-clock budget so a permanently-dead element
+  // can't spin forever (the Circuit Breaker, item #5, fail-fasts repeat offenders).
+  // Escalation needs a resolvable element (ref/selector); a raw x/y point has nothing
+  // to degrade to, so it is skipped. Returns the final outcome + an escalation note.
+  const WATERFALL_BUDGET_MS = 4000
+  interface ClickHandle { backendId?: number; selector?: string }
+  async function clickWaterfall(
+    tgt: Debuggee, point: { x: number; y: number },
+    el: ClickHandle | null, before: PageSig | null, after: PageSig | null,
+  ): Promise<{ after: PageSig | null; escalated: string[] }> {
+    const escalated: string[] = []
+    let cur = classifyOutcome(before, after, 'click')
+    if (cur.outcome === 'SUCCESS') return { after, escalated }
+    // No element handle (raw x/y click) or no probe baseline → cannot meaningfully
+    // escalate or measure escalation. Keep the tier-1 result.
+    if (!el || (el.backendId == null && !el.selector) || before == null) return { after, escalated }
+
+    // Resolve a Runtime objectId for the JS-click tier (ref → backendId, else selector).
+    const getObjectId = async (): Promise<string | null> => {
+      try {
+        if (el.backendId != null) return await resolveRefObject(cdp, tgt, el.backendId)
+        if (el.selector) return await resolveSelectorObject(cdp, tgt, el.selector)
+      } catch { /* gone */ }
+      return null
+    }
+
+    const deadline = Date.now() + WATERFALL_BUDGET_MS
+    const tiers: Array<{ name: string; run: () => Promise<void> }> = [
+      // raw CDP press/release at the point (no moveTo fidelity; defeats hover-state interceptors).
+      { name: 'cdp-coord', run: async () => {
+        await cdp.sendCommand(tgt, 'Input', 'dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 })
+        await cdp.sendCommand(tgt, 'Input', 'dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 })
+      } },
+      // JS element.click() + a synthetic bubbling MouseEvent (handles non-isTrusted listeners).
+      { name: 'js-click', run: async () => {
+        const objectId = await getObjectId()
+        if (!objectId) return
+        await cdp.callFunctionOnObject(tgt, objectId,
+          `function(){ try{ this.click(); }catch(e){} this.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window})); return 'ok'; }`)
+      } },
+      // Keyboard activation: focus the node, then Enter then Space (covers button/link/checkbox).
+      { name: 'keyboard', run: async () => {
+        if (el.backendId != null) { try { await cdp.sendCommand(tgt, 'DOM', 'focus', { backendNodeId: el.backendId }) } catch { /* not focusable */ } }
+        else if (el.selector) { await cdp.runtimeEvaluate(tgt, `(()=>{const el=document.querySelector(${JSON.stringify(el.selector)});if(el&&el.focus)el.focus();return !!el;})()`) }
+        await input.sendNamedKey(tgt, 'Enter', '\r')
+        await input.sendNamedKey(tgt, ' ', ' ')
+      } },
+    ]
+
+    let outSig = after
+    for (const tier of tiers) {
+      if (Date.now() > deadline) break
+      try { await tier.run() } catch { continue }     // a failed tier just falls to the next
+      escalated.push(tier.name)
+      outSig = await captureSig(tgt, point)
+      cur = classifyOutcome(before, outSig, 'click')
+      if (cur.outcome === 'SUCCESS') break
+    }
+    return { after: outSig, escalated }
+  }
 
   // Resolve the target tab; enforce the AI-page gate (hard refuse) unless allowAIPage.
   // allowAIPage is set for the tab-ESTABLISHING tools (browser_use_tab / browser_new_tab)
@@ -224,13 +309,53 @@ export function makeController(deps: ControllerDeps = {}) {
 
     async click(args: { tabId?: number; ref?: string; selector?: string; mark?: number; x?: number; y?: number; button?: 'left' | 'right' | 'middle'; clickCount?: number }): Promise<string> {
       const tab = await ensureTab(args)
-      const { point, sessionId } = await resolvePoint(cdp, registry, target(tab.tabId), { tabId: tab.tabId, ref: args.ref, selector: args.selector, mark: args.mark, x: args.x, y: args.y })
+      // Circuit breaker (item #5): only when there is a resolvable element handle
+      // (ref/selector/mark). A raw x/y click has nothing to address/escalate, so it
+      // skips the breaker — the same bail condition the waterfall uses below.
+      const cbQuery = clickQuery(args)
+      const cbKey = cbQuery ? elementKey(tab.tabId, cbQuery) : null
+      if (cbKey) {
+        const d = breaker.allow(tab.tabId, cbKey)
+        if (!d.allowed) {
+          // Fail fast: skip the waterfall entirely and tell the AI why (unavailable/reload/paused).
+          return `skipped click on ${cbQuery} in tabId=${tab.tabId} — ${d.reason}`
+        }
+      }
+      let point: { x: number; y: number }, sessionId: string
+      try {
+        ({ point, sessionId } = await resolvePoint(cdp, registry, target(tab.tabId), { tabId: tab.tabId, ref: args.ref, selector: args.selector, mark: args.mark, x: args.x, y: args.y }))
+      } catch (e) {
+        // A thrown resolution error (stale ref / missing selector) is a failure too.
+        if (cbKey) breaker.recordFailure(tab.tabId, cbKey)
+        throw e
+      }
       const tgt: Debuggee = sessionId ? ({ tabId: tab.tabId, sessionId } as Debuggee) : target(tab.tabId)
       // Skip elementFromPoint for iframe targets (topmost at the point is the <iframe>).
       if (!sessionId) await assertPointActionable(cdp, tgt, point)
       const button = args.button ?? 'left'
       const preOrigin = originOf(tab.url)
+      const before = await captureSig(tgt, point)               // outcome probe (best-effort)
       await input.dispatchClick(tgt, tab.tabId, point.x, point.y, button, args.clickCount ?? 1)
+      let after = await captureSig(tgt, point)
+      // Ralph interaction waterfall (item #2): only for a plain left single-click (a
+      // right/double-click degraded via JS/keyboard would change semantics). Escalate
+      // through cheaper→noisier tiers when tier-1 produced a SILENT_CLICK outcome.
+      let escNote = ''
+      if (button === 'left' && (args.clickCount ?? 1) === 1) {
+        const reft = args.ref ? registry.resolveRef(tab.tabId, args.ref) : null
+        const handle: { backendId?: number; selector?: string } | null =
+          reft ? { backendId: reft.backendId } : (args.selector ? { selector: args.selector } : null)
+        const w = await clickWaterfall(tgt, point, handle, before, after)
+        after = w.after
+        if (w.escalated.length) escNote = `\n[escalated: ${w.escalated.join(' → ')}]`
+      }
+      // Circuit breaker bookkeeping (item #5): SUCCESS closes the element circuit;
+      // SILENT_CLICK/WRONG_ELEMENT trip it toward OPEN (3 strikes → fail fast next time).
+      if (cbKey) {
+        const o = classifyOutcome(before, after, 'click').outcome
+        if (o === 'SUCCESS') breaker.recordSuccess(tab.tabId, cbKey)
+        else if (o === 'SILENT_CLICK' || o === 'WRONG_ELEMENT') breaker.recordFailure(tab.tabId, cbKey)
+      }
       registry.markStale(tab.tabId)
       await settle(tab.tabId)
       let note = ''
@@ -242,7 +367,7 @@ export function makeController(deps: ControllerDeps = {}) {
         }
       } catch { /* tab gone */ }
       const verb = button === 'right' ? 'right-clicked' : (args.clickCount === 2 ? 'double-clicked' : 'clicked')
-      return `${verb} at ${Math.round(point.x)},${Math.round(point.y)} in tabId=${tab.tabId}${note}`
+      return annotateOutcome(`${verb} at ${Math.round(point.x)},${Math.round(point.y)} in tabId=${tab.tabId}${note}${escNote}`, before, after, 'click')
     },
 
     async type(args: { tabId?: number; ref?: string; selector?: string; x?: number; y?: number; text: string; clear?: boolean; submit?: boolean }): Promise<string> {
@@ -250,6 +375,7 @@ export function makeController(deps: ControllerDeps = {}) {
       const { point, sessionId } = await resolvePoint(cdp, registry, target(tab.tabId), { tabId: tab.tabId, ref: args.ref, selector: args.selector, x: args.x, y: args.y })
       const tgt: Debuggee = sessionId ? ({ tabId: tab.tabId, sessionId } as Debuggee) : target(tab.tabId)
       await input.dispatchClick(tgt, tab.tabId, point.x, point.y, 'left', 1)   // focus
+      const before = await captureSig(tgt, point)               // probe AFTER focus, BEFORE typing
       if (args.clear) {
         const selectAll = isMac() ? ['Meta'] : ['Ctrl']
         await input.sendKeyChordMods(tgt, selectAll, 'a')
@@ -257,8 +383,9 @@ export function makeController(deps: ControllerDeps = {}) {
       }
       await input.dispatchTypedKeys(tgt, args.text)
       if (args.submit) await input.sendNamedKey(tgt, 'Enter', '\r')
+      const after = await captureSig(tgt, point)
       registry.markStale(tab.tabId)
-      return `typed ${[...args.text].length} chars into tabId=${tab.tabId}`
+      return annotateOutcome(`typed ${[...args.text].length} chars into tabId=${tab.tabId}`, before, after, 'type')
     },
 
     async hover(args: { tabId?: number; ref?: string; selector?: string; x?: number; y?: number }): Promise<string> {
@@ -299,9 +426,11 @@ export function makeController(deps: ControllerDeps = {}) {
 
     async select(args: { tabId?: number; selector: string; by?: 'value' | 'label' | 'index'; value: string }): Promise<string> {
       const tab = await ensureTab(args)
+      const before = await captureSig(target(tab.tabId))         // outcome probe (best-effort)
       const r = await cdp.runtimeEvaluate(target(tab.tabId), selectExpr(args.selector, args.by ?? 'value', args.value))
+      const after = await captureSig(target(tab.tabId))
       registry.markStale(tab.tabId)
-      return String(r)
+      return annotateOutcome(String(r), before, after, 'select')
     },
 
     async pressKey(args: { tabId?: number; key: string }): Promise<string> {
@@ -549,6 +678,16 @@ export function makeController(deps: ControllerDeps = {}) {
 
 function isMac(): boolean {
   try { return /mac/i.test((navigator as any).platform || (navigator as any).userAgentData?.platform || '') } catch { return false }
+}
+
+// Element-locating query string for the circuit breaker key (item #5). A raw x/y
+// click addresses no element, so it returns '' → the breaker is skipped (the same
+// bail the waterfall uses). ref/selector/mark each yield a stable, distinct token.
+function clickQuery(args: { ref?: string; selector?: string; mark?: number }): string {
+  if (args.ref) return `ref:${args.ref}`
+  if (args.selector) return `sel:${args.selector}`
+  if (typeof args.mark === 'number') return `mark:${args.mark}`
+  return ''
 }
 
 // Deliver a captured media dataURL (screenshot/zoom/record/pdf): inject it into the

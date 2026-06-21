@@ -45,4 +45,28 @@ describe('dispatch lock + key', () => {
     TOOL_TABLE.delete('browser_test_echo')
     READONLY_TOOLS.delete('browser_test_echo')
   })
+
+  it('dispatchBrowserTool: appends a hint (item #4) when the result matches a rule', async () => {
+    // A tool whose output trips the snapshot-stale rule gets a recovery hint appended.
+    TOOL_TABLE.set('browser_test_stale', async () => 'ref e9 is stale or unknown; take a fresh browser_snapshot')
+    READONLY_TOOLS.add('browser_test_stale')
+    const r = await dispatchBrowserTool('browser_test_stale', { tabId: 3 }, 'c3')
+    expect(r.success).toBe(true)
+    expect(r.output).toMatch(/Hint:/)
+    expect(r.output).toMatch(/stale/i)
+    TOOL_TABLE.delete('browser_test_stale')
+    READONLY_TOOLS.delete('browser_test_stale')
+  })
+
+  it('dispatchBrowserTool: appends an error-recovery hint on the error path', async () => {
+    TOOL_TABLE.set('browser_test_boom', async () => { throw new Error('kaboom') })
+    READONLY_TOOLS.add('browser_test_boom')
+    const r = await dispatchBrowserTool('browser_test_boom', { tabId: 4 }, 'c4')
+    expect(r.success).toBe(false)
+    expect(r.error).toBe('kaboom')
+    expect(r.output).toMatch(/kaboom/)
+    expect(r.output).toMatch(/fresh browser_snapshot/i)
+    TOOL_TABLE.delete('browser_test_boom')
+    READONLY_TOOLS.delete('browser_test_boom')
+  })
 })

@@ -1,6 +1,23 @@
 // Faithful port of internal/browser/snapshot.go — AX tree → indented text + refs.
 // Parent-child context preserved (indent under nearest kept ancestor), refs (e0,e1…)
 // assigned to actionable nodes in document order, bounded by maxNodes/maxChars/depth.
+//
+// ── #7 (part 2): serialized-snapshot token footprint vs a compact format ────────
+// One emitted node line ≈ `  [e3] button "Submit Order" focused\n`. Cost per line:
+//   • indent: 2 spaces × depth (≈0.5 tok at depth 5–8 once GPT-BPE merges runs),
+//   • ref tag `[eN] ` ≈ 3 tok, role word ≈ 1 tok, quoted name ≈ name_words+2 tok,
+//   • each affordance flag ≈ 1–2 tok.
+// A typical 80–150-node page renders ~120–500 lines ⇒ ~600–2500 tokens, hard-capped
+// by MAX_OUTPUT_CHARS=12000 (~3000 tok) + the 200-node cap. That is ALREADY the AX-text
+// "DOM mode" the openchrome reference touts (5–15× vs raw HTML): one terse line/node,
+// no markup, no inline styles. The cheap further wins would be 1-space indent and
+// dropping the `value=`/`desc=` key prefixes — but those DIVERGE from the Go port
+// (internal/browser/snapshot.go) this file mirrors byte-for-byte and would desync the
+// two serializers + their tests, so they are deliberately NOT applied here. The two
+// real caps (maxChars + maxNodes, with the `ref_id=<ref>`/`depth` narrowing hint on
+// truncation) are the load-bearing token guards and are already in place. #7 part-2 is
+// therefore a documented finding, not a code change. (Part 1 — stable backendNodeId
+// addressing — is verified in ref-resolve.ts and IS satisfied.)
 import type { BrowserTab, RefTarget, Bounds } from './types'
 
 const DEFAULT_MAX_NODES = 200
@@ -134,6 +151,12 @@ class Walk {
     if (keep) {
       let refName = ''
       if (isImportantRole(role) || isFocusable(node) || isEditable(node)) {
+        // #7 (part 1): the ref NAME (e0,e1…) is positional within THIS snapshot and is
+        // re-minted on every re-snapshot, but the stored RefTarget carries the CDP
+        // `backendDOMNodeId` — a stable per-document node handle. resolvePoint() resolves
+        // a ref THROUGH that backendId (boxModelBounds), so the same element addresses
+        // consistently across calls after a refresh; the name is just a lookup label, the
+        // backendId is the real address. (nodeId is the volatile AX id — not used to act.)
         refName = `e${this.refBase + this.refs.length}`
         this.refs.push({ ref: refName, nodeId: node.nodeId, backendId: node.backendDOMNodeId ?? 0,
           role, name, bounds: boundsFromNode(node), sessionId: '', frameOffset: null })

@@ -4,6 +4,17 @@ import type { ExecResult } from './types'
 import { getController } from './controller'
 import { approval } from './approval-singleton'
 import { runGates } from './gates'
+import { applyHints } from './hints'
+
+// Append a deterministic recovery hint (item #4) to a browser tool's output. Wrapped so
+// a misbehaving rule can never turn a successful tool into a failure. Empty hint → output
+// is returned unchanged.
+function withHints(name: string, output: string, isError: boolean): string {
+  try {
+    const hint = applyHints({ toolName: name, resultText: output, isError })
+    return hint ? `${output}\n${hint}` : output
+  } catch { return output }
+}
 
 /** Port of executor.go:528 browserTabKey: tabId>0 → "tab:<id>", else "tab:default". */
 export function browserTabKey(args: Record<string, unknown>): string {
@@ -64,9 +75,9 @@ export async function dispatchBrowserTool(
       }
       return method(args)
     })
-    return { callId, name, output, success: true }
+    return { callId, name, output: withHints(name, output, false), success: true }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    return { callId, name, output: msg, error: msg, success: false }
+    return { callId, name, output: withHints(name, msg, true), error: msg, success: false }
   }
 }

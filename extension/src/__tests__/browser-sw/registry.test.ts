@@ -47,7 +47,7 @@ describe('TabRegistry', () => {
     reg.setDefault({ tabId: 9, url: 'https://x.com', title: 'X' })
     reg.markApproved(9)
     reg.storeSnapshot(9, 's', { e0: ref('e0') })
-    reg.setMarks(9, [{ mark: 1, role: 'button', name: 'go', bounds: { x: 0, y: 0, width: 1, height: 1 } }])
+    reg.setMarks(9, [{ index: 1, x: 0, y: 0, w: 1, h: 1, cx: 0, cy: 0, role: 'button', text: 'go', ref: '#go' }])
     reg.setLastPointer(9, { x: 5, y: 5 })
     reg.clearDefault(9)
     // Chrome reuses tab ids; if approved/snapshots leaked, a NEW AI tab reusing id 9 would

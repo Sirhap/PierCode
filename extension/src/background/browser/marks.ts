@@ -69,6 +69,10 @@ export function markCollectorExpr(): string {
         continue;
       }
       consider(node,offX,offY);
+      // node.shadowRoot is NON-null only for OPEN shadow roots; a CLOSED root reads as
+      // null here (page-context JS cannot reach it). Elements inside a closed component
+      // therefore won't be marked — to address one, use a selector and let resolvePoint's
+      // CDP DOM.getDocument({pierce:true}) fallback locate it (ref-resolve.ts item #6).
       if(node.shadowRoot){ walkDoc(node.shadowRoot,offX,offY,depth+1); }
     }
   }
