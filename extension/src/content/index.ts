@@ -1992,9 +1992,10 @@ function startDOMObserver(_responseSelector: string) {
   // to read on later ticks. Platforms WITHOUT detectComplete never latch →
   // turnConfirmedComplete short-circuits true and the existing settle gating runs.
   const turnCompleteConfirmed = new WeakSet<Element>();
-  // stopVisible is page-global (one stop control per page), so the caller computes
-  // it ONCE per tick and passes it in — avoids an O(containers) findStopElement
-  // querySelector storm when several containers are active.
+  // The caller passes the freshly-read stop state + clock (recomputed per container
+  // just before this call) so the observation reflects live DOM even after a prior
+  // container's long fillAndSend await. stopVisible is page-global (one stop control
+  // per page); the per-iteration read is one findStopElement querySelector — cheap.
   function observeTurnCompletion(container: Element, stopVisible: boolean, now: number): void {
     if (!hasCompletionDetection()) return;
     const fired = detectorFor(container).observe({
@@ -2059,23 +2060,27 @@ function startDOMObserver(_responseSelector: string) {
         return;
       }
 
-      const stillGenerating = isResponseGenerating();
-      const settleRemainingMs = responseSettleRemainingMs();
-
       // 每个响应容器独立累积/提交：B 响应的结果不会混进 A 响应的提交（问题 E）。
       // fillAndSend 是 async 且内部 await focusTab + clickSendWhenReady（Qwen 可达 90s），
       // 同 tick 提交两个容器会抢同一个聊天输入框，故循环内 await 串行提交。
-      // #15: tick each active container's completion detector BEFORE the submit
-      // decision so it accumulates settle observations across reschedules and
-      // latches the complete-edge. stopVisible (page-global) + now computed once and
-      // shared across containers. No-op for platforms without a detector.
       let awaitingCompletionConfirm = false;
-      const completionNow = Date.now();
-      for (const c of Array.from(activeOutputContainers)) observeTurnCompletion(c, stillGenerating, completionNow);
 
       for (const c of Array.from(activeOutputContainers)) {
         const arr = outputsByContainer.get(c);
         if (!arr || arr.length === 0) { activeOutputContainers.delete(c); releaseCompletion(c); continue; }
+
+        // Recompute the gating signals PER container, just before its decision. The
+        // loop awaits fillAndSend (≤90s on Qwen) for a prior container, during which
+        // the stream can stop and new tool results can arrive — so a value captured
+        // once before the loop would be up to 90s stale for later containers.
+        // Re-reading here keeps every container's defer/submit decision (and the
+        // #15 detector observation below) based on the live DOM state.
+        const stillGenerating = isResponseGenerating();
+        const settleRemainingMs = responseSettleRemainingMs();
+        // #15: tick THIS container's completion detector with the fresh stop state +
+        // current text, accumulating settle observations across reschedules and
+        // latching the complete-edge. No-op for platforms without a detector.
+        observeTurnCompletion(c, stillGenerating, Date.now());
 
         // 顺延起点按容器记录：自该容器首个待提交结果产生起最多顺延 MAX_SUBMIT_DEFER_MS，
         // 防 stopBtn 误判导致 isResponseGenerating 恒 true 而永不提交。
@@ -2111,10 +2116,12 @@ function startDOMObserver(_responseSelector: string) {
       }
 
       // 仍有顺延中的容器 → 重排。settle 未到且非生成中时用剩余 settle 时间重排，
-      // 与旧逻辑的嵌套 settle setTimeout 等价。
+      // 与旧逻辑的嵌套 settle setTimeout 等价。settle 余量在循环后(可能历经 fillAndSend
+      // await)重新读取，保证用的是当前 DOM 状态而非循环前的旧值。
       if (activeOutputContainers.size > 0) {
-        if (settleRemainingMs > 0 && !isResponseGenerating()) {
-          submitTimer = setTimeout(() => { submitTimer = null; scheduleFinalSubmit(); }, settleRemainingMs);
+        const tailSettleRemainingMs = responseSettleRemainingMs();
+        if (tailSettleRemainingMs > 0 && !isResponseGenerating()) {
+          submitTimer = setTimeout(() => { submitTimer = null; scheduleFinalSubmit(); }, tailSettleRemainingMs);
         } else if (awaitingCompletionConfirm) {
           // #15: settle elapsed and not generating, but the detector hasn't yet
           // held the signature long enough to confirm. Re-tick after its settle
