@@ -2962,6 +2962,12 @@ function initAttachmentLimitForPlatform(): number {
   switch (platformAdapter.name) {
     // aistudio uses a real system-instructions field (handled separately) → no wall.
     case 'aistudio': return 0;
+    // chatgpt's composer is a ProseMirror contenteditable filled via execCommand,
+    // which takes long text without clipping (the same path large tool results go
+    // through every turn). Typing the init prompt inline is preferred there — the
+    // .txt-attachment indirection added a read-the-file hop and an upload that can
+    // fail, with no clipping problem to justify it. 0 = no wall, type it.
+    case 'chatgpt': return 0;
     default: return INIT_ATTACHMENT_THRESHOLD;
   }
 }
