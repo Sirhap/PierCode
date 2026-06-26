@@ -99,18 +99,39 @@ export function whenTokenizerReady(): Promise<void> {
   return loadPromise ?? Promise.resolve()
 }
 
+// Result memoized by (platform,text): chat history is immutable once settled but
+// computeMeter is re-run per stream chunk (App.tsx useMemo over `messages`), so an
+// uncached full re-encode of the whole conversation runs on every SSE chunk. The
+// memo makes settled history free; only the growing tail re-encodes. Pure — same
+// numbers. Mirrors content/token-meter.ts (the two are kept in sync deliberately:
+// content/index.ts is a classic MV3 chunk that can't import this module).
+const COUNT_CACHE_MAX = 500
+const countCache = new Map<string, number>()
+
 export function countTokens(text: string, platform = 'chatgpt'): number {
   if (!text) return 0
   ensureTiktoken()
   const enc = loadState === 'ready' ? encoderFor(platform) : null
-  if (enc) {
-    try {
-      return Math.round(enc.encode(text).length * platformFactor(platform))
-    } catch {
-      return estimateTokens(text)
-    }
+  if (!enc) return estimateTokens(text)
+  const key = platform + '\0' + text
+  const cached = countCache.get(key)
+  if (cached !== undefined) {
+    countCache.delete(key)
+    countCache.set(key, cached)
+    return cached
   }
-  return estimateTokens(text)
+  let n: number
+  try {
+    n = Math.round(enc.encode(text).length * platformFactor(platform))
+  } catch {
+    return estimateTokens(text)
+  }
+  countCache.set(key, n)
+  if (countCache.size > COUNT_CACHE_MAX) {
+    const oldest = countCache.keys().next().value
+    if (oldest !== undefined) countCache.delete(oldest)
+  }
+  return n
 }
 
 export function computeMeter(messages: MeterMessage[], platform = 'chatgpt'): TokenMeter {
@@ -130,4 +151,5 @@ export function __resetTokenizerForTest(): void {
   delete encoders.cl100k_base
   loadState = 'idle'
   loadPromise = null
+  countCache.clear()
 }

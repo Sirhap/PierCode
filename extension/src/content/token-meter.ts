@@ -87,18 +87,40 @@ export function whenTokenizerReady(): Promise<void> {
 }
 
 // countTokens 算单段文本的 token。tiktoken 就绪用平台编码器（含校正系数），否则字符估算。
+//
+// 结果按 (platform,text) 记忆化：会话历史一旦定型其 token 数不变，但 computeMeter 会被
+// 高频重算（content 端 3s 定时刷新 + sidebar 流式每 chunk 重算整段历史）。js-tiktoken 是
+// 纯 JS BPE（~1-5MB/s），重新编码数百 KB 历史是 ~100-300ms 主线程开销，重复跑会卡。记忆化
+// 让不变历史命中缓存，只有增长中的流式尾部重新编码。纯函数，返回值不变。
+const COUNT_CACHE_MAX = 500;
+const countCache = new Map<string, number>();
+
 export function countTokens(text: string, platform = 'chatgpt'): number {
   if (!text) return 0;
   ensureTiktoken();
   const enc = loadState === 'ready' ? encoderFor(platform) : null;
-  if (enc) {
-    try {
-      return Math.round(enc.encode(text).length * platformFactor(platform));
-    } catch {
-      return estimateTokens(text);
-    }
+  if (!enc) return estimateTokens(text);
+  const key = platform + '\0' + text;
+  const cached = countCache.get(key);
+  if (cached !== undefined) {
+    // LRU touch: re-insert so hot entries stay live.
+    countCache.delete(key);
+    countCache.set(key, cached);
+    return cached;
   }
-  return estimateTokens(text);
+  let n: number;
+  try {
+    n = Math.round(enc.encode(text).length * platformFactor(platform));
+  } catch {
+    return estimateTokens(text); // don't cache the fallback — tokenizer may recover
+  }
+  countCache.set(key, n);
+  if (countCache.size > COUNT_CACHE_MAX) {
+    // Map preserves insertion order → first key is the least-recently-used.
+    const oldest = countCache.keys().next().value;
+    if (oldest !== undefined) countCache.delete(oldest);
+  }
+  return n;
 }
 
 // computeMeter 把会话消息流算成 input/output/total。
@@ -123,4 +145,5 @@ export function __resetTokenizerForTest(): void {
   delete encoders.cl100k_base;
   loadState = 'idle';
   loadPromise = null;
+  countCache.clear();
 }

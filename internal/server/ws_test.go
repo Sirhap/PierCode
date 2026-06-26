@@ -240,6 +240,106 @@ func TestWSManagerSendToRoleTargetsOnlyMatchingClients(t *testing.T) {
 	}
 }
 
+// TestSendBrowserCommandRouting pins the multi-browser anti-race guarantee at
+// the WSManager tier (the relay tier is covered separately in browser/relay_test).
+// A tab-targeted command must reach ONLY its owning browser; an unknown tab must
+// broadcast; and a vanished owner must drop ownership and fall back to broadcast.
+func TestSendBrowserCommandRouting(t *testing.T) {
+	drain := func(ch chan []byte) bool {
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}
+
+	t.Run("known owner receives only-targeted", func(t *testing.T) {
+		m := NewWSManager(nil)
+		defer m.Close()
+		relayA := &clientConn{id: "A", send: make(chan []byte, 1), role: "browser-relay"}
+		relayB := &clientConn{id: "B", send: make(chan []byte, 1), role: "browser-relay"}
+		m.clientsMu.Lock()
+		m.clients[relayA] = true
+		m.clients[relayB] = true
+		m.clientsMu.Unlock()
+		m.RecordTabOwner("A", 7)
+
+		tab := 7
+		sent, targeted := m.SendBrowserCommand(&tab, []byte("cmd"))
+		if !sent || !targeted {
+			t.Fatalf("expected sent+targeted for a known owner, got sent=%v targeted=%v", sent, targeted)
+		}
+		if !drain(relayA.send) {
+			t.Fatal("owner relay A did not receive the command")
+		}
+		if drain(relayB.send) {
+			t.Fatal("non-owner relay B must NOT receive a tab-targeted command (anti-race)")
+		}
+	})
+
+	t.Run("unknown tab broadcasts to all relays", func(t *testing.T) {
+		m := NewWSManager(nil)
+		defer m.Close()
+		relayA := &clientConn{id: "A", send: make(chan []byte, 1), role: "browser-relay"}
+		relayB := &clientConn{id: "B", send: make(chan []byte, 1), role: "browser-relay"}
+		m.clientsMu.Lock()
+		m.clients[relayA] = true
+		m.clients[relayB] = true
+		m.clientsMu.Unlock()
+
+		tab := 99 // no owner recorded
+		sent, targeted := m.SendBrowserCommand(&tab, []byte("cmd"))
+		if !sent || targeted {
+			t.Fatalf("expected sent + NOT targeted for an unknown tab, got sent=%v targeted=%v", sent, targeted)
+		}
+		if !drain(relayA.send) || !drain(relayB.send) {
+			t.Fatal("both relays should receive a broadcast for an unowned tab")
+		}
+	})
+
+	t.Run("vanished owner drops ownership and falls back to broadcast", func(t *testing.T) {
+		m := NewWSManager(nil)
+		defer m.Close()
+		// Record ownership for a client that is NOT in m.clients → SendToID fails.
+		relayB := &clientConn{id: "B", send: make(chan []byte, 1), role: "browser-relay"}
+		m.clientsMu.Lock()
+		m.clients[relayB] = true
+		m.clientsMu.Unlock()
+		m.RecordTabOwner("A", 7) // owner A never connected / already gone
+
+		tab := 7
+		sent, targeted := m.SendBrowserCommand(&tab, []byte("cmd"))
+		if !sent || targeted {
+			t.Fatalf("expected fallback broadcast (sent, not targeted), got sent=%v targeted=%v", sent, targeted)
+		}
+		if _, ok := m.tabOwner(7); ok {
+			t.Fatal("vanished owner's tab ownership must be forgotten")
+		}
+		if !drain(relayB.send) {
+			t.Fatal("fallback broadcast should reach the live relay B")
+		}
+	})
+
+	t.Run("forgetClientTabs clears that client's ownership", func(t *testing.T) {
+		m := NewWSManager(nil)
+		defer m.Close()
+		m.RecordTabOwner("A", 7)
+		m.RecordTabOwner("A", 8)
+		m.RecordTabOwner("B", 9)
+		m.forgetClientTabs("A")
+		if _, ok := m.tabOwner(7); ok {
+			t.Fatal("tab 7 should be forgotten after forgetClientTabs(A)")
+		}
+		if _, ok := m.tabOwner(8); ok {
+			t.Fatal("tab 8 should be forgotten after forgetClientTabs(A)")
+		}
+		if _, ok := m.tabOwner(9); !ok {
+			t.Fatal("tab 9 (owned by B) must survive forgetClientTabs(A)")
+		}
+	})
+}
+
 func TestFormatProviderCountsSummarizesManyProviders(t *testing.T) {
 	got := FormatProviderCounts(map[string]int{
 		"ChatGPT":   3,

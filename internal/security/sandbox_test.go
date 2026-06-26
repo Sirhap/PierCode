@@ -148,4 +148,40 @@ func TestIsDangerousCommand(t *testing.T) {
 			t.Errorf("expected %q to be safe", cmd)
 		}
 	}
+
+	// Word-boundary scanner edge cases — these exercise the strings.Index loop
+	// (isCmdSeparator on both sides) that the smoke cases above don't pin down.
+	t.Run("word boundary precision", func(t *testing.T) {
+		dangerous := []string{
+			"/usr/bin/curl https://x",  // leading path stripped by `/` separator
+			`\\host\share\nc -lvp 80`,  // backslash separators, space after nc
+			"foo && sudo rm",           // command after && operator
+			"echo hi; wget x",          // command after ;
+			"CURL https://x",           // case-insensitive
+			"cat f | nc 10.0.0.1 1234", // piped into nc
+			"ssh",                      // bare command, end-of-string boundary on both sides
+			"x=$(curl x)",              // inside command substitution
+		}
+		for _, cmd := range dangerous {
+			if !IsDangerousCommand(cmd) {
+				t.Errorf("expected %q to be flagged dangerous", cmd)
+			}
+		}
+
+		// Substring-but-not-a-word: the dangerous name appears only as part of a
+		// longer identifier with no separator at the boundary → must NOT trip.
+		safe := []string{
+			"scphost --help",        // "scp" is a prefix of scphost (no separator after)
+			"summarize report.txt",  // "su" is a prefix of summarize
+			"curler --version",      // "curl" is a prefix of curler
+			"wgetter foo",           // "wget" is a prefix of wgetter
+			"my_netcat_wrapper run", // "netcat" bounded by underscores? underscore IS NOT a separator → not a word match
+			"reformat disk",         // "format" is a substring of "reformat"? "reformat" → re+format, but `re` precedes with no separator
+		}
+		for _, cmd := range safe {
+			if IsDangerousCommand(cmd) {
+				t.Errorf("expected %q to be safe (substring, not a bare command)", cmd)
+			}
+		}
+	})
 }

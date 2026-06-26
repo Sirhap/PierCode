@@ -617,15 +617,22 @@ class ReplyReader {
 
     const text = this.extractContainerText(container);
     if (!text.trim()) return;
-    // 诊断：拿到容器文本，看 extractFenceToolCalls 解析出几个工具。
+
+    // Parse the container text ONCE per tick and reuse for both the diagnostic
+    // and the real reporting logic below (this used to scan the same text 3x:
+    // extractFenceToolCalls + hasIncompleteToolFence + extractFenceToolCalls
+    // again — each a full global-regex + brace-walk over the whole response).
+    let parsed: ReturnType<typeof extractFenceToolCalls>;
     try {
-      const parsedDbg = extractFenceToolCalls(text);
-      console.debug('[PierCode/ba] scan: container text', {
-        len: text.length, parsed: parsedDbg.length,
-        names: parsedDbg.map(t => t.name), incomplete: hasIncompleteToolFence(text),
-        head: text.slice(0, 120),
-      });
-    } catch { /* ignore */ }
+      parsed = extractFenceToolCalls(text);
+    } catch {
+      parsed = [];
+    }
+    console.debug('[PierCode/ba] scan: container text', {
+      len: text.length, parsed: parsed.length,
+      names: parsed.map(t => t.name),
+      head: text.slice(0, 120),
+    });
 
     // 流式预览（best-effort）：只发本回合新增的文本片段。
     this.maybeStream(turnId, text);
@@ -633,7 +640,6 @@ class ReplyReader {
     // 本回合已上报过工具就不再重复（同一容器流式期间会多次触发）。
     if (this.reportedTurns.has(turnId)) return;
 
-    const parsed = extractFenceToolCalls(text);
     if (parsed.length === 0) {
       // 还没有完整工具块：可能仍在流式。安排一次 settle 重扫，兜住"工具块是
       // 回复最后一段、之后无 DOM 变动"的情况；同时也给"无工具=自然语言收尾"

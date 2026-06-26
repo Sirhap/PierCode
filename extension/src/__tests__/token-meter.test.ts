@@ -51,6 +51,25 @@ describe('token-meter exact path after tokenizer ready', () => {
     // mock 编码器：4 字符 = 1 token
     expect(countTokens('a'.repeat(40))).toBe(10);
   });
+
+  it('memoizes by content: a repeated count returns the identical value', async () => {
+    __resetTokenizerForTest();
+    void countTokens('warm');
+    await whenTokenizerReady();
+    const text = 'b'.repeat(80);
+    const first = countTokens(text);
+    const cached = countTokens(text); // served from the memo
+    expect(cached).toBe(first);
+    expect(cached).toBe(20);
+    // computeMeter over unchanged messages must be stable across repeated calls
+    const messages = ctx([
+      { role: 'user', content: text, timestamp: 1 },
+      { role: 'assistant', content: 'c'.repeat(40), timestamp: 2 },
+    ]);
+    const m1 = computeMeter(messages);
+    const m2 = computeMeter(messages);
+    expect(m2).toEqual(m1);
+  });
 });
 
 describe('computeMeter role classification', () => {

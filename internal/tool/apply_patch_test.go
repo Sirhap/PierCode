@@ -351,6 +351,56 @@ func TestApplyPatchTool(t *testing.T) {
 	})
 }
 
+// TestCommitPlansRollsBackOnRuntimeFailure exercises the in-call rollback path
+// (a later plan fails AFTER earlier plans wrote to disk) — distinct from the
+// planning-failure cases, which abort before commitPlans ever runs. An earlier
+// updated file must be restored to its original bytes, and an earlier created
+// file must be removed, when a subsequent plan's write fails.
+func TestCommitPlansRollsBackOnRuntimeFailure(t *testing.T) {
+	dir := t.TempDir()
+
+	// Plan 1: update an existing file (rollback = restore original content).
+	existing := filepath.Join(dir, "existing.txt")
+	if err := os.WriteFile(existing, []byte("ORIGINAL"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Plan 2: create a brand-new file (rollback = remove it).
+	newFile := filepath.Join(dir, "created.txt")
+
+	// Plan 3: make its parent a REGULAR FILE so os.MkdirAll(filepath.Dir(...))
+	// fails at commit time — a deterministic runtime failure with no monkey-patching.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	doomed := filepath.Join(blocker, "child.txt") // parent "blocker" is a file → MkdirAll fails
+
+	plans := []patchPlan{
+		{absPath: existing, content: "MODIFIED", mode: 0644},
+		{absPath: newFile, content: "NEW", mode: 0644},
+		{absPath: doomed, content: "WONT", mode: 0644},
+	}
+
+	err := commitPlans(plans)
+	if err == nil {
+		t.Fatal("expected commitPlans to fail on the unwritable third plan")
+	}
+
+	// Plan 1 must be restored to its original bytes.
+	got, readErr := os.ReadFile(existing)
+	if readErr != nil {
+		t.Fatalf("existing file should still be present after rollback: %v", readErr)
+	}
+	if string(got) != "ORIGINAL" {
+		t.Errorf("rollback did not restore plan-1 file: got %q, want %q", got, "ORIGINAL")
+	}
+
+	// Plan 2 (newly created) must be removed by rollback.
+	if _, statErr := os.Stat(newFile); !os.IsNotExist(statErr) {
+		t.Errorf("rollback should have removed the created plan-2 file %s (stat err: %v)", newFile, statErr)
+	}
+}
+
 func TestSplitJoinContentLinesRoundTrip(t *testing.T) {
 	cases := []string{
 		// LF / no-newline
