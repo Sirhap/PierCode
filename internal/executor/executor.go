@@ -304,9 +304,7 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 		toolCtx.Client.BroadcastToClient = *bp
 	}
 
-	unlock := e.lockForTool(req.Name, req.Args, rootSnapshot)
-	result := t.Execute(toolCtx)
-	unlock()
+	result := e.runToolGuarded(t, toolCtx, req.Name, rootSnapshot)
 
 	// Augment runtime errors with an actionable hint for AI callers so they can
 	// self-correct (e.g. missing path -> "verify with list_dir"). Direct API/TUI
@@ -349,6 +347,25 @@ func (e *Executor) ExecuteWithStream(ctx context.Context, req *types.ToolRequest
 	}
 
 	return resp
+}
+
+// runToolGuarded acquires the tool's execution lock, runs Execute, and releases
+// the lock via defer so a panicking tool cannot leak it (a leaked global/path/tab
+// lock would wedge every later call of that class forever). A panic is recovered
+// into an error Result so one misbehaving tool fails its own call instead of
+// crashing the request goroutine / server.
+func (e *Executor) runToolGuarded(t tool.Tool, toolCtx *tool.Context, name, rootDir string) (result *tool.Result) {
+	unlock := e.lockForTool(name, toolCtx.Args, rootDir)
+	defer unlock()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Executor] 工具 %s panic: %v\n", name, r)
+			now := time.Now()
+			msg := fmt.Sprintf("tool %s panicked: %v", name, r)
+			result = &tool.Result{Status: "error", Output: msg, Error: msg, StartTime: now, EndTime: now}
+		}
+	}()
+	return t.Execute(toolCtx)
 }
 
 // guidanceCounter is one conversation's guidance turn counter plus the wall
