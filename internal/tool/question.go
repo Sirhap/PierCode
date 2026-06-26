@@ -75,7 +75,10 @@ func (t *QuestionTool) Execute(ctx *Context) *Result {
 		}
 	}
 
-	answerCh, cleanup := PendingQuestions.Register(callID)
+	// Bind the question to the asking page's WS client id so only that page can
+	// answer/cancel it (#1). Direct CLI/TUI callers have no SourceClientID, so it
+	// registers unbound and any responder is accepted (the local operator).
+	answerCh, cleanup := PendingQuestions.RegisterOwned(callID, ctx.Client.SourceClientID)
 	defer cleanup()
 
 	if ctx.Client.Broadcast != nil || (ctx.Client.BroadcastToClient != nil && ctx.Client.SourceClientID != "") {

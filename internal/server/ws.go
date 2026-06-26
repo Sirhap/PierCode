@@ -80,12 +80,15 @@ func NewWSManager(allowedOrigins []string) *WSManager {
 			WriteBufferSize: 1024,
 			// Content scripts create WebSocket connections from the AI
 			// page's origin (e.g. https://chatgpt.com), not from
-			// chrome-extension://. Since the token in the query string
-			// already authenticates the connection, we accept any origin
-			// for the WS upgrade. The CORS middleware has already been
-			// bypassed for /ws, so this is the sole origin gate.
+			// chrome-extension://. The token in the query string is the
+			// PRIMARY auth, but the Origin is still gated against the
+			// configured allowlist (chrome-extension/loopback/empty are
+			// always allowed; see IsAllowedOrigin) so a disallowed cross-site
+			// page cannot open a token-replay WS — and so allowedOrigins is a
+			// real control, not dead config. The CORS middleware is bypassed
+			// for /ws, so this is the sole origin gate.
 			CheckOrigin: func(r *http.Request) bool {
-				return true
+				return IsAllowedOrigin(r.Header.Get("Origin"), allowedOrigins)
 			},
 		},
 	}
@@ -107,10 +110,12 @@ func (m *WSManager) RegisterWithProvider(conn *websocket.Conn, provider string) 
 	m.RegisterWithMeta(conn, WSClientMeta{Provider: provider})
 }
 
-func (m *WSManager) RegisterWithMeta(conn *websocket.Conn, meta WSClientMeta) {
-	if meta.ID == "" {
-		meta.ID = fmt.Sprintf("ws_%d_%d", time.Now().UnixNano(), wsFallbackSeq.Add(1))
-	}
+// RegisterWithMeta registers a connection and returns the client id it was
+// actually assigned. The returned id may differ from meta.ID when the requested
+// id was empty or already in use (#3) — callers MUST use the returned id for any
+// later directed routing (worker bind, per-client messages), not the value they
+// passed in.
+func (m *WSManager) RegisterWithMeta(conn *websocket.Conn, meta WSClientMeta) string {
 	if meta.Client == "" {
 		meta.Client = "content"
 	}
@@ -123,16 +128,62 @@ func (m *WSManager) RegisterWithMeta(conn *websocket.Conn, meta WSClientMeta) {
 	cc := &clientConn{
 		conn:      conn,
 		send:      make(chan []byte, wsClientQueueSize),
-		id:        meta.ID,
 		client:    strings.TrimSpace(meta.Client),
 		role:      strings.TrimSpace(meta.Role),
 		provider:  normalizeProvider(meta.Provider),
 		connected: meta.Connected,
 	}
+	// Assign the id and insert under ONE lock so two simultaneous registrations
+	// can't both pass a separate "is it free?" check and end up sharing an id.
 	m.clientsMu.Lock()
+	cc.id = m.uniqueIDLocked(strings.TrimSpace(meta.ID))
 	m.clients[cc] = true
 	m.clientsMu.Unlock()
 	go m.writePump(cc)
+	return cc.id
+}
+
+// genClientID returns a fresh, collision-resistant server-side client id.
+func genClientID() string {
+	return fmt.Sprintf("ws_%d_%d", time.Now().UnixNano(), wsFallbackSeq.Add(1))
+}
+
+// idInUseLocked reports whether a live connection already holds id. Caller holds
+// clientsMu (read or write).
+func (m *WSManager) idInUseLocked(id string) bool {
+	for cc := range m.clients {
+		if cc.id == id {
+			return true
+		}
+	}
+	return false
+}
+
+// uniqueIDLocked returns the id a newly registering client should be given. An
+// empty id, or one already held by a live connection, is replaced with a fresh
+// generated id so no two connections ever share an id (which would let SendToID
+// fan directed traffic to an eavesdropper — #3). A unique client-supplied id is
+// honored unchanged (content scripts supply their own high-entropy per-document
+// id, which the worker-binding/conversation routing relies on). Caller holds
+// clientsMu for writing.
+func (m *WSManager) uniqueIDLocked(requested string) string {
+	if requested != "" && !m.idInUseLocked(requested) {
+		return requested
+	}
+	for {
+		candidate := genClientID()
+		if !m.idInUseLocked(candidate) {
+			return candidate
+		}
+	}
+}
+
+// assignClientID is the lock-taking wrapper used by tests and any non-register
+// caller that needs to preview the id assignment.
+func (m *WSManager) assignClientID(requested string) string {
+	m.clientsMu.Lock()
+	defer m.clientsMu.Unlock()
+	return m.uniqueIDLocked(strings.TrimSpace(requested))
 }
 
 func (m *WSManager) SendToID(id string, message []byte) bool {

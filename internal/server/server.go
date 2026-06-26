@@ -563,10 +563,13 @@ func (s *Server) handleWS(c *gin.Context) {
 	log.Println("[PierCode] ✅ 扩展已连接 WebSocket")
 
 	provider := browserProviderFromRequest(c.Request)
-	id := strings.TrimSpace(c.Query("id"))
+	requestedID := strings.TrimSpace(c.Query("id"))
 	role := strings.TrimSpace(c.Query("role"))
 	client := strings.TrimSpace(c.Query("client"))
-	s.ws.RegisterWithMeta(conn, WSClientMeta{ID: id, Provider: provider, Role: role, Client: client})
+	// Use the id the manager actually assigned: a duplicate/empty requested id is
+	// replaced with a fresh one (#3), and all later directed routing for this
+	// connection (worker bind, per-client messages) must use the assigned id.
+	id := s.ws.RegisterWithMeta(conn, WSClientMeta{ID: requestedID, Provider: provider, Role: role, Client: client})
 
 	// A worker page carries ?agent=<id> (spawn_agent encoded it into the tab
 	// URL). Bind it to its agent record and seed the task now that the page is
@@ -785,13 +788,15 @@ func (s *Server) handleWSClientMessage(sourceClientID string, payload []byte) {
 		if callID == "" {
 			return
 		}
-		tool.PendingQuestions.Deliver(callID, msg.Answer)
+		// Only the page that asked may answer (#1): pass the responder's client
+		// id so a different page sharing the token is rejected.
+		tool.PendingQuestions.DeliverFrom(callID, msg.Answer, sourceClientID)
 	case "question_cancel":
 		callID := strings.TrimSpace(msg.CallID)
 		if callID == "" {
 			return
 		}
-		tool.PendingQuestions.Cancel(callID, msg.Reason)
+		tool.PendingQuestions.CancelFrom(callID, msg.Reason, sourceClientID)
 	case "browser_result":
 		if s.browser != nil {
 			// Learn which browser hosts the tab(s) named in this result so a
@@ -845,7 +850,7 @@ func (s *Server) handleWSClientMessage(sourceClientID string, payload []byte) {
 			})
 		}
 	case "agent_result":
-		s.handleAgentResult(msg.AgentID, msg.Status, msg.Summary, msg.Result)
+		s.handleAgentResult(msg.AgentID, msg.Status, msg.Summary, msg.Result, sourceClientID)
 	case "agent_release":
 		s.handleAgentRelease(msg.AgentID, sourceClientID)
 	case "browser_ping", "browser_hello":
@@ -877,7 +882,7 @@ func (s *Server) handleAgentRelease(agentID, clientID string) {
 // dispatcher (coordinator) page as a <task-notification>. The inject auto-submits
 // on the dispatcher page, waking the coordinator to read the result — the push
 // callback that lets the coordinator avoid polling its workers.
-func (s *Server) handleAgentResult(agentID, status, summary, result string) {
+func (s *Server) handleAgentResult(agentID, status, summary, result, fromClientID string) {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" || s.executor == nil {
 		return
@@ -886,9 +891,10 @@ func (s *Server) handleAgentResult(agentID, status, summary, result string) {
 	if registry == nil {
 		return
 	}
-	rec, late, ok := registry.RecordResult(agentID, status, result)
+	// Owner check (#1): only the agent's bound worker may report its result.
+	rec, late, ok := registry.RecordResultFrom(agentID, status, result, fromClientID)
 	if !ok {
-		log.Printf("[PierCode] agent_result for unknown agent_id %q\n", agentID)
+		log.Printf("[PierCode] agent_result for unknown/unauthorized agent_id %q (from %q)\n", agentID, fromClientID)
 		return
 	}
 	if late {

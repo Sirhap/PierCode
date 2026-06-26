@@ -10,22 +10,34 @@ const pendingQuestionCancelPrefix = "\x00piercode-cancel:"
 // The question tool registers a channel keyed by call_id, broadcasts the
 // question over WS, and blocks on the channel. The HTTP server (or TUI) calls
 // Deliver with the matching call_id when an answer arrives.
+type pendingQuestion struct {
+	ch    chan string
+	owner string // WS client id that registered the question; "" = any (TUI/CLI)
+}
+
 type pendingQuestionRegistry struct {
 	mu sync.Mutex
-	ch map[string]chan string
+	ch map[string]*pendingQuestion
 }
 
 // PendingQuestions is the shared registry used by the question tool and the
 // server's question_answer dispatcher.
-var PendingQuestions = &pendingQuestionRegistry{ch: map[string]chan string{}}
+var PendingQuestions = &pendingQuestionRegistry{ch: map[string]*pendingQuestion{}}
 
-// Register reserves a one-shot channel for the given call_id. Returns the
-// channel and a cancel func; the caller must invoke cancel() to clean up the
-// map entry whether or not an answer arrived.
+// Register reserves a one-shot channel for the given call_id with no owner
+// binding (answers accepted from any client). Used by the TUI/CLI path.
 func (r *pendingQuestionRegistry) Register(callID string) (<-chan string, func()) {
+	return r.RegisterOwned(callID, "")
+}
+
+// RegisterOwned reserves a one-shot channel bound to owner — the WS client id of
+// the page that asked. Only that client may answer/cancel (#1); a different page
+// sharing the token is rejected. An empty owner means unbound (any client may
+// answer), preserving the TUI/CLI behavior.
+func (r *pendingQuestionRegistry) RegisterOwned(callID, owner string) (<-chan string, func()) {
 	ch := make(chan string, 1)
 	r.mu.Lock()
-	r.ch[callID] = ch
+	r.ch[callID] = &pendingQuestion{ch: ch, owner: owner}
 	r.mu.Unlock()
 	return ch, func() {
 		r.mu.Lock()
@@ -34,27 +46,41 @@ func (r *pendingQuestionRegistry) Register(callID string) (<-chan string, func()
 	}
 }
 
-// Deliver routes an answer to a registered question. Returns true if a
-// waiting question accepted it, false if no one is waiting on call_id.
+// Deliver routes an answer with no owner check (TUI/CLI / internal callers).
 func (r *pendingQuestionRegistry) Deliver(callID, answer string) bool {
-	return r.send(callID, answer)
+	return r.send(callID, answer, "", false)
 }
 
-// Cancel routes a cancellation notice to a registered question. Returns true
-// if a waiting question accepted it, false if no one is waiting on call_id.
+// DeliverFrom routes an answer that arrived from WS client `from`. It is dropped
+// unless `from` matches the question's owner (or the question is unbound).
+func (r *pendingQuestionRegistry) DeliverFrom(callID, answer, from string) bool {
+	return r.send(callID, answer, from, true)
+}
+
+// Cancel routes a cancellation notice with no owner check.
 func (r *pendingQuestionRegistry) Cancel(callID, reason string) bool {
-	return r.send(callID, pendingQuestionCancelPrefix+reason)
+	return r.send(callID, pendingQuestionCancelPrefix+reason, "", false)
 }
 
-func (r *pendingQuestionRegistry) send(callID, value string) bool {
+// CancelFrom routes a cancellation that arrived from WS client `from`, subject
+// to the same owner check as DeliverFrom.
+func (r *pendingQuestionRegistry) CancelFrom(callID, reason, from string) bool {
+	return r.send(callID, pendingQuestionCancelPrefix+reason, from, true)
+}
+
+func (r *pendingQuestionRegistry) send(callID, value, from string, checkOwner bool) bool {
 	r.mu.Lock()
-	ch, ok := r.ch[callID]
+	pq, ok := r.ch[callID]
 	r.mu.Unlock()
 	if !ok {
 		return false
 	}
+	if checkOwner && pq.owner != "" && pq.owner != from {
+		// A page other than the one that asked tried to answer — reject (#1).
+		return false
+	}
 	select {
-	case ch <- value:
+	case pq.ch <- value:
 		return true
 	default:
 		// Already delivered (someone double-answered) — drop silently.

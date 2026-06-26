@@ -184,12 +184,26 @@ func (r *AgentRegistry) Depth(agentID string) int {
 }
 
 // BindWorker associates a worker page's WebSocket client id with an agent and
-// moves it to running. Returns false if the agent is unknown.
+// moves it to running. Returns false if the agent is unknown OR the agent is
+// already bound to a DIFFERENT client (#2): an agent maps to exactly one worker
+// tab/document for its lifetime, so once bound only that same client may re-bind
+// (the normal MV3-SW-sleep reconnect, which keeps its per-document client id).
+// Refusing a different binder stops another page (sharing the token) from
+// hijacking the agent to receive its worker seed — task, system prompt, sandbox
+// info. A binding cleared by ReleaseWorkerClient ("") is rebindable.
 func (r *AgentRegistry) BindWorker(agentID, workerClientID string) bool {
+	workerClientID = strings.TrimSpace(workerClientID)
+	if workerClientID == "" {
+		return false
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec, ok := r.agents[agentID]
 	if !ok {
+		return false
+	}
+	if rec.WorkerClientID != "" && rec.WorkerClientID != workerClientID {
+		// Already owned by another worker connection — refuse the takeover.
 		return false
 	}
 	rec.WorkerClientID = workerClientID
@@ -314,10 +328,28 @@ func (r *AgentRegistry) Get(agentID string) (AgentRecord, bool) {
 // already-recorded packet) must not flip a stopped/finished agent back to
 // completed and re-wake the dispatcher.
 func (r *AgentRegistry) RecordResult(agentID, status, result string) (rec AgentRecord, late bool, ok bool) {
+	return r.recordResult(agentID, status, result, "")
+}
+
+// RecordResultFrom is RecordResult with an owner check (#1): the result packet
+// must arrive from the agent's bound worker client. A packet from any other WS
+// client (a different page sharing the token forging an agent_result) is
+// rejected with ok=false, so it can neither flip the agent's status nor inject a
+// forged <task-notification> into the dispatcher. An empty fromClientID skips
+// the check (internal/test callers).
+func (r *AgentRegistry) RecordResultFrom(agentID, status, result, fromClientID string) (rec AgentRecord, late bool, ok bool) {
+	return r.recordResult(agentID, status, result, strings.TrimSpace(fromClientID))
+}
+
+func (r *AgentRegistry) recordResult(agentID, status, result, fromClientID string) (rec AgentRecord, late bool, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cur, found := r.agents[agentID]
 	if !found {
+		return AgentRecord{}, false, false
+	}
+	if fromClientID != "" && cur.WorkerClientID != "" && cur.WorkerClientID != fromClientID {
+		// Reporter is not this agent's bound worker — reject the forged packet.
 		return AgentRecord{}, false, false
 	}
 	switch cur.Status {
