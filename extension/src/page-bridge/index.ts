@@ -93,17 +93,32 @@ function installKeepAliveVisibilityShim(): void {
     document.addEventListener(eventName, blockHiddenSignal, true);
   }
 
+  // Map each original listener to the wrapper actually registered, so a later
+  // removeEventListener(type, original) can find and detach the wrapper. Without
+  // this, removal silently fails (Chrome looks up `original`, only `wrapped` is
+  // registered) and dead no-op listeners accumulate for the page's lifetime.
+  const wrapperFor = new WeakMap<object, EventListener>();
   const originalAddEventListener = EventTarget.prototype.addEventListener;
+  const originalRemoveEventListener = EventTarget.prototype.removeEventListener;
   EventTarget.prototype.addEventListener = function(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
-    if ((this === window || this === document) && blockedEvents.has(type)) {
-      const wrapped = function(this: EventTarget, event: Event) {
+    if ((this === window || this === document) && blockedEvents.has(type) && listener) {
+      const existing = wrapperFor.get(listener as object);
+      const wrapped: EventListener = existing ?? function(this: EventTarget, event: Event) {
         if (blockedEvents.has(event.type)) return;
         if (typeof listener === 'function') return listener.call(this, event);
-        return listener?.handleEvent?.(event);
+        return (listener as EventListenerObject)?.handleEvent?.(event);
       };
+      if (!existing) wrapperFor.set(listener as object, wrapped);
       return originalAddEventListener.call(this, type, wrapped, options);
     }
     return originalAddEventListener.call(this, type, listener, options);
+  };
+  EventTarget.prototype.removeEventListener = function(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
+    if ((this === window || this === document) && blockedEvents.has(type) && listener) {
+      const wrapped = wrapperFor.get(listener as object);
+      if (wrapped) return originalRemoveEventListener.call(this, type, wrapped, options);
+    }
+    return originalRemoveEventListener.call(this, type, listener, options);
   };
 }
 

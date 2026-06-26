@@ -34,6 +34,31 @@ func TestSafePath(t *testing.T) {
 		}
 	})
 
+	t.Run("paths resolving inside root allowed", func(t *testing.T) {
+		// Targets that normalize to somewhere at-or-under root must succeed,
+		// including ones that don't yet exist on disk.
+		cases := []struct {
+			target string
+			desc   string
+		}{
+			{"", "empty target resolves to root"},
+			{".", "dot resolves to root"},
+			{"./.", "double dot resolves to root"},
+			{filepath.Join("a", "b", "c", "d", "e"), "deep nested new dirs"},
+			{filepath.Join("test", "..", "test", "..", "test.txt"), "traversals that resolve inside"},
+		}
+		for _, tc := range cases {
+			got, err := SafePath(root, tc.target)
+			if err != nil {
+				t.Errorf("%s: SafePath(%q, %q) returned error: %v", tc.desc, root, tc.target, err)
+				continue
+			}
+			if got == "" {
+				t.Errorf("%s: expected non-empty path", tc.desc)
+			}
+		}
+	})
+
 	t.Run("symlink outside root blocked", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("symlinks require elevated privileges on Windows")

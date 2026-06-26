@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +155,57 @@ func TestWriteReadFile(t *testing.T) {
 			t.Errorf("expected truncation hint for 200KB single line, got %q", tail)
 		}
 	})
+
+	t.Run("byte-budget cut mid-line: continuation offset re-reads the partial line whole", func(t *testing.T) {
+		// 8 lines of 10KB each → the 50KB budget fills ~5 full lines and cuts the
+		// next line mid-way. The truncation hint's offset must point AT that
+		// partial line (so a re-read returns its full content), not past it —
+		// otherwise the unshown tail of that line is silently lost forever.
+		w := NewWriteFileTool(cfg)
+		r := NewReadFileTool(cfg)
+		var b strings.Builder
+		for i := 0; i < 8; i++ {
+			b.WriteString(strings.Repeat(string(rune('A'+i)), 10*1024))
+			b.WriteByte('\n')
+		}
+		w.Execute(testCtx(cfg, map[string]interface{}{"path": "budget.txt", "content": b.String()}))
+
+		res := r.Execute(testCtx(cfg, map[string]interface{}{"path": "budget.txt", "line_numbers": false}))
+		if res.Status != "success" || !strings.Contains(res.Output, "[truncated") {
+			t.Fatalf("expected truncated success, got status=%s out-tail=%q", res.Status, lastN(res.Output, 120))
+		}
+		// Parse the suggested continuation offset out of the hint.
+		var nextOffset int
+		if _, err := fmt.Sscanf(res.Output[strings.LastIndex(res.Output, "use offset="):], "use offset=%d", &nextOffset); err != nil {
+			t.Fatalf("could not parse offset from hint: %q", lastN(res.Output, 120))
+		}
+		// The last fully-or-partially shown line must be re-read in full by the
+		// continuation. Find the highest line letter present in the first read.
+		var lastShown rune
+		for i := rune('A'); i <= 'H'; i++ {
+			if strings.Contains(res.Output, string(i)) {
+				lastShown = i
+			}
+		}
+		cont := r.Execute(testCtx(cfg, map[string]interface{}{
+			"path": "budget.txt", "line_numbers": false, "offset": float64(nextOffset),
+		}))
+		if cont.Status != "success" {
+			t.Fatalf("continuation read failed: %s (%s)", cont.Status, cont.Error)
+		}
+		// The continuation must contain a FULL 10KB run of the last-shown line's
+		// letter — proving its tail wasn't skipped by an off-by-one nextOffset.
+		if !strings.Contains(cont.Output, strings.Repeat(string(lastShown), 10*1024)) {
+			t.Errorf("continuation at offset=%d dropped the tail of line %q (off-by-one nextOffset)", nextOffset, string(lastShown))
+		}
+	})
+}
+
+func lastN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }
 
 func TestAdditionalAllowedDirsForAbsoluteFileTools(t *testing.T) {

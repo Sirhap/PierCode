@@ -58,11 +58,10 @@ describe('accumulateBatch (the actual fix logic)', () => {
     // and would emit a 1-agent summary; ensure the dedup keeps it from re-counting
     // the SAME agent. A repeat of agent '1' must not re-emit it as a fresh batch.
     const repeat = accumulateBatch(done, expected, mkAgent('1', 'b1', 'done', 'A'))
-    // After delete-on-emit, a repeat of the same id re-creates the entry with one
-    // item and expected falls back to 1 → it re-emits a single-agent summary. This
-    // is acceptable (each runSubAgent broadcasts DONE exactly once, so a true repeat
-    // never occurs); assert the dedup at least prevents double-counting within a batch.
-    expect(repeat === null || repeat!.length === 1).toBe(true)
+    // After delete-on-emit, `expected` no longer holds b1, so a post-emit replay
+    // (e.g. an SW-restart resume firing DONE again) must NOT re-emit — accumulateBatch
+    // returns null on a missing `expected` entry. Honors the emit-once contract.
+    expect(repeat).toBeNull()
   })
 
   it('Bug2: two concurrent batches accumulate independently', () => {

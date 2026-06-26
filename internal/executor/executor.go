@@ -49,6 +49,14 @@ type Executor struct {
 	// "tab:default") and single-path file writers per normalized path
 	// ("path:<abs>"). Distinct keys run in parallel; one key stays strictly
 	// ordered. map[string]*sync.Mutex.
+	//
+	// Entries are never evicted. Tab keys are bounded by live tab ids; path keys
+	// grow by one tiny *sync.Mutex per distinct normalized path written in a
+	// session. The server is per-launch and per-workspace (not multi-tenant), so
+	// that count is bounded by the working set of files an agent touches and the
+	// memory is negligible — eviction would need in-use tracking to avoid racing
+	// a concurrent locker, which isn't worth it at this scale. Accepted, not an
+	// oversight.
 	keyedLocks sync.Map
 }
 
@@ -459,6 +467,16 @@ func (e *Executor) ListTools() []tool.ToolInfo {
 }
 
 func (e *Executor) lockForTool(name string, args map[string]interface{}, rootDir string) func() {
+	// question BLOCKS for the human's answer — up to the /exec deadline (minutes)
+	// or a large timeout_sec. It is classified ReadOnly, but holding toolMu.RLock
+	// for that whole wait would let a single pending prompt wedge the server: once
+	// any exclusive-lock tool blocks on toolMu.Lock(), Go's RWMutex writer-priority
+	// queues every later RLock() behind it. question is fully self-synchronized
+	// (PendingQuestions has its own mutex; it only registers a channel + broadcasts)
+	// and touches no shared filesystem/browser state, so it must hold NO lock here.
+	if strings.EqualFold(strings.TrimSpace(name), "question") {
+		return func() {}
+	}
 	if t, ok := e.registry.Get(name); ok && toolIsReadOnly(t) {
 		e.toolMu.RLock()
 		return e.toolMu.RUnlock

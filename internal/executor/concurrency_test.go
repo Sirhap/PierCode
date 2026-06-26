@@ -31,6 +31,28 @@ func TestToolConcurrencyPolicy(t *testing.T) {
 	}
 }
 
+// question BLOCKS for a human answer (minutes). It must hold NO lock, or a
+// pending prompt would let the next exclusive-lock tool wedge the whole server
+// (RWMutex writer-priority queues every later reader behind it). Guard: while a
+// question "lock" is held, an exclusive-lock tool must still acquire immediately.
+func TestQuestionHoldsNoLock(t *testing.T) {
+	e := New(testConfig(t))
+	unlockQuestion := e.lockForTool("question", nil, "")
+	defer unlockQuestion()
+
+	acquired := make(chan func(), 1)
+	go func() {
+		acquired <- e.lockForTool("todo_write", nil, "")
+	}()
+
+	select {
+	case unlock := <-acquired:
+		unlock()
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("exclusive lock must not block on a held question lock (question must hold no lock)")
+	}
+}
+
 func TestReadOnlyLocksCanRunConcurrently(t *testing.T) {
 	e := New(testConfig(t))
 	unlockRead := e.lockForTool("read_file", nil, "")

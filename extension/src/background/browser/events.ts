@@ -42,8 +42,16 @@ export class EventBus {
   waitForNav(tabId: number, timeoutMs: number): Promise<any> {
     return new Promise((resolve, reject) => {
       const arr = this.navWaiters.get(tabId) ?? []
-      const t = setTimeout(() => reject(new Error('navigation wait timed out')), timeoutMs)
-      arr.push((r: any) => { clearTimeout(t); resolve(r) })
+      const cb = (r: any) => { clearTimeout(t); resolve(r) }
+      const t = setTimeout(() => {
+        // Remove our dead resolver so it doesn't accumulate in the waiter array
+        // until the next nav event (which would otherwise invoke an already-
+        // rejected promise's resolver).
+        const cur = this.navWaiters.get(tabId)
+        if (cur) { const i = cur.indexOf(cb); if (i >= 0) cur.splice(i, 1) }
+        reject(new Error('navigation wait timed out'))
+      }, timeoutMs)
+      arr.push(cb)
       this.navWaiters.set(tabId, arr)
     })
   }
@@ -57,8 +65,13 @@ export class EventBus {
   waitForDialog(tabId: number, timeoutMs: number): Promise<any> {
     return new Promise((resolve, reject) => {
       const arr = this.dialogWaiters.get(tabId) ?? []
-      const t = setTimeout(() => reject(new Error('dialog wait timed out')), timeoutMs)
-      arr.push((r: any) => { clearTimeout(t); resolve(r) })
+      const cb = (r: any) => { clearTimeout(t); resolve(r) }
+      const t = setTimeout(() => {
+        const cur = this.dialogWaiters.get(tabId)
+        if (cur) { const i = cur.indexOf(cb); if (i >= 0) cur.splice(i, 1) }
+        reject(new Error('dialog wait timed out'))
+      }, timeoutMs)
+      arr.push(cb)
       this.dialogWaiters.set(tabId, arr)
     })
   }

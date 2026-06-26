@@ -1795,6 +1795,11 @@ async function runSpawnBatchRecord(rec: SpawnBatchRecord): Promise<void> {
     if (rec.inject && !rec.injected) {
       for (const r of results) broadcast({ type: 'CHAT_TOOL_DONE', result: r })
       rec.injected = true
+      // Persist done+injected BEFORE enqueueing: enqueueInjection can synchronously
+      // drain a continuation turn to the model, and if the SW is killed before the
+      // saveSpawnBatch at the end of this function, the resume path would re-run the
+      // batch and inject the same summary a second time. Mirror resumeOrphanedSpawnBatches.
+      await saveSpawnBatch(rec)
       enqueueInjection(formatToolResults(results), rec.inject)
     }
     finishedSpawnBatches.set(rec.batchKey, results)

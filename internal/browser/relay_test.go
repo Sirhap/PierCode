@@ -106,3 +106,52 @@ func TestRelayOwnerTargetedSkipsBroadcast(t *testing.T) {
 		t.Fatalf("expected delivery to owner-A, went to %q", transport.sentToID)
 	}
 }
+
+// fanoutStragglerTransport simulates three browsers where only the first answers;
+// the other two stay silent. It exercises the per-iteration timeout in
+// SendCommandFanout: a single one-shot timer would bound only the first straggler
+// and let the second block until the (much longer) ctx deadline.
+type fanoutStragglerTransport struct {
+	relay *RelayManager
+	ids   []string
+	first bool
+}
+
+func (t *fanoutStragglerTransport) SendBrowserCommand(_ *int, _ []byte) (bool, bool) {
+	return true, false
+}
+func (t *fanoutStragglerTransport) BrowserRelayIDs() []string { return t.ids }
+func (t *fanoutStragglerTransport) SendToID(_ string, payload []byte) bool {
+	if !t.first {
+		t.first = true
+		var cmd Command
+		_ = json.Unmarshal(payload, &cmd)
+		t.relay.DeliverResult(Result{ID: cmd.ID, Success: true, Data: json.RawMessage(`{"ok":true}`)})
+	}
+	// Subsequent clients never answer — they are the stragglers.
+	return true
+}
+
+func TestRelayFanoutTimeoutBoundsAllStragglers(t *testing.T) {
+	transport := &fanoutStragglerTransport{ids: []string{"A", "B", "C"}}
+	relay := NewRelayManager(transport)
+	transport.relay = relay
+
+	// Short per-call timeout, generous ctx deadline: the fanout must honor the
+	// 200ms timeout for EVERY straggler, not just the first. With the one-shot
+	// timer bug, the 2nd+ stragglers fall through to ctx and this exceeds ~1s.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	results, err := relay.SendCommandFanout(ctx, Command{Domain: "PierCode", Method: "listTabs"}, 200*time.Millisecond)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("fanout returned error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 successful result, got %d", len(results))
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("fanout took %v — stragglers not bounded by the 200ms timeout (one-shot timer regression)", elapsed)
+	}
+}

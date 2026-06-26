@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { EventBus } from '../../background/browser/events'
 
 describe('EventBus', () => {
@@ -26,6 +26,24 @@ describe('EventBus', () => {
     const p = bus.waitForNav(3, 1000)
     bus.handleNavEvent(3, { url: 'https://done.com' })
     await expect(p).resolves.toMatchObject({ url: 'https://done.com' })
+  })
+  it('nav waiter does not leak its resolver on timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const bus = new EventBus()
+      const p = bus.waitForNav(4, 1000)
+      // Swallow the expected rejection so it doesn't surface as unhandled.
+      p.catch(() => {})
+      // Before timeout: one resolver registered.
+      expect((bus as any).navWaiters.get(4)?.length).toBe(1)
+      vi.advanceTimersByTime(1001)
+      await Promise.resolve()
+      // After timeout: the dead resolver must be spliced out, not left to fire
+      // (and resolve an already-rejected promise) on the next nav event.
+      expect((bus as any).navWaiters.get(4)?.length ?? 0).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
   it('domain-enable dedupe', () => {
     const bus = new EventBus()

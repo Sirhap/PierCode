@@ -93,6 +93,10 @@ func (t *ReadFileTool) Execute(ctx *Context) *Result {
 	totalLines := 0
 	byteCount := 0
 	truncated := false
+	// Set only when the byte budget cut a line mid-way and we emitted its prefix:
+	// that partial line occupies a line slot but isn't fully shown, so the
+	// continuation offset must point AT it (re-read in full), not past it.
+	partialLast := false
 
 	scanner := bufio.NewScanner(f)
 	// Bump scanner's max-token buffer from the default 64KB to 1MB so that
@@ -134,6 +138,7 @@ func (t *ReadFileTool) Execute(ctx *Context) *Result {
 				}
 				if keep > 0 {
 					lines = append(lines, line[:keep])
+					partialLast = true
 				}
 			}
 			for scanner.Scan() {
@@ -160,6 +165,10 @@ func (t *ReadFileTool) Execute(ctx *Context) *Result {
 	}
 	if truncated {
 		nextOffset := offset + len(lines)
+		if partialLast {
+			// The last shown line is only a prefix; re-read it whole next time.
+			nextOffset--
+		}
 		output += fmt.Sprintf("\n[truncated, %d total lines, use offset=%d to continue]", totalLines, nextOffset)
 	}
 

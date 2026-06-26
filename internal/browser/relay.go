@@ -175,10 +175,21 @@ func (m *RelayManager) SendCommandFanout(ctx context.Context, cmd Command, timeo
 		return nil, ErrNoRelay
 	}
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	// One absolute deadline for the whole fan-in: a single time.Timer fires only
+	// once, so reusing it across N waiters would bound only the FIRST straggler and
+	// let later unresponsive browsers block until ctx (minutes). Arm a fresh timer
+	// per iteration from the remaining budget instead, so the total wait across all
+	// waiters stays capped at timeout no matter how many browsers go silent.
+	deadline := time.Now().Add(timeout)
 	results := make([]Result, 0, len(waiters))
 	for _, w := range waiters {
+		rem := time.Until(deadline)
+		if rem <= 0 {
+			// Budget already spent on earlier stragglers; don't wait on this one.
+			m.deletePending(w.cmdID)
+			continue
+		}
+		timer := time.NewTimer(rem)
 		select {
 		case res := <-w.ch:
 			if res.Success {
@@ -190,6 +201,7 @@ func (m *RelayManager) SendCommandFanout(ctx context.Context, cmd Command, timeo
 		case <-ctx.Done():
 			m.deletePending(w.cmdID)
 		}
+		timer.Stop()
 		m.deletePending(w.cmdID)
 	}
 	return results, nil

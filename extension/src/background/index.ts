@@ -111,6 +111,12 @@ let browserConnectionSeq = 0;
 let controlledTabId: number | null = null;
 let configuredBrowserAuth: AuthInfo | null = null;
 const attachedTabs = new Set<number>();
+// Collapses concurrent first-touches of the same tab into a single attach: two
+// browser-tool calls reaching the same physical tab through different lock keys
+// (tab:default vs tab:<id>) would otherwise both call chrome.debugger.attach and
+// the loser's "Another debugger is already attached" catch would wrongly delete
+// the live tab. Keyed by tabId, cleared in finally.
+const attachInflight = new Map<number, Promise<void>>();
 const perTabQueues = new Map<number, Promise<unknown>>();
 const DEBUGGER_EVENTS_TO_RELAY = new Set([
   'Page.javascriptDialogOpening',
@@ -958,29 +964,40 @@ function listFrameSessions(tabId: number): FrameSession[] {
 
 async function ensureAttached(tabId: number) {
   if (attachedTabs.has(tabId)) return;
-  // chrome-extension:// 和某些特殊页面无法 attach debugger，加超时避免卡死
-  const attachPromise = chrome.debugger.attach({ tabId }, '1.3');
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`debugger attach timed out for tab ${tabId}`)), 8000)
-  );
-  try {
-    await Promise.race([attachPromise, timeoutPromise]);
-    attachedTabs.add(tabId);
-    // Eagerly enable the domains whose events we relay, so navigation lifecycle
-    // and load-time console/network events are captured from attach onward
-    // (lazy enable used to lose everything before the first read call).
-    await enableDebuggerDomains(tabId);
-  } catch (error) {
-    if (errorMessage(error).includes('Another debugger is already attached')) {
-      attachedTabs.delete(tabId);
-      sendBrowserMessage({
-        type: 'browser_event',
-        event: 'debugger_detached',
-        tabId,
-        reason: 'another_debugger_attached',
-      });
+  // Collapse concurrent first-touches: if an attach for this tab is already in
+  // flight (raced past the has() check above via a different lock key), await it
+  // instead of issuing a second chrome.debugger.attach.
+  const pending = attachInflight.get(tabId);
+  if (pending) return pending;
+  const p = (async () => {
+    // chrome-extension:// 和某些特殊页面无法 attach debugger，加超时避免卡死
+    const attachPromise = chrome.debugger.attach({ tabId }, '1.3');
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`debugger attach timed out for tab ${tabId}`)), 8000)
+    );
+    try {
+      await Promise.race([attachPromise, timeoutPromise]);
+      attachedTabs.add(tabId);
+      // Eagerly enable the domains whose events we relay, so navigation lifecycle
+      // and load-time console/network events are captured from attach onward
+      // (lazy enable used to lose everything before the first read call).
+      await enableDebuggerDomains(tabId);
+    } catch (error) {
+      if (errorMessage(error).includes('Another debugger is already attached')) {
+        // THIS extension already holds the debugger on this tab (a concurrent
+        // caller won the race). The tab IS attached — record it and succeed
+        // instead of deleting live state, which would wedge every later command.
+        attachedTabs.add(tabId);
+        return;
+      }
+      throw error;
     }
-    throw error;
+  })();
+  attachInflight.set(tabId, p);
+  try {
+    await p;
+  } finally {
+    attachInflight.delete(tabId);
   }
 }
 

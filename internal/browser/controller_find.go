@@ -330,7 +330,8 @@ func (c *Controller) ReadConsole(ctx context.Context, req tool.BrowserConsoleReq
 	sb.WriteString("):\n\n")
 
 	for _, msg := range messages {
-		ts := time.Unix(int64(msg.Timestamp), 0).UTC().Format("15:04:05")
+		// CDP Runtime.Timestamp is milliseconds since epoch, not seconds.
+		ts := time.UnixMilli(int64(msg.Timestamp)).UTC().Format("15:04:05")
 		sb.WriteString(fmt.Sprintf("[%s] [%-5s] %s\n", ts, strings.ToUpper(msg.Type), msg.Text))
 	}
 	return sb.String(), nil

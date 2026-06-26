@@ -114,7 +114,12 @@ export function accumulateBatch(
   const acc = done.get(bId) || []
   if (!acc.some(a => a.id === finished.id)) acc.push(finished)
   done.set(bId, acc)
-  const want = expected.get(bId) || acc.length
+  // A missing `expected` entry means the batch was never registered OR already
+  // emitted (delete-on-emit cleared it). Either way, do NOT treat the current
+  // count as complete — that would re-emit a duplicate summary on a post-emit
+  // replay (e.g. an SW-restart resume firing DONE again). Honor emit-once.
+  const want = expected.get(bId)
+  if (want === undefined) return null
   if (acc.length < want) return null
   const summary = buildAgentSummary(acc)
   done.delete(bId)

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -18,6 +19,12 @@ const (
 	wsWriteTimeout    = 5 * time.Second
 	wsReadTimeout     = 60 * time.Second
 )
+
+// wsFallbackSeq makes auto-generated WS client ids unique even if two clients
+// connect within the same nanosecond (UnixNano alone can collide on coarse
+// clocks). Only the browser-relay path hits this — content scripts supply their
+// own high-entropy id — but a collision would alias two connections' routing.
+var wsFallbackSeq atomic.Uint64
 
 // clientConn wraps one WebSocket connection. Its writePump is the only
 // goroutine that writes to conn.
@@ -102,7 +109,7 @@ func (m *WSManager) RegisterWithProvider(conn *websocket.Conn, provider string) 
 
 func (m *WSManager) RegisterWithMeta(conn *websocket.Conn, meta WSClientMeta) {
 	if meta.ID == "" {
-		meta.ID = fmt.Sprintf("ws_%d", time.Now().UnixNano())
+		meta.ID = fmt.Sprintf("ws_%d_%d", time.Now().UnixNano(), wsFallbackSeq.Add(1))
 	}
 	if meta.Client == "" {
 		meta.Client = "content"
