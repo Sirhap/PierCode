@@ -106,10 +106,33 @@ func NewSpawnAgentTool() Tool {
 				return "", err
 			}
 
-			tab, err := ctx.Browser.NewTab(ctx.Context, workerURL)
+			// Open the worker tab via the dispatcher's own browser, NOT the Go
+			// relay. browser_* tools now run SW-natively in the extension; the
+			// legacy Go→WS browser_cmd relay is rejected (SW_DIRECT_BROWSER=true)
+			// and, worse, would broadcast to every connected browser (duplicate
+			// tabs). So push an open_worker_tab message to the dispatcher's WS
+			// client; its content script opens the tab with chrome.tabs.create via
+			// EXEC_BROWSER_TOOL. The worker then connects with ?agent=<id> and the
+			// server binds + seeds it — that path is unchanged and fires off the
+			// worker's own WS connect, so we don't wait for the tab here.
+			if ctx.Client.SourceClientID == "" || ctx.Client.BroadcastToClient == nil {
+				ctx.Agents.SetStatus(rec.AgentID, AgentFailed)
+				return "", fmt.Errorf("spawn_agent needs an active browser AI page; no dispatcher client connected")
+			}
+			openMsg, err := json.Marshal(map[string]any{
+				"type":             "open_worker_tab",
+				"url":              workerURL,
+				"agent_id":         rec.AgentID,
+				"client_id":        ctx.Client.SourceClientID,
+				"conversation_url": ctx.Client.ConversationURL,
+			})
 			if err != nil {
 				ctx.Agents.SetStatus(rec.AgentID, AgentFailed)
-				return "", fmt.Errorf("open worker tab: %w", err)
+				return "", err
+			}
+			if !ctx.Client.BroadcastToClient(ctx.Client.SourceClientID, openMsg) {
+				ctx.Agents.SetStatus(rec.AgentID, AgentFailed)
+				return "", fmt.Errorf("dispatcher browser is not reachable (tab may be closed)")
 			}
 
 			// Schedule an auto-confirmation inject to mitigate SPA hydration races.
@@ -118,8 +141,8 @@ func NewSpawnAgentTool() Tool {
 			scheduleAutoConfirmSpawn(ctx, rec.AgentID, task)
 
 			return fmt.Sprintf(
-				"Dispatched worker %s on %s (tab %d): %s\nThe worker will run autonomously and report back as a <task-notification>. Do not poll or read its tab — end your turn and wait for the callback.%s%s\n\n✅ 已启用自动确认机制（90秒后发送跟进消息确保任务执行）",
-				rec.AgentID, platform, tab.TabID, desc, dupWarn, activeRosterSuffix(ctx.Agents, ctx.Client.SourceClientID),
+				"Dispatched worker %s on %s: %s\nThe worker will run autonomously and report back as a <task-notification>. Do not poll or read its tab — end your turn and wait for the callback.%s%s\n\n✅ 已启用自动确认机制（90秒后发送跟进消息确保任务执行）",
+				rec.AgentID, platform, desc, dupWarn, activeRosterSuffix(ctx.Agents, ctx.Client.SourceClientID),
 			), nil
 		},
 	}

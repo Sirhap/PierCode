@@ -727,6 +727,20 @@ function connectWebSocket(apiUrl: string, token: string) {
           if (msg.agent_id === workerAgentId()) {
             setWorkerStopped(msg.action === "stop");
           }
+        } else if (msg.type === "open_worker_tab" && typeof msg.url === "string") {
+          // The coordinator's spawn_agent asks THIS dispatcher's browser to open
+          // the worker tab via the SW-direct path (chrome.tabs.create through
+          // EXEC_BROWSER_TOOL), because the legacy Go→WS relay is disabled and
+          // would otherwise broadcast a duplicate tab to every connected browser.
+          // Gate on isForThisClient so only the owning dispatcher acts.
+          if (!isForThisClient(msg)) return;
+          const agentId = typeof msg.agent_id === "string" ? msg.agent_id : "";
+          void chrome.runtime.sendMessage({
+            type: "EXEC_BROWSER_TOOL",
+            name: "browser_new_tab",
+            args: { url: msg.url },
+            callId: `spawn-${agentId || Date.now()}`,
+          });
         } else if (msg.type === "tool_stream" && typeof msg.text === "string") {
 		  if (!isForThisPage(msg)) return;
           for (const handler of streamHandlers.slice()) {
