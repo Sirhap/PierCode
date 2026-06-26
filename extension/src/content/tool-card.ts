@@ -12,6 +12,7 @@ import { T_PANEL, T_PANEL2, T_LINE, T_DIM, T_TXT, T_GLOW, T_AMBER, T_RED, T_FONT
 import { getDestructiveCommandWarning } from './destructive-warning';
 import { visualIndicator } from './visual-indicator';
 import { statusPanel } from './status-panel';
+import { saveToolResult, loadToolResult } from './tool-result-store';
 
 // ── 流式工具输出订阅表 ────────────────────────────────────────────────────────
 // 同一个 call_id 的 ToolCard 注册自己的 stream/done 回调。index.ts 的
@@ -212,6 +213,151 @@ export function initToolCardDeps(d: ToolCardDeps): void {
  *  no rescan re-rendered it. Callers check this before honoring `processed`. */
 export function isToolCardLive(key: string): boolean {
   return !!document.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`);
+}
+
+// subLineEl builds a Claude-Code-style ⎿ indented child row. Shared shape used
+// by both the interactive card (closure version inside renderToolCard) and the
+// read-only executed card below.
+function subLineEl(): HTMLDivElement {
+  const d = document.createElement('div');
+  d.style.cssText = `display:flex;align-items:baseline;gap:5px;margin:1px 0 0 14px;color:${T_DIM};font-size:11px;min-width:0`;
+  const mark = document.createElement('span');
+  mark.textContent = '⎿';
+  mark.style.cssText = 'flex:0 0 auto';
+  d.appendChild(mark);
+  return d;
+}
+
+// appendResultPreview renders the ⎿ first-line preview + expandable full output,
+// mirroring renderToolCard's closure `appendResultSection` but standalone for the
+// read-only executed card. No "插入到对话" link — the result is already in the
+// conversation (it went through fillAndSend when the tool first ran).
+function appendResultPreview(card: HTMLElement, text: string): void {
+  const lines = text.split('\n');
+  const first = (lines.find(l => l.trim()) || '(无输出)').trim();
+  const extra = Math.max(0, lines.length - 1);
+  const lineEl = subLineEl();
+  const preview = document.createElement('span');
+  preview.style.cssText = 'flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  preview.textContent = first.length > 100 ? first.slice(0, 99) + '…' : first;
+  lineEl.appendChild(preview);
+
+  const full = document.createElement('div');
+  full.style.cssText = `display:none;margin:4px 0 0 14px;padding:6px 8px;background:${T_PANEL2};border-radius:6px;max-height:240px;overflow-y:auto;font-family:${T_FONT};font-size:11px;color:${T_TXT};white-space:pre-wrap;word-break:break-word`;
+  full.textContent = text;
+
+  if (extra > 0 || first.length > 100) {
+    const toggle = document.createElement('span');
+    toggle.style.cssText = `flex:0 0 auto;color:${T_GLOW};cursor:pointer;user-select:none`;
+    const closedLabel = extra > 0 ? `+${extra} 行 ▸` : '展开 ▸';
+    toggle.textContent = closedLabel;
+    const flip = () => {
+      const open = full.style.display !== 'none';
+      full.style.display = open ? 'none' : 'block';
+      toggle.textContent = open ? closedLabel : '收起 ▾';
+    };
+    toggle.onclick = flip;
+    preview.style.cursor = 'pointer';
+    preview.onclick = flip;
+    lineEl.appendChild(toggle);
+  }
+  card.appendChild(lineEl);
+  card.appendChild(full);
+}
+
+/** Render a read-only terminal "done" card for an ALREADY-EXECUTED tool whose
+ *  interactive card got orphaned by an SPA DOM rebuild. NO exec/background/skip
+ *  buttons and it never calls executeToolCallRaw — so re-rendering an executed
+ *  tool can never re-trigger execution (the double-exec guard the `isExecuted`
+ *  gate protects). Result text (when cached) comes from tool-result-store; a
+ *  cache miss degrades to a "已执行，无缓存输出" line. Returns true when a card
+ *  is live in the DOM after the call. */
+export function renderExecutedCard(data: any, sourceEl: Element, key: string): boolean {
+  data = ensureToolCallId(data, key);
+  // Already live (e.g. a prior executed-card render) → nothing to do.
+  if (isToolCardLive(key)) return true;
+
+  const blockEl = findToolBlockElement(sourceEl, data);
+  const messageContent = sourceEl.closest('message-content') ?? sourceEl.closest('.prose') ?? sourceEl;
+  const anchor = blockEl?.parentElement ?? messageContent.parentElement ?? sourceEl.parentElement;
+  if (!anchor) return false;
+
+  // A previously-decorated block whose card was orphaned: clear the stale flag so
+  // the block-hide below re-applies to the rebuilt node.
+  if (blockEl?.getAttribute('data-piercode-decorated') === '1') {
+    blockEl.removeAttribute('data-piercode-decorated');
+  }
+
+  ensureToolCardAnimStyles();
+  const rec = loadToolResult(key);
+  const args = data.args || {};
+
+  const card = document.createElement('div');
+  card.setAttribute('data-piercode-key', key);
+  card.style.cssText = `border:1px solid ${T_LINE};border-radius:8px;padding:7px 10px;margin:8px 0;background:${T_PANEL};color:${T_TXT};font-size:12px;line-height:1.55;font-family:${T_FONT}`;
+
+  // ── 头行：⏺ name(预览) · 状态（done/error 终态，只读）──
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:0';
+  const stateMark = document.createElement('span');
+  const isError = rec?.status === 'error';
+  stateMark.textContent = '⏺';
+  stateMark.style.cssText = `flex:0 0 auto;display:inline-block;color:${isError ? T_RED : T_GLOW}`;
+  const title = document.createElement('span');
+  title.style.cssText = 'flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  title.title = `#${getToolCallId(data)}`;
+  const nameSpan = document.createElement('span');
+  nameSpan.style.cssText = `font-weight:600;color:${T_TXT}`;
+  nameSpan.textContent = String(data.name);
+  const argSpan = document.createElement('span');
+  argSpan.style.color = T_DIM;
+  argSpan.textContent = `(${rec?.argsPreview || toolCardArgPreview(args)})`;
+  title.append(nameSpan, argSpan);
+  const statusNote = document.createElement('span');
+  statusNote.style.cssText = `flex:0 0 auto;margin-left:auto;color:${isError ? T_RED : T_DIM};font-size:11px;white-space:nowrap`;
+  statusNote.textContent = rec
+    ? (isError ? `error · ${(rec.durationMs / 1000).toFixed(1)}s` : `已执行 · ${(rec.durationMs / 1000).toFixed(1)}s`)
+    : '已执行';
+  header.append(stateMark, title, statusNote);
+  card.appendChild(header);
+
+  // Hide the AI's raw ```piercode-tool block (same as the interactive card), so
+  // the executed card replaces the noisy JSON ChatGPT re-rendered.
+  if (blockEl) {
+    blockEl.setAttribute('data-piercode-decorated', '1');
+    const rawDetails = document.createElement('details');
+    rawDetails.style.cssText = 'margin:1px 0 0 14px';
+    const rawSummary = document.createElement('summary');
+    rawSummary.style.cssText = `cursor:pointer;list-style:none;color:${T_DIM};font-size:11px;user-select:none`;
+    rawSummary.textContent = '⎿ 原始调用 ▸';
+    rawDetails.appendChild(rawSummary);
+    card.appendChild(rawDetails);
+    const prevDisplay = blockEl.style.display;
+    blockEl.style.display = 'none';
+    rawDetails.addEventListener('toggle', () => {
+      rawSummary.textContent = rawDetails.open ? '⎿ 原始调用 ▾' : '⎿ 原始调用 ▸';
+      blockEl.style.display = rawDetails.open ? prevDisplay : 'none';
+    });
+  }
+
+  // Result preview (from cache) or a no-output placeholder.
+  if (rec && rec.output.trim()) {
+    appendResultPreview(card, rec.output);
+  } else {
+    const line = subLineEl();
+    const txt = document.createElement('span');
+    txt.style.cssText = 'flex:0 1 auto;min-width:0;color:' + T_DIM;
+    txt.textContent = '(已执行，无缓存输出)';
+    line.appendChild(txt);
+    card.appendChild(line);
+  }
+
+  if (blockEl && blockEl.parentElement === anchor) {
+    anchor.insertBefore(card, blockEl);
+  } else {
+    anchor.insertBefore(card, messageContent);
+  }
+  return true;
 }
 
 /** Returns true when a card for `key` is present in the DOM after this call
@@ -495,6 +641,7 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
   }
 
   execBtn.onclick = async () => {
+    const t0 = Date.now();
     setBtnDisabled(execBtn, true);
     setBtnDisabled(bgBtn, true);
     statusNote.textContent = '执行中…';
@@ -517,6 +664,17 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
         return;
       }
       markExecuted(key);
+      // Cache the result so a read-only done card can be re-rendered if the SPA
+      // later rebuilds the message DOM and orphans this card (ChatGPT does this
+      // on stream-finalize). See tool-result-store / renderExecutedCard.
+      saveToolResult(key, {
+        name: String(data.name),
+        argsPreview: toolCardArgPreview(args),
+        output: text,
+        status: 'done',
+        durationMs: Date.now() - t0,
+        ts: Date.now(),
+      });
       setCardState('done');
       if (statusNote.textContent === '执行中…') statusNote.textContent = '完成';
       setBtnDisabled(skipBtn, true);
@@ -562,6 +720,7 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
 
   if (bgBtn) {
     bgBtn.onclick = async () => {
+      const t0 = Date.now();
       setBtnDisabled(bgBtn, true);
       setBtnDisabled(execBtn, true);
       statusNote.textContent = '后台执行中…';
@@ -584,6 +743,14 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
           return;
         }
         markExecuted(key);
+        saveToolResult(key, {
+          name: String(data.name),
+          argsPreview: toolCardArgPreview(data.args || {}),
+          output: text,
+          status: 'done',
+          durationMs: Date.now() - t0,
+          ts: Date.now(),
+        });
         // text contains "[backgrounded as task ...]" — ⎿ 行展示 task_id，
         // 与下方实时流对应。
         const infoLine = subLine();

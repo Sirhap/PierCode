@@ -40,7 +40,8 @@ import { selectorsForHost } from './platform-selectors';
 import { isBrowserAgentFrame } from './browser-agent-bridge';
 import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
 import { T_PANEL, T_PANEL2, T_LINE, T_DIM, T_TXT, T_GLOW, T_GLOW_SOFT, T_AMBER, T_RED, T_FONT } from './terminal-theme';
-import { hashStr, getToolCallId, ensureToolCallId, renderToolCard, isToolCardLive, initToolCardDeps, streamChunkSubs, streamDoneSubs } from './tool-card';
+import { hashStr, getToolCallId, ensureToolCallId, renderToolCard, renderExecutedCard, toolCardArgPreview, isToolCardLive, initToolCardDeps, streamChunkSubs, streamDoneSubs } from './tool-card';
+import { saveToolResult } from './tool-result-store';
 import { scheduleResultEchoDecoration } from './tool-result-echo';
 import { showToast } from './toast';
 import { attachInputListener, initEditorCompletionDeps, getEditorText, effectiveFillMethod } from './editor-completion';
@@ -1436,6 +1437,17 @@ function scopedExecutionKey(key: string): string {
 	return key;
 }
 
+// spawnDedupKey computes the SAME exec-dedup key the batch loop uses for a tool
+// call (conversation-scoped, callId or content-hash). Kept identical to the
+// `${convId}:${data.name}:${callId|toolDedupHash}` formula at the scheduling
+// sites so an early markExecuted (spawn-accepted) and a later isExecuted (DOM
+// rescan after refresh) agree on the key.
+function spawnDedupKey(toolCall: any): string {
+  const convId = getConversationId();
+  const callId = getToolCallId(toolCall);
+  return callId ? `${convId}:${toolCall.name}:${callId}` : `${convId}:${toolDedupHash(toolCall)}`;
+}
+
 function isExecuted(key: string): boolean {
   try {
 		const scopedKey = scopedExecutionKey(key);
@@ -1516,8 +1528,21 @@ async function executeToolCallRaw(toolCall: any): Promise<string | null> {
 const SPAWN_POLL_INTERVAL_MS = 20 * 1000;
 const SPAWN_BATCH_TIMEOUT_MS = 30 * 60 * 1000;
 
-function runSpawnBatchRecoverable(spawns: any[]): Promise<any[]> {
+// onAccepted fires ONCE the moment the SW acknowledges it has taken over the
+// batch (recoverable ack) or answered inline — i.e. the dispatch is now
+// irreversible and the SW will drive/resume it on its own. The caller uses this
+// to mark the spawn executed immediately, so a tab refresh mid-run does NOT
+// re-detect the same spawn_agent fence and launch a SECOND batch (the SW already
+// owns the first). Without it, markExecuted only ran after the whole sub-agent
+// finished, leaving the entire run window unguarded against a refresh.
+function runSpawnBatchRecoverable(spawns: any[], onAccepted?: () => void): Promise<any[]> {
   const batchKey = `cbatch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let acceptedFired = false;
+  const fireAccepted = () => {
+    if (acceptedFired) return;
+    acceptedFired = true;
+    try { onAccepted?.(); } catch {}
+  };
   return new Promise((resolve, reject) => {
     let settled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -1571,6 +1596,9 @@ function runSpawnBatchRecoverable(spawns: any[]): Promise<any[]> {
           finish(() => reject(new Error(String(resp?.error || '未知错误'))));
           return;
         }
+        // SW took the batch (recoverable ack) or answered inline → dispatch is
+        // now irreversible; mark executed so a refresh can't relaunch it.
+        fireAccepted();
         // Old background without recoverable mode answers with results inline.
         if (!resp.accepted && resp.results) {
           finish(() => resolve(resp.results));
@@ -1584,6 +1612,7 @@ function runSpawnBatchRecoverable(spawns: any[]): Promise<any[]> {
             finish(() => reject(new Error(String(retry?.error || err))));
             return;
           }
+          fireAccepted();
           if (!retry.accepted && retry.results) {
             finish(() => resolve(retry.results));
             return;
@@ -1618,8 +1647,16 @@ async function executeToolCallReturn(toolCall: any, withGuidance = true): Promis
       args: toolCall.args || {},
       call_id: getToolCallId(toolCall),
     };
+    // Mark the spawn executed the instant the SW accepts the batch — NOT after
+    // the sub-agent finishes. The API sub-agent can run for minutes; if the user
+    // refreshes mid-run, the content tab's in-memory dedup state is wiped and the
+    // batch loop's markExecuted (post-result) never ran, so the DOM rescan would
+    // re-detect this same spawn_agent fence and launch a SECOND batch — the
+    // user-reported "refresh re-runs the sub-agent" bug. The SW owns/recovers the
+    // first batch on its own, so once accepted, content must never relaunch it.
+    const dedupKey = spawnDedupKey(toolCall);
     try {
-      const results = await runSpawnBatchRecoverable([spawn]);
+      const results = await runSpawnBatchRecoverable([spawn], () => markExecuted(dedupKey));
       injectToolResult(maybeTruncate(formatToolResults(results)));
     } catch (error) {
       injectToolResult(`子 agent 失败: ${error instanceof Error ? error.message : error}`);
@@ -2177,6 +2214,7 @@ function startDOMObserver(_responseSelector: string) {
           if (isExecuted(key) || executingKeys.has(key)) return false;
           executingKeys.add(key);
 
+          const t0 = Date.now();
           try {
             // 更新卡片状态为"执行中..."
             const cardEl = document.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`);
@@ -2186,6 +2224,17 @@ function startDOMObserver(_responseSelector: string) {
             const { output, stopStream, sendable, alreadyInjected } = await executeToolCallReturn(toolCall, withGuidance);
             if (sendable) {
               markExecuted(key);
+              // Cache the result so an executed card orphaned by an SPA DOM
+              // rebuild can be re-rendered read-only. Auto-exec path mirrors the
+              // interactive execBtn cache write in tool-card.ts.
+              saveToolResult(key, {
+                name: String(toolCall.name),
+                argsPreview: toolCardArgPreview(toolCall.args || {}),
+                output,
+                status: 'done',
+                durationMs: Date.now() - t0,
+                ts: Date.now(),
+              });
             }
             // alreadyInjected tools (spawn_agent's API route) filled + submitted
             // their own result via injectToolResult; don't re-queue it here.
@@ -2428,7 +2477,12 @@ function startDOMObserver(_responseSelector: string) {
         // Hash the parsed semantics, NOT codeText — Monaco virtualizes finished
         // blocks, so codeText drifts across a refresh and re-ran every tool.
         const key = callId ? `${convId}:${data.name}:${callId}` : `${convId}:${toolDedupHash(data)}`;
-        if (isExecuted(key)) { parsedQwenTool = true; continue; }
+        if (isExecuted(key)) {
+          // Already executed but its card was orphaned by an SPA DOM rebuild →
+          // re-render a read-only done card (never re-executes). Then bail.
+          if (sourceEl && !isToolCardLive(key)) renderExecutedCard(data, sourceEl, key);
+          parsedQwenTool = true; continue;
+        }
         if (processed.has(key) && (!sourceEl || isToolCardLive(key))) { parsedQwenTool = true; continue; }
         console.log('[PierCode] 提取到工具调用(Qwen DOM):', data);
 
@@ -2483,12 +2537,15 @@ function startDOMObserver(_responseSelector: string) {
         // Hash the parsed semantics, NOT codeText — DOM-rendered code drifts
         // across a refresh and re-ran every tool.
         const key = callId ? `${convId}:${data.name}:${callId}` : `${convId}:${toolDedupHash(data)}`;
-        if (processed.has(key)) continue;
+        if (isExecuted(key)) {
+          if (sourceEl && !isToolCardLive(key)) renderExecutedCard(data, sourceEl, key);
+          continue;
+        }
+        if (processed.has(key) && (!sourceEl || isToolCardLive(key))) continue;
         console.log('[PierCode] 提取到工具调用(Chat Z DOM):', data);
 
         if (sourceEl) {
-          processed.add(key);
-          renderToolCard(data, codeText, sourceEl, key, processed);
+          if (renderToolCard(data, codeText, sourceEl, key, processed)) processed.add(key);
           maybeScheduleAutoExecute(data, key, sourceEl ?? document.body);
         }
       }
@@ -2512,9 +2569,14 @@ function startDOMObserver(_responseSelector: string) {
         const key = callId ? `${convId}:${data.name}:${callId}` : `${convId}:${toolDedupHash(data)}`;
         // Self-heal: skip only if already processed AND its card is still live.
         // A burned key whose card got orphaned (SPA rebuilt the streaming <pre>)
-        // must be allowed to re-render, or the card stays gone for good. But a
-        // tool already executed/skipped is done — don't resurrect its card.
-        if (isExecuted(key)) continue;
+        // must be allowed to re-render, or the card stays gone for good. A tool
+        // already executed → re-render a READ-ONLY done card if its card was
+        // orphaned (ChatGPT rebuilds the message DOM on stream-finalize), so the
+        // executed state stays visible; it never re-enters the exec path.
+        if (isExecuted(key)) {
+          if (sourceEl && !isToolCardLive(key)) renderExecutedCard(data, sourceEl, key);
+          continue;
+        }
         if (processed.has(key) && (!sourceEl || isToolCardLive(key))) continue;
         console.log('[PierCode] 提取到工具调用(JSON):', data);
 
@@ -2548,7 +2610,10 @@ function startDOMObserver(_responseSelector: string) {
         const callId = getToolCallId(data);
         // Conversation-scoped fallback hash — see the Qwen DOM path above.
         const key = callId ? `${convId}:${data.name}:${callId}` : `${convId}:${toolDedupHash(data)}`;
-        if (isExecuted(key)) continue;
+        if (isExecuted(key)) {
+          if (sourceEl && !isToolCardLive(key)) renderExecutedCard(data, sourceEl, key);
+          continue;
+        }
         if (processed.has(key) && (!sourceEl || isToolCardLive(key))) continue;
         console.log('[PierCode] 提取到工具调用(XML):', data);
 

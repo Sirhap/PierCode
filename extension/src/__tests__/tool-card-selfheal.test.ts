@@ -15,7 +15,20 @@ globalThis.CSS = window.CSS || ({ escape: (s: string) => s } as any)
   runtime: { sendMessage: () => {}, onMessage: { addListener: () => {} } },
 }
 
-const { renderToolCard, isToolCardLive, initToolCardDeps } = await import('../content/tool-card')
+// localStorage shim (jsdom's may be absent depending on config) so the result
+// cache used by renderExecutedCard works in tests.
+if (!globalThis.localStorage) {
+  const m = new Map<string, string>()
+  globalThis.localStorage = {
+    getItem: (k: string) => (m.has(k) ? m.get(k)! : null),
+    setItem: (k: string, v: string) => { m.set(k, v) },
+    removeItem: (k: string) => { m.delete(k) },
+    clear: () => { m.clear() },
+  } as any
+}
+
+const { renderToolCard, renderExecutedCard, isToolCardLive, initToolCardDeps } = await import('../content/tool-card')
+const { saveToolResult } = await import('../content/tool-result-store')
 
 // Reproduces the live-streaming orphan: a card is anchored next to the AI's
 // <pre> tool block; the SPA rebuilds that <pre> mid-stream, removing the card
@@ -72,5 +85,77 @@ describe('tool card self-heal on SPA node rebuild', () => {
     // A rescan must succeed again (not bail because the block was decorated).
     expect(renderToolCard(DATA, '', msg, KEY, new Set())).toBe(true)
     expect(isToolCardLive(KEY)).toBe(true)
+  })
+})
+
+// renderExecutedCard: the read-only "done" card re-rendered for an already-
+// executed tool whose interactive card was orphaned by an SPA DOM rebuild
+// (ChatGPT finalizes the message and rebuilds the <pre>). It must show the
+// cached result, carry NO execution buttons, and never call executeToolCallRaw.
+describe('renderExecutedCard (read-only done card)', () => {
+  const EXEC_RAW = vi.fn().mockResolvedValue('')
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    ;(globalThis.localStorage as any).clear?.()
+    EXEC_RAW.mockClear()
+    initToolCardDeps({
+      executeToolCallRaw: EXEC_RAW,
+      markExecuted: vi.fn(),
+      fillAndSend: vi.fn().mockReturnValue(true),
+      ensureStreamDispatchers: vi.fn(),
+    })
+  })
+
+  it('renders a read-only card with the cached output and no exec buttons', () => {
+    saveToolResult(KEY, { name: 'read_file', argsPreview: '/tmp/x', output: 'cached line one\ncached line two', status: 'done', durationMs: 250, ts: Date.now() })
+    const msg = makeMessage(JSON_TEXT)
+    expect(renderExecutedCard(DATA, msg, KEY)).toBe(true)
+    const card = document.querySelector(`[data-piercode-key="${KEY}"]`)!
+    expect(card).toBeTruthy()
+    // No buttons at all → cannot re-trigger execution.
+    expect(card.querySelectorAll('button').length).toBe(0)
+    // Cached output surfaced.
+    expect(card.textContent).toContain('cached line one')
+    expect(card.textContent).toContain('已执行')
+  })
+
+  it('does not call executeToolCallRaw (no double-exec)', () => {
+    saveToolResult(KEY, { name: 'read_file', argsPreview: '/tmp/x', output: 'out', status: 'done', durationMs: 1, ts: Date.now() })
+    const msg = makeMessage(JSON_TEXT)
+    renderExecutedCard(DATA, msg, KEY)
+    expect(EXEC_RAW).not.toHaveBeenCalled()
+  })
+
+  it('degrades to a no-output placeholder on a cache miss', () => {
+    const msg = makeMessage(JSON_TEXT)
+    expect(renderExecutedCard(DATA, msg, KEY)).toBe(true)
+    const card = document.querySelector(`[data-piercode-key="${KEY}"]`)!
+    expect(card.querySelectorAll('button').length).toBe(0)
+    expect(card.textContent).toContain('无缓存输出')
+  })
+
+  it('re-renders after the executed card is orphaned by a node rebuild', () => {
+    saveToolResult(KEY, { name: 'read_file', argsPreview: '/tmp/x', output: 'out', status: 'done', durationMs: 1, ts: Date.now() })
+    const msg = makeMessage(JSON_TEXT)
+    expect(renderExecutedCard(DATA, msg, KEY)).toBe(true)
+    expect(isToolCardLive(KEY)).toBe(true)
+
+    // SPA rebuilds the subtree: card gone, fresh <pre> back.
+    msg.innerHTML = ''
+    const fresh = document.createElement('pre')
+    fresh.textContent = JSON_TEXT
+    msg.appendChild(fresh)
+    expect(isToolCardLive(KEY)).toBe(false)
+
+    expect(renderExecutedCard(DATA, msg, KEY)).toBe(true)
+    expect(isToolCardLive(KEY)).toBe(true)
+  })
+
+  it('shows error status when the cached record is an error', () => {
+    saveToolResult(KEY, { name: 'read_file', argsPreview: '/tmp/x', output: 'boom', status: 'error', durationMs: 5, ts: Date.now() })
+    const msg = makeMessage(JSON_TEXT)
+    renderExecutedCard(DATA, msg, KEY)
+    const card = document.querySelector(`[data-piercode-key="${KEY}"]`)!
+    expect(card.textContent).toContain('error')
   })
 })
