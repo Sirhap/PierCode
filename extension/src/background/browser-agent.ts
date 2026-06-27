@@ -169,7 +169,6 @@ export function classifyRisk(
     case 'browser_handle_dialog':
       return { highRisk: true, reason: 'handles a page dialog' }
     case 'browser_attachment_upload':
-    case 'browser_upload':
       return { highRisk: true, reason: 'uploads a file' }
     // Page mutators that are in the content route's APPROVAL_TOOLS but previously fell to
     // `default: safe` here — so the sidebar browser-agent ran them UNPROMPTED (it sets
@@ -183,6 +182,19 @@ export function classifyRisk(
       return { highRisk: true, reason: 'changes a dropdown selection' }
     case 'browser_drag':
       return { highRisk: true, reason: 'performs a drag-and-drop' }
+    // Also in the content route's APPROVAL_TOOLS but previously fell to `default:
+    // safe` here, so the sidebar browser-agent ran them UNPROMPTED. Mirror
+    // APPROVAL_TOOLS exactly so the two gates can't drift (audit #6): hover can
+    // trigger hover-activated menus/navigation; use_tab adopts another tab as the
+    // control target; finalize_tabs closes tabs; zoom changes the page zoom level.
+    case 'browser_hover':
+      return { highRisk: true, reason: 'hovers an element (can trigger menus/navigation)' }
+    case 'browser_use_tab':
+      return { highRisk: true, reason: 'adopts another tab as the control target' }
+    case 'browser_finalize_tabs':
+      return { highRisk: true, reason: 'closes tabs' }
+    case 'browser_zoom':
+      return { highRisk: true, reason: 'changes the page zoom level' }
 
     case 'browser_batch': {
       const actions = Array.isArray(args.actions) ? args.actions : []
@@ -537,10 +549,11 @@ let activeTask: ActiveTask | null = null
 const KEEP_ALIVE_ALARM = 'piercode-browser-agent-keepalive'
 const ORPHAN_TASK_STORAGE_KEY = 'piercodeBrowserAgentActiveTask'
 
-/** 启动任务保活闹钟（幂等）。periodInMinutes 取平台允许的最小值附近。 */
+/** 启动任务保活闹钟（幂等）。0.5 = Chrome 打包扩展允许的最小周期；低于它（如 0.4）
+ *  在打包构建会被拒绝创建，保活闹钟根本起不来，无法维持 MV3 service worker。 */
 function startKeepAlive(): void {
   try {
-    chrome.alarms?.create(KEEP_ALIVE_ALARM, { periodInMinutes: 0.4 })
+    chrome.alarms?.create(KEEP_ALIVE_ALARM, { periodInMinutes: 0.5 })
   } catch {
     // 无 alarms 权限 / 测试环境：忽略（保活退化为无，但不影响功能正确性）。
   }

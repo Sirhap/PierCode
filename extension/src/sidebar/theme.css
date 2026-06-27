@@ -48,7 +48,7 @@ html, body {
 .glow-text { color: var(--glow); }
 .glow-border { border-color: var(--glow); box-shadow: 0 0 0 1px var(--glow-soft); }
 .glow-bg { background: var(--glow); }
-/* Theme-token amber/red — replaces raw Tailwind amber-*/red-* so accents follow the palette. */
+/* Theme-token amber/red — replaces raw Tailwind amber and red utilities so accents follow the palette. */
 .amber-text { color: var(--amber); }
 .amber-bg { background: var(--amber); }
 .red-text { color: var(--red); }
