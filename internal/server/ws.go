@@ -78,17 +78,20 @@ func NewWSManager(allowedOrigins []string) *WSManager {
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
-			// Content scripts create WebSocket connections from the AI
-			// page's origin (e.g. https://chatgpt.com), not from
-			// chrome-extension://. The token in the query string is the
-			// PRIMARY auth, but the Origin is still gated against the
-			// configured allowlist (chrome-extension/loopback/empty are
-			// always allowed; see IsAllowedOrigin) so a disallowed cross-site
-			// page cannot open a token-replay WS — and so allowedOrigins is a
-			// real control, not dead config. The CORS middleware is bypassed
-			// for /ws, so this is the sole origin gate.
+			// The content script opens this WS from inside the AI page, so the
+			// browser forces Origin to that page's https origin (e.g.
+			// https://chat.qwen.ai) — NOT chrome-extension://. The set of such
+			// origins is exactly the extension's host_permissions and grows every
+			// time a platform is added, so the server cannot enumerate them
+			// without duplicating the manifest; gating on an allowlist here would
+			// reject every legitimate AI-page connection (verified: a real Qwen
+			// content script got a 403). The per-launch bearer token in the query
+			// string is therefore the authoritative auth for /ws (server binds
+			// 127.0.0.1 only). We intentionally accept any Origin and rely on the
+			// token. allowedOrigins still governs the CORS middleware for the HTTP
+			// routes; it is deliberately NOT applied to the WS upgrade.
 			CheckOrigin: func(r *http.Request) bool {
-				return IsAllowedOrigin(r.Header.Get("Origin"), allowedOrigins)
+				return true
 			},
 		},
 	}

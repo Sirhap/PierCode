@@ -7,11 +7,15 @@ import (
 	"github.com/sirhap/piercode/internal/tool"
 )
 
-// #7: the WS upgrader's CheckOrigin must actually consult the configured
-// allowlist, not be a hardcoded `return true`. Token remains the primary auth,
-// but a disallowed cross-site Origin must be rejected at the upgrade so the
-// allowedOrigins config is not silently dead.
-func TestWSCheckOriginUsesAllowlist(t *testing.T) {
+// #7 (corrected): the WS upgrader must accept connections from the AI pages the
+// extension's content script runs in. The browser forces Origin to that page's
+// https origin (e.g. https://chat.qwen.ai), which the server cannot enumerate
+// without duplicating the manifest's host_permissions. Gating the upgrade on an
+// allowlist rejected every legitimate AI-page connection (a real Qwen content
+// script got a 403 in live testing), so the per-launch bearer token is the
+// authoritative auth and CheckOrigin accepts any Origin. This test pins that so
+// the regression is not re-introduced.
+func TestWSCheckOriginAcceptsAIPageOrigins(t *testing.T) {
 	m := NewWSManager([]string{"https://staging.app"})
 	check := m.upgrader.CheckOrigin
 
@@ -23,20 +27,16 @@ func TestWSCheckOriginUsesAllowlist(t *testing.T) {
 		return r
 	}
 
-	if !check(req("")) {
-		t.Fatal("empty origin (same-origin / native client) must be allowed")
-	}
-	if !check(req("chrome-extension://abc")) {
-		t.Fatal("extension origin must be allowed")
-	}
-	if !check(req("http://localhost:5173")) {
-		t.Fatal("loopback origin must be allowed")
-	}
-	if !check(req("https://staging.app")) {
-		t.Fatal("whitelisted origin must be allowed")
-	}
-	if check(req("https://evil.com")) {
-		t.Fatal("non-whitelisted cross-site origin must be REJECTED (allowlist was dead before)")
+	// AI-page origins the content script actually connects from MUST be accepted
+	// (token is the gate). These are NOT in allowedOrigins on purpose.
+	for _, origin := range []string{
+		"", "chrome-extension://abc", "http://localhost:5173",
+		"https://chat.qwen.ai", "https://chatgpt.com", "https://claude.ai",
+		"https://gemini.google.com",
+	} {
+		if !check(req(origin)) {
+			t.Fatalf("CheckOrigin must accept AI-page origin %q (token is the auth)", origin)
+		}
 	}
 }
 
