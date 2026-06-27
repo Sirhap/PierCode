@@ -1407,6 +1407,14 @@ function refreshTokenMeterNow(): void {
   } catch {}
 }
 let tokenVisibilityListenerBound = false;
+// 停掉 3s 令牌刷新定时器（总开关关闭时调用，避免停用后仍在后台跑 scanConversation
+// + computeMeter——审计 #14）。visibilitychange 监听是幂等的，留着无副作用。
+function stopTokenRefresh(): void {
+  if (tokenRefreshTimer) {
+    clearInterval(tokenRefreshTimer);
+    tokenRefreshTimer = null;
+  }
+}
 function startTokenRefresh(): void {
   if (tokenRefreshTimer) return;
   void loadCompressionConfig(); // 预热缓存，让 tokenThreshold 用上真实平台阈值
@@ -3397,6 +3405,7 @@ function bootstrapGate() {
             statusPanel.init();
             statusPanel.setProvider(platformAdapter.name, platformProfile);
           } catch {}
+          try { startTokenRefresh(); } catch {}   // 恢复 3s 令牌刷新（停用时停掉的）
           console.log('[PierCode] 总开关已开启，恢复运行');
         } else {
           start();
@@ -3406,6 +3415,9 @@ function bootstrapGate() {
         try { statusPanel.destroy(); } catch {}
         try { visualIndicator.hideAllIndicators(); } catch {}
         try { document.querySelectorAll('[data-piercode-init-btn]').forEach(el => el.remove()); } catch {}
+        // 停掉持续后台定时器，别让停用后仍 3s 一跑（审计 #14）。DOM MutationObserver
+        // 由 scanText 顶部的 piercodeMasterDisabled 早退兜底（不再检测/执行工具）。
+        try { stopTokenRefresh(); } catch {}
         console.log('[PierCode] 总开关已关闭，插件停用（已渲染的卡片刷新页面后清除）');
       }
     });

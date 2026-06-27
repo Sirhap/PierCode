@@ -23,3 +23,22 @@ describe('Chat Z generic-parser fallthrough (audit #8)', () => {
     expect(block).toContain('if (chatzHasContainers) {');
   });
 });
+
+describe('master switch stops background timers (audit #14)', () => {
+  it('defines stopTokenRefresh and calls it when the switch is turned off', () => {
+    expect(contentSource).toContain('function stopTokenRefresh()');
+    expect(contentSource).toContain('clearInterval(tokenRefreshTimer)');
+    // The disable branch must stop the 3s token-refresh timer.
+    const off = contentSource.indexOf('总开关已关闭，插件停用');
+    expect(off).toBeGreaterThan(-1);
+    const offBlock = contentSource.slice(off - 400, off);
+    expect(offBlock).toContain('stopTokenRefresh()');
+  });
+
+  it('restarts the token-refresh timer when the switch is turned back on', () => {
+    const on = contentSource.indexOf('总开关已开启，恢复运行');
+    expect(on).toBeGreaterThan(-1);
+    const onBlock = contentSource.slice(on - 400, on);
+    expect(onBlock).toContain('startTokenRefresh()');
+  });
+});
