@@ -67,7 +67,12 @@ const RENDERER_SOURCE = `(() => {
       // re-attach on the next move() instead of silently vanishing.
       if (!state.observer && window.MutationObserver && document.body) {
         state.observer = new MutationObserver(() => {
-          if (state.host && !state.host.isConnected && document.body) {
+          // Guard the whole document: a callback can still be queued after the
+          // realm is torn down (JSDOM window.close in tests, or a navigating
+          // page), where document itself is gone, so reading document.body
+          // throws an uncaught TypeError.
+          if (typeof document === 'undefined' || !document || !document.body) return;
+          if (state.host && !state.host.isConnected) {
             try { document.body.appendChild(state.host); } catch (e) {}
           }
         });
@@ -180,6 +185,19 @@ const RENDERER_SOURCE = `(() => {
           el.addEventListener('transitionend', fin, { once: true });
           setTimeout(fin, 300);
         });
+      },
+      // Explicit teardown: disconnect the self-heal observer, clear the idle
+      // hide/remove timers, and remove the host overlay immediately instead of
+      // waiting out IDLE_HIDE_MS + IDLE_REMOVE_MS (~15s). Tests call this in
+      // afterEach so a queued observer callback can't fire after the realm is
+      // torn down; production can call it on tab teardown / extension disable.
+      destroy() {
+        if (state.hideTimer) { clearTimeout(state.hideTimer); state.hideTimer = null; }
+        if (state.removeTimer) { clearTimeout(state.removeTimer); state.removeTimer = null; }
+        if (state.observer) { try { state.observer.disconnect(); } catch (e) {} state.observer = null; }
+        if (state.el) { try { state.el.remove(); } catch (e) {} state.el = null; state.arrow = null; }
+        if (state.host) { try { state.host.remove(); } catch (e) {} state.host = null; state.root = null; }
+        state.x = null; state.y = null;
       },
     };
   }

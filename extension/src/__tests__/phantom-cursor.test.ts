@@ -72,6 +72,14 @@ describe('phantom cursor renderer (page context)', () => {
   });
 
   afterEach(() => {
+    // Tear the renderer down (disconnect observer, clear idle timers, remove
+    // host) BEFORE closing the JSDOM realm. Without this, a queued self-heal
+    // MutationObserver callback fires after window.close() and throws an uncaught
+    // "Cannot read properties of undefined (reading 'body')" (audit #15).
+    try {
+      const pcc = (dom.window as any).__piercodePhantomCursor;
+      if (pcc && typeof pcc.destroy === 'function') pcc.destroy();
+    } catch { /* ignore */ }
     dom.window.close();
   });
 
@@ -119,6 +127,23 @@ describe('phantom cursor renderer (page context)', () => {
     const start = Date.now();
     await move(10, 10);
     expect(Date.now() - start).toBeLessThan(100);
+  });
+
+  it('destroy() tears down the host and observer immediately (audit #15)', async () => {
+    await move(10, 10);
+    const host = findHost();
+    expect(host).toBeTruthy();
+    const pcc = (dom.window as any).__piercodePhantomCursor;
+    expect(typeof pcc.destroy).toBe('function');
+    pcc.destroy();
+    // Host overlay is gone right away (no 15s idle wait).
+    expect(findHost()).toBeNull();
+    // A subsequent body mutation must NOT throw — the observer was disconnected.
+    expect(() => {
+      const d = dom.window.document.createElement('div');
+      dom.window.document.body.appendChild(d);
+      d.remove();
+    }).not.toThrow();
   });
 
   it('removes the host overlay after the idle remove delay', async () => {

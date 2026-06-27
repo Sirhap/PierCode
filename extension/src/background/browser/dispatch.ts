@@ -23,16 +23,28 @@ export function browserTabKey(args: Record<string, unknown>): string {
   return 'tab:default'
 }
 
-/** Per-key promise chain: same key serializes, different keys run concurrently. */
+/** Per-key promise chain: same key serializes, different keys run concurrently.
+ *  A key's entry is deleted once its chain drains so the map doesn't accumulate
+ *  one entry per distinct tab/path/op key ever used over the SW's lifetime
+ *  (audit #20). A key that is still being awaited keeps its entry; only the tail
+ *  promise removes itself, and only if no newer run has replaced it. */
 export class KeyedLock {
   private chains = new Map<string, Promise<unknown>>()
   run<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.chains.get(key) ?? Promise.resolve()
     const next = prev.then(fn, fn)   // run regardless of prior outcome
     // keep the chain but swallow rejection so one failure doesn't poison the key
-    this.chains.set(key, next.catch(() => undefined))
+    const tail = next.catch(() => undefined)
+    this.chains.set(key, tail)
+    // When this tail settles, drop the entry IF it is still the current tail
+    // (a later run() for the same key would have replaced it — leave that one).
+    void tail.then(() => {
+      if (this.chains.get(key) === tail) this.chains.delete(key)
+    })
     return next
   }
+  /** Number of live keys — for tests/diagnostics. */
+  get size(): number { return this.chains.size }
 }
 
 // Controller method signature: (args) => Promise<string> (the tool output text).
