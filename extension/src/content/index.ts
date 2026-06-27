@@ -2506,6 +2506,12 @@ function startDOMObserver(_responseSelector: string) {
     // ── Phase 0b: 直接从 DOM 提取 tool 代码块（Chat Z CodeMirror6 专用） ──
     if (sourceEl && platformAdapter.name === 'chatz') {
       const toolContainers = sourceEl.querySelectorAll(DOM_EXTRACT.chatzToolContainer);
+      // Only let the Chat Z DOM path OWN this message (short-circuit the generic
+      // fence/XML parsers) when it actually found CodeMirror tool containers
+      // (audit #8). If there are none — the model emitted a plain Markdown
+      // `piercode-tool` fence, or Chat Z changed its DOM — fall through so the
+      // generic parser still detects the call instead of silently dropping it.
+      const chatzHasContainers = toolContainers.length > 0;
       for (const container of toolContainers) {
         // 从 CodeMirror6 提取文本
         const cmContent = container.querySelector(DOM_EXTRACT.codeMirrorContent);
@@ -2549,9 +2555,13 @@ function startDOMObserver(_responseSelector: string) {
           maybeScheduleAutoExecute(data, key, sourceEl ?? document.body);
         }
       }
-      scheduleAIResponseLog(sourceEl, text);
-      // Chat Z 已通过 DOM 直接提取，不再走文本解析
-      return;
+      // Chat Z handled via DOM extraction → don't also run the text parsers
+      // (double-exec). But only short-circuit if we actually had tool containers;
+      // otherwise fall through to the generic fence/XML parsers below (#8).
+      if (chatzHasContainers) {
+        scheduleAIResponseLog(sourceEl, text);
+        return;
+      }
     }
 
     // ── Phase 1: JSON 围栏格式（优先） ──

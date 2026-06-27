@@ -309,6 +309,10 @@ export function createBrowserAgentStore(): {
     // 防被抢占旧任务的晚到 TARGET clobber 新 store 显示——审计 Bug #21）；用户 query/set
     // 的 TARGET 回复不带 taskId（非任务作用域），始终放行。
     if (m.taskId && currentTaskId && m.taskId !== currentTaskId) return
+    // STREAM 是回复预览，必须严格属于当前任务：旧/无 taskId 的 STREAM（如 bridge 路径
+    // 早期裸 broadcast 不带 taskId）会把旧任务文本拼进新任务的 streamPreview（审计 #9）。
+    // 故当本 store 有活跃任务时，只接受带匹配 taskId 的 STREAM。
+    if (m.type === 'BROWSER_AGENT_STREAM' && currentTaskId && m.taskId !== currentTaskId) return
     reduce(m)
   }
 

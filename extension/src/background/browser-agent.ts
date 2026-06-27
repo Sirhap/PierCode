@@ -1328,7 +1328,11 @@ export function registerBrowserAgentHandler(): void {
           }
           case 'BROWSER_AGENT_STREAM': {
             // 桥若跑了 scoped SSE tee，转发预览给侧边栏（best-effort）。
-            broadcast({ type: 'BROWSER_AGENT_STREAM', agentTurnId: msg.agentTurnId, chunk: msg.chunk })
+            // 必须带上当前任务的 taskId（审计 #9）：不带身份的 STREAM 会被旧/别的 store
+            // 当成自己的预览拼进 streamPreview。无活跃任务时不转发（没有归属对象）。
+            if (activeTask) {
+              broadcast({ type: 'BROWSER_AGENT_STREAM', taskId: activeTask.taskId, agentTurnId: msg.agentTurnId, chunk: msg.chunk })
+            }
             break
           }
         }
