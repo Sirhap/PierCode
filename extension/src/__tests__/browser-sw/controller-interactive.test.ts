@@ -100,6 +100,40 @@ describe('controller interactive', () => {
     await expect(ctl.scroll({ tabId: 1, ref: 'e9' })).rejects.toThrow(/stale or unknown/)
   })
 
+  it('scroll by ref REJECTS when CDP scrollIntoViewIfNeeded fails (audit #11)', async () => {
+    const { makeController } = await import('../../background/browser/controller')
+    const send = vi.fn(async (_t: any, fq: string) => {
+      if (fq === 'Accessibility.getFullAXTree') return AX_TREE
+      if (fq === 'DOM.scrollIntoViewIfNeeded') throw new Error('Node is detached from document')
+      return {}
+    })
+    const ctl = makeController({ send, sleep: noSleep })
+    await ctl.snapshot({ tabId: 1 })
+    // Must NOT resolve with a fake "scrolled ref into view" — it surfaces the error.
+    await expect(ctl.scroll({ tabId: 1, ref: 'e0' })).rejects.toThrow(/could not scroll ref/)
+  })
+
+  it('drag dispatches each endpoint to its own OOPIF session (audit #12)', async () => {
+    const { makeController } = await import('../../background/browser/controller')
+    const events: Array<{ session: string | undefined; type: string }> = []
+    const send = vi.fn(async (t: any, fq: string, p: any) => {
+      if (fq === 'Accessibility.getFullAXTree') return AX_TREE
+      if (fq === 'DOM.getBoxModel') return { model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } }
+      if (fq.startsWith('Input.dispatchMouseEvent')) events.push({ session: t?.sessionId, type: p?.type })
+      return {}
+    })
+    const ctl = makeController({ send, sleep: noSleep })
+    await ctl.snapshot({ tabId: 1 })
+    // Force the resolved ref to carry a child OOPIF sessionId.
+    const ref = ctl.registry.resolveRef(1, 'e0')!
+    ;(ref as any).sessionId = 'sess-A'
+    await ctl.drag({ tabId: 1, fromRef: 'e0', toRef: 'e0' })
+    const press = events.find(e => e.type === 'mousePressed')
+    const release = events.find(e => e.type === 'mouseReleased')
+    expect(press?.session, 'mousePressed must target the child session, not the main page').toBe('sess-A')
+    expect(release?.session, 'mouseReleased must target the child session').toBe('sess-A')
+  })
+
   it('use_tab on an AI-page tab is NOT blocked by the AI-page gate (it grants control)', async () => {
     ;(globalThis as any).chrome.tabs.get = vi.fn(async () => ({ id: 5, url: 'https://chatgpt.com/c/9', title: 'GPT' }))
     const { makeController } = await import('../../background/browser/controller')
@@ -128,6 +162,22 @@ describe('controller interactive', () => {
     await expect(ctl.resolveTabForGate({ tabId: 7 }, 'browser_finalize_tabs')).resolves.toMatchObject({ tabId: 7 })
     const out = await ctl.finalizeTabs({ close: [7] })
     expect(out).toContain('finalized 1/1')
+  })
+
+  it('re-enables a CDP domain after a transient enable failure (audit #10)', async () => {
+    const { makeController } = await import('../../background/browser/controller')
+    let enableCalls = 0
+    const send = vi.fn(async (_t: any, fq: string) => {
+      if (fq === 'Network.enable') {
+        enableCalls++
+        if (enableCalls === 1) throw new Error('transient: tab still attaching')
+      }
+      return {}
+    })
+    const ctl = makeController({ send, sleep: noSleep })
+    await ctl.network({ tabId: 1 })   // first enable throws → must NOT be cached as enabled
+    await ctl.network({ tabId: 1 })   // second call retries the enable
+    expect(enableCalls, 'domain enable must be retried after a transient failure').toBe(2)
   })
 
   it('waitForNavigation resolves when a main-frame nav event lands', async () => {

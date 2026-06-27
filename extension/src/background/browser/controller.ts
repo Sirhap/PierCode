@@ -166,8 +166,15 @@ export function makeController(deps: ControllerDeps = {}) {
   // Enable a CDP domain once per tab (dedupe via EventBus). Best-effort.
   async function ensureDomain(tabId: number, domain: string): Promise<void> {
     if (events.domainEnabled(tabId, domain)) return
-    try { await cdp.sendCommand(target(tabId), domain, 'enable') } catch { /* restricted page */ }
-    events.markDomainEnabled(tabId, domain)
+    // Mark enabled ONLY after the command actually succeeds (audit #10). The old
+    // code marked it unconditionally after the try/catch, so a transient first
+    // failure (e.g. the tab still attaching) cached "enabled" and the domain was
+    // never re-enabled until the tab closed. On failure we leave it unmarked so
+    // the next call retries; a genuinely restricted page just retries cheaply.
+    try {
+      await cdp.sendCommand(target(tabId), domain, 'enable')
+      events.markDomainEnabled(tabId, domain)
+    } catch { /* transient or restricted page: leave unmarked so a later call retries */ }
   }
 
   const api = {
@@ -410,10 +417,19 @@ export function makeController(deps: ControllerDeps = {}) {
         const t = registry.resolveRef(tab.tabId, args.ref)
         if (!t) throw new Error(`ref ${args.ref} is stale or unknown; take a fresh browser_snapshot`)
         const tgt: Debuggee = t.sessionId ? ({ tabId: tab.tabId, sessionId: t.sessionId } as Debuggee) : target(tab.tabId)
-        try { await cdp.sendCommand(tgt, 'DOM', 'scrollIntoViewIfNeeded', { backendNodeId: t.backendId }) }
-        catch { /* fall through to wheel below */ }
-        registry.markStale(tab.tabId)
-        return 'scrolled ref into view'
+        try {
+          await cdp.sendCommand(tgt, 'DOM', 'scrollIntoViewIfNeeded', { backendNodeId: t.backendId })
+          registry.markStale(tab.tabId)
+          return 'scrolled ref into view'
+        } catch (e) {
+          // CDP scrollIntoViewIfNeeded failed — do NOT report success (audit #11:
+          // the old code swallowed the error and returned 'scrolled ref into
+          // view' anyway, so the agent believed an element it never scrolled to
+          // was in view). Surface the real failure so the caller can retry with a
+          // fresh snapshot or a wheel scroll.
+          registry.markStale(tab.tabId)
+          throw new Error(`could not scroll ref ${args.ref} into view: ${e instanceof Error ? e.message : String(e)}`)
+        }
       }
       // else mouse-wheel at point (or viewport center).
       const dx = args.deltaX ?? 0
@@ -446,11 +462,20 @@ export function makeController(deps: ControllerDeps = {}) {
       const tab = await ensureTab(args)
       const a = await resolvePoint(cdp, registry, target(tab.tabId), { tabId: tab.tabId, ref: args.fromRef, selector: args.fromSelector, x: args.fromX, y: args.fromY })
       const b = await resolvePoint(cdp, registry, target(tab.tabId), { tabId: tab.tabId, ref: args.toRef, selector: args.toSelector, x: args.toX, y: args.toY })
-      const tgt = target(tab.tabId)
-      await input.moveTo(tgt, tab.tabId, a.point.x, a.point.y, 'none', 0)
-      await cdp.sendCommand(tgt, 'Input', 'dispatchMouseEvent', { type: 'mousePressed', x: a.point.x, y: a.point.y, button: 'left', buttons: 1, clickCount: 1 })
-      await input.moveTo(tgt, tab.tabId, b.point.x, b.point.y, 'left', 1)
-      await cdp.sendCommand(tgt, 'Input', 'dispatchMouseEvent', { type: 'mouseReleased', x: b.point.x, y: b.point.y, button: 'left', buttons: 0, clickCount: 1 })
+      // Route each endpoint's mouse events to the CDP session that owns it.
+      // resolvePoint returns frame-local coordinates plus the backend node's
+      // sessionId (set for a cross-process iframe). Dispatching to the main page
+      // target with frame-local coords (the old code, audit #12) lands the drag
+      // at the wrong place — or on the main page — for an OOPIF element. This
+      // mirrors click()'s session-aware dispatch. The press goes to the source
+      // session, the release to the destination session (same session for the
+      // common in-frame drag; best-effort across frames).
+      const fromTgt: Debuggee = a.sessionId ? ({ tabId: tab.tabId, sessionId: a.sessionId } as Debuggee) : target(tab.tabId)
+      const toTgt: Debuggee = b.sessionId ? ({ tabId: tab.tabId, sessionId: b.sessionId } as Debuggee) : target(tab.tabId)
+      await input.moveTo(fromTgt, tab.tabId, a.point.x, a.point.y, 'none', 0)
+      await cdp.sendCommand(fromTgt, 'Input', 'dispatchMouseEvent', { type: 'mousePressed', x: a.point.x, y: a.point.y, button: 'left', buttons: 1, clickCount: 1 })
+      await input.moveTo(toTgt, tab.tabId, b.point.x, b.point.y, 'left', 1)
+      await cdp.sendCommand(toTgt, 'Input', 'dispatchMouseEvent', { type: 'mouseReleased', x: b.point.x, y: b.point.y, button: 'left', buttons: 0, clickCount: 1 })
       registry.markStale(tab.tabId)
       return `dragged ${Math.round(a.point.x)},${Math.round(a.point.y)} → ${Math.round(b.point.x)},${Math.round(b.point.y)}`
     },
