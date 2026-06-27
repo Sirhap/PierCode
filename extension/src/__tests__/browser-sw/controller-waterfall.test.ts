@@ -98,6 +98,42 @@ describe('click waterfall', () => {
     expect(out).toMatch(/outcome=SILENT_CLICK/)
   })
 
+  it('keyboard tier does not press Space after Enter already acts (audit #4)', async () => {
+    const { makeController } = await import('../../background/browser/controller')
+    const keys: string[] = []
+    let enterPressed = false
+    const send = vi.fn(async (_t: any, fq: string, p: any) => {
+      if (fq === 'Accessibility.getFullAXTree') return AX_TREE
+      if (fq === 'DOM.getBoxModel') return { model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } }
+      if (fq === 'DOM.resolveNode') return { object: { objectId: 'obj-1' } }
+      if (fq === 'DOM.focus') return {}
+      if (fq === 'Runtime.callFunctionOn') return { result: { value: 'clicked' } }   // js-click stays silent
+      if (fq.startsWith('Input.dispatchKeyEvent')) {
+        if (p?.type === 'keyDown') {
+          const k = String(p?.key ?? '')
+          keys.push(k)
+          if (k === 'Enter') enterPressed = true
+        }
+        return {}
+      }
+      if (fq === 'Runtime.evaluate') {
+        const expr: string = p?.expression || ''
+        if (expr.includes('location.href')) {
+          // Everything stays silent UNTIL Enter is pressed; then the page changes,
+          // so the keyboard tier's mid-probe sees SUCCESS and must skip Space.
+          return { result: { value: enterPressed ? SIG({ domSize: 300 }) : SIG() } }
+        }
+        return { result: { value: true } }
+      }
+      return {}
+    })
+    const ctl = makeController({ send, sleep: noSleep })
+    await ctl.snapshot({ tabId: 1 })
+    await ctl.click({ tabId: 1, ref: 'e0' })
+    expect(keys).toContain('Enter')
+    expect(keys, 'Space must not be pressed once Enter already activated the control').not.toContain(' ')
+  })
+
   it('escalation is skipped for explicit x/y coordinate clicks (no element to degrade to)', async () => {
     const { makeController } = await import('../../background/browser/controller')
     const send = vi.fn(async (_t: any, fq: string, p: any) => {

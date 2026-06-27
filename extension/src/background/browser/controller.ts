@@ -121,11 +121,18 @@ export function makeController(deps: ControllerDeps = {}) {
         await cdp.callFunctionOnObject(tgt, objectId,
           `function(){ try{ this.click(); }catch(e){} this.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window})); return 'ok'; }`)
       } },
-      // Keyboard activation: focus the node, then Enter then Space (covers button/link/checkbox).
+      // Keyboard activation: focus the node, press Enter, and ONLY if that produced
+      // no change press Space (covers button/link/checkbox). Firing both keys
+      // unconditionally was a double activation of the same control (audit #4) —
+      // e.g. a button bound to both keydown handlers would submit twice. Probe
+      // between the two keypresses so the second never fires after the first
+      // already acted.
       { name: 'keyboard', run: async () => {
         if (el.backendId != null) { try { await cdp.sendCommand(tgt, 'DOM', 'focus', { backendNodeId: el.backendId }) } catch { /* not focusable */ } }
         else if (el.selector) { await cdp.runtimeEvaluate(tgt, `(()=>{const el=document.querySelector(${JSON.stringify(el.selector)});if(el&&el.focus)el.focus();return !!el;})()`) }
         await input.sendNamedKey(tgt, 'Enter', '\r')
+        const mid = classifyOutcome(before, await captureSig(tgt, point), 'click')
+        if (mid.outcome === 'SUCCESS') return
         await input.sendNamedKey(tgt, ' ', ' ')
       } },
     ]

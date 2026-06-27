@@ -52,6 +52,25 @@ describe('classifyOutcome', () => {
     const r = classifyOutcome(sig(), sig({ newOverlayText: 'cdk-overlay-container mat-tooltip' }), 'click')
     expect(r.outcome).toBe('WRONG_ELEMENT')
   })
+  it('a PRE-EXISTING tooltip (unchanged) is NOT WRONG_ELEMENT (audit #13)', () => {
+    // The same tooltip overlay is present before AND after — a normal click on a
+    // page that already shows a tooltip must not be misjudged as a wrong element
+    // (which would otherwise trigger the click waterfall's extra activations).
+    const r = classifyOutcome(
+      sig({ newOverlayText: 'role=tooltip' }),
+      sig({ newOverlayText: 'role=tooltip' }),
+      'click',
+    )
+    expect(r.outcome).toBe('SILENT_CLICK')
+  })
+  it('a tooltip that CHANGES between before/after is still WRONG_ELEMENT', () => {
+    const r = classifyOutcome(
+      sig({ newOverlayText: 'role=tooltip old' }),
+      sig({ newOverlayText: 'role=tooltip new' }),
+      'click',
+    )
+    expect(r.outcome).toBe('WRONG_ELEMENT')
+  })
   it('type that lands text in the focused field → SUCCESS', () => {
     const r = classifyOutcome(sig({ activeTag: 'INPUT', activeText: '' }), sig({ activeTag: 'INPUT', activeText: 'hello' }), 'type')
     expect(r.outcome).toBe('SUCCESS')

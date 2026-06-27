@@ -78,10 +78,19 @@ export function classifyOutcome(before: PageSig | null, after: PageSig | null, a
     return { outcome: 'SUCCESS', reason: `dom changed by ${after.domSize - before.domSize} nodes` }
   }
 
-  // 7. Only a tooltip/popover appeared (hover affordance) and it's NOT a real surface →
-  //    we likely clicked the wrong element.
-  if (after.newOverlayText && TOOLTIP_PATTERNS.test(after.newOverlayText) && !OVERLAY_SUCCESS_PATTERNS.test(after.newOverlayText)) {
-    return { outcome: 'WRONG_ELEMENT', reason: 'only a tooltip/popover appeared (likely wrong element)' }
+  // 7. Only a tooltip/popover NEWLY appeared (hover affordance) and it's NOT a real
+  //    surface → we likely clicked the wrong element. Compare against the BEFORE
+  //    overlay signature (audit #13): a tooltip/popover that was already on the page
+  //    before the click must NOT be read as a wrong-element signal — otherwise a
+  //    normal click on a page that happens to show a tooltip is misjudged
+  //    WRONG_ELEMENT and triggers the click waterfall's extra activations (#4).
+  if (
+    after.newOverlayText &&
+    after.newOverlayText !== before.newOverlayText &&
+    TOOLTIP_PATTERNS.test(after.newOverlayText) &&
+    !OVERLAY_SUCCESS_PATTERNS.test(after.newOverlayText)
+  ) {
+    return { outcome: 'WRONG_ELEMENT', reason: 'a tooltip/popover newly appeared (likely wrong element)' }
   }
 
   // 8. The point we clicked is no longer there/visible — something re-rendered.
