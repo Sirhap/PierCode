@@ -64,6 +64,35 @@ describe('download tracking helpers', () => {
     });
   });
 
+  it('pins bytesReceived to totalBytes on completion (audit #18)', () => {
+    const base: DownloadRecord = {
+      id: '7',
+      state: 'in_progress',
+      bytesReceived: 10,
+      totalBytes: 100,
+      startedAt: '2026-05-31T00:00:00.000Z',
+    };
+    // A completion delta carries no bytesReceived (Chrome's DownloadDelta lacks
+    // the field); progress must still reflect the full size, not stay at 10.
+    const complete = applyDownloadDelta(base, {
+      id: 7,
+      state: { current: 'complete', previous: 'in_progress' },
+    } as chrome.downloads.DownloadDelta, new Date('2026-05-31T00:01:00.000Z'));
+    expect(complete.bytesReceived).toBe(100);
+    expect(complete.state).toBe('complete');
+  });
+
+  it('updates totalBytes from a delta before completion is applied', () => {
+    const base: DownloadRecord = { id: '8', state: 'in_progress', bytesReceived: 0 };
+    const next = applyDownloadDelta(base, {
+      id: 8,
+      totalBytes: { current: 250, previous: 0 },
+      state: { current: 'complete', previous: 'in_progress' },
+    } as chrome.downloads.DownloadDelta);
+    expect(next.totalBytes).toBe(250);
+    expect(next.bytesReceived).toBe(250);
+  });
+
   it('keeps recent records first and truncates history', () => {
     const records = Array.from({ length: 100 }, (_, i) => ({
       id: String(i),

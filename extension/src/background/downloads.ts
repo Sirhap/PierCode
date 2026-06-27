@@ -35,13 +35,21 @@ export function applyDownloadDelta(record: DownloadRecord, delta: chrome.downloa
   if (delta.finalUrl?.current) next.url = delta.finalUrl.current;
   if (delta.filename?.current) next.filename = delta.filename.current;
   if (delta.error?.current) next.error = delta.error.current;
+  if (delta.totalBytes?.current != null) next.totalBytes = finiteNumber(delta.totalBytes.current);
   if (delta.state?.current) {
     next.state = normalizeState(delta.state.current);
     if (next.state === 'complete' || next.state === 'interrupted') {
       next.endedAt = next.endedAt || now.toISOString();
     }
+    // chrome.downloads.DownloadDelta carries no bytesReceived field, so a
+    // delta-only update would otherwise leave bytesReceived stale at its last
+    // value (audit #18). A completed download has received all of its bytes, so
+    // pin progress to totalBytes; getRecentDownloads re-queries search() for
+    // live in-progress byte counts.
+    if (next.state === 'complete' && next.totalBytes != null) {
+      next.bytesReceived = next.totalBytes;
+    }
   }
-  if (delta.totalBytes?.current != null) next.totalBytes = finiteNumber(delta.totalBytes.current);
   return next;
 }
 
