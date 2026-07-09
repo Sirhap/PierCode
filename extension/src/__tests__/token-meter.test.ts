@@ -72,6 +72,41 @@ describe('token-meter exact path after tokenizer ready', () => {
   });
 });
 
+describe('computeMeter encode budget (anti-freeze on long-chat reopen)', () => {
+  it('spreads a huge cold sweep across calls and converges to the exact total', async () => {
+    __resetTokenizerForTest();
+    void countTokens('warm');
+    await whenTokenizerReady();
+
+    // Build a conversation far larger than the per-sweep encode budget (50K chars):
+    // 20 messages × 20K chars = 400K fresh chars. A single sweep must NOT encode all
+    // of it (that synchronous BPE blast is the page-freeze bug); the budget caps
+    // fresh encoding per sweep and the rest falls back to the char estimate.
+    const big = Array.from({ length: 20 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: String.fromCharCode(97 + i).repeat(20_000), // distinct content per msg
+      timestamp: i,
+    }));
+    const conv = ctx(big);
+
+    // The exact total if every message were encoded (mock: 4 chars = 1 token):
+    // 20 × (20000/4) = 100000, times the platform factor applied in countTokens.
+    const exactTotal = big.reduce((s, m) => s + countTokens(m.content), 0);
+    // (countTokens above also warmed the cache for all messages.) Reset the cache
+    // state by re-resetting the tokenizer + re-warming so the sweep starts cold.
+    __resetTokenizerForTest();
+    void countTokens('warm again');
+    await whenTokenizerReady();
+
+    // First cold sweep: budgeted, so the total is an UNDER/over-estimate mix, but it
+    // must complete without encoding everything. Run several sweeps; the cache fills
+    // (cache hits are free, don't spend budget) until the total converges to exact.
+    let last = 0;
+    for (let i = 0; i < 20; i++) last = computeMeter(conv).total;
+    expect(last).toBe(exactTotal);
+  });
+});
+
 describe('computeMeter role classification', () => {
   it('counts user + system as input and assistant as output', async () => {
     __resetTokenizerForTest();

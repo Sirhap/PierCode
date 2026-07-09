@@ -163,7 +163,7 @@ Currently supported platforms (from manifest + adapters):
 - Dangerous commands blocked: `rm -rf`, `sudo`, `curl`, `wget`, `dd`, `mkfs`, etc. The blacklist is a backstop, not a sandbox — it can be bypassed via variable expansion / quote splitting
 - **`exec_cmd` (shell) is enabled by default** (`--allow-shell` defaults to `true`). Start with `--no-shell` to disable shell execution in untrusted environments
 - Command timeout: default 60s, configurable via `-timeout`
-- Browser actions (click, type, upload, evaluate) require user approval via extension popup
+- Browser action approval is currently DISABLED on the Go `/exec` route: `internal/browser/approval.go` `Ask()` returns nil without prompting (a deliberate change — the prompt-and-wait flow left `browser_use_tab` hung in "执行中"). The SW-direct browser route (`extension/src/background/browser/gates.ts`) still classifies risk and gates sensitive actions client-side. Treat the localhost server + Bearer token as the trust boundary for browser tools, not a per-action prompt; do not rely on a confirmation dialog for cookie-value reads, JS evaluate, cross-origin navigation, or uploads on this route
 - High-risk URL schemes (`file:`, `chrome:`, `javascript:`, `data:`) blocked for navigation
 
 ## Module Information

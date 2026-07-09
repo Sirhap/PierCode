@@ -34,6 +34,24 @@ func TestCompactSnapshotFiltersAndCreatesRefs(t *testing.T) {
 	}
 }
 
+// A corrupt AX payload whose childIds form a cycle must not stack-overflow the
+// whole process (BR5). The not-kept "generic" branch recurses over childIds
+// unconditionally, bypassing MaxNodes/MaxDepth, so only the per-NodeID visited
+// guard bounds it. The test passing (returning at all) is the assertion.
+func TestCompactSnapshotCyclicTreeDoesNotOverflow(t *testing.T) {
+	raw := json.RawMessage(`{
+		"nodes": [
+			{"nodeId":"1","role":{"value":"generic"},"name":{"value":""},"childIds":["2"]},
+			{"nodeId":"2","role":{"value":"generic"},"name":{"value":""},"childIds":["1","3"]},
+			{"nodeId":"3","role":{"value":"button"},"name":{"value":"Loop"},"childIds":["1"]}
+		]
+	}`)
+	tab := tool.BrowserTab{TabID: 99, URL: "https://example.com", Title: "Cycle"}
+	if _, _, err := CompactSnapshot(raw, tab, "snap_cycle", tool.SnapshotOptions{MaxNodes: 50}); err != nil {
+		t.Fatalf("CompactSnapshot on cyclic tree errored: %v", err)
+	}
+}
+
 func TestCompactSnapshotIndentsHierarchy(t *testing.T) {
 	// nav > list > 2 links; the links must be indented under their ancestors.
 	raw := json.RawMessage(`{

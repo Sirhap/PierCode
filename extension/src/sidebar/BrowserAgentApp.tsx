@@ -19,6 +19,7 @@ import { ApprovalCard } from './ApprovalCard'
 import { QuestionCard } from './QuestionCard'
 import { TargetTabBar } from './TargetTabBar'
 import { createBrowserAgentStore, AI_PLATFORMS } from './browser-agent-store'
+import { exportTestPlan } from './test-plan'
 import { useGlow } from './use-glow'
 import { GLOW_COLORS } from './glow'
 
@@ -61,6 +62,21 @@ export default function BrowserAgentApp(): JSX.Element {
   // 动作时间线浮层：默认收起把空间全给 iframe；任务一跑自动弹出。
   const [timelineOpen, setTimelineOpen] = useState(false)
   useEffect(() => { if (running) setTimelineOpen(true) }, [running])
+
+  // 录制→回放：把本次任务时间线导出为 browser_test 计划（piercode-tool block 进剪贴板）。
+  const [exportNote, setExportNote] = useState('')
+  const exportPlan = () => {
+    const plan = exportTestPlan(state.timeline, `recorded ${new Date().toLocaleString()}`)
+    if (!plan) { setExportNote('无可导出的动作'); setTimeout(() => setExportNote(''), 2000); return }
+    navigator.clipboard.writeText(plan.fencedBlock).then(
+      () => {
+        const warn = plan.refWarnings > 0 ? `（${plan.refWarnings} 步含 ref，回放前建议换 selector）` : ''
+        setExportNote(`已复制 ${plan.stepCount} 步${warn}`)
+        setTimeout(() => setExportNote(''), 4000)
+      },
+      () => { setExportNote('复制失败'); setTimeout(() => setExportNote(''), 2000) },
+    )
+  }
 
   // AiTabBar 的标签来自已挂载的 aiTabs，标题取已知平台清单的 label。
   const tabs = useMemo(
@@ -218,7 +234,17 @@ export default function BrowserAgentApp(): JSX.Element {
                 {state.timeline.length > 0 && (
                   <span style={{ color: 'var(--dim)' }}>· {state.timeline.length} 个动作</span>
                 )}
-                <button onClick={() => setTimelineOpen(false)} className="ml-auto cursor-pointer" style={{ color: 'var(--dim)' }} title="收起">▾ 收起</button>
+                {exportNote && <span className="amber-text">{exportNote}</span>}
+                {/* 录制→回放：任务结束且有动作时，导出 browser_test 计划到剪贴板 */}
+                {!running && state.timeline.length > 0 && (
+                  <button
+                    onClick={exportPlan}
+                    className="ml-auto cursor-pointer"
+                    style={{ color: 'var(--dim)' }}
+                    title="把本次动作导出为 browser_test 回放计划（复制到剪贴板，可粘贴给 AI 重跑）"
+                  >⤓ 导出测试</button>
+                )}
+                <button onClick={() => setTimelineOpen(false)} className={`${!running && state.timeline.length > 0 ? '' : 'ml-auto '}cursor-pointer`} style={{ color: 'var(--dim)' }} title="收起">▾ 收起</button>
               </div>
               <ActionTimeline entries={state.timeline} streamPreview={state.streamPreview} />
             </div>

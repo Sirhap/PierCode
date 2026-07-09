@@ -190,7 +190,7 @@ func TestBrowserDefaultTabCallsShareOneLock(t *testing.T) {
 
 func TestBrowserWriteDoesNotBlockOnOtherDomains(t *testing.T) {
 	e := New(testConfig(t))
-	// A browser action holds only the shared side of toolMu + its tab lock…
+	// A browser action holds ONLY its per-tab keyed mutex — it is out of toolMu…
 	unlockBrowser := e.lockForTool("browser_click", map[string]interface{}{"tabId": float64(3)}, "")
 	defer unlockBrowser()
 
@@ -206,7 +206,11 @@ func TestBrowserWriteDoesNotBlockOnOtherDomains(t *testing.T) {
 		t.Fatal("read-only tool must not block behind a browser write tool")
 	}
 
-	// …but a filesystem WRITE still waits for the shared lock to clear.
+	// …and, unlike the old shared-lock design, an exclusive-lock filesystem tool
+	// does NOT wait behind a browser call either: they touch disjoint state, and
+	// coupling them let a hung CDP call (up to the 6-minute browser timeout) plus
+	// one waiting todo_write starve every subsequent RLock reader (writer
+	// priority). todo_write must acquire immediately here.
 	fsAcquired := make(chan func(), 1)
 	go func() {
 		fsAcquired <- e.lockForTool("todo_write", nil, "")
@@ -214,8 +218,8 @@ func TestBrowserWriteDoesNotBlockOnOtherDomains(t *testing.T) {
 	select {
 	case unlock := <-fsAcquired:
 		unlock()
-		t.Fatal("filesystem write lock should wait while a browser tool holds the shared lock")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("exclusive filesystem tool must not block behind a browser call — disjoint state")
 	}
 }
 

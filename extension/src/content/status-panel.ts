@@ -99,6 +99,9 @@ class StatusPanel {
   private meter: TokenMeter | null = null;
   private threshold = 0;
   private tab: ControlledTabInfo | null = null;
+  private autoExecute = false;
+  private autoSend = true;
+  private toggleListenerBound = false;
   private agents = new Map<string, AgentRow>();
   private agentRemoveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private agentRenderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -114,12 +117,28 @@ class StatusPanel {
   init(): void {
     if (this.root || typeof document === 'undefined') return;
     try {
-      chrome.storage?.local?.get([PANEL_STORAGE_KEY], (res) => {
+      chrome.storage?.local?.get([PANEL_STORAGE_KEY, 'autoExecute', 'autoSend'], (res) => {
         this.expanded = res?.[PANEL_STORAGE_KEY] === true;
+        this.autoExecute = res?.autoExecute === true;
+        this.autoSend = res?.autoSend !== false; // default on
         this.mount();
+        this.paint();
       });
     } catch {
       // storage 不可用时落到下方同步构建。
+    }
+    // Keep the panel toggles in sync with the popup (both write the same keys).
+    if (!this.toggleListenerBound) {
+      this.toggleListenerBound = true;
+      try {
+        chrome.storage?.onChanged?.addListener((changes, area) => {
+          if (area !== 'local') return;
+          let changed = false;
+          if ('autoExecute' in changes) { this.autoExecute = changes.autoExecute.newValue === true; changed = true; }
+          if ('autoSend' in changes) { this.autoSend = changes.autoSend.newValue !== false; changed = true; }
+          if (changed && this.expanded) this.paint();
+        });
+      } catch { /* storage unavailable */ }
     }
     // 同步构建一次，便于无 storage 的环境（测试）立即拿到 DOM。
     this.mount();
@@ -463,6 +482,20 @@ class StatusPanel {
          </div>`
       : `<div style="margin-top:8px;border-top:1px solid ${T_LINE};padding-top:6px;color:${T_DIM};opacity:.5;">无受控 Tab</div>`;
 
+    // Two inline toggles so autoExecute / autoSend are reachable while approving
+    // tool cards on the AI page, without opening the popup. They write the same
+    // storage keys the popup + content bootstrap already read/react to.
+    const toggleRow = (id: string, label: string, on: boolean) =>
+      `<div data-pc-toggle="${id}" role="button" tabindex="0" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:1px 0;">
+         <span style="color:${T_DIM};">${label}</span>
+         <span style="color:${on ? T_GLOW : T_DIM};font-weight:600;">${on ? '● 开' : '○ 关'}</span>
+       </div>`;
+    const togglesBlock =
+      `<div style="margin-top:8px;border-top:1px solid ${T_LINE};padding-top:6px;">
+         ${toggleRow('autoExecute', '自动执行', this.autoExecute)}
+         ${toggleRow('autoSend', '自动回填发送', this.autoSend)}
+       </div>`;
+
     this.panel.style.display = 'block';
     this.panel.innerHTML = `
       <div style="font-weight:600;margin-bottom:6px;color:${T_GLOW};">⌁ PierCode 状态</div>
@@ -479,8 +512,24 @@ class StatusPanel {
         <div style="height:100%;width:${pct}%;background:${color};transition:width .3s;"></div>
       </div>
       <div style="margin-top:6px;font-size:10px;color:${T_DIM};">${pct}% · ${acc}</div>
+      ${togglesBlock}
       ${tabBlock}
     `;
+
+    // Rebind toggle handlers after the innerHTML rewrite (which wipes listeners).
+    for (const el of Array.from(this.panel.querySelectorAll<HTMLElement>('[data-pc-toggle]'))) {
+      const key = el.getAttribute('data-pc-toggle') as 'autoExecute' | 'autoSend' | null;
+      if (!key) continue;
+      const flip = (e: Event) => {
+        e.stopPropagation();
+        const next = key === 'autoExecute' ? !this.autoExecute : !this.autoSend;
+        if (key === 'autoExecute') this.autoExecute = next; else this.autoSend = next;
+        try { chrome.storage?.local?.set({ [key]: next }); } catch { /* */ }
+        this.paint();
+      };
+      el.onclick = flip;
+      el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') flip(e); };
+    }
   }
 }
 

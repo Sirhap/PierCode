@@ -11,7 +11,7 @@ import { EventBus } from './events'
 import { SecurityPolicy, isAIPage, checkNavigate, sameRegistrableHost, originOf } from './security'
 import { compactSnapshotWithFrames } from './snapshot'
 import { find } from './find'
-import { budgetScreenshot, encodeGif } from './image'
+import { budgetScreenshot, encodeGif, rasterizeRGBA, pngBudget } from './image'
 import {
   getContentExpr, pageTextExpr, waitSelectorExpr, waitForFunctionExpr, getAttributesExpr,
   selectExpr, storageExpr, formInputExpr, clipboardReadExpr, clipboardWriteExpr, uploadDataTransferExpr,
@@ -24,6 +24,13 @@ import { GATE_BYPASS_AI_PAGE_TOOLS } from './gates'
 import { classifyOutcome, outcomeSnapshotExpr, parsePageSig, formatOutcome, type PageSig, type Outcome } from './outcome'
 import { CircuitBreaker, elementKey } from './circuit-breaker'
 import { safeTitle, type BrowserTab } from './types'
+import {
+  validateAssertArgs, elementProbeExpr, parseElementProbe, matchValue, compareCount,
+  assertOutcome, waitStableExpr, parseTestSteps, renderTestReport,
+  type AssertArgs, type TestStepResult, type TestReport,
+} from './testing'
+import { InterceptStore, resolvePaused, FAIL_REASONS, type InterceptFulfill } from './intercept'
+import { diffRGBA, renderVisualOutcome, baselineStorageKey, validateVisualKey, VISUAL_BASELINE_PREFIX, type StoredBaseline } from './visual'
 
 type Debuggee = chrome.debugger.Debuggee
 type SendFn = (t: Debuggee, m: string, p?: object) => Promise<any>
@@ -54,6 +61,7 @@ export function makeController(deps: ControllerDeps = {}) {
   const security = new SecurityPolicy()
   const input = new Input(cdp, { fidelity: deps.fidelity ?? DEFAULT_FIDELITY, sleep: deps.sleep, registry })
   const breaker = new CircuitBreaker()   // item #5: element/page/global fail-fast for dead targets
+  const intercepts = new InterceptStore() // browser_intercept: per-tab network mock/block rules
   const settleMs = 0  // mirror default fidelity SettleMS=0; per-tab settle is a no-op
   let snapSeq = 0
 
@@ -170,6 +178,13 @@ export function makeController(deps: ControllerDeps = {}) {
     return tab
   }
 
+  // Shared DOM-quiet settle (browser_wait_stable + browser_test's inter-step
+  // settle). Resolves with a note on timeout — never throws for "still busy".
+  async function waitStableInner(args: { tabId?: number }, quietMs: number, timeoutMs: number): Promise<string> {
+    const tab = await ensureTab(args)
+    return String(await cdp.runtimeEvaluate(target(tab.tabId), waitStableExpr(quietMs, timeoutMs)) ?? 'stable')
+  }
+
   // Enable a CDP domain once per tab (dedupe via EventBus). Best-effort.
   async function ensureDomain(tabId: number, domain: string): Promise<void> {
     if (events.domainEnabled(tabId, domain)) return
@@ -184,8 +199,54 @@ export function makeController(deps: ControllerDeps = {}) {
     } catch { /* transient or restricted page: leave unmarked so a later call retries */ }
   }
 
+  // Base64-encode a UTF-8 string in the SW (no Buffer). Used for Fetch.fulfillRequest.
+  function b64(s: string): string {
+    try {
+      const bytes = new TextEncoder().encode(s)
+      let bin = ''
+      for (const byte of bytes) bin += String.fromCharCode(byte)
+      return btoa(bin)
+    } catch { return btoa(unescape(encodeURIComponent(s))) }
+  }
+
+  // Resolve one paused request against the tab's intercept rules. ALWAYS issues
+  // exactly one Fetch verb (fulfill/fail/continue) — an unresolved paused request
+  // hangs the page. A CDP error on the chosen verb falls back to continueRequest.
+  async function handleInterceptPaused(tabId: number, params: { requestId?: string; request?: { url?: string; method?: string } }): Promise<void> {
+    const requestId = params?.requestId
+    if (!requestId) return
+    const tgt = target(tabId)
+    const url = params?.request?.url || ''
+    const method = params?.request?.method || 'GET'
+    const decision = resolvePaused(intercepts.rules(tabId), url, method)
+    try {
+      if (decision.kind === 'fulfill') {
+        const f: InterceptFulfill = decision.fulfill
+        const headers: Array<{ name: string; value: string }> = []
+        if (f.contentType) headers.push({ name: 'Content-Type', value: f.contentType })
+        for (const [k, v] of Object.entries(f.headers ?? {})) headers.push({ name: k, value: String(v) })
+        await cdp.sendCommand(tgt, 'Fetch', 'fulfillRequest', {
+          requestId,
+          responseCode: f.status ?? 200,
+          responseHeaders: headers,
+          body: b64(f.body ?? ''),
+        })
+      } else if (decision.kind === 'fail') {
+        await cdp.sendCommand(tgt, 'Fetch', 'failRequest', { requestId, errorReason: decision.reason })
+      } else {
+        await cdp.sendCommand(tgt, 'Fetch', 'continueRequest', { requestId })
+      }
+    } catch {
+      // The chosen verb failed (request already gone / bad param): last-resort
+      // continue so the page never hangs on our unresolved pause.
+      try { await cdp.sendCommand(tgt, 'Fetch', 'continueRequest', { requestId }) } catch { /* request already resolved/detached */ }
+    }
+  }
+
   const api = {
-    registry, events, security,
+    registry, events, security, intercepts,
+    // Exposed so the SW's chrome.debugger.onEvent can route Fetch.requestPaused here.
+    handleInterceptPaused,
     // exported for the dispatch gate to pre-resolve a tab (Phase 2). Some tools must
     // skip the AI-page gate during pre-resolution:
     //  - use_tab/new_tab ESTABLISH control (they ARE the approval path; gating deadlocks).
@@ -296,6 +357,88 @@ export function makeController(deps: ControllerDeps = {}) {
         await new Promise(r => setTimeout(r, 100))
       }
       return 'waitForFunction timed out'
+    },
+
+    // Declarative page-state check. PASS returns a confirmation string; FAIL
+    // throws (→ success:false on the tool result) carrying expected vs actual,
+    // so a test runner / the model gets a hard signal instead of parsing prose.
+    async assert(args: AssertArgs): Promise<string> {
+      const invalid = validateAssertArgs(args)
+      if (invalid) throw new Error(`browser_assert: ${invalid}`)
+      const tab = await ensureTab(args)
+      const match = args.match ?? 'contains'
+
+      if (args.kind === 'url' || args.kind === 'title') {
+        const t = await chrome.tabs.get(tab.tabId)
+        const actual = args.kind === 'url' ? (t.url || '') : safeTitle(t.title || '')
+        const o = assertOutcome(`${args.kind} ${match} ${JSON.stringify(args.expect)}`,
+          matchValue(actual, args.expect as string, match), args.expect as string, actual)
+        if (!o.pass) throw new Error(o.text)
+        return o.text
+      }
+
+      if (args.kind === 'console_clean') {
+        await ensureDomain(tab.tabId, 'Runtime')
+        const pat = safeRegex(args.pattern)
+        const errs = events.readConsole(tab.tabId)
+          .filter(m => m.level === 'error')
+          .filter(m => !pat || pat.test(m.text))
+        const o = assertOutcome(`console_clean${args.pattern ? ` (pattern ${args.pattern})` : ''} — no console errors since observation started`,
+          errs.length === 0, 'no console errors', errs.slice(0, 3).map(m => m.text).join(' | ') || 'none')
+        if (!o.pass) throw new Error(o.text)
+        return o.text
+      }
+
+      if (args.kind === 'network_ok') {
+        await ensureDomain(tab.tabId, 'Network')
+        const bad = events.readNetwork(tab.tabId)
+          .filter(r => (r.status ?? 0) >= 400)
+          .filter(r => !args.pattern || r.url.includes(args.pattern))
+        const o = assertOutcome(`network_ok${args.pattern ? ` (url ~ ${args.pattern})` : ''} — no failed (>=400) requests since observation started`,
+          bad.length === 0, 'no failed requests',
+          bad.slice(0, 3).map(r => `${r.status} ${r.url}`).join(' | ') || 'none')
+        if (!o.pass) throw new Error(o.text)
+        return o.text
+      }
+
+      // Element kinds: one in-page probe returns count/visible/text/attr.
+      const sel = args.selector as string
+      const probe = parseElementProbe(await cdp.runtimeEvaluate(target(tab.tabId), elementProbeExpr(sel, args.attribute)))
+      let pass = false, expected = '', actual = ''
+      let desc = `${args.kind} ${JSON.stringify(sel)}`
+      switch (args.kind) {
+        case 'element_exists':
+          pass = probe.count > 0; expected = 'element present'; actual = `count=${probe.count}`; break
+        case 'element_not_exists':
+          pass = probe.count === 0; expected = 'element absent'; actual = `count=${probe.count}`; break
+        case 'element_visible':
+          pass = probe.count > 0 && probe.visible
+          expected = 'element visible'; actual = probe.count === 0 ? 'not found' : (probe.visible ? 'visible' : 'present but hidden'); break
+        case 'element_text':
+          pass = probe.count > 0 && matchValue(probe.text, args.expect as string, match)
+          desc += ` text ${match} ${JSON.stringify(args.expect)}`
+          expected = args.expect as string; actual = probe.count === 0 ? '(element not found)' : probe.text; break
+        case 'element_count': {
+          const op = args.op ?? '='
+          pass = compareCount(probe.count, args.count as number, op)
+          desc += ` count ${op} ${args.count}`
+          expected = `count ${op} ${args.count}`; actual = `count=${probe.count}`; break
+        }
+        case 'attribute':
+          pass = probe.count > 0 && probe.attr != null && matchValue(probe.attr, args.expect as string, match)
+          desc += ` [${args.attribute}] ${match} ${JSON.stringify(args.expect)}`
+          expected = args.expect as string
+          actual = probe.count === 0 ? '(element not found)' : (probe.attr == null ? '(attribute absent)' : probe.attr); break
+      }
+      const o = assertOutcome(desc, pass, expected, actual)
+      if (!o.pass) throw new Error(o.text)
+      return o.text
+    },
+
+    // Wait until the DOM stops mutating (quiet window) — the settle primitive
+    // for post-action reads. Resolves with a note on timeout, never throws.
+    async waitStable(args: { tabId?: number; quietMs?: number; timeoutMs?: number }): Promise<string> {
+      return waitStableInner(args, args.quietMs ?? 300, args.timeoutMs ?? 2000)
     },
 
     async pdf(args: { tabId?: number; __originTabId?: number }): Promise<string> {
@@ -671,19 +814,247 @@ export function makeController(deps: ControllerDeps = {}) {
       return `finalized ${closed}/${ids.length} tabs`
     },
 
-    async batch(args: { tabId?: number; actions: Array<{ name: string; input?: Record<string, unknown> }>; __originTabId?: number }): Promise<string> {
+    async batch(args: { tabId?: number; actions: Array<{ name: string; input?: Record<string, unknown> }>; __originTabId?: number; __skipApproval?: boolean }): Promise<string> {
       // Re-dispatch each sub-call through the full gated path. Uses the module-level
       // `dispatchRef` (set by register.ts) instead of importing ./dispatch here — a
       // controller→dispatch static import would force Vite to emit a shared
       // vite-preload-helper chunk that leaks into content.js (content-build.test.ts).
       if (!dispatchRef) return 'browser_batch unavailable (dispatcher not wired)'
       const out: string[] = []
-      const opts = { originTabId: args.__originTabId }   // propagate the AI-page tab to sub-calls
+      // Propagate the AI-page tab AND the caller's skipApproval to sub-calls. The
+      // browser-agent route gates the whole batch via classifyRisk before dispatch;
+      // without forwarding skipApproval each child re-entered runGates → approval.ask,
+      // which nothing on the sidebar route renders → 5-min timeout per child.
+      const opts = { originTabId: args.__originTabId, skipApproval: args.__skipApproval === true }
       for (const a of args.actions ?? []) {
         const r = await dispatchRef(a.name, { tabId: args.tabId, ...(a.input ?? {}) }, '', opts)
         out.push(`### ${a.name}\n${r.output}`)
       }
       return out.join('\n\n') || '(empty batch)'
+    },
+
+    // Scripted test runner: executes steps in order via the gated dispatcher
+    // (like browser_batch), counts browser_assert / step failures, auto-settles
+    // after mutating steps, and returns a structured TEST REPORT (human lines +
+    // one machine-readable `JSON: {...}` line for export/replay tooling).
+    async test(args: {
+      tabId?: number; name?: string; steps?: unknown
+      stopOnFailure?: boolean; settle?: boolean
+      __originTabId?: number; __skipApproval?: boolean
+    }): Promise<string> {
+      if (!dispatchRef) return 'browser_test unavailable (dispatcher not wired)'
+      const parsed = parseTestSteps(args.steps)
+      if (typeof parsed === 'string') throw new Error(`browser_test: ${parsed}`)
+      const stopOnFailure = args.stopOnFailure !== false
+      const settleBetween = args.settle !== false
+      const opts = { originTabId: args.__originTabId, skipApproval: args.__skipApproval === true }
+      const name = (args.name || '').trim() || 'unnamed test'
+
+      const t0 = Date.now()
+      const results: TestStepResult[] = []
+      let passed = 0, failed = 0
+      for (let i = 0; i < parsed.length; i++) {
+        const step = parsed[i]
+        const input: Record<string, unknown> = { ...step.input }
+        if (typeof args.tabId === 'number' && input.tabId === undefined) input.tabId = args.tabId
+        const s0 = Date.now()
+        const r = await dispatchRef(step.name, input, '', opts)
+        const ms = Date.now() - s0
+        if (r.success) {
+          passed++
+          results.push({ index: i + 1, tool: step.name, status: 'pass', ms })
+          // Settle after steps that plausibly mutated the page, so the next
+          // step / assert doesn't race the render. A quiet page resolves in
+          // ~quietMs, so this costs little on read-only-ish steps too.
+          if (settleBetween && !NO_SETTLE_TOOLS.has(step.name)) {
+            try { await waitStableInner({ tabId: input.tabId as number | undefined }, 250, 1500) } catch { /* settle is best-effort */ }
+          }
+        } else {
+          failed++
+          results.push({ index: i + 1, tool: step.name, status: 'fail', ms, error: r.output })
+          if (stopOnFailure) {
+            for (let j = i + 1; j < parsed.length; j++) {
+              results.push({ index: j + 1, tool: parsed[j].name, status: 'skipped', ms: 0 })
+            }
+            break
+          }
+        }
+      }
+
+      const report: TestReport = {
+        name, result: failed > 0 ? 'FAIL' : 'PASS',
+        passed, failed, skipped: results.filter(s => s.status === 'skipped').length,
+        durationMs: Date.now() - t0, steps: results,
+      }
+      if (failed > 0) {
+        // Failure artifacts: page URL + console tail (best-effort).
+        try {
+          const tab = await ensureTab({ tabId: args.tabId })
+          const t = await chrome.tabs.get(tab.tabId)
+          report.pageUrl = t.url || ''
+          report.consoleTail = events.readConsole(tab.tabId).slice(-6).map(m => `[${m.level}] ${m.text}`)
+        } catch { /* tab gone — report without artifacts */ }
+      }
+      return renderTestReport(report)
+    },
+
+    // Network interception for deterministic tests. action=add stubs (fulfill)
+    // or blocks (fail) requests whose URL matches; action=clear disables Fetch
+    // and drops all rules; action=list shows active rules. Enabling Fetch pauses
+    // every request → resolved by handleInterceptPaused (fulfill/fail/continue).
+    async intercept(args: {
+      tabId?: number; action?: 'add' | 'clear' | 'list'
+      url?: string; method?: string; status?: number; body?: string; contentType?: string
+      headers?: Record<string, string>; fail?: string; times?: number
+    }): Promise<string> {
+      const tab = await ensureTab(args)
+      const action = args.action ?? 'add'
+
+      if (action === 'list') return intercepts.describe(tab.tabId)
+
+      if (action === 'clear') {
+        intercepts.clearTab(tab.tabId)
+        try { await cdp.sendCommand(target(tab.tabId), 'Fetch', 'disable') } catch { /* not enabled */ }
+        events.unmarkDomainEnabled(tab.tabId, 'Fetch')
+        return 'cleared all network intercepts'
+      }
+
+      // action === 'add'
+      if (!args.url || !args.url.trim()) throw new Error('browser_intercept add requires a url pattern')
+      if (args.fail && !FAIL_REASONS.has(args.fail)) {
+        throw new Error(`browser_intercept: fail must be one of ${[...FAIL_REASONS].join(', ')}`)
+      }
+      const rule = intercepts.add(tab.tabId, {
+        urlPattern: args.url.trim(),
+        method: args.method ? args.method.toUpperCase() : undefined,
+        fail: args.fail,
+        fulfill: args.fail ? undefined : {
+          status: args.status, body: args.body, contentType: args.contentType, headers: args.headers,
+        },
+        times: typeof args.times === 'number' && args.times > 0 ? Math.trunc(args.times) : undefined,
+      })
+      // Enable Fetch once per tab (pause every request at the Request stage, then
+      // our handler matches). Best-effort; a restricted page just won't intercept.
+      if (!events.domainEnabled(tab.tabId, 'Fetch')) {
+        try {
+          await cdp.sendCommand(target(tab.tabId), 'Fetch', 'enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] })
+          events.markDomainEnabled(tab.tabId, 'Fetch')
+        } catch (e) {
+          // Roll the rule back so a failed enable doesn't leave a phantom rule.
+          intercepts.clearTab(tab.tabId)
+          throw new Error(`could not enable request interception: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      const what = rule.fail ? `fail(${rule.fail})` : `fulfill(${rule.fulfill?.status ?? 200})`
+      return `intercept #${rule.id} added: ${rule.method ? rule.method + ' ' : ''}${JSON.stringify(rule.urlPattern)} → ${what}`
+    },
+
+    // Reset page state for test isolation: clear cookies + cache (browser-wide),
+    // local/session storage for the tab's origin, and any emulation overrides.
+    // Each part is opt-out; default clears everything.
+    async reset(args: { tabId?: number; cookies?: boolean; cache?: boolean; storage?: boolean; emulation?: boolean }): Promise<string> {
+      const tab = await ensureTab(args)
+      const tgt = target(tab.tabId)
+      const done: string[] = []
+      const doCookies = args.cookies !== false
+      const doCache = args.cache !== false
+      const doStorage = args.storage !== false
+      const doEmulation = args.emulation !== false
+
+      if (doCookies) {
+        try { await cdp.sendCommand(tgt, 'Network', 'clearBrowserCookies'); done.push('cookies') } catch { /* */ }
+      }
+      if (doCache) {
+        try { await cdp.sendCommand(tgt, 'Network', 'clearBrowserCache'); done.push('cache') } catch { /* */ }
+      }
+      if (doStorage) {
+        let origin = ''
+        try { origin = new URL(tab.url).origin } catch { /* non-http tab */ }
+        if (origin) {
+          try { await cdp.sendCommand(tgt, 'Storage', 'clearDataForOrigin', { origin, storageTypes: 'all' }); done.push('storage') } catch { /* */ }
+        }
+        // Also wipe the in-page localStorage/sessionStorage directly (clearDataForOrigin
+        // doesn't always flush the live JS view).
+        try { await cdp.runtimeEvaluate(tgt, `(function(){try{localStorage.clear();sessionStorage.clear();}catch(e){}return 'ok';})()`) } catch { /* */ }
+      }
+      if (doEmulation) {
+        try { await cdp.sendCommand(tgt, 'Emulation', 'clearDeviceMetricsOverride') } catch { /* */ }
+        try { await cdp.sendCommand(tgt, 'Emulation', 'setUserAgentOverride', { userAgent: '' }) } catch { /* */ }
+        try { await cdp.sendCommand(tgt, 'Network', 'emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 }) } catch { /* */ }
+        done.push('emulation')
+      }
+      registry.markStale(tab.tabId)
+      return done.length ? `reset ${done.join(', ')} for tabId=${tab.tabId}` : 'nothing to reset'
+    },
+
+    // Visual regression: screenshot the tab and compare against a stored
+    // baseline (chrome.storage.local, ≤maxDim PNG). action=baseline records,
+    // action=compare PASSes when the changed-pixel ratio is within threshold
+    // and THROWS on exceed (assert semantics — browser_test counts it).
+    async visualDiff(args: {
+      tabId?: number; action?: 'baseline' | 'compare' | 'clear' | 'list'
+      key?: string; threshold?: number; maxDim?: number; tolerance?: number
+    }): Promise<string> {
+      const action = args.action ?? 'compare'
+
+      if (action === 'list') {
+        const all = await chrome.storage.local.get(null)
+        const lines = Object.entries(all)
+          .filter(([k]) => k.startsWith(VISUAL_BASELINE_PREFIX))
+          .map(([k, v]) => {
+            const b = v as StoredBaseline
+            return `${k.slice(VISUAL_BASELINE_PREFIX.length)} — ${b.width}x${b.height}, saved ${new Date(b.savedAt).toISOString()}`
+          })
+        return lines.join('\n') || '(no visual baselines)'
+      }
+
+      if (action === 'clear') {
+        if (args.key) {
+          await chrome.storage.local.remove(baselineStorageKey(args.key.trim()))
+          return `cleared visual baseline ${JSON.stringify(args.key.trim())}`
+        }
+        const all = await chrome.storage.local.get(null)
+        const keys = Object.keys(all).filter(k => k.startsWith(VISUAL_BASELINE_PREFIX))
+        if (keys.length) await chrome.storage.local.remove(keys)
+        return `cleared ${keys.length} visual baseline(s)`
+      }
+
+      const keyErr = validateVisualKey(args.key)
+      if (keyErr) throw new Error(`browser_visual_diff: ${keyErr}`)
+      const key = (args.key as string).trim()
+      const maxDim = Math.min(Math.max(Math.trunc(args.maxDim ?? 800) || 800, 200), 1600)
+
+      const tab = await ensureTab(args)
+      const shot = await cdp.sendCommand(target(tab.tabId), 'Page', 'captureScreenshot', { format: 'png' })
+
+      if (action === 'baseline') {
+        const png = await pngBudget(shot.data, 'image/png', maxDim)
+        const stored: StoredBaseline = { base64: png.base64, width: png.width, height: png.height, savedAt: Date.now() }
+        await chrome.storage.local.set({ [baselineStorageKey(key)]: stored })
+        return `visual baseline saved: key=${JSON.stringify(key)} ${png.width}x${png.height}`
+      }
+
+      // action === 'compare'
+      const got = await chrome.storage.local.get(baselineStorageKey(key))
+      const base = got?.[baselineStorageKey(key)] as StoredBaseline | undefined
+      if (!base || !base.base64) {
+        throw new Error(`browser_visual_diff: no baseline for key ${JSON.stringify(key)} — run {action:"baseline", key:${JSON.stringify(key)}} first`)
+      }
+      // Rasterize both sides through the SAME cap so identical pages align. The
+      // baseline was stored ≤maxDim; reuse ITS longest side as the cap for the
+      // current shot, so a changed args.maxDim can't force a size mismatch.
+      const cap = Math.max(base.width, base.height)
+      const cur = await rasterizeRGBA(shot.data, 'image/png', cap)
+      if (cur.width !== base.width || cur.height !== base.height) {
+        throw new Error(`VISUAL FAIL: key=${JSON.stringify(key)} size mismatch — baseline ${base.width}x${base.height} vs current ${cur.width}x${cur.height} (viewport changed? re-baseline or fix the viewport)`)
+      }
+      const ref = await rasterizeRGBA(base.base64, 'image/png', cap)
+      const tolerance = Math.min(Math.max(Math.trunc(args.tolerance ?? 16) || 16, 0), 128)
+      const r = diffRGBA(ref.data, cur.data, cur.width, cur.height, tolerance)
+      const threshold = Math.min(Math.max(args.threshold ?? 0.01, 0), 1)
+      const o = renderVisualOutcome(key, r, threshold)
+      if (!o.pass) throw new Error(o.text)
+      return o.text
     },
   }
 
@@ -711,6 +1082,24 @@ export function makeController(deps: ControllerDeps = {}) {
 function isMac(): boolean {
   try { return /mac/i.test((navigator as any).platform || (navigator as any).userAgentData?.platform || '') } catch { return false }
 }
+
+// Compile a user-supplied pattern; an invalid regex returns null (→ no filter)
+// instead of throwing inside an assert that should report expected-vs-actual.
+function safeRegex(pattern?: string): RegExp | null {
+  if (!pattern) return null
+  try { return new RegExp(pattern) } catch { return null }
+}
+
+// browser_test inter-step settle skips tools that don't mutate the page —
+// pure reads and the wait tools themselves (settling after a wait is a no-op
+// that just re-spends the quiet window).
+const NO_SETTLE_TOOLS = new Set([
+  'browser_assert', 'browser_wait_stable', 'browser_wait', 'browser_wait_for_function',
+  'browser_wait_for_navigation', 'browser_snapshot', 'browser_console', 'browser_network',
+  'browser_get_content', 'browser_get_page_text', 'browser_get_attributes', 'browser_find',
+  'browser_screenshot', 'browser_tabs', 'browser_downloads', 'browser_intercept',
+  'browser_visual_diff',
+])
 
 // Element-locating query string for the circuit breaker key (item #5). A raw x/y
 // click addresses no element, so it returns '' → the breaker is skipped (the same

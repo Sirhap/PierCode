@@ -384,11 +384,16 @@ func (b *EventBus) GetConsoleMessages(tabID int, filter ConsoleFilter) []Console
 
 	var result []ConsoleMessage
 	var re *regexp.Regexp
+	literal := ""
 	if filter.Pattern != "" {
 		var err error
 		re, err = regexp.Compile(filter.Pattern)
 		if err != nil {
-			return nil
+			// Invalid regex: fall back to a literal substring match instead of
+			// silently returning nil. An empty return is indistinguishable from
+			// "no console messages", so the model would wrongly conclude the page
+			// logged nothing when its pattern merely failed to compile.
+			re, literal = nil, filter.Pattern
 		}
 	}
 
@@ -397,6 +402,9 @@ func (b *EventBus) GetConsoleMessages(tabID int, filter ConsoleFilter) []Console
 			continue
 		}
 		if re != nil && !re.MatchString(msg.Text) {
+			continue
+		}
+		if literal != "" && !strings.Contains(msg.Text, literal) {
 			continue
 		}
 		result = append(result, msg)

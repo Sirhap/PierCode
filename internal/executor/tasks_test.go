@@ -219,6 +219,74 @@ func TestTaskManagerStopKillsShellChildren(t *testing.T) {
 	}
 }
 
+// A command whose main process exits while a backgrounded child keeps the
+// stdout pipe open must still reach a terminal state promptly (G1). The old
+// code blocked on the pump goroutines before cmd.Wait(), so the never-EOFing
+// pipe wedged the task in "running" for as long as the child lived.
+func TestTaskManagerBackgroundChildDoesNotWedge(t *testing.T) {
+	skipOnWindows(t)
+	tm := NewTaskManager()
+	defer tm.Close()
+
+	// echo runs, then the shell backgrounds a 5s sleep (which inherits the
+	// stdout pipe) and exits immediately. The pipe write end stays open for 5s.
+	id, err := tm.Start(tool.TaskSpec{
+		Command: "echo hi; { sleep 5 & }",
+		Dir:     t.TempDir(),
+		Timeout: 60 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	start := time.Now()
+	select {
+	case <-tm.Get(id).Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("task wedged: main process exited but pump blocked on child-held pipe")
+	}
+	if elapsed := time.Since(start); elapsed >= 3*time.Second {
+		t.Fatalf("task took %s to finish — did not force-close the child-held pipe", elapsed)
+	}
+	// The pre-exit output must survive (no truncation from the forced close).
+	if stdout, _ := tm.Get(id).Output(); !strings.Contains(stdout, "hi") {
+		t.Fatalf("lost pre-exit output; got %q", stdout)
+	}
+}
+
+// The WaitDelay grace must let a large buffered output drain before the forced
+// pipe close, i.e. reaping-before-draining must not truncate normal output.
+func TestTaskManagerHighVolumeOutputNotTruncated(t *testing.T) {
+	skipOnWindows(t)
+	tm := NewTaskManager()
+	defer tm.Close()
+
+	id, err := tm.Start(tool.TaskSpec{
+		Command: "seq 1 2000",
+		Dir:     t.TempDir(),
+		Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case <-tm.Get(id).Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("seq task did not finish")
+	}
+	stdout, _ := tm.Get(id).Output()
+	if !strings.Contains(stdout, "\n2000") && !strings.HasSuffix(strings.TrimSpace(stdout), "2000") {
+		t.Fatalf("output truncated: last line missing, tail=%q", tail(stdout, 40))
+	}
+}
+
+func tail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
+}
+
 func TestTaskManagerTimeout(t *testing.T) {
 	skipOnWindows(t)
 	tm := NewTaskManager()

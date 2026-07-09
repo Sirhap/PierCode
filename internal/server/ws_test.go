@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -336,6 +337,27 @@ func TestSendBrowserCommandRouting(t *testing.T) {
 		}
 		if _, ok := m.tabOwner(9); !ok {
 			t.Fatal("tab 9 (owned by B) must survive forgetClientTabs(A)")
+		}
+	})
+
+	t.Run("forgetClientTabs notifies the forget-tabs hook with only that client's tabs", func(t *testing.T) {
+		m := NewWSManager(nil)
+		defer m.Close()
+		var got []int
+		m.SetForgetTabsHook(func(ids []int) { got = append(got, ids...) })
+		m.RecordTabOwner("A", 7)
+		m.RecordTabOwner("A", 8)
+		m.RecordTabOwner("B", 9)
+		m.forgetClientTabs("A")
+		sort.Ints(got)
+		if len(got) != 2 || got[0] != 7 || got[1] != 8 {
+			t.Fatalf("hook should receive A's tabs [7 8], got %v", got)
+		}
+		// A client owning nothing must not fire the hook.
+		got = nil
+		m.forgetClientTabs("C")
+		if got != nil {
+			t.Fatalf("hook must not fire for a client owning no tabs, got %v", got)
 		}
 	})
 }

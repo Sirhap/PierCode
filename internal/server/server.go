@@ -86,6 +86,10 @@ func New(config *types.Config) *Server {
 	for _, h := range config.AllowedSensitiveHosts {
 		s.browser.AllowSensitiveHost(h)
 	}
+	// On a browser-relay disconnect, clear any default tab that browser hosted so
+	// a stale default doesn't wedge every tabId-less browser_* call (no
+	// tab_removed fires on disconnect).
+	ws.SetForgetTabsHook(s.browser.ForgetTabs)
 	s.executor.SetBrowserController(s.browser)
 
 	// Tools (currently just `question`) can push arbitrary WS payloads via

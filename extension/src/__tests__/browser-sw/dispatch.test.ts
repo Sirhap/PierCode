@@ -46,6 +46,37 @@ describe('dispatch lock + key', () => {
     READONLY_TOOLS.delete('browser_test_echo')
   })
 
+  it('dispatchBrowserTool: browser_batch does NOT self-deadlock re-dispatching same-key sub-calls', async () => {
+    // browser_batch runs its sub-actions by re-entering dispatchBrowserTool. If
+    // the batch itself were wrapped in lock.run (like every other tool), the
+    // first same-key sub-call would queue behind the still-running batch →
+    // permanent hang (KeyedLock is not reentrant). The dispatcher special-cases
+    // browser_batch to hold no lock; this test would time out without that.
+    TOOL_TABLE.set('browser_test_sub', async (a) => `sub:${(a as any).n}`)
+    READONLY_TOOLS.add('browser_test_sub')
+    TOOL_TABLE.set('browser_batch', async (a) => {
+      const acts = (a as any).actions as Array<{ n: number }>
+      const out: string[] = []
+      for (const act of acts) {
+        // No tabId → key tab:default, SAME as the batch itself.
+        const r = await dispatchBrowserTool('browser_test_sub', { n: act.n }, '')
+        out.push(r.output)
+      }
+      return out.join(',')
+    })
+
+    const result = await Promise.race([
+      dispatchBrowserTool('browser_batch', { actions: [{ n: 1 }, { n: 2 }] }, 'cb'),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('DEADLOCK: browser_batch never completed')), 1000)),
+    ])
+    expect((result as any).success).toBe(true)
+    expect((result as any).output).toContain('sub:1')
+    expect((result as any).output).toContain('sub:2')
+
+    TOOL_TABLE.delete('browser_test_sub'); READONLY_TOOLS.delete('browser_test_sub')
+    TOOL_TABLE.delete('browser_batch')
+  })
+
   it('dispatchBrowserTool: appends a hint (item #4) when the result matches a rule', async () => {
     // A tool whose output trips the snapshot-stale rule gets a recovery hint appended.
     TOOL_TABLE.set('browser_test_stale', async () => 'ref e9 is stale or unknown; take a fresh browser_snapshot')

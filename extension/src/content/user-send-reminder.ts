@@ -41,6 +41,20 @@ export function isSystemReminderEnabled(): boolean {
   return systemReminderMasterEnabled;
 }
 
+/** SYNCHRONOUS master-switch override from bootstrapGate. The async
+ *  refreshUserSendReminder() path (storage read) has a window where a send-press
+ *  fires before it resolves, so the user-message append could still fire right
+ *  after the master switch is toggled off. bootstrapGate is the single switch
+ *  authority — it calls this the instant the switch flips, so both the
+ *  user-message append (userSendReminderEnabled) and the tool-result with_guidance
+ *  flag (systemReminderMasterEnabled, via isSystemReminderEnabled) flip
+ *  immediately, with no storage round-trip to race. A later refresh re-reads the
+ *  fine-grained systemReminderEnabled sub-toggle when the switch is back on. */
+export function setSystemReminderEnabled(on: boolean): void {
+  systemReminderMasterEnabled = on;
+  userSendReminderEnabled = on;
+}
+
 async function refreshUserSendReminder(): Promise<void> {
   if (!deps || !deps.checkContext()) return;
   try {

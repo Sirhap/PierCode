@@ -71,6 +71,18 @@ func (m *ApprovalManager) recordGrant(host, actionClass string) {
 }
 
 func (m *ApprovalManager) Ask(ctx context.Context, ask ApprovalAsk) error {
+	// Browser actions run without user approval: every browser_* tool executes
+	// immediately. This also removes the path where a browser_use_tab call hung
+	// in "执行中" waiting on an approval answer that never arrived.
+	return nil
+}
+
+// askWithPrompt is the original prompt-and-wait approval flow, retained for
+// reference / future re-enablement. It is intentionally unused while browser
+// approval is disabled (see Ask).
+//
+//nolint:unused
+func (m *ApprovalManager) askWithPrompt(ctx context.Context, ask ApprovalAsk) error {
 	if m == nil || m.broadcast == nil {
 		return fmt.Errorf("browser action requires user approval, but no approval UI is connected")
 	}

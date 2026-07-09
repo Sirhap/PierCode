@@ -184,6 +184,11 @@ export default function App() {
   // 运行时状态（从后端拉取，非用户设置）
   const [version, setVersion] = useState('')
   const [rootDir, setRootDir] = useState('')
+  // Real windowId of the window hosting this popup, pre-fetched on mount.
+  // chrome.sidePanel.open() rejects the WINDOW_ID_CURRENT (-2) sentinel and must
+  // run inside the click's synchronous gesture stack — so we resolve the concrete
+  // id ahead of time and pass it synchronously when the button is clicked.
+  const [popupWindowId, setPopupWindowId] = useState<number | null>(null)
   const [browserProviders, setBrowserProviders] = useState<Record<string, number>>({})
   const [tasksRunning, setTasksRunning] = useState(0)
   const [tasksTotal, setTasksTotal] = useState(0)
@@ -194,6 +199,18 @@ export default function App() {
       return () => clearTimeout(timer)
     }
   }, [toast])
+
+  // Resolve the concrete windowId once on mount so the side-panel button can call
+  // sidePanel.open({windowId}) synchronously inside the click gesture. awaiting
+  // windows.getCurrent() inside the click handler would break the user-gesture
+  // requirement, and WINDOW_ID_CURRENT is rejected by sidePanel.open.
+  useEffect(() => {
+    try {
+      chrome.windows.getCurrent((w) => {
+        if (!chrome.runtime.lastError && w && typeof w.id === 'number') setPopupWindowId(w.id)
+      })
+    } catch { /* windows API unavailable */ }
+  }, [])
 
   useEffect(() => {
     chrome.storage.local.get(['authToken', 'apiUrl', 'authPort', 'extensionEnabled', 'autoSend', 'autoExecute', 'autoApproveBrowserActions', 'batchQuietMs', 'stealthMode', 'systemReminderEnabled', 'contextCompressionConfig', 'qwenCompressionConfig'], (result) => {
@@ -568,15 +585,21 @@ export default function App() {
       <div className="mb-4">
         <button
           onClick={() => {
-            // sidePanel.open requires tabId or windowId; use current window.
-            // Types are incomplete in @types/chrome for this API.
+            // sidePanel.open needs a CONCRETE windowId (the WINDOW_ID_CURRENT
+            // sentinel is rejected) AND must run synchronously inside this click
+            // gesture. popupWindowId was pre-resolved on mount, so pass it
+            // directly; fall back to a tab only when the API or the id is missing
+            // or the call actually rejects. Types are incomplete in @types/chrome.
             const openSidePanel = (chrome as any).sidePanel?.open
-            if (openSidePanel) {
-              openSidePanel({ windowId: chrome.windows.WINDOW_ID_CURRENT }).catch(() => {
-                chrome.tabs.create({ url: chrome.runtime.getURL('sidebar.html') })
-              })
+            const openInTab = () => chrome.tabs.create({ url: chrome.runtime.getURL('sidebar.html') })
+            if (openSidePanel && popupWindowId != null) {
+              try {
+                openSidePanel({ windowId: popupWindowId }).catch(openInTab)
+              } catch {
+                openInTab()
+              }
             } else {
-              chrome.tabs.create({ url: chrome.runtime.getURL('sidebar.html') })
+              openInTab()
             }
           }}
           className="w-full rounded-md border px-3 py-2 text-sm transition-colors cursor-pointer"

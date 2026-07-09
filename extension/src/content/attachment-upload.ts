@@ -53,10 +53,45 @@ export function buildTextAttachmentFile(text: string, name = 'piercode-init.txt'
 }
 
 /** Upload `text` as a .txt attachment into the current chat (init-prompt
- *  fallback). Throws if no upload entry point is found, so the caller can fall
- *  back to typing. */
+ *  fallback). Throws if no upload entry point is found, OR if the attachment
+ *  never visibly attaches (see waitForAttachmentChip) — either way the caller
+ *  falls back to typing the full prompt instead of sending a pointer message
+ *  for an attachment that isn't really there. */
 export async function uploadInitPromptAsAttachment(text: string, name = 'piercode-init.txt'): Promise<void> {
   await attachFileToCurrentChat(buildTextAttachmentFile(text, name));
+  // attachFileToCurrentChat only confirms the DOM dispatch didn't throw — it does
+  // NOT confirm the platform actually attached the file. Some platforms (observed:
+  // Gemini) run an async pipeline after the file input's `change` event (read file
+  // → sometimes a one-time permission/consent dialog on first use → render a
+  // preview chip → mark the message as having an attachment) that a startup-time
+  // consent dialog can stall indefinitely. Without this check, sendInitPrompt sent
+  // "已作为附件 piercode-init.txt 上传" immediately after — a message telling the
+  // model to read a file that was never actually attached.
+  if (!(await waitForAttachmentChip(name))) {
+    throw new Error(`附件 ${name} 上传后未在页面上确认挂载（可能被平台自身的一次性弹窗/异步处理打断）`);
+  }
+}
+
+/** Poll for `name` (or its extension-stripped stem) anywhere in the page's text —
+ *  the attachment preview chip virtually every platform renders once an upload
+ *  actually registers. textContent (not innerText) deliberately: we only care
+ *  whether the DOM has the chip at all, not whether it's currently laid out /
+ *  visible, and innerText's dependence on rendered layout made this diverge
+ *  between real browsers and the jsdom-based unit tests. This is a DOM-structure-
+ *  agnostic signal (works across platforms without a per-platform chip selector)
+ *  at the cost of being a heuristic: a false positive would require unrelated
+ *  text to contain the exact filename, which is not realistic for the
+ *  `piercode-init` stem. Exported (with a timeoutMs override) so tests don't have
+ *  to wait out the real 4s default to exercise the timeout branch. */
+export async function waitForAttachmentChip(name: string, timeoutMs = 4000): Promise<boolean> {
+  const stem = name.replace(/\.[^.]+$/, '');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const text = document.body.textContent || '';
+    if (text.includes(name) || (stem && text.includes(stem))) return true;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return false;
 }
 
 let attachmentUploadDispatcherRegistered = false;
@@ -168,14 +203,21 @@ function prioritizeFileInputs(inputs: HTMLInputElement[], editor: HTMLElement | 
   });
 }
 
-function tryAssignFileInput(input: HTMLInputElement, file: File): boolean {
+// Exported for the double-fire regression test. Assigns `file` to a file input
+// and dispatches exactly one `change` event.
+export function tryAssignFileInput(input: HTMLInputElement, file: File): boolean {
   try {
     const transfer = new DataTransfer();
     transfer.items.add(file);
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'files')?.set;
     if (setter) setter.call(input, transfer.files);
     else input.files = transfer.files;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    // Dispatch ONLY `change` — the canonical event for <input type="file">. React's
+    // onChange on a file input also binds the native `change` event (file inputs are
+    // the exception where React uses change, not input), so change alone covers both
+    // React and vanilla handlers. Dispatching `input` too made sites that listen to
+    // both (e.g. z.ai) fire their upload handler twice → the file uploaded twice on
+    // a single init click.
     input.dispatchEvent(new Event('change', { bubbles: true }));
     return !!input.files && input.files.length > 0;
   } catch (error) {
@@ -189,7 +231,11 @@ function dispatchClipboardFile(target: HTMLElement, file: File): boolean {
     target.focus();
     const transfer = new DataTransfer();
     transfer.items.add(file);
-    transfer.setData('text/plain', file.name);
+    // Do NOT also set text/plain to the filename. A file paste doesn't need it,
+    // and if the site ignores the pasted FILE the filename text lands in the
+    // editor — which then fools waitForAttachmentChip (it scans body.textContent
+    // for the filename), reporting a phantom "attached" for a file that never
+    // uploaded. The drop path deliberately omits it for the same reason.
     const event = new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true });
     target.dispatchEvent(event);
     return true;

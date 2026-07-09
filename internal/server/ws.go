@@ -65,6 +65,18 @@ type WSManager struct {
 
 	tabOwnersMu sync.RWMutex
 	tabOwners   map[int]string // tabId → owning browser-relay client id
+
+	// onForgetTabs, if set, is called with the tabIds a disconnecting browser
+	// owned, so the controller can clear a default tab hosted by the now-gone
+	// browser (no tab_removed event fires on a WS disconnect). Wired once at
+	// startup before any connection, so a plain field read is race-free.
+	onForgetTabs func([]int)
+}
+
+// SetForgetTabsHook wires the disconnect → controller callback. Call once during
+// server setup, before serving.
+func (m *WSManager) SetForgetTabsHook(fn func([]int)) {
+	m.onForgetTabs = fn
 }
 
 // NewWSManager 创建新的 WebSocket 管理器。allowedOrigins 是用户显式配置的
@@ -415,13 +427,22 @@ func (m *WSManager) forgetClientTabs(clientID string) {
 	if clientID == "" {
 		return
 	}
+	var gone []int
 	m.tabOwnersMu.Lock()
 	for tabID, owner := range m.tabOwners {
 		if owner == clientID {
 			delete(m.tabOwners, tabID)
+			gone = append(gone, tabID)
 		}
 	}
 	m.tabOwnersMu.Unlock()
+	// Notify the controller OUTSIDE the tabOwners lock (avoids any lock-ordering
+	// coupling with the tab registry) so a default tab hosted by the now-gone
+	// browser is cleared and the next tabId-less call auto-creates instead of
+	// failing "No tab with id" forever against a dead cached default.
+	if len(gone) > 0 && m.onForgetTabs != nil {
+		m.onForgetTabs(gone)
+	}
 }
 
 // tabOwner returns the client id hosting tabID, if known.

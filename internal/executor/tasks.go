@@ -582,9 +582,20 @@ func (m *TaskManager) run(ctx context.Context, t *Task, spec tool.TaskSpec) {
 	wg.Add(2)
 	go m.pumpStream(t, "stdout", stdout, onChunk, &wg)
 	go m.pumpStream(t, "stderr", stderr, onChunk, &wg)
-	wg.Wait()
 
+	// Reap the process BEFORE draining the pumps, not after. cmd.Wait() closes
+	// the stdout/stderr read ends once the MAIN process exits (the WaitDelay
+	// grace set in ConfigureCommand lets buffered output drain first, so normal
+	// output isn't truncated). A command that double-forks / setsid's a daemon
+	// leaves that grandchild holding the pipe WRITE end open after the main
+	// process exits — it escaped the process group, so Cancel()'s SIGKILL can't
+	// reach it and the pipe never EOFs on its own. The old order (wg.Wait()
+	// first) let the pumps block forever on that never-closing pipe, so
+	// cmd.Wait() — the only thing that force-closes the pipes — was never
+	// reached: the task stayed "running" and task_stop could never reclaim it.
+	// Reaping first lets that forced close unblock the stuck pumps.
 	waitErr := cmd.Wait()
+	wg.Wait()
 	exitCode := 0
 	errMsg := ""
 	status := TaskDone

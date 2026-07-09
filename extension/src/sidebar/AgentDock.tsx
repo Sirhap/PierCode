@@ -49,7 +49,12 @@ function AgentRow({ agent, expanded, onToggle, onAbort }: {
   }
   return (
     <div className={`border-b last:border-b-0${agent.fading ? ' agent-fading' : ''}`} style={{ borderColor: 'var(--line)' }}>
-      <div className="flex items-center gap-1.5 px-2 py-1.5 cursor-pointer" onClick={onToggle} title={agent.task}>
+      <div
+        className="flex items-center gap-1.5 px-2 py-1.5 cursor-pointer" onClick={onToggle}
+        role="button" tabIndex={0} aria-expanded={expanded}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle() } }}
+        title={agent.task}
+      >
         <span className={`${s.cls} ${agent.status === 'running' ? 'animate-pulse-dot' : ''} flex-shrink-0`}>{s.mark}</span>
         <span className="glow-text flex-shrink-0">@{agent.label}</span>
         <span className="truncate flex-1 flex items-center gap-1" style={{ color: 'var(--dim)' }}>

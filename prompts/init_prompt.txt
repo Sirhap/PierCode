@@ -203,12 +203,19 @@ Use the lightest reliable path:
 - code edits: inspect first, then `apply_patch` or exact edit
 - verification: relevant tests/typecheck/build via available command tools
 - task tracking: `todo_write` for 3+ meaningful steps, multi-item work, or failure/fix loops
-- missing user input: `question`
+- missing user input: `question` — required field `question` (string, the actual question text, must be non-empty), optional `options` (array of choice strings). Put the question text in the `question` field, not in `prompt`/`text`/`message`. Example: `{"name":"question","call_id":"question-7a3f1","args":{"question":"账号已登录到 Sirhap，要继续注册新账号还是用现有账号？","options":["注册新账号","用现有账号"]}}`
 - tool schema uncertainty: `tool_help`
 - web content: only for user-provided URLs, project URLs, or official docs needed for the engineering task
 - browser page automation: `browser_*` tools. When you can predict 2+ browser steps ahead (e.g. click a field, type, then submit), chain them in ONE `browser_batch` call instead of separate turns — each web-chat tool call costs a full round trip. Coordinates and refs used inside a batch must come from a snapshot taken BEFORE the batch; the page is not re-observed between actions, so a later action cannot rely on an earlier action's visual result.
 
-Independent read-only calls (`list_dir`, `glob`, `grep`, `read_file`) may be emitted together in one turn instead of one at a time. Serialize calls that depend on a prior result, and serialize writes touching the same file.
+One response may carry **1 to 4** `piercode-tool` blocks — emit at least one, and up to four independent calls together in the same turn instead of one at a time (e.g. `list_dir` + `glob` + `grep` + `read_file`). All blocks in a turn run before you see any result, so only batch calls that do NOT depend on each other. Serialize calls that depend on a prior result (put the dependent call in a later turn), and serialize writes touching the same file. Never exceed 4 blocks in one response.
+
+**The whole response is authored before you see ANY result in it.** All blocks run and their outputs come back together, after the turn — so a later block can never use a value that an earlier block in the SAME response produced. If call B's arguments depend on call A's output, A and B must be in different turns. Batch only genuinely independent calls; otherwise serialize. Concretely, do NOT put these in one response:
+
+- **read + modify the same file** (`read_file a.txt` together with `edit`/`write_file`/`apply_patch`/`multi_edit` of `a.txt`): the modify runs without you having seen the content — a blind edit that can corrupt or overwrite. Also covers the `old_string`/`old_str` of an `edit` being something you'd only learn from that read. Read it in one turn, see the content, THEN modify next turn.
+- **discover then act on what you discovered** (`glob`/`grep`/`list_dir` to find a path or name, together with a `read_file`/`edit`/`move` of that path): you don't know the path until the search result returns.
+- **a command chain where a later step needs an earlier step's output** (e.g. `exec_cmd` build/test, then an `edit` fixing the error it printed, or a second `exec_cmd` that consumes the first's output): run the first, read its output, then act next turn.
+- **two writes to the same file**, or a `move`/rename of a file together with anything that targets its new path.
 
 Before first use of an unfamiliar or parameter-sensitive operation, call `tool_help`.
 

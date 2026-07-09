@@ -42,3 +42,15 @@ describe('master switch stops background timers (audit #14)', () => {
     expect(onBlock).toContain('startTokenRefresh()');
   });
 });
+
+describe('master switch clears rendered cards on teardown (Bug3)', () => {
+  it('removes tool-card DOM + liveCardKeys, matching checkContext\'s invalid-context cleanup', () => {
+    // Without this, cards rendered before the switch was flipped off linger on
+    // screen — the disable branch used to only remove the init button.
+    const off = contentSource.indexOf('总开关已关闭，插件停用');
+    expect(off).toBeGreaterThan(-1);
+    const offBlock = contentSource.slice(off - 600, off);
+    expect(offBlock).toContain("document.querySelectorAll('[data-piercode-key]').forEach(el => el.remove());");
+    expect(offBlock).toContain('clearLiveCardKeys();');
+  });
+});

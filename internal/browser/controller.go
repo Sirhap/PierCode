@@ -1156,23 +1156,35 @@ func (c *Controller) ensureCaptureDomains(_ context.Context, tabID int) {
 	}
 }
 
+// ForgetTabs drops registry state for tabs whose owning browser disconnected.
+// A WS disconnect fires no tab_removed event, so without this a default tab
+// hosted by the gone browser would stay cached: every tabId-less browser_* call
+// would then fail "No tab with id" and never reach the NewTab auto-create
+// fallback in ensureTab. ClearDefault only nulls the default when it matches and
+// is a no-op otherwise, so passing all of the browser's tabIds is safe.
+func (c *Controller) ForgetTabs(tabIDs []int) {
+	for _, id := range tabIDs {
+		c.tabs.ClearDefault(id)
+	}
+}
+
 func (c *Controller) ensureTab(ctx context.Context, tabID *int) (tool.BrowserTab, error) {
 	if tabID != nil && *tabID > 0 {
 		tab, err := c.getTab(ctx, *tabID)
 		if err != nil {
 			return tool.BrowserTab{}, err
 		}
-		if c.policy.IsAIPage(tab.URL) && !c.tabs.IsApproved(tab.TabID) {
-			return tool.BrowserTab{}, fmt.Errorf("refusing to control AI conversation tab by default; use browser_use_tab and approve explicitly")
+		// Browser approval is disabled, so AI conversation tabs are no longer
+		// gated behind an explicit browser_use_tab approval — mark them approved
+		// on first touch so downstream tools treat them as controlled.
+		if c.policy.IsAIPage(tab.URL) {
+			c.tabs.MarkApproved(tab.TabID)
 		}
 		return c.tabs.Upsert(tab), nil
 	}
 	if tab, ok := c.tabs.DefaultTab(); ok {
-		// Same gate as the explicit-tabID path above. Without it, the implicit
-		// default-tab route was the one place an AI conversation page could be
-		// driven without browser_use_tab approval.
-		if c.policy.IsAIPage(tab.URL) && !c.tabs.IsApproved(tab.TabID) {
-			return tool.BrowserTab{}, fmt.Errorf("refusing to control AI conversation tab by default; use browser_use_tab and approve explicitly")
+		if c.policy.IsAIPage(tab.URL) {
+			c.tabs.MarkApproved(tab.TabID)
 		}
 		return tab, nil
 	}

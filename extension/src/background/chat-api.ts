@@ -685,7 +685,12 @@ async function getAuth(platform: string): Promise<AuthResult | { error: string }
 
 // ── PierCode Server Exec ───────────────────────────────────────────────────
 
-async function execTool(name: string, args: Record<string, unknown>, callId?: string): Promise<ToolResult> {
+async function execTool(
+  name: string,
+  args: Record<string, unknown>,
+  callId?: string,
+  dispatcher?: { clientId?: string; conversationUrl?: string },
+): Promise<ToolResult> {
   callId = callId || `sidebar-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   // NOTE: browser_* tools execute SW-natively now (EXEC_BROWSER_TOOL → dispatchBrowserTool)
   // on the content + browser-agent routes. This API-sidebar route still POSTs to /exec, so
@@ -708,7 +713,17 @@ async function execTool(name: string, args: Record<string, unknown>, callId?: st
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${authToken}`,
       },
-      body: JSON.stringify({ name, call_id: callId, args }),
+      // dispatcher (clientId + conversationUrl) is set only by the ChatGPT
+      // tab-worker fallback below: it carries the originating AI page's WS
+      // identity so the Go /exec spawn_agent can push open_worker_tab back to
+      // that page. Omitted on the normal sidebar/sub-agent route (no page).
+      body: JSON.stringify({
+        name,
+        call_id: callId,
+        args,
+        ...(dispatcher?.clientId ? { client_id: dispatcher.clientId } : {}),
+        ...(dispatcher?.conversationUrl ? { conversation_url: dispatcher.conversationUrl } : {}),
+      }),
     })
 
     if (!res.ok) {
@@ -871,7 +886,7 @@ async function fetchWorkerPrompt(): Promise<string> {
   try {
     const { apiUrl, authToken } = await chrome.storage.local.get(['apiUrl', 'authToken'])
     if (apiUrl && authToken) {
-      const res = await fetch(`${apiUrl}/prompt?profile=worker`, {
+      const res = await fetch(`${apiUrl}/prompt?profile=sidebar-worker`, {
         headers: { Authorization: `Bearer ${authToken}` },
       })
       if (res.ok) {
@@ -882,10 +897,14 @@ async function fetchWorkerPrompt(): Promise<string> {
   } catch {
     // fall through to inline default
   }
-  workerPromptCache =
+  // Do NOT cache the fallback: the server may simply not be connected yet.
+  // Caching it would pin every future sub-agent to this degraded prompt for the
+  // SW's whole lifetime even after the server comes up. Return it transiently so
+  // the next call retries the /prompt fetch.
+  return (
     '你是一个子 agent。独立完成下面的任务，可以使用 piercode-tool 工具（read_file/write_file/exec_cmd 等）。' +
     '完成后用纯文本简明汇报结论，不要再派生新的子 agent。'
-  return workerPromptCache
+  )
 }
 
 // ── SSE Stream Processing ──────────────────────────────────────────────────
@@ -1116,6 +1135,16 @@ export function isListenPlatform(platform: string): boolean {
 // the sidebar sends chatId≠null on later turns (fresh=false → same tab/chat).
 const listenChatIds = new Map<string, string>()
 
+// Abort controller for the listen route (chatgpt page-driven). It is SEPARATE
+// from the sidebar-fetch `currentAbort`, and — unlike currentAbort — it is
+// aborted-but-NOT-nulled by handleChatCancel, so continueListenTurn can observe
+// the cancellation instead of resurrecting a fresh controller with `??=` and
+// driving the tab again after Stop. Reset per user turn (depth 0 entry).
+let listenAbort: AbortController | null = null
+// Getter handed to the listen receiver so it stops broadcasting the in-flight
+// stream on Stop (the intercepted stream is otherwise consumed with no signal).
+function currentListenSignal(): AbortSignal | undefined { return listenAbort?.signal }
+
 async function handleChatRequestViaListen(platform: string, message: string, fresh = false): Promise<void> {
   if (!listenSendHook) {
     broadcast({ type: 'CHAT_ERROR', error: '监听通道未初始化（缺少 tab 驱动）' })
@@ -1139,7 +1168,13 @@ export async function continueListenTurn(platform: string, content: string): Pro
     broadcast({ type: 'CHAT_DONE', chatId: listenChatId, responseId: null })
     return
   }
-  const signal = (currentAbort ??= new AbortController()).signal
+  const signal = (listenAbort ??= new AbortController()).signal
+  // Stop pressed between the stream ending and tools running: honor it before
+  // executing anything or driving the tab again.
+  if (signal.aborted) {
+    broadcast({ type: 'CHAT_DONE', chatId: listenChatId, responseId: null })
+    return
+  }
   const results = await runToolCalls(toolCalls, platform, undefined, 0, signal)
   if (signal.aborted) {
     broadcast({ type: 'CHAT_DONE', chatId: listenChatId, responseId: null })
@@ -1175,7 +1210,7 @@ let mainTurnDepth = 0
 // Queued batch summaries waiting for an idle main conversation. ctx is the
 // fallback resume point persisted with the batch (used when a restarted SW has
 // no lastMainContext yet); a fresher lastMainContext wins at drain time.
-const pendingInjections: Array<{ message: string; ctx: MainTurnContext }> = []
+const pendingInjections: Array<{ message: string; ctx: MainTurnContext; batchKey?: string }> = []
 
 let sidebarBatchSeq = 0
 
@@ -1198,8 +1233,11 @@ export function launchSidebarSpawnBatch(
 }
 
 // enqueueInjection queues a finished batch's summary and tries to drain.
-function enqueueInjection(message: string, ctx: MainTurnContext): void {
-  pendingInjections.push({ message, ctx })
+// batchKey (when given) lets the drain mark that batch's record `injected` only
+// after the summary is actually delivered, so a SW death while the summary is
+// still queued does not lose it (resume re-enqueues undelivered batches).
+function enqueueInjection(message: string, ctx: MainTurnContext, batchKey?: string): void {
+  pendingInjections.push({ message, ctx, batchKey })
   drainInjectionQueue()
 }
 
@@ -1218,17 +1256,30 @@ function drainInjectionQueue(): void {
   const ctx = lastMainContext && lastMainContext.chatId === item.ctx.chatId
     ? lastMainContext
     : item.ctx
-  // New assistant bubble in the sidebar for the continuation.
-  broadcast({ type: 'CHAT_CONTINUING' })
-  void handleChatRequest({
-    platform: ctx.platform,
-    message: item.message,
-    chatId: ctx.chatId,
-    parentId: ctx.parentId,
-    model: ctx.model,
-    reasoning: ctx.reasoning,
-    depth: 1, // continuation turn: never re-applies the system prompt
-  }).catch(err => {
+  void (async () => {
+    // Mark the batch injected at DISPATCH time — after it has left the in-memory
+    // queue and is being sent, but BEFORE the continuation broadcast. This closes
+    // the lost-summary window (a SW death while the summary was still QUEUED, held
+    // by an in-flight user turn, leaves injected=false so resume re-enqueues it)
+    // while preserving emit-once (a second resume after dispatch sees injected=true
+    // and skips). Persisting before CHAT_CONTINUING also makes the ordering
+    // observable to callers that await the broadcast.
+    if (item.batchKey) {
+      const rec = await loadSpawnBatch(item.batchKey)
+      if (rec && !rec.injected) { rec.injected = true; await saveSpawnBatch(rec) }
+    }
+    // New assistant bubble in the sidebar for the continuation.
+    broadcast({ type: 'CHAT_CONTINUING' })
+    await handleChatRequest({
+      platform: ctx.platform,
+      message: item.message,
+      chatId: ctx.chatId,
+      parentId: ctx.parentId,
+      model: ctx.model,
+      reasoning: ctx.reasoning,
+      depth: 1, // continuation turn: never re-applies the system prompt
+    })
+  })().catch(err => {
     broadcast({ type: 'CHAT_ERROR', error: err instanceof Error ? err.message : String(err) })
   })
 }
@@ -1300,6 +1351,8 @@ async function handleChatRequestInner(params: ChatRequestParams): Promise<void> 
   if (isListenPlatform(platform) && depth === 0) {
     let outbound = message
     if (systemPrompt) outbound = `${systemPrompt}\n\n---\n\n${outbound}`
+    // Fresh controller for this user turn (a prior turn's may be aborted).
+    listenAbort = new AbortController()
     // fresh = sidebar starts a NEW conversation → the driver must put its
     // dedicated tab on a new chat instead of appending to whatever
     // conversation the page currently shows.
@@ -1368,7 +1421,14 @@ async function handleChatRequestInner(params: ChatRequestParams): Promise<void> 
   const headers = await config.buildHeaders(auth.token)
   const body = config.buildBody(message, parentId, ctx)
 
-  currentAbort = new AbortController()
+  // Capture THIS turn's controller in a local. handleChatCancel aborts and then
+  // nulls the global currentAbort synchronously, and the finally below nulls it
+  // too — so by the time the fetch/read rejection reaches the catch, the global
+  // is already null and `currentAbort?.signal.aborted` would always be false
+  // (a stopped turn wrongly reported as CHAT_ERROR). The captured signal stays
+  // valid regardless.
+  const turnAbort = new AbortController()
+  currentAbort = turnAbort
 
   try {
     const response = await platformFetch(
@@ -1450,7 +1510,7 @@ async function handleChatRequestInner(params: ChatRequestParams): Promise<void> 
 
     broadcast({ type: 'CHAT_DONE', chatId, responseId: sseResult.responseId })
   } catch (error) {
-    if (currentAbort?.signal.aborted) {
+    if (turnAbort.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
       broadcast({ type: 'CHAT_DONE', chatId, responseId: null })
       return
     }
@@ -1459,7 +1519,9 @@ async function handleChatRequestInner(params: ChatRequestParams): Promise<void> 
       error: error instanceof Error ? error.message : String(error),
     })
   } finally {
-    currentAbort = null
+    // Only clear the global if it still points at THIS turn — a concurrent turn
+    // may have already replaced it.
+    if (currentAbort === turnAbort) currentAbort = null
   }
 }
 
@@ -1496,6 +1558,7 @@ async function runSubAgent(
   batchId: string,
   originTabId?: number,
   recovery?: SubAgentRecovery,
+  dispatcher?: { clientId?: string; conversationUrl?: string },
 ): Promise<ToolResult> {
   const agentId = recovery?.agentId ?? `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   const label = String(call.args.label || 'agent')
@@ -1566,13 +1629,18 @@ async function runSubAgent(
 
     // API path exhausted. For ChatGPT, fall back to a real tab-worker via the Go
     // /exec spawn_agent (page context has the full turnstile state the proxy lacks).
-    if (platform === 'chatgpt' && !signal.aborted) {
+    // The Go spawn_agent pushes open_worker_tab back to the dispatching AI page
+    // over its WS client, so it REQUIRES that page's client id; without it the
+    // server can't reach any dispatcher and returns "no dispatcher client
+    // connected". The sidebar route has no page (pure API), so dispatcher is
+    // unset there and we skip the fallback rather than emit that misleading error.
+    if (platform === 'chatgpt' && !signal.aborted && dispatcher?.clientId) {
       broadcastAgentLifecycle({ type: 'CHAT_AGENT_STREAM', agentId, chunk: '\n[proxy 失败，降级到 tab-worker]\n' }, originTabId)
       const fb = await execTool('spawn_agent', {
         task,
         description: String(call.args.description || label),
         platform: 'chatgpt',
-      }, call.call_id)
+      }, call.call_id, dispatcher)
       broadcastAgentLifecycle({
         type: 'CHAT_AGENT_DONE', agentId, status: fb.success ? 'done' : 'error',
         ...(fb.success ? {} : { error: fb.output }),
@@ -1600,10 +1668,11 @@ export async function runSubAgentBatch(
   model: string | undefined,
   depth: number,
   originTabId?: number,
+  dispatcher?: { clientId?: string; conversationUrl?: string },
 ): Promise<ToolResult[]> {
   if (spawns.length === 0) return []
   const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-  return Promise.all(spawns.map(tc => runSubAgent(tc, platform, model, depth, batchId, originTabId)))
+  return Promise.all(spawns.map(tc => runSubAgent(tc, platform, model, depth, batchId, originTabId, undefined, dispatcher)))
 }
 
 // ── Recoverable Spawn Batches ──────────────────────────────────────────────
@@ -1635,6 +1704,13 @@ interface SpawnBatchRecord {
   model?: string
   depth: number
   originTabId?: number
+  /** The dispatching AI page's WS client id + conversation url (content route
+   *  only). Carried so the ChatGPT proxy→tab-worker fallback can push
+   *  open_worker_tab back to that page. Persisted with the record so a resumed
+   *  batch (SW restart) still has it — though a page reload rotates the client
+   *  id, in which case the fallback degrades to the prior "no dispatcher" error. */
+  dispatcherClientId?: string
+  dispatcherConversationUrl?: string
   createdAt: number
   done: boolean
   agents: SpawnAgentRecord[]
@@ -1644,6 +1720,12 @@ interface SpawnBatchRecord {
   /** True once the summary was handed to the injection queue (emit-once across
    *  SW restarts; resumeOrphanedSpawnBatches re-injects done-but-uninjected). */
   injected?: boolean
+  /** Set by handleChatCancel when Stop is pressed while this batch's chatId is
+   *  still live. Persisted immediately (before the SW might die) so it survives
+   *  a restart. Gates enqueueInjection everywhere it's called (live completion
+   *  AND resume) — a stopped batch still finishes and reports its result, it
+   *  just never auto-continues the conversation. */
+  cancelled?: boolean
 }
 
 const SPAWN_BATCH_PREFIX = 'spawnBatch:'
@@ -1653,6 +1735,10 @@ const SPAWN_KEEPALIVE_MS = 20_000
 // Batches currently running in THIS service-worker life. A record in storage
 // but not in this set is an orphan from a killed SW → resume it.
 const liveSpawnBatches = new Set<string>()
+// rec objects for batches live in THIS SW life, keyed the same as liveSpawnBatches.
+// handleChatCancel needs the actual record (not just the key) to flip `cancelled`
+// on the ones matching the stopped chatId.
+const liveSpawnRecords = new Map<string, SpawnBatchRecord>()
 // Completed results kept in memory so the status poll works even when
 // chrome.storage.session is unavailable (tests / restricted contexts).
 const finishedSpawnBatches = new Map<string, ToolResult[]>()
@@ -1742,7 +1828,7 @@ export async function startRecoverableSpawnBatch(
   platform: string,
   model: string | undefined,
   originTabId?: number,
-  opts?: { inject?: MainTurnContext; depth?: number },
+  opts?: { inject?: MainTurnContext; depth?: number; dispatcherClientId?: string; dispatcherConversationUrl?: string },
 ): Promise<void> {
   const stamp = Date.now()
   const rec: SpawnBatchRecord = {
@@ -1752,6 +1838,8 @@ export async function startRecoverableSpawnBatch(
     model,
     depth: opts?.depth ?? 0,
     originTabId,
+    dispatcherClientId: opts?.dispatcherClientId,
+    dispatcherConversationUrl: opts?.dispatcherConversationUrl,
     inject: opts?.inject,
     createdAt: stamp,
     done: false,
@@ -1771,6 +1859,7 @@ export async function startRecoverableSpawnBatch(
 async function runSpawnBatchRecord(rec: SpawnBatchRecord): Promise<void> {
   if (liveSpawnBatches.has(rec.batchKey)) return
   liveSpawnBatches.add(rec.batchKey)
+  liveSpawnRecords.set(rec.batchKey, rec)
   updateSpawnKeepAlive()
   try {
     const results = await Promise.all(rec.agents.map(async (a) => {
@@ -1782,7 +1871,7 @@ async function runSpawnBatchRecord(rec: SpawnBatchRecord): Promise<void> {
           a.checkpoint = cp
           await saveSpawnBatch(rec)
         },
-      })
+      }, { clientId: rec.dispatcherClientId, conversationUrl: rec.dispatcherConversationUrl })
       a.status = 'done'
       a.result = result
       delete a.checkpoint
@@ -1794,13 +1883,28 @@ async function runSpawnBatchRecord(rec: SpawnBatchRecord): Promise<void> {
     // message in the UI) + queue the batch summary for idle injection.
     if (rec.inject && !rec.injected) {
       for (const r of results) broadcast({ type: 'CHAT_TOOL_DONE', result: r })
-      rec.injected = true
-      // Persist done+injected BEFORE enqueueing: enqueueInjection can synchronously
-      // drain a continuation turn to the model, and if the SW is killed before the
-      // saveSpawnBatch at the end of this function, the resume path would re-run the
-      // batch and inject the same summary a second time. Mirror resumeOrphanedSpawnBatches.
-      await saveSpawnBatch(rec)
-      enqueueInjection(formatToolResults(results), rec.inject)
+      if (rec.cancelled) {
+        // Stop was pressed for this chatId while the batch was still running
+        // (handleChatCancel). The batch ran to completion and its results are
+        // already broadcast above, but the auto-continue is skipped so a stopped
+        // conversation doesn't spontaneously resume. Nothing will be delivered,
+        // so mark it injected (handled) now — otherwise a later resume would
+        // treat it as an undelivered batch.
+        rec.injected = true
+        await saveSpawnBatch(rec)
+      } else {
+        // Leave injected=false: the summary lives only in the in-memory
+        // pendingInjections queue until the idle drain actually delivers it (a
+        // user turn in flight holds the drain). Marking injected before delivery
+        // would make the resume sweep treat the batch as handled, so a SW death
+        // while the summary is still queued would drop it silently. The drain
+        // marks injected AFTER the continuation turn is delivered, and
+        // resumeOrphanedSpawnBatches re-enqueues any still-undelivered batch.
+        // (Trade: a SW death mid-continuation may re-inject once — acceptable
+        // versus silently losing the sub-agents' results.)
+        await saveSpawnBatch(rec)
+        enqueueInjection(formatToolResults(results), rec.inject, rec.batchKey)
+      }
     }
     finishedSpawnBatches.set(rec.batchKey, results)
     // Cap the in-memory finished store: it only exists so the status poll works
@@ -1827,6 +1931,7 @@ async function runSpawnBatchRecord(rec: SpawnBatchRecord): Promise<void> {
     }
   } finally {
     liveSpawnBatches.delete(rec.batchKey)
+    liveSpawnRecords.delete(rec.batchKey)
     updateSpawnKeepAlive()
   }
 }
@@ -1836,30 +1941,37 @@ async function runSpawnBatchRecord(rec: SpawnBatchRecord): Promise<void> {
 export async function resumeOrphanedSpawnBatches(): Promise<void> {
   const { undone, uninjected } = await sweepSpawnBatches()
   for (const rec of undone) {
+    // cancelled + persisted before the SW died (handleChatCancel) — the user
+    // already stopped this batch; don't spend API budget resuming it.
+    if (rec.cancelled) continue
     if (!liveSpawnBatches.has(rec.batchKey)) void runSpawnBatchRecord(rec)
   }
   // SW died after the batch finished but before its summary was queued:
   // re-queue from the persisted results (emit-once via the injected flag).
   for (const rec of uninjected) {
+    if (rec.cancelled) continue
     const results = rec.agents.map(a => a.result).filter((r): r is ToolResult => !!r)
     if (results.length === 0 || !rec.inject) continue
-    rec.injected = true
-    await saveSpawnBatch(rec)
-    enqueueInjection(formatToolResults(results), rec.inject)
+    // Don't pre-mark injected — the drain marks it only after the summary is
+    // delivered (same lost-summary reasoning as the live path). Pass batchKey.
+    enqueueInjection(formatToolResults(results), rec.inject, rec.batchKey)
   }
 }
 
 // Test-only: reset module state between cases.
 export function __spawnBatchStateForTest(): {
   live: Set<string>
+  records: Map<string, SpawnBatchRecord>
   finished: Map<string, ToolResult[]>
   reset: () => void
 } {
   return {
     live: liveSpawnBatches,
+    records: liveSpawnRecords,
     finished: finishedSpawnBatches,
     reset: () => {
       liveSpawnBatches.clear()
+      liveSpawnRecords.clear()
       finishedSpawnBatches.clear()
       if (spawnKeepAliveTimer) {
         clearInterval(spawnKeepAliveTimer)
@@ -2007,6 +2119,76 @@ function broadcastAgentLifecycle(msg: Record<string, unknown>, originTabId?: num
   }
 }
 
+// Handles a CHAT_CANCEL message: abort the main turn, abort every in-flight
+// sub-agent, and purge queued injections for the stopped conversation.
+// Extracted from the onMessage listener so it is independently testable
+// (chrome.runtime.onMessage callbacks otherwise can't be invoked from a test
+// without also mocking the addListener capture plumbing).
+export function handleChatCancel(): void {
+  // Read once up front: used both to purge queued injections below and to mark
+  // any still-live detached batch for this conversation as cancelled.
+  const stoppedChatId = lastMainContext?.chatId
+  if (currentAbort) {
+    currentAbort.abort()
+    currentAbort = null
+  }
+  // Listen route (chatgpt page-driven): abort but do NOT null — continueListenTurn
+  // reads listenAbort.signal.aborted to stop executing tools + re-driving the tab.
+  // Nulling it would let its `??=` mint a fresh un-aborted controller and resume.
+  listenAbort?.abort()
+  // Abort every in-flight sub-agent too. currentAbort only covers the main
+  // turn — a detached spawn_agent batch (launchSidebarSpawnBatch fires as
+  // `void`) is already running with its OWN per-agent AbortController by the
+  // time Stop is pressed, so currentAbort's abort() above never reaches it.
+  // Without this, sub-agents keep running after Stop, finish, enqueueInjection
+  // queues their summary, and the conversation spontaneously resumes.
+  //
+  // This is a GLOBAL abort (agentAborts carries no chatId), so Stop pressed
+  // in conversation B also kills conversation A's still-running detached
+  // batch if the user switched away from A without stopping it first.
+  // Precise per-conversation scoping needs an agentId→chatId registry
+  // threaded through runSubAgent/mergedAgentSignal — not done here; this
+  // fixes the common case (stop-then-spontaneous-resume in the SAME
+  // conversation) without that larger change.
+  agentAborts.forEach(ac => ac.abort())
+  agentAborts.clear()
+  // Drop any queued sub-agent summaries for THIS conversation. A detached
+  // batch that already finished sits in pendingInjections; without this, the
+  // very next idle drain (even the finally of the turn the user just stopped)
+  // would broadcast CHAT_CONTINUING and POST a continuation turn — the
+  // conversation spontaneously resumes after the user pressed Stop. Scope the
+  // purge to the current conversation (lastMainContext.chatId) so a queued
+  // summary for an unrelated conversation still drains there.
+  if (pendingInjections.length > 0 && stoppedChatId) {
+    for (let i = pendingInjections.length - 1; i >= 0; i--) {
+      if (pendingInjections[i].ctx.chatId === stoppedChatId) pendingInjections.splice(i, 1)
+    }
+  }
+  // The purge above only catches a batch that ALREADY finished and queued its
+  // summary. A batch still RUNNING at this instant will keep going (its
+  // sub-agents see the aborted signal from agentAborts above and wind down,
+  // but runSpawnBatchRecord's Promise.all still resolves normally afterward)
+  // and would otherwise call enqueueInjection later, resuming the conversation
+  // anyway. Mark it cancelled now — persisted immediately since the SW can be
+  // killed at any point after Stop — so that later enqueueInjection call (in
+  // runSpawnBatchRecord, and on resume in resumeOrphanedSpawnBatches) is a
+  // no-op for this batch.
+  if (stoppedChatId) {
+    for (const rec of liveSpawnRecords.values()) {
+      if (rec.inject?.chatId === stoppedChatId && !rec.cancelled) {
+        rec.cancelled = true
+        void saveSpawnBatch(rec)
+      }
+    }
+  }
+}
+
+// Test-only: set the module-private currentAbort so a test can verify
+// handleChatCancel aborts the main turn's controller.
+export function __setCurrentAbortForTest(ac: AbortController | null): void {
+  currentAbort = ac
+}
+
 // ── Message Handler Registration ───────────────────────────────────────────
 
 export function registerChatApiHandler() {
@@ -2019,7 +2201,7 @@ export function registerChatApiHandler() {
   // fetch path. Shares this module's broadcast() so sidebar messages match. On
   // each completed stream, continueListenTurn runs any tool calls and injects
   // the results back into the driven tab (closing the loop).
-  installApiListenReceiver(broadcast, (platform, result) => continueListenTurn(platform, result.content))
+  installApiListenReceiver(broadcast, (platform, result) => continueListenTurn(platform, result.content), currentListenSignal)
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'CHAT_REQUEST') {
@@ -2042,10 +2224,7 @@ export function registerChatApiHandler() {
     }
 
     if (msg.type === 'CHAT_CANCEL') {
-      if (currentAbort) {
-        currentAbort.abort()
-        currentAbort = null
-      }
+      handleChatCancel()
       sendResponse({ ok: true })
       return false
     }
@@ -2061,16 +2240,23 @@ export function registerChatApiHandler() {
       const platform = String(msg.platform || '')
       const model = msg.model ? String(msg.model) : undefined
       const originTabId = sender.tab?.id
+      // The dispatching content page's WS client id + conversation url, so the
+      // ChatGPT proxy→tab-worker fallback can route open_worker_tab back to it.
+      const dispatcherClientId = msg.dispatcherClientId ? String(msg.dispatcherClientId) : undefined
+      const dispatcherConversationUrl = msg.conversationUrl ? String(msg.conversationUrl) : undefined
       if (msg.batchKey) {
         // Recoverable mode: ack synchronously and run detached. A long-open
         // sendResponse channel is what triggered the MV3 5-min SW kill; the
         // result is delivered by push (CONTENT_SPAWN_RESULT) + status poll.
-        void startRecoverableSpawnBatch(String(msg.batchKey), spawns, platform, model, originTabId)
+        void startRecoverableSpawnBatch(String(msg.batchKey), spawns, platform, model, originTabId, {
+          dispatcherClientId,
+          dispatcherConversationUrl,
+        })
         sendResponse({ ok: true, accepted: true })
         return false
       }
       // Legacy single-channel mode (no batchKey): kept for old content scripts.
-      runSubAgentBatch(spawns, platform, model, 0, originTabId)
+      runSubAgentBatch(spawns, platform, model, 0, originTabId, { clientId: dispatcherClientId, conversationUrl: dispatcherConversationUrl })
         .then(results => sendResponse({ ok: true, results }))
         .catch(err => sendResponse({ ok: false, error: String(err?.message || err) }))
       return true // keep the message channel open for async sendResponse

@@ -88,6 +88,12 @@ export function decorateToolResultEchoes(userSelector: string | undefined): void
   document.querySelectorAll(userSelector).forEach((el) => {
     const host = el as HTMLElement;
     if (host.getAttribute('data-piercode-result-echo') === '1') return;
+    // Cheap pre-filter on textContent (no layout). innerText forces a synchronous
+    // reflow per bubble — on a long conversation, running it over every user
+    // bubble each mutation batch was a top freeze contributor. Only the rare
+    // bubble whose text actually contains a `###` header pays for innerText (we
+    // still need its block-level newlines for the `^###`-anchored section parse).
+    if (!(host.textContent || '').includes('###')) return;
     const text = (host.innerText || host.textContent || '').trim();
     if (!text.startsWith('###')) return;
     const sections = parseToolResultEchoSections(text);

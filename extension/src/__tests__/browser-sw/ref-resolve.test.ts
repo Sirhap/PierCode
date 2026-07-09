@@ -39,7 +39,10 @@ describe('ref-resolve', () => {
     reg.storeSnapshot(1, 's2', { e5: { ref: 'e5', nodeId: 'ax-77', backendId: 101, role: 'button', name: 'Go', bounds: null, sessionId: '', frameOffset: null } })
     const b = await resolvePoint(cdp as any, reg, { tabId: 1 }, { tabId: 1, ref: 'e5' })
     expect(a.point).toEqual(b.point)             // same element, same address
-    expect(sent).toEqual([101, 101])             // both resolved through backendNodeId 101
+    // Every CDP command each resolve issued (scrollIntoViewIfNeeded guard +
+    // getBoxModel) addressed backendNodeId 101 — never the drifting ref name.
+    expect(sent).toEqual([101, 101, 101, 101])
+    expect(new Set(sent)).toEqual(new Set([101]))
   })
   it('resolvePoint ref → boxModelBounds center (+ frameOffset)', async () => {
     const reg = new TabRegistry()

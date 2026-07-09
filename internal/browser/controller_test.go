@@ -3,30 +3,28 @@ package browser
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/sirhap/piercode/internal/tool"
 )
 
-func TestEnsureTabRequiresApprovalForAIPage(t *testing.T) {
+// Browser approval is disabled, so ensureTab no longer gates AI conversation
+// tabs: it resolves them on first touch and auto-marks them approved.
+func TestEnsureTabAllowsAIPageWithoutApproval(t *testing.T) {
 	const tabID = 42
 	relay := newGetTabRelay(t, tool.BrowserTab{TabID: tabID, URL: "https://chatgpt.com/c/123", Title: "AI chat"})
 	controller := NewController(relay, func([]byte) {})
 
-	_, err := controller.ensureTab(context.Background(), intPtr(tabID))
-	if err == nil || !strings.Contains(err.Error(), "refusing to control AI conversation tab") {
-		t.Fatalf("expected AI tab refusal before approval, got %v", err)
-	}
-
-	controller.tabs.MarkApproved(tabID)
 	tab, err := controller.ensureTab(context.Background(), intPtr(tabID))
 	if err != nil {
-		t.Fatalf("expected approved AI tab to pass: %v", err)
+		t.Fatalf("expected AI tab to resolve without approval, got %v", err)
 	}
 	if tab.TabID != tabID {
 		t.Fatalf("unexpected tab: %+v", tab)
+	}
+	if !controller.tabs.IsApproved(tabID) {
+		t.Fatalf("expected AI tab to be auto-marked approved")
 	}
 }
 
@@ -52,6 +50,32 @@ func newGetTabRelay(t *testing.T, tab tool.BrowserTab) *RelayManager {
 }
 
 func intPtr(v int) *int { return &v }
+
+// A browser-relay disconnect (surfaced via WSManager.forgetClientTabs → the
+// ForgetTabs hook) must clear a default tab hosted by the gone browser so the
+// next tabId-less call auto-creates instead of failing against a dead default.
+func TestForgetTabsClearsDefault(t *testing.T) {
+	controller := NewController(NewRelayManagerFromSend(func([]byte) bool { return false }), func([]byte) {})
+	def := tool.BrowserTab{TabID: 5, URL: "https://chat.qwen.ai/c/x", Title: "def"}
+	controller.tabs.SetDefault(def)
+	controller.tabs.Upsert(def)
+	if _, ok := controller.tabs.DefaultTab(); !ok {
+		t.Fatal("precondition: default tab should be set")
+	}
+
+	// Forgetting an UNRELATED tab must not disturb the default.
+	controller.ForgetTabs([]int{999})
+	if _, ok := controller.tabs.DefaultTab(); !ok {
+		t.Fatal("forgetting an unrelated tab must leave the default intact")
+	}
+
+	// Forgetting the default's owning browser (its tabId among the gone set)
+	// clears it.
+	controller.ForgetTabs([]int{5})
+	if _, ok := controller.tabs.DefaultTab(); ok {
+		t.Fatal("default tab should be cleared after ForgetTabs includes its id")
+	}
+}
 
 func TestHandleEventTabRemovedClearsEventBusBuffers(t *testing.T) {
 	controller := NewController(NewRelayManagerFromSend(func([]byte) bool { return false }), func([]byte) {})

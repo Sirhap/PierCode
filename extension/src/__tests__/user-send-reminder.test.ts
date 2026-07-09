@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { installUserSendReminder, markProgrammaticSend, isSystemReminderEnabled, type UserSendReminderDeps } from '../content/user-send-reminder';
+import { installUserSendReminder, markProgrammaticSend, isSystemReminderEnabled, setSystemReminderEnabled, type UserSendReminderDeps } from '../content/user-send-reminder';
 
 const REMINDER = '\n\n[系统提示] 测试提醒文本 piercode-tool tool_help';
 
@@ -138,6 +138,33 @@ describe('user-send-reminder', () => {
     textarea.value = '消息';
     pressSend();
     expect(textarea.value).toBe('消息');
+  });
+
+  it('setSystemReminderEnabled(false) synchronously suppresses append after a runtime master-switch off', async () => {
+    // Install with the switch ON so the reminder text is loaded and append works.
+    storageData = {};
+    installUserSendReminder(makeDeps());
+    await flush();
+    textarea.value = '消息一';
+    pressSend();
+    expect(textarea.value).toBe('消息一' + REMINDER);
+    expect(isSystemReminderEnabled()).toBe(true);
+
+    // Master switch flips off at runtime → bootstrapGate calls this synchronously.
+    // A send-press right after (no await for the async storage refresh) must NOT
+    // append — this is the leak the sync override closes.
+    setSystemReminderEnabled(false);
+    expect(isSystemReminderEnabled()).toBe(false);
+    textarea.value = '消息二';
+    pressSend();
+    expect(textarea.value).toBe('消息二');
+
+    // Back on → append resumes.
+    setSystemReminderEnabled(true);
+    expect(isSystemReminderEnabled()).toBe(true);
+    textarea.value = '消息三';
+    pressSend();
+    expect(textarea.value).toBe('消息三' + REMINDER);
   });
 
   it('appends on Enter keydown in editor, not on Shift+Enter', async () => {

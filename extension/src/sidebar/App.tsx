@@ -574,10 +574,44 @@ export default function App() {
     return () => chrome.runtime.onMessage.removeListener(listener)
   }, [])
 
-  // ── Auto-scroll ───────────────────────────────────────────────────────
+  // ── Auto-scroll (sticky) ──────────────────────────────────────────────
+  // Only pull to the bottom when the user is already near it. Scrolling up to
+  // re-read history during a stream no longer yanks the view back down.
+  const stickToBottom = useRef(true)
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false)
+  const [queuedSend, setQueuedSend] = useState<string | null>(null)
+  const handleListScroll = () => {
+    const el = listRef.current
+    if (!el) return
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+    stickToBottom.current = dist < 40
+    setShowJumpToBottom(dist >= 120)
+  }
+  const jumpToBottom = () => {
+    const el = listRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    stickToBottom.current = true
+    setShowJumpToBottom(false)
+  }
   useEffect(() => {
-    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight
+    if (listRef.current && stickToBottom.current) listRef.current.scrollTop = listRef.current.scrollHeight
   }, [messages])
+
+  // ── Draft persistence ─────────────────────────────────────────────────
+  // Survive sidebar close/reopen + SW reload so a long half-typed prompt isn't
+  // lost. Independent of the session store (which is gated on messages.length).
+  useEffect(() => {
+    chrome.storage.local.get('piercodeSidebarDraft', r => {
+      if (typeof r.piercodeSidebarDraft === 'string' && r.piercodeSidebarDraft) {
+        setInput(prev => prev || r.piercodeSidebarDraft)
+      }
+    })
+  }, [])
+  useEffect(() => {
+    const h = setTimeout(() => { chrome.storage.local.set({ piercodeSidebarDraft: input }) }, 300)
+    return () => clearTimeout(h)
+  }, [input])
 
   // ── Auto-resize textarea ──────────────────────────────────────────────
   useEffect(() => {
@@ -721,20 +755,26 @@ export default function App() {
     const auth = await getAuth()
     if (!auth) return ''
     try {
-      const res = await bgFetch(`${auth.apiUrl}/prompt`, {
+      const res = await bgFetch(`${auth.apiUrl}/prompt?profile=sidebar`, {
         headers: { Authorization: `Bearer ${auth.token}` },
       })
-      initPromptCacheRef.current = res.text || ''
+      // Only cache a successful response. Caching a non-2xx body (error page,
+      // auth failure) would permanently lock the sidebar's system prompt to
+      // that garbage for the rest of the session — initPromptCacheRef is never
+      // invalidated elsewhere, so a transient hiccup on the very first fetch
+      // would otherwise poison every subsequent new-chat prompt injection.
+      if (res.ok) initPromptCacheRef.current = res.text || ''
     } catch {
-      initPromptCacheRef.current = ''
+      // leave initPromptCacheRef unset (null) so the next call retries
     }
-    return initPromptCacheRef.current
+    return initPromptCacheRef.current ?? ''
   }, [])
 
   // ── Send ──────────────────────────────────────────────────────────────
-  const handleSend = useCallback(async () => {
-    const text = input.trim()
-    if (!text || streaming) return
+  // Core send: dispatches `raw` as a turn. Assumes no turn is in flight.
+  const sendText = useCallback(async (raw: string) => {
+    const text = raw.trim()
+    if (!text) return
 
     setError('')
     const now = Date.now()
@@ -744,7 +784,6 @@ export default function App() {
     const newMessages = [...messages, userMsg, assistantMsg]
     currentAssistantIdx.current = newMessages.length - 1
     setMessages(newMessages)
-    setInput('')
     setStreaming(true)
     setPickerMode(null)
     setPickerItems([])
@@ -765,7 +804,30 @@ export default function App() {
       message: text,
       systemPrompt: systemPrompt || undefined,
     })
-  }, [input, messages, platform, model, reasoning, streaming, fetchInitPrompt])
+  }, [messages, platform, model, reasoning, fetchInitPrompt])
+
+  const handleSend = useCallback(() => {
+    const text = input.trim()
+    if (!text) return
+    setInput('')
+    chrome.storage.local.remove('piercodeSidebarDraft')
+    if (streaming) {
+      // A turn is in flight — queue this message and auto-send it when the turn
+      // finishes (Claude-Code-style steering), instead of silently dropping it.
+      setQueuedSend(text)
+      return
+    }
+    void sendText(text)
+  }, [input, streaming, sendText])
+
+  // Flush a queued message once the in-flight turn completes.
+  useEffect(() => {
+    if (!streaming && queuedSend) {
+      const t = queuedSend
+      setQueuedSend(null)
+      void sendText(t)
+    }
+  }, [streaming, queuedSend, sendText])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Don't send if picker is open (let Picker handle Enter)
@@ -1094,7 +1156,7 @@ export default function App() {
       )}
 
       {/* ── Messages ────────────────────────────────────────────────────────── */}
-      <div ref={listRef} className="boot boot-3 flex-1 overflow-y-auto chat-scroll py-2 space-y-1">
+      <div ref={listRef} onScroll={handleListScroll} className="boot boot-3 flex-1 overflow-y-auto chat-scroll py-2 space-y-1">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-xs gap-3 px-4" style={{ color: 'var(--dim)' }}>
             <pre className="glow-text text-[10px] leading-tight select-none">{`  ___ _           ___         _
@@ -1148,6 +1210,25 @@ export default function App() {
       {/* ── Token panel ─────────────────────────────────────────────────────── */}
       <TokenPanel meter={meter} threshold={tokenThreshold} platform={platform} />
 
+      {/* ── Jump-to-bottom (shown when scrolled up) ─────────────────────────── */}
+      {showJumpToBottom && (
+        <button
+          onClick={jumpToBottom}
+          className="self-center mb-1 px-2 py-0.5 text-[10px] rounded-full cursor-pointer glow-border flex-shrink-0"
+          style={{ color: 'var(--glow)', background: 'var(--panel-2)' }}
+          title="回到底部"
+        >↓ 回到底部</button>
+      )}
+
+      {/* ── Queued message (auto-sends when the current turn finishes) ───────── */}
+      {queuedSend && (
+        <div className="flex-shrink-0 mx-2 mb-1 px-2 py-1 text-[11px] rounded-sm flex items-center gap-2 border" style={{ borderColor: 'var(--line)', background: 'var(--panel-2)', color: 'var(--dim)' }}>
+          <span className="flex-shrink-0">⏳ 已排队</span>
+          <span className="flex-1 truncate" style={{ color: 'var(--txt)' }}>{queuedSend}</span>
+          <button onClick={() => setQueuedSend(null)} className="cursor-pointer flex-shrink-0 hover:opacity-80" style={{ color: 'var(--dim)' }} title="取消排队">✕</button>
+        </div>
+      )}
+
       {/* ── Input ───────────────────────────────────────────────────────────── */}
       <div className="boot boot-4 flex-shrink-0 border-t p-2 relative" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
         {/* Picker popup */}
@@ -1171,7 +1252,7 @@ export default function App() {
             style={{ background: 'var(--panel-2)', borderColor: 'var(--line)', color: 'var(--txt)', maxHeight: '120px' }}
           />
           {streaming ? (
-            <button onClick={handleCancel} className="px-3 py-2 text-sm rounded-sm cursor-pointer flex-shrink-0 text-red-300 border border-red-800/50" title="停止生成">■</button>
+            <button onClick={handleCancel} className="px-3 py-2 text-sm rounded-sm cursor-pointer flex-shrink-0 text-red-300 border border-red-800/50" title="停止生成与全部子 agent">■</button>
           ) : (
             <button onClick={handleSend} disabled={!input.trim() || !connected} className="px-3 py-2 text-sm rounded-sm cursor-pointer flex-shrink-0 glow-border disabled:opacity-40 disabled:cursor-not-allowed" style={{ color: 'var(--glow)' }} title="发送 (Enter)">⏎</button>
           )}

@@ -110,8 +110,9 @@ func TestFinalizeTabsClosesCreatedAndSkipsClaimedByDefault(t *testing.T) {
 	if !reflect.DeepEqual(closedPayload, []int{101}) || !reflect.DeepEqual(resp.Closed, []int{101}) {
 		t.Fatalf("expected only created tab to close, payload=%v resp=%v", closedPayload, resp.Closed)
 	}
-	if approvalCount != 1 {
-		t.Fatalf("expected one close approval, got %d", approvalCount)
+	// Browser approval is disabled: closing a controlled tab no longer prompts.
+	if approvalCount != 0 {
+		t.Fatalf("expected no close approval, got %d", approvalCount)
 	}
 	if !reflect.DeepEqual(resp.Released, []int{102}) {
 		t.Fatalf("unexpected released tabs: %#v", resp.Released)

@@ -27,8 +27,8 @@ func (t *QuestionTool) Parameters() interface{} {
 }
 
 func (t *QuestionTool) Validate(args map[string]interface{}) error {
-	if q, ok := args["question"].(string); !ok || q == "" {
-		return fmt.Errorf("question is required")
+	if q, ok := args["question"].(string); !ok || strings.TrimSpace(q) == "" {
+		return fmt.Errorf("question is required (non-empty string in the \"question\" field)")
 	}
 	return nil
 }
@@ -52,13 +52,24 @@ func (t *QuestionTool) Execute(ctx *Context) *Result {
 	}
 
 	timeout := defaultQuestionTimeout
+	// Clamp to 24h: a huge timeout_sec overflows time.Duration (int64 ns) to a
+	// NEGATIVE value, making time.After fire immediately and returning a bogus
+	// "no answer received within -…s". The server clamps the request DEADLINE
+	// the same way, but this tool re-reads the raw arg, so clamp here too.
+	const maxQuestionSec = 24 * 60 * 60
 	switch v := ctx.Args["timeout_sec"].(type) {
 	case float64:
 		if v > 0 {
+			if v > maxQuestionSec {
+				v = maxQuestionSec
+			}
 			timeout = time.Duration(v * float64(time.Second))
 		}
 	case int:
 		if v > 0 {
+			if v > maxQuestionSec {
+				v = maxQuestionSec
+			}
 			timeout = time.Duration(v) * time.Second
 		}
 	}

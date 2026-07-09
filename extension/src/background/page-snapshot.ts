@@ -120,11 +120,18 @@ export function composeTurnPrompt(opts: {
  */
 export async function buildPageSnapshot(
   exec: SnapshotExec,
-  opts: { tabId: number | null; url?: string; title?: string; mode?: 'text' | 'som' },
+  opts: { tabId: number | null; url?: string; title?: string; mode?: 'text' | 'som'; settleFirst?: boolean },
 ): Promise<{ ok: boolean; text: string }> {
   const tabArg: Record<string, unknown> = {}
   if (opts.tabId != null) tabArg.tabId = opts.tabId
   const meta = { url: opts.url || '', title: opts.title || '' }
+
+  // 动作轮之后的快照先等 DOM 静默（settleFirst）：上一轮 click/type 触发的渲染可能
+  // 尚未完成，立刻 snapshot 会读到旧 DOM，AI 拿着过期 ref 操作 —— flaky 的最大来源。
+  // best-effort：失败/超时都不阻断快照（browser_wait_stable 超时也返回正常字符串）。
+  if (opts.settleFirst) {
+    try { await exec('browser_wait_stable', { ...tabArg, quietMs: 300, timeoutMs: 2000 }) } catch { /* 快照继续 */ }
+  }
 
   if (opts.mode === 'som') {
     // 先截图并附到 composer，再叠数字编号。截图失败不阻断（编号文本仍可用）。

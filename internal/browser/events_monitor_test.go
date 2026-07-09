@@ -2,6 +2,7 @@ package browser
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -499,24 +500,31 @@ func TestExceptionEventBufferedAsConsole(t *testing.T) {
 	}
 }
 
-func TestGetConsoleMessagesInvalidRegexReturnsNil(t *testing.T) {
+// An invalid user regex falls back to a LITERAL substring match rather than
+// returning nil: a bare nil is indistinguishable from "the page logged nothing",
+// so the model would wrongly conclude the console was clean when its pattern
+// merely failed to compile.
+func TestGetConsoleMessagesInvalidRegexFallsBackToLiteral(t *testing.T) {
 	bus := NewEventBus()
-	params, _ := json.Marshal(map[string]interface{}{
-		"type": "log",
-		"args": []map[string]interface{}{
-			{"type": "string", "value": "hello"},
-		},
-		"timestamp": float64(1000),
-	})
-	bus.HandleEvent(Event{
-		Type:   "browser_event",
-		Event:  "Runtime.consoleAPICalled",
-		TabID:  1,
-		Params: params,
-	})
+	emit := func(text string) {
+		params, _ := json.Marshal(map[string]interface{}{
+			"type":      "log",
+			"args":      []map[string]interface{}{{"type": "string", "value": text}},
+			"timestamp": float64(1000),
+		})
+		bus.HandleEvent(Event{Type: "browser_event", Event: "Runtime.consoleAPICalled", TabID: 1, Params: params})
+	}
+	emit("value is [invalid] here")
+	emit("unrelated line")
 
+	// "[invalid" is not a valid regexp (unclosed class) — falls back to literal.
 	result := bus.GetConsoleMessages(1, ConsoleFilter{Pattern: "[invalid"})
-	if result != nil {
-		t.Fatalf("expected nil for invalid regex, got %v", result)
+	if len(result) != 1 || !strings.Contains(result[0].Text, "[invalid") {
+		t.Fatalf("invalid regex should literal-match the containing message, got %+v", result)
+	}
+
+	// A literal that matches nothing correctly yields no messages.
+	if got := bus.GetConsoleMessages(1, ConsoleFilter{Pattern: "(nomatch"}); len(got) != 0 {
+		t.Fatalf("non-matching literal should return no messages, got %+v", got)
 	}
 }

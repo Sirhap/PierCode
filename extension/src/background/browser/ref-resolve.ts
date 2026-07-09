@@ -32,7 +32,12 @@ export async function boxModelBounds(cdp: Cdp, target: Debuggee, backendNodeId: 
 }
 
 function selectorRectExpr(sel: string): string {
+  // Scroll-then-measure: an off-viewport element yields out-of-viewport (or
+  // negative) coordinates that CDP mouse events can't hit. scrollIntoViewIfNeeded
+  // (Chrome-native) only scrolls when actually out of view; fall back to a
+  // centered scrollIntoView. Measured AFTER the scroll so the rect is current.
   return `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return null;
+    try { if (el.scrollIntoViewIfNeeded) el.scrollIntoViewIfNeeded(true); else el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
     const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`
 }
 
@@ -50,6 +55,10 @@ export async function resolvePoint(
     // sessionId targets a child OOPIF session (flat sessions); @types/chrome's
     // Debuggee lacks the field, so cast (mirrors background/index.ts handling).
     const tgt: Debuggee = sess ? ({ tabId: req.tabId, sessionId: sess } as Debuggee) : target
+    // Actionability guard: bring an off-viewport element into view BEFORE taking
+    // its box model — otherwise the center lands outside the viewport and the
+    // click's elementFromPoint check fails. No-op when already visible.
+    try { await cdp.sendCommand(tgt, 'DOM', 'scrollIntoViewIfNeeded', { backendNodeId: t.backendId }) } catch { /* older Chrome / detached node: measure as-is */ }
     const b = await boxModelBounds(cdp, tgt, t.backendId)
     const off = t.frameOffset
     const cx = b.x + b.width / 2 + (off?.x ?? 0)

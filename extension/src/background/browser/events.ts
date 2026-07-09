@@ -32,6 +32,7 @@ export class EventBus {
   markDomainEnabled(tabId: number, domain: string): void {
     const s = this.enabledDomains.get(tabId) ?? new Set<string>(); s.add(domain); this.enabledDomains.set(tabId, s)
   }
+  unmarkDomainEnabled(tabId: number, domain: string): void { this.enabledDomains.get(tabId)?.delete(domain) }
 
   clearTab(tabId: number): void {
     this.console.delete(tabId); this.network.delete(tabId)

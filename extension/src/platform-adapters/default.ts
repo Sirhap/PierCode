@@ -1,9 +1,12 @@
+import { attachCompletionDetection } from './completion';
 import { pushPierCodeTool } from './shared';
 import type { PlatformAdapter } from './types';
 
 export const defaultAdapter: PlatformAdapter = {
   name: 'default',
   match: () => true,
+  // #15: batch a multi-tool turn's results into one reply — see claude.ts.
+  ...attachCompletionDetection(),
   responseSelector: 'message-content, .prose, .chat-content',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';

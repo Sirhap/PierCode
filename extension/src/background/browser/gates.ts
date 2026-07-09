@@ -53,8 +53,27 @@ export interface GateCtx {
   callId: string
   approval: ApprovalManager
   security: SecurityPolicy
+  args?: Record<string, unknown>  // tool args, so a cookie write can key its grant on the COOKIE'S target domain, not the controlled tab
   originTabId?: number   // AI-page tab to show the approval card on (targeted, not broadcast)
   skipApproval?: boolean // caller gates approval itself (browser-agent route); keep sensitivity refuse
+}
+
+/** Host the approval grant is keyed on. Normally the controlled tab's host, BUT a
+ *  cookie write targets an ARBITRARY domain (args.domain/args.url) independent of
+ *  the controlled tab — so a session grant ("always allow") must be keyed to the
+ *  cookie's target, or a grant earned on tab A silently authorizes cookie writes
+ *  onto a different domain B (within host_permissions) the user never approved.
+ *  Falls back to the tab host when no explicit cookie target is given. */
+function grantHostFor(ctx: GateCtx): string {
+  const tabHost = (() => { try { return new URL(ctx.tab.url).hostname } catch { return '' } })()
+  if (ctx.name === 'browser_set_cookie' || ctx.name === 'browser_cookies') {
+    const a = ctx.args || {}
+    const domain = typeof a.domain === 'string' ? a.domain.trim() : ''
+    if (domain) return domain.replace(/^\./, '')   // leading-dot cookie domains → bare host
+    const url = typeof a.url === 'string' ? a.url.trim() : ''
+    if (url) { try { return new URL(url).hostname } catch { /* fall through */ } }
+  }
+  return tabHost
 }
 
 /** Run the security + approval gates. Throws to abort the tool (refusal/rejection). */
@@ -65,8 +84,15 @@ export async function runGates(ctx: GateCtx): Promise<void> {
   }
   // Action approval for the tools that require it.
   if (!ctx.skipApproval && APPROVAL_TOOLS.has(ctx.name)) {
-    let host = ''
-    try { host = new URL(ctx.tab.url).hostname } catch { /* opaque */ }
+    const host = grantHostFor(ctx)
+    // An empty host means ApprovalManager.hasGrant/recordGrant silently no-op
+    // (both guard on `!!host`) — the user could pick "本站点始终允许" and the
+    // grant would never persist, re-prompting on every subsequent call with no
+    // indication why. Fail loudly instead of asking for an approval that can't
+    // be remembered.
+    if (!host) {
+      throw new Error(`${ctx.name} refused: cannot determine target host for approval`)
+    }
     await ctx.approval.ask({ host, actionClass: actionClassFor(ctx.name), action: ctx.name, callId: ctx.callId, originTabId: ctx.originTabId })
   }
 }

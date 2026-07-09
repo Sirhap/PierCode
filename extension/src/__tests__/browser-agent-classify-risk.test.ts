@@ -15,6 +15,7 @@ const ALWAYS_HIGH_RISK = [
   'browser_upload', 'browser_evaluate', 'browser_clipboard', 'browser_handle_dialog',
   'browser_cookies', 'browser_set_cookie', 'browser_form_input', 'browser_select',
   'browser_drag',
+  'browser_intercept', 'browser_reset',   // testing state/network mutators
 ];
 
 describe('classifyRisk vs APPROVAL_TOOLS (audit #6)', () => {
@@ -40,5 +41,36 @@ describe('classifyRisk vs APPROVAL_TOOLS (audit #6)', () => {
   // the first; removing it must not change that browser_upload is still gated.
   it('browser_upload remains gated after duplicate-case removal (audit #19)', () => {
     expect(classifyRisk('browser_upload', {}).highRisk).toBe(true);
+  });
+});
+
+describe('classifyRisk browser_test (recursive, mirrors browser_batch)', () => {
+  it('safe when every step is safe', () => {
+    const r = classifyRisk('browser_test', {
+      steps: [
+        { name: 'browser_navigate', input: { url: 'https://x.com/a' } },
+        { name: 'browser_assert', input: { kind: 'url', expect: 'x.com' } },
+        { name: 'browser_wait_stable', input: {} },
+      ],
+    }, undefined, 'https://x.com');
+    expect(r.highRisk).toBe(false);
+  });
+
+  it('high risk when any step is high risk (submit)', () => {
+    const r = classifyRisk('browser_test', {
+      steps: [
+        { name: 'browser_click', input: { selector: '#a' } },
+        { name: 'browser_type', input: { text: 'q', submit: true } },
+      ],
+    });
+    expect(r.highRisk).toBe(true);
+    expect(r.reason).toMatch(/submits/);
+  });
+
+  it('accepts the {tool,args} alias shape for steps', () => {
+    const r = classifyRisk('browser_test', {
+      steps: [{ tool: 'browser_evaluate', args: { expression: '1' } }],
+    });
+    expect(r.highRisk).toBe(true);
   });
 });

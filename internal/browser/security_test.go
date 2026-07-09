@@ -47,6 +47,8 @@ func TestSecurityPolicyIsAIPage(t *testing.T) {
 		"https://claude.ai/chat/x",
 		"https://gemini.google.com/app",
 		"https://sub.qwen.ai/foo",
+		"https://chatgpt.com./c/123", // trailing-dot FQDN — same site to the browser
+		"https://CHATGPT.com/c/x",     // case-insensitive host
 	}
 	for _, u := range ai {
 		if !p.IsAIPage(u) {

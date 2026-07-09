@@ -1,3 +1,4 @@
+import { attachCompletionDetection } from './completion';
 import { pushPierCodeTool } from './shared';
 import type { PlatformAdapter } from './types';
 
@@ -5,6 +6,8 @@ export const geminiAdapter: PlatformAdapter = {
   name: 'gemini',
   match: () => location.hostname.includes('gemini.google.com'),
   newSessionUrl: () => `${location.protocol}//${location.host}/app`,
+  // #15: batch a multi-tool turn's results into one reply — see claude.ts.
+  ...attachCompletionDetection(),
   responseSelector: 'message-content, .model-response-text',
   userSelector: 'user-query, .user-query-bubble-with-background',
   extractText: (el: Element, buf: string[]): boolean => {

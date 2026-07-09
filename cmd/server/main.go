@@ -168,6 +168,7 @@ func main() {
 	// 关闭。未内置二进制的平台为 no-op。代理生命周期绑主进程：退出时杀子进程。
 	if !*noChatGPTProxy {
 		proxy := subproc.NewChatGPTProxy(*chatGPTProxyPort)
+		proxy.ForceKill = *forceKillPort
 		if err := proxy.Start(); err != nil {
 			fmt.Printf("⚠️  ChatGPT 代理启动失败（继续运行，ChatGPT 子代理不可用）: %v\n", err)
 		}

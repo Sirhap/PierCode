@@ -68,6 +68,84 @@ function httpOrigin(url: string): string | null {
   }
 }
 
+/** origin/host 是否本机回环（localhost / 127.0.0.1 / [::1] / *.localhost）。 */
+export function isLoopbackOrigin(origin: string): boolean {
+  if (!origin) return false
+  try {
+    const h = new URL(origin).hostname
+    return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1' || h.endsWith('.localhost')
+  } catch {
+    return false
+  }
+}
+
+function isLoopbackHost(host: string): boolean {
+  const h = host.replace(/^\./, '').toLowerCase()
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]' || h.endsWith('.localhost')
+}
+
+/**
+ * loopbackAutoApprove：受控页是本机回环（localhost 开发页）时，把**效果局限于该页面**
+ * 的高危动作自动放行，让无人值守的自动化测试跑得起来（否则每次 submit/评估都弹卡等
+ * 5 分钟）。仍然要门控的：
+ *  - 导航/新开到非回环 origin（离开本机 = 效果不再局限）
+ *  - cookie 目标非回环域（cookie 写可指向任意域，与受控页无关）
+ *  - 剪贴板（读写用户系统剪贴板，非页面局限）
+ *  - 上传（把本地文件字节交给页面）
+ *  - 接管别的 tab / 关 tab（跨出受控页）
+ * browser_batch / browser_test 递归：所有子步都可自动放行才放行整体。
+ * 纯函数，单测覆盖。
+ */
+export function loopbackAutoApprove(name: string, args: Record<string, unknown>, currentOrigin: string): boolean {
+  if (!isLoopbackOrigin(currentOrigin)) return false
+  switch (name) {
+    case 'browser_clipboard':
+    case 'browser_upload':
+    case 'browser_attachment_upload':
+    case 'browser_use_tab':
+    case 'browser_finalize_tabs':
+      return false
+
+    case 'browser_cookies':
+    case 'browser_set_cookie': {
+      const domain = typeof args.domain === 'string' ? args.domain.trim() : ''
+      if (domain) return isLoopbackHost(domain)
+      const url = typeof args.url === 'string' ? args.url.trim() : ''
+      if (url) return isLoopbackOrigin(httpOrigin(url) || '')
+      return true   // 无显式目标 = 受控页自身（已知回环）
+    }
+
+    case 'browser_navigate': {
+      const target = httpOrigin(String(args.url || ''))
+      return target != null && isLoopbackOrigin(target)
+    }
+
+    case 'browser_batch': {
+      const actions = Array.isArray(args.actions) ? args.actions : []
+      return actions.every(raw => {
+        if (!raw || typeof raw !== 'object') return true
+        const a = raw as { name?: unknown; input?: unknown }
+        const childArgs = (a.input && typeof a.input === 'object' ? a.input : {}) as Record<string, unknown>
+        return loopbackAutoApprove(String(a.name || ''), childArgs, currentOrigin)
+      })
+    }
+
+    case 'browser_test': {
+      const steps = Array.isArray(args.steps) ? args.steps : []
+      return steps.every(raw => {
+        if (!raw || typeof raw !== 'object') return true
+        const s = raw as { name?: unknown; tool?: unknown; input?: unknown; args?: unknown }
+        const childArgs = (s.input && typeof s.input === 'object' ? s.input
+          : s.args && typeof s.args === 'object' ? s.args : {}) as Record<string, unknown>
+        return loopbackAutoApprove(String(s.name ?? s.tool ?? ''), childArgs, currentOrigin)
+      })
+    }
+
+    default:
+      return true   // 页面局限动作（click/type/submit/evaluate/storage/form/select/drag/…）
+  }
+}
+
 /**
  * classifyRisk：判定一个 browser_* 动作是否高危（需用户批准）。纯函数 —— 不碰
  * chrome/CDP；规则 3（点击目标文本）所需的 ref→文本解析作为 refText 注入，保持可测。
@@ -195,6 +273,10 @@ export function classifyRisk(
       return { highRisk: true, reason: 'closes tabs' }
     case 'browser_zoom':
       return { highRisk: true, reason: 'changes the page zoom level' }
+    case 'browser_intercept':
+      return { highRisk: true, reason: 'intercepts/mocks network requests' }
+    case 'browser_reset':
+      return { highRisk: true, reason: 'clears cookies/storage/cache (can log the user out)' }
 
     case 'browser_batch': {
       const actions = Array.isArray(args.actions) ? args.actions : []
@@ -206,6 +288,23 @@ export function classifyRisk(
         // 子动作继承父的受控 origin（经形参传递，绝不写进 childArgs —— 那是会下发给
         // Go server 的同一引用对象）。
         const r = classifyRisk(childName, childArgs, refText, current)
+        if (r.highRisk) return r
+      }
+      return safe
+    }
+
+    // browser_test 与 browser_batch 同款递归：任一步高危则整个测试计划先过一次门控
+    // （执行时经 __skipApproval 透传，子步不再二次弹卡）。步骤兼容 {name,input} 与
+    // {tool,args} 两种形状（与 SW 端 parseTestSteps 一致）。
+    case 'browser_test': {
+      const steps = Array.isArray(args.steps) ? args.steps : []
+      for (const raw of steps) {
+        if (!raw || typeof raw !== 'object') continue
+        const s = raw as { name?: unknown; tool?: unknown; input?: unknown; args?: unknown }
+        const childName = String(s.name ?? s.tool ?? '')
+        const childInput = (s.input && typeof s.input === 'object' ? s.input
+          : s.args && typeof s.args === 'object' ? s.args : {}) as Record<string, unknown>
+        const r = classifyRisk(childName, childInput, refText, current)
         if (r.highRisk) return r
       }
       return safe
@@ -236,6 +335,9 @@ interface LoopOpts {
   /** 可选：解析最近一次快照里 ref 的可见文本（classifyRisk 规则 3 用）。
    *  production 由 startBrowserAgentTask 用每轮快照刷新；测试可省略（返回空）。 */
   refText?: (ref: string) => string
+  /** 可选：本任务最大轮数（默认 MAX_BROWSER_AGENT_STEPS，钳制 [1,200]）。
+   *  测试套件常超 24 轮；经 storage 键 browserAgentMaxSteps 配置。 */
+  maxSteps?: number
 }
 
 /** 生成本任务内唯一的 turn id（注入/回读/流式都带它，丢弃过期回读）。 */
@@ -279,7 +381,9 @@ export async function runBrowserAgentLoop(opts: LoopOpts): Promise<{ reason: Loo
   // 后续轮的 prompt body（上一步工具结果）。闭包局部 —— 多任务并发也互不串台。
   let lastResultsBody = ''
 
-  for (let step = 0; step < MAX_BROWSER_AGENT_STEPS; step++) {
+  const maxSteps = Math.min(Math.max(Math.trunc(opts.maxSteps ?? MAX_BROWSER_AGENT_STEPS) || MAX_BROWSER_AGENT_STEPS, 1), 200)
+
+  for (let step = 0; step < maxSteps; step++) {
     if (signal.aborted) return { reason: 'stopped' }
 
     const agentTurnId = nextTurnId()
@@ -351,8 +455,10 @@ export async function runBrowserAgentLoop(opts: LoopOpts): Promise<{ reason: Loo
 
       // 受控页 origin 经形参传给 classifyRisk 判同源导航，绝不写进 call.args
       // （call.args 及其嵌套 input 会原样下发给 Go server；契约：__currentOrigin 不下发）。
+      // 回环开发页（localhost/127.0.0.1）上页面局限的高危动作自动放行——无人值守
+      // 测试模式；离开回环的导航/cookie/剪贴板/上传等仍走批准卡（见 loopbackAutoApprove）。
       const risk = classifyRisk(call.name, call.args, refText, currentOrigin())
-      if (risk.highRisk) {
+      if (risk.highRisk && !loopbackAutoApprove(call.name, call.args, currentOrigin())) {
         const decision = await gate({ name: call.name, args: call.args, call_id: callId })
         if (signal.aborted) return { reason: 'stopped' }
         if (decision === 'skip') {
@@ -874,12 +980,13 @@ async function injectTurn(
   task.currentOrigin = originOf(task.tabInfo.url)
 
   // 取快照（text 模式，a11y ref 树）。失败也照样注入错误文本，让 AI 重试/换页。
+  // 非首轮 = 上一轮刚执行过动作 → settleFirst 先等 DOM 静默再快照（消 stale-DOM flaky）。
   const snap = await buildPageSnapshot(
     async (name, args) => {
       const r = await execBrowserTool(name, args)
       return { output: r.output, success: r.success }
     },
-    { tabId: task.targetTabId, url: task.tabInfo.url, title: task.tabInfo.title, mode: 'text' },
+    { tabId: task.targetTabId, url: task.tabInfo.url, title: task.tabInfo.title, mode: 'text', settleFirst: !firstTurn },
   )
 
   // 解析 ref → 文本（snap.text 是已裹标签的快照；从中提取 [eN] 行）。
@@ -1136,12 +1243,21 @@ export async function startBrowserAgentTask(params: StartBrowserAgentParams): Pr
       emitForTask({ type: 'BROWSER_AGENT_TARGET', tabId: info.tabId, title: info.title, url: info.url }))
   }
 
+  // 轮数上限：storage 键 browserAgentMaxSteps（测试套件常超默认 24 轮）。读失败用默认。
+  let maxSteps: number | undefined
+  try {
+    const got = await chrome.storage?.local?.get('browserAgentMaxSteps')
+    const v = got?.browserAgentMaxSteps
+    if (typeof v === 'number' && Number.isFinite(v)) maxSteps = v
+  } catch { /* 默认 */ }
+
   try {
     const result = await runBrowserAgentLoop({
       platform: params.platform,
       task: params.task,
       targetTabId: resolvedTabId,
       signal: abort.signal,
+      maxSteps,
       emit: emitForTask,
       inject: (body, agentTurnId) => {
         // 登记本任务拥有的 turnId（inject + tools 共用同一 turnId），供 task-scoped cleanup。
@@ -1154,7 +1270,20 @@ export async function startBrowserAgentTask(params: StartBrowserAgentParams): Pr
       },
       // 被操作 tab 已在任务开始时 browser_use_tab 接管为受控 tab，故 browser_*
       // 默认就打在它上面，不再每调注入 tabId（注入未 attach 的 tabId 反而会挂起）。
-      exec: (name, args, callId) => execBrowserTool(name, args, callId, abort.signal),
+      // 每个动作成功后即时刷新受控页 origin（不等下一轮快照）：同一轮里 navigate/
+      // click 跳离 localhost 后，后续动作的 loopbackAutoApprove / 同源判定必须用
+      // 新 origin，否则"回环自动放行"会被一次跳转带出本机后继续放行（安全边界）。
+      exec: async (name, args, callId) => {
+        const r = await execBrowserTool(name, args, callId, abort.signal)
+        if (r.success && !abort.signal.aborted) {
+          try {
+            const info = await resolveTabInfo(task.targetTabId)
+            task.tabInfo = info
+            task.currentOrigin = originOf(info.url)
+          } catch { /* tab 瞬时不可读：下一轮 injectTurn 会再刷新 */ }
+        }
+        return r
+      },
       gate: call => {
         if (call.call_id) task.ownedCallIds.add(call.call_id)
         return gateApproval(task, call, abort.signal)

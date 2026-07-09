@@ -19,11 +19,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/sirhap/piercode/internal/portutil"
 )
 
 // ChatGPTProxy supervises the embedded chatgpt-proxy child process.
 type ChatGPTProxy struct {
-	Port int // port the proxy listens on (default 8765)
+	Port      int  // port the proxy listens on (default 8765)
+	ForceKill bool // kill existing process on the port before starting
 
 	cmd     *exec.Cmd
 	binPath string // extracted binary path, removed on Stop
@@ -46,8 +49,14 @@ func NewChatGPTProxy(port int) *ChatGPTProxy {
 // already healthy on the port (user ran one manually), Start skips launching.
 func (p *ChatGPTProxy) Start() error {
 	if p.healthy(500 * time.Millisecond) {
-		fmt.Printf("ℹ️  ChatGPT 代理已在 127.0.0.1:%d 运行，复用现有实例。\n", p.Port)
-		return nil
+		if p.ForceKill {
+			fmt.Printf("   终止旧 ChatGPT 代理（127.0.0.1:%d）...\n", p.Port)
+			portutil.KillPortProcess(p.Port, true)
+			time.Sleep(500 * time.Millisecond)
+		} else {
+			fmt.Printf("ℹ️  ChatGPT 代理已在 127.0.0.1:%d 运行，复用现有实例。\n", p.Port)
+			return nil
+		}
 	}
 
 	data, name := embeddedProxy()

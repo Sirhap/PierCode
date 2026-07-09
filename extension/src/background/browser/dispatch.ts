@@ -73,6 +73,29 @@ export async function dispatchBrowserTool(
   const method = TOOL_TABLE.get(name)
   if (!method) return { callId, name, output: `unknown browser tool: ${name}`, error: 'unknown tool', success: false }
   if (typeof opts.originTabId === 'number') args = { ...args, __originTabId: opts.originTabId }
+  // Mirror the __originTabId stamp for skipApproval so the re-dispatching meta-tools
+  // (browser_batch / browser_test) can forward it to their sub-calls — the
+  // browser-agent route already gated the whole call via classifyRisk, and nothing
+  // on that route renders the gates' approval card (it would sit until timeout).
+  if (opts.skipApproval) args = { ...args, __skipApproval: true }
+
+  // browser_batch / browser_test re-dispatch each of their sub-actions back
+  // through THIS function, so every sub-call takes the per-tab lock itself. The
+  // meta-tool must therefore hold NO lock: running it under lock.run(key) would
+  // deadlock the first same-key sub-call, because KeyedLock is not reentrant
+  // (the sub-call's run() chains behind the meta-call's own still-pending run()).
+  // This mirrors the Go executor, which gives browser_batch no lock. Gates run
+  // per sub-call.
+  if (name === 'browser_batch' || name === 'browser_test') {
+    try {
+      const output = await method(args)
+      return { callId, name, output: withHints(name, output, false), success: true }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return { callId, name, output: withHints(name, msg, true), error: msg, success: false }
+    }
+  }
+
   const key = browserTabKey(args)
   try {
     const output = await lock.run(key, async () => {
@@ -83,7 +106,7 @@ export async function dispatchBrowserTool(
         // so the tab-establishing tools (use_tab/new_tab) skip the AI-page gate — gating
         // them would deadlock (the gate's remedy IS browser_use_tab).
         const tab = await c.resolveTabForGate(args as { tabId?: number }, name)
-        await runGates({ name, tab, callId, approval, security: c.security, originTabId: opts.originTabId, skipApproval: opts.skipApproval })
+        await runGates({ name, tab, callId, args, approval, security: c.security, originTabId: opts.originTabId, skipApproval: opts.skipApproval })
       }
       return method(args)
     })

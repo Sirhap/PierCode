@@ -45,6 +45,30 @@ export async function budgetScreenshot(base64: string, mime: string, maxDim: num
   return `data:image/jpeg;base64,${bytesToBase64(buf)}`
 }
 
+/** Decode a base64 image and rasterize to RGBA capped at maxDim (aspect kept).
+ *  Shared by browser_visual_diff: baseline and current shot rasterize through the
+ *  SAME path so identical pages produce identical pixels. */
+export async function rasterizeRGBA(base64: string, mime: string, maxDim: number): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
+  const bmp = await base64ToBitmap(base64, mime)
+  const { width, height } = budgetTargetDims(bmp.width, bmp.height, maxDim)
+  const canvas = new OffscreenCanvas(width, height)
+  const ctx = canvas.getContext('2d')!
+  ctx.drawImage(bmp, 0, 0, width, height)
+  const img = ctx.getImageData(0, 0, width, height)
+  return { data: img.data, width, height }
+}
+
+/** Re-encode a base64 image as a ≤maxDim PNG base64 (baseline storage form). */
+export async function pngBudget(base64: string, mime: string, maxDim: number): Promise<{ base64: string; width: number; height: number }> {
+  const bmp = await base64ToBitmap(base64, mime)
+  const { width, height } = budgetTargetDims(bmp.width, bmp.height, maxDim)
+  const canvas = new OffscreenCanvas(width, height)
+  const ctx = canvas.getContext('2d')!
+  ctx.drawImage(bmp, 0, 0, width, height)
+  const out = await canvas.convertToBlob({ type: 'image/png' })
+  return { base64: bytesToBase64(new Uint8Array(await out.arrayBuffer())), width, height }
+}
+
 /** Assemble base64 PNG frames into an animated GIF dataURL. Port of screenshot_gif.go. */
 export async function encodeGif(frames: string[], mime = 'image/png', delayMs = 200): Promise<string> {
   const enc = GIFEncoder()

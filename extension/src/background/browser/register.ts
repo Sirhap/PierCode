@@ -28,6 +28,11 @@ export function registerBrowserTools(): void {
     ['browser_network', a => c.network(a)],
     ['browser_wait', a => c.wait(a)],
     ['browser_wait_for_function', a => c.waitForFunction(a as any)],
+    ['browser_wait_stable', a => c.waitStable(a as any)],
+    ['browser_assert', a => c.assert(a as any)],
+    // visual_diff reads the page (screenshot) and writes only extension-local
+    // storage (the baseline) — page-wise read-only, so it skips the gates.
+    ['browser_visual_diff', a => c.visualDiff(a as any)],
     ['browser_pdf', a => c.pdf(a)],
     ['browser_record', a => c.record(a)],
   ]
@@ -71,12 +76,17 @@ export function registerBrowserTools(): void {
     ['browser_zoom', a => c.zoom(a as any)],
     ['browser_finalize_tabs', a => c.finalizeTabs(a as any)],
     ['browser_batch', a => c.batch(a as any)],
+    ['browser_test', a => c.test(a as any)],
+    ['browser_intercept', a => c.intercept(a as any)],
+    ['browser_reset', a => c.reset(a as any)],
   ]
   for (const [name, fn] of write) TOOL_TABLE.set(name, fn)
-  // browser_batch bypasses the OUTER gate (no tab pre-resolution, no double lock): each
-  // re-dispatched sub-call runs its own gate + per-tab lock. Mark it read-only so the
-  // dispatcher skips the wrapper gate (mirrors Go browser_batch taking no lock).
+  // browser_batch / browser_test bypass the OUTER gate (no tab pre-resolution, no double
+  // lock): each re-dispatched sub-call runs its own gate + per-tab lock. Mark them
+  // read-only so the dispatcher skips the wrapper gate (mirrors Go browser_batch
+  // taking no lock).
   READONLY_TOOLS.add('browser_batch')
+  READONLY_TOOLS.add('browser_test')
   // browser_downloads is a pure read of chrome.downloads (no tab, no mutation) — skip
   // the gate too. browser_cookies stays gated (sensitive credential read).
   READONLY_TOOLS.add('browser_downloads')

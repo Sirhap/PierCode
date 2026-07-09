@@ -655,7 +655,9 @@ func TestReadNetworkFormatsStatusTextAndDuration(t *testing.T) {
 	}
 }
 
-func TestCookiesRequiresApprovalBeforeRelayCommand(t *testing.T) {
+// Browser approval is disabled, so Cookies runs the relay command without any
+// approval prompt and no prompt is broadcast.
+func TestCookiesRunsWithoutApproval(t *testing.T) {
 	var commandSent bool
 	var relay *RelayManager
 	relay = NewRelayManagerFromSend(func(payload []byte) bool {
@@ -668,38 +670,21 @@ func TestCookiesRequiresApprovalBeforeRelayCommand(t *testing.T) {
 		return true
 	})
 
-	var controller *Controller
-	var askSeen ApprovalAsk
-	controller = NewController(relay, func(payload []byte) {
-		var ask ApprovalAsk
-		if err := json.Unmarshal(payload, &ask); err != nil {
-			t.Fatalf("invalid approval payload: %v", err)
-		}
-		if ask.Type != "browser_approval_ask" {
-			return
-		}
-		askSeen = ask
-		go controller.DeliverApproval(ApprovalAnswer{ApprovalID: ask.ApprovalID, Approved: false, Reason: "no cookies"})
-	})
+	var broadcasts int
+	controller := NewController(relay, func([]byte) { broadcasts++ })
 
 	_, err := controller.Cookies(context.Background(), tool.BrowserCookiesRequest{
 		URL:          "https://example.com",
 		IncludeValue: true,
 	})
-	if err == nil || !strings.Contains(err.Error(), "no cookies") {
-		t.Fatalf("expected approval rejection, got %v", err)
+	if err != nil {
+		t.Fatalf("cookies should run without approval, got %v", err)
 	}
-	if commandSent {
-		t.Fatal("cookies command should not be sent before approval")
+	if !commandSent {
+		t.Fatal("cookies command should be sent when approval is disabled")
 	}
-	if askSeen.Action != "read browser cookies" {
-		t.Fatalf("unexpected approval action: %q", askSeen.Action)
-	}
-	if !strings.Contains(askSeen.Target, "https://example.com") {
-		t.Fatalf("approval target should include requested scope, got %q", askSeen.Target)
-	}
-	if !strings.Contains(askSeen.Risk, "values") {
-		t.Fatalf("approval risk should mention cookie values, got %q", askSeen.Risk)
+	if broadcasts != 0 {
+		t.Fatalf("no approval prompt should be broadcast; broadcasts=%d", broadcasts)
 	}
 }
 

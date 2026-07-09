@@ -268,6 +268,71 @@ func TestBrowserAgentProfileOnlyExposesBrowserTools(t *testing.T) {
 	}
 }
 
+// The sidebar profile (coordinator main turn) uses a sidebar-specific base prompt:
+// it must render the full tool surface, but must NOT carry the web-tab worker
+// callback framing (the sidebar's sub-agents are in-memory API conversations, not
+// tab workers that report via <task-notification>).
+// Guards the sidebar/sidebar-worker embeds directly: renderBodyCached treats an
+// accidentally-emptied embed as valid content (Prompt == []byte{} is non-nil, so
+// Select's nil-fallback to defaultPrompt never kicks in) — the profile would
+// silently render with no base prompt instead of failing loudly. The other
+// sidebar tests below only catch this indirectly (missing-string assertions),
+// with an error message that says nothing about an empty file.
+func TestSidebarEmbedsAreNotEmpty(t *testing.T) {
+	if len(prompts.SidebarBasePrompt) == 0 {
+		t.Fatal("prompts.SidebarBasePrompt (sidebar_base.txt) must not be empty")
+	}
+	if len(prompts.SidebarWorkerPromptAppend) == 0 {
+		t.Fatal("prompts.SidebarWorkerPromptAppend (sidebar_worker_append.txt) must not be empty")
+	}
+}
+
+func TestSidebarProfileDropsTabWorkerFraming(t *testing.T) {
+	registry := DefaultProfileRegistry([]byte("default {{TOOLS}}"))
+	profile := registry.Select("sidebar")
+	tools := []tool.ToolInfo{
+		{Name: "read_file", Description: "read"},
+		{Name: "write_file", Description: "write"},
+		{Name: "spawn_agent", Description: "spawn"},
+	}
+	// Full tool surface (no narrowing), unlike browser-agent.
+	if len(profile.FilterTools(tools)) != len(tools) {
+		t.Fatalf("sidebar profile should expose all tools, got %d", len(profile.FilterTools(tools)))
+	}
+	rendered := string(profile.RenderWithSandbox("/repo", "default", nil, tools, nil))
+	for _, forbidden := range []string{"task-notification", "browser AI tab", "piercode-agent-result"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Errorf("sidebar coordinator prompt must not contain tab-worker framing %q", forbidden)
+		}
+	}
+	// It must still describe API sub-agents and keep the engineering contract.
+	for _, want := range []string{"in-memory", "Multi-Agent Policy", "Git Safety Floor"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("sidebar coordinator prompt should contain %q", want)
+		}
+	}
+}
+
+// The sidebar-worker profile (in-memory API sub-agent) must NOT instruct the
+// sub-agent to emit a piercode-agent-result packet — the sidebar path takes the
+// sub-agent's raw final prose as the result and never parses a packet.
+func TestSidebarWorkerProfileHasNoPacketContract(t *testing.T) {
+	registry := DefaultProfileRegistry([]byte("base {{TOOLS}}"))
+	profile := registry.Select("sidebar-worker")
+	rendered := string(profile.RenderWithSandbox("/repo", "default", nil, nil, nil))
+	// The harmful pattern is a fenced packet TEMPLATE the sub-agent would copy
+	// (```piercode-agent-result …). The prose may still name the packet to forbid
+	// it; what must be absent is the fenced opener that worker_append carries.
+	if strings.Contains(rendered, "```piercode-agent-result") {
+		t.Error("sidebar-worker prompt must not contain a piercode-agent-result fenced template")
+	}
+	for _, want := range []string{"Sub-Agent Role", "final assistant message IS your result"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("sidebar-worker prompt should contain %q", want)
+		}
+	}
+}
+
 // ToolNamePrefixes admits a whole family without hardcoding names; ToolNames and
 // prefixes are unioned.
 func TestFilterToolsPrefixUnion(t *testing.T) {

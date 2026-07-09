@@ -121,7 +121,11 @@ type OnComplete = (platform: string, result: SSEResult) => void | Promise<void>
 /** 注册 SW 端 onConnect 接收器。content 在监听到聊天 API 响应时打开
  *  `piercode-api-listen:<id>` port,逐帧推 HEAD/CHUNK/DONE/ERROR。
  *  onComplete 在每条流解析完后触发 (工具续跑由 chat-api 提供,避免环形耦合)。 */
-export function installApiListenReceiver(broadcast: Broadcast, onComplete?: OnComplete): void {
+export function installApiListenReceiver(
+  broadcast: Broadcast,
+  onComplete?: OnComplete,
+  getAbortSignal?: () => AbortSignal | undefined,
+): void {
   if (typeof chrome === 'undefined' || !chrome.runtime?.onConnect) return
 
   chrome.runtime.onConnect.addListener((port) => {
@@ -140,7 +144,8 @@ export function installApiListenReceiver(broadcast: Broadcast, onComplete?: OnCo
           if (!consuming) {
             consuming = true
             // 不 await:让流随 chunk 推进。完成后 port 由 content 断开。
-            void consumeListenStream(platform, stream.fetchLike, broadcast)
+            // 传入当前 listen turn 的 abort signal:Stop 后停止广播在途流。
+            void consumeListenStream(platform, stream.fetchLike, broadcast, getAbortSignal?.())
               .then((result) => { if (result && onComplete) return onComplete(platform, result) })
               .catch((e) => {
                 broadcast({ type: 'CHAT_ERROR', error: e instanceof Error ? e.message : String(e) })

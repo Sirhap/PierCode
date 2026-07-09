@@ -42,7 +42,7 @@ func TestApprovalSessionGrantSkipsReprompt(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}()
-	if err := m.Ask(context.Background(), ask); err != nil {
+	if err := m.askWithPrompt(context.Background(), ask); err != nil {
 		t.Fatalf("first ask should be approved: %v", err)
 	}
 	if broadcasts != 1 {
@@ -50,7 +50,7 @@ func TestApprovalSessionGrantSkipsReprompt(t *testing.T) {
 	}
 
 	// Second ask, same host+class: must be auto-allowed, NO new broadcast.
-	if err := m.Ask(context.Background(), ask); err != nil {
+	if err := m.askWithPrompt(context.Background(), ask); err != nil {
 		t.Fatalf("second ask should be auto-allowed by grant: %v", err)
 	}
 	if broadcasts != 1 {
@@ -75,7 +75,7 @@ func TestApprovalSessionGrantSkipsReprompt(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}()
-	if err := m.Ask(context.Background(), evalAsk); err != nil {
+	if err := m.askWithPrompt(context.Background(), evalAsk); err != nil {
 		t.Fatalf("evaluate ask should prompt and be approved: %v", err)
 	}
 	if broadcasts != 2 {

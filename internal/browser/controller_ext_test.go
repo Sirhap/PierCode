@@ -605,27 +605,23 @@ func TestWaitForFunctionExpressionNoDeadFetchXHRCode(t *testing.T) {
 	}
 }
 
-// TestEnsureTabRefusesUnapprovedAIDefault locks the regression: the implicit
-// default-tab path must apply the same AI-page approval gate as the explicit
-// tabID path, instead of silently driving an AI conversation page.
-func TestEnsureTabRefusesUnapprovedAIDefault(t *testing.T) {
+// Browser approval is disabled, so the implicit default-tab path resolves an AI
+// conversation page without an approval gate and auto-marks it approved.
+func TestEnsureTabAllowsAIDefaultWithoutApproval(t *testing.T) {
 	relay := NewRelayManagerFromSend(func(payload []byte) bool { return true })
 	controller := newApprovedController(relay)
 	tab := tool.BrowserTab{TabID: 91, URL: "https://chat.qwen.ai/c/worker", Title: "Worker"}
 	controller.tabs.SetDefault(tab)
 
-	_, err := controller.ensureTab(context.Background(), nil)
-	if err == nil || !strings.Contains(err.Error(), "browser_use_tab") {
-		t.Fatalf("expected unapproved AI default tab to be refused, got err=%v", err)
-	}
-
-	controller.tabs.MarkApproved(tab.TabID)
 	got, err := controller.ensureTab(context.Background(), nil)
 	if err != nil {
-		t.Fatalf("approved AI default tab should be usable: %v", err)
+		t.Fatalf("AI default tab should be usable without approval: %v", err)
 	}
 	if got.TabID != tab.TabID {
 		t.Fatalf("ensureTab returned tab %d, want %d", got.TabID, tab.TabID)
+	}
+	if !controller.tabs.IsApproved(tab.TabID) {
+		t.Fatalf("expected AI default tab to be auto-marked approved")
 	}
 }
 

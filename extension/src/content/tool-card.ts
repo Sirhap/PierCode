@@ -206,13 +206,78 @@ export function initToolCardDeps(d: ToolCardDeps): void {
 
 // ── 工具卡 ───────────────────────────────────────────────────────────────────
 
+// liveCardKeys mirrors the [data-piercode-key] cards currently inserted, so the
+// per-block-per-scan liveness check is an O(1) Set lookup instead of a whole-doc
+// querySelector. During an active stream scanText runs this for every tool block
+// every debounce flush; on a long conversation the doc-wide query was a top
+// freeze contributor. The Set is the fast path; the DOM is still the source of
+// truth, so on a miss (SPA rebuilt/orphaned the card and dropped the node) we
+// fall back to a real query and reconcile the stale key out.
+const liveCardKeys = new Set<string>();
+
+// ── Batch approval ─────────────────────────────────────────────────────────
+// When autoExecute is off and one AI turn emits several tool blocks, the user
+// otherwise has to click 执行 on every card. Track the currently-PENDING cards'
+// execute triggers; while ≥2 are waiting, show one floating "执行本轮全部" bar.
+// (No global Enter shortcut — hijacking Enter on a live AI page is too intrusive.)
+const pendingCardExecs = new Map<string, () => void>();
+let batchBarEl: HTMLElement | null = null;
+function refreshBatchBar(): void {
+  const n = pendingCardExecs.size;
+  if (n < 2 || typeof document === 'undefined' || !document.body) {
+    if (batchBarEl) { batchBarEl.remove(); batchBarEl = null; }
+    return;
+  }
+  if (!batchBarEl) {
+    batchBarEl = document.createElement('div');
+    batchBarEl.setAttribute('data-piercode-batch-bar', '1');
+    batchBarEl.style.cssText = `position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:2147483646;background:${T_PANEL2};border:1px solid ${T_GLOW};border-radius:8px;padding:6px 12px;font-family:${T_FONT};font-size:12px;color:${T_GLOW};cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,.4);user-select:none`;
+    batchBarEl.onclick = () => {
+      // Snapshot first — each exec unregisters itself (mutating the map).
+      for (const run of Array.from(pendingCardExecs.values())) { try { run(); } catch { /* */ } }
+    };
+    document.body.appendChild(batchBarEl);
+  }
+  batchBarEl.textContent = `▶ 执行本轮全部 (${n})`;
+}
+function registerPendingCard(key: string, exec: () => void): void {
+  pendingCardExecs.set(key, exec);
+  refreshBatchBar();
+}
+function unregisterPendingCard(key: string): void {
+  if (pendingCardExecs.delete(key)) refreshBatchBar();
+}
+
 /** Whether a tool card for this key is currently live in the DOM. Used by the
  *  scan loop to self-heal: during live streaming the SPA can rebuild the <pre>
  *  the card was anchored to, orphaning the card and re-showing the raw block.
  *  When that happens the card is gone but the dedup key was already burned, so
  *  no rescan re-rendered it. Callers check this before honoring `processed`. */
 export function isToolCardLive(key: string): boolean {
-  return !!document.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`);
+  if (liveCardKeys.has(key)) {
+    // Confirm it's actually still attached (SPA may have torn the node out
+    // without us observing it). If gone, drop the stale key so a re-render fires.
+    if (document.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`)) return true;
+    liveCardKeys.delete(key);
+    return false;
+  }
+  // Cold path: not in the registry (e.g. card rendered before this module
+  // tracked it, or a different document/frame). Fall back to the DOM and adopt
+  // the key if found.
+  if (document.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`)) {
+    liveCardKeys.add(key);
+    return true;
+  }
+  return false;
+}
+
+/** Forget all tracked live-card keys. Call after bulk-removing every
+ *  [data-piercode-key] node (master-switch teardown / context invalidation) so a
+ *  later re-bootstrap doesn't see stale keys and skip re-rendering. */
+export function clearLiveCardKeys(): void {
+  liveCardKeys.clear();
+  pendingCardExecs.clear();
+  refreshBatchBar();
 }
 
 // subLineEl builds a Claude-Code-style ⎿ indented child row. Shared shape used
@@ -357,6 +422,7 @@ export function renderExecutedCard(data: any, sourceEl: Element, key: string): b
   } else {
     anchor.insertBefore(card, messageContent);
   }
+  liveCardKeys.add(key);
   return true;
 }
 
@@ -429,6 +495,12 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
     stateMark.textContent = '⏺';
     stateMark.style.color = meta.color;
     stateMark.style.animation = meta.pulse ? 'piercodeCardPulse 1s ease-in-out infinite' : 'none';
+    // Batch-approval registry: a card counts toward "执行本轮全部" only while it
+    // is still awaiting approval. Registering lazily via execBtn.click keeps the
+    // disabled-guard + full exec path (this closure runs at batch time, by which
+    // point execBtn.onclick is wired).
+    if (s === 'pending') registerPendingCard(key, () => { if (!execBtn.disabled) execBtn.click(); });
+    else unregisterPendingCard(key);
   }
 
   function mkLinkBtn(label: string, color: string): HTMLButtonElement {
@@ -437,6 +509,11 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
     b.style.cssText = `all:unset;flex:0 0 auto;cursor:pointer;color:${color};font-size:11px;font-family:${T_FONT};padding:1px 5px;border-radius:4px`;
     b.addEventListener('mouseenter', () => { b.style.background = T_PANEL2; });
     b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; });
+    // all:unset (inline) strips the focus ring and outranks any stylesheet rule,
+    // so restore a keyboard-only focus outline inline via the :focus-visible
+    // heuristic — otherwise keyboard users can't see which action is focused.
+    b.addEventListener('focus', () => { if (b.matches(':focus-visible')) { b.style.outline = `1px solid ${color}`; b.style.outlineOffset = '1px'; } });
+    b.addEventListener('blur', () => { b.style.outline = 'none'; });
     return b;
   }
   function setBtnDisabled(b: HTMLButtonElement | null, on: boolean): void {
@@ -601,9 +678,22 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
       lineEl.appendChild(toggle);
     }
 
+    const copyLink = document.createElement('span');
+    copyLink.textContent = '复制';
+    copyLink.style.cssText = `flex:0 0 auto;margin-left:auto;color:${T_GLOW};cursor:pointer;user-select:none`;
+    copyLink.onclick = () => {
+      try {
+        void navigator.clipboard.writeText(text);
+        const orig = copyLink.textContent;
+        copyLink.textContent = '已复制';
+        setTimeout(() => { copyLink.textContent = orig; }, 1200);
+      } catch { /* clipboard blocked */ }
+    };
+    lineEl.appendChild(copyLink);
+
     const insertLink = document.createElement('span');
     insertLink.textContent = '插入到对话';
-    insertLink.style.cssText = `flex:0 0 auto;margin-left:auto;color:${T_GLOW};cursor:pointer;user-select:none`;
+    insertLink.style.cssText = `flex:0 0 auto;margin-left:8px;color:${T_GLOW};cursor:pointer;user-select:none`;
     insertLink.onclick = () => fillAndSend(text, true);
     lineEl.appendChild(insertLink);
 
@@ -705,9 +795,13 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
       if (!isExecCmd || (isExecCmd && !data.args?.background)) {
         unsubscribeStream();
       }
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       statusNote.style.color = T_RED;
       statusNote.textContent = '执行失败';
+      // Surface the actual cause instead of swallowing it to console: an
+      // expandable (and now copyable) result row so the user can read why.
+      try { appendResultSection(`执行失败: ${msg || '未知错误'}`); } catch { /* */ }
       setBtnDisabled(execBtn, false);
       setBtnDisabled(bgBtn, false);
       setCardState('error');
@@ -774,6 +868,8 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
   skipBtn.onclick = () => {
     unsubscribeStream();
     card.remove();
+    liveCardKeys.delete(key);
+    unregisterPendingCard(key);
     processed.delete(key);
     markExecuted(key);
   };
@@ -785,5 +881,6 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
   } else {
     anchor.insertBefore(card, messageContent);
   }
+  liveCardKeys.add(key);
   return true;
 }

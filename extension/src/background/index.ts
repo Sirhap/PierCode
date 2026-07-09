@@ -1092,6 +1092,31 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Ref-counted service-worker keep-alive for in-flight SW-direct browser tools.
+// A browser tool can wait up to the approval timeout (minutes) for the user to
+// answer an approval card; an open message channel alone does not stop Chrome's
+// hard ~5-min SW kill, which would lose the pending sendResponse (content side
+// sees "message port closed") plus attachedTabs/live batches. A periodic alarm
+// keeps the idle timer reset so the SW survives to deliver the answer and return
+// the result. Mirrors browser-agent.ts's alarm keep-alive.
+let browserToolInFlight = 0;
+const BROWSER_TOOL_KEEPALIVE_ALARM = 'piercode_browser_tool_keepalive';
+function browserToolKeepAliveStart(): void {
+  if (browserToolInFlight++ === 0) {
+    try { chrome.alarms?.create(BROWSER_TOOL_KEEPALIVE_ALARM, { periodInMinutes: 0.4 }); } catch { /* alarms unavailable */ }
+  }
+}
+function browserToolKeepAliveEnd(): void {
+  if (browserToolInFlight > 0 && --browserToolInFlight === 0) {
+    try { chrome.alarms?.clear(BROWSER_TOOL_KEEPALIVE_ALARM); } catch { /* */ }
+  }
+}
+// The alarm firing wakes the SW and resets its idle timer; the handler itself is
+// a no-op (its existence is the keep-alive).
+try {
+  chrome.alarms?.onAlarm.addListener(a => { if (a.name === BROWSER_TOOL_KEEPALIVE_ALARM) { /* keep-alive tick */ } });
+} catch { /* alarms unavailable */ }
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'FETCH') {
     const { url, options } = msg;
@@ -1112,9 +1137,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // The sender tab IS the AI page that emitted the tool — approval cards + the
     // screenshot attachment target this tab only (no broadcast to other AI tabs).
     const originTabId = _sender?.tab?.id;
+    browserToolKeepAliveStart();
     dispatchBrowserTool(msg.name, msg.args || {}, callId, { originTabId })
       .then(sendResponse)
-      .catch(e => sendResponse({ callId, name: msg.name, output: String(e), error: String(e), success: false }));
+      .catch(e => sendResponse({ callId, name: msg.name, output: String(e), error: String(e), success: false }))
+      .finally(browserToolKeepAliveEnd);
     return true;
   }
   if (msg.type === 'BROWSER_APPROVAL_ANSWER') {
@@ -1275,6 +1302,10 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     // Surface the dialog to a pending browser_handle_dialog waiter (if any).
     const p = (params || {}) as { message?: string; type?: string; url?: string };
     getController().events.handleDialogEvent(tabId, { message: p.message || '', dialogType: p.type || '', url: p.url || '' });
+  } else if (method === 'Fetch.requestPaused') {
+    // browser_intercept: a paused request MUST be resolved (fulfill/fail/continue)
+    // or the page hangs — the controller always issues exactly one Fetch verb.
+    void getController().handleInterceptPaused(tabId, (params || {}) as { requestId?: string; request?: { url?: string; method?: string } });
   }
 
   if (!DEBUGGER_EVENTS_TO_RELAY.has(method)) return;
@@ -1295,6 +1326,7 @@ chrome.tabs.onRemoved.addListener(tabId => {
   // tabId can't resolve a stale ref (the ref-staleness invariant across tab death).
   getController().registry.clearDefault(tabId);
   getController().events.clearTab(tabId);
+  getController().intercepts.clearTab(tabId);   // drop this tab's network intercept rules
   if (controlledTabId === tabId) {
     controlledTabId = null;
     setBrowserRelayStatus({ state: browserWs?.readyState === WebSocket.OPEN ? 'open' : 'closed' });

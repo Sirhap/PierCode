@@ -21,18 +21,45 @@ const defaultSend: SendFn = (msg, originTabId) => {
 }
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
 
+const GRANTS_STORAGE_KEY = 'piercode_browser_grants'
+
 export class ApprovalManager {
   private pending = new Map<string, (a: ApprovalAnswer) => void>()
   private grants = new Set<string>()
   private seq = 0
-  constructor(private send: SendFn = defaultSend, private timeoutMs = APPROVAL_TIMEOUT_MS) {}
+  constructor(private send: SendFn = defaultSend, private timeoutMs = APPROVAL_TIMEOUT_MS) {
+    // Rehydrate grants that outlived a service-worker restart. Grants lived only
+    // in-memory before, so a ~30s idle SW recycle forgot every "本站点始终允许"
+    // and re-prompted — on an unattended agent run that stalled until the 5-min
+    // approval timeout. storage.session survives SW restarts within the browser
+    // session, matching these session-scoped grants' lifetime.
+    void this.hydrate()
+  }
+
+  private sessionStore(): chrome.storage.StorageArea | undefined {
+    try { return (chrome as any)?.storage?.session } catch { return undefined }
+  }
+  private async hydrate(): Promise<void> {
+    const store = this.sessionStore()
+    if (!store) return
+    try {
+      const got = await store.get(GRANTS_STORAGE_KEY)
+      const arr = got?.[GRANTS_STORAGE_KEY]
+      if (Array.isArray(arr)) for (const k of arr) if (typeof k === 'string') this.grants.add(k)
+    } catch { /* storage unavailable */ }
+  }
+  private persist(): void {
+    const store = this.sessionStore()
+    if (!store) return
+    try { void store.set({ [GRANTS_STORAGE_KEY]: Array.from(this.grants) }) } catch { /* */ }
+  }
 
   private grantKey(host: string, actionClass: string) { return `${host}\x00${actionClass}` }
   hasGrant(host: string, actionClass: string): boolean {
     return !!host && !!actionClass && this.grants.has(this.grantKey(host, actionClass))
   }
   recordGrant(host: string, actionClass: string): void {
-    if (host && actionClass) this.grants.add(this.grantKey(host, actionClass))
+    if (host && actionClass) { this.grants.add(this.grantKey(host, actionClass)); this.persist() }
   }
 
   /** Resolves on approval, rejects (throws) on rejection/timeout. */

@@ -29,6 +29,28 @@ var QwenBasePrompt []byte
 //go:embed worker_append.txt
 var WorkerPromptAppend []byte
 
+// SidebarBasePrompt is a sidebar-specific base prompt used as the "sidebar"
+// profile's Prompt INSTEAD of inheriting DefaultPrompt. The sidebar talks to the
+// model over an API and runs its sub-agents as in-memory sub-conversations, so its
+// §1 transport rule drops the web-tab host-sandbox framing and its §12 multi-agent
+// section describes API sub-agents (parallel in-memory conversations, results
+// injected as a continuation turn) instead of tab workers reporting via
+// <task-notification>. Everything else mirrors init_prompt.txt verbatim.
+//
+//go:embed sidebar_base.txt
+var SidebarBasePrompt []byte
+
+// SidebarWorkerPromptAppend is the role+handoff append for the "sidebar-worker"
+// profile (the sidebar's in-memory API sub-agent). Unlike WorkerPromptAppend it
+// does NOT instruct the sub-agent to emit a piercode-agent-result packet: the
+// sidebar path takes the sub-agent's raw final prose as the result (no packet
+// parser), so the worker_append packet contract would be dumped verbatim into the
+// coordinator. This append tells the sub-agent its final plain-text message IS the
+// result.
+//
+//go:embed sidebar_worker_append.txt
+var SidebarWorkerPromptAppend []byte
+
 //go:embed browser_agent_append.txt
 var BrowserAgentPromptAppend []byte
 

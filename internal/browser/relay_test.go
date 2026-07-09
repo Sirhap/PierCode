@@ -107,6 +107,60 @@ func TestRelayOwnerTargetedSkipsBroadcast(t *testing.T) {
 	}
 }
 
+// allFailTransport simulates two connected browsers that BOTH fail (the tab is
+// genuinely gone). Owner unknown → broadcast. preferSuccess must return the
+// failure as soon as every recipient has answered, not wait out the full timeout.
+type allFailTransport struct{ relay *RelayManager }
+
+func (t *allFailTransport) SendBrowserCommand(_ *int, payload []byte) (bool, bool) {
+	var cmd Command
+	_ = json.Unmarshal(payload, &cmd)
+	t.relay.DeliverResult(Result{ID: cmd.ID, Success: false, Error: "No tab with id: 7."})
+	t.relay.DeliverResult(Result{ID: cmd.ID, Success: false, Error: "No tab with id: 7."})
+	return true, false
+}
+func (t *allFailTransport) BrowserRelayIDs() []string       { return []string{"A", "B"} }
+func (t *allFailTransport) SendToID(_ string, _ []byte) bool { return true }
+
+func TestRelayPreferSuccessReturnsEarlyWhenAllFail(t *testing.T) {
+	transport := &allFailTransport{}
+	relay := NewRelayManager(transport)
+	transport.relay = relay
+
+	tabID := 7
+	start := time.Now()
+	_, err := relay.SendCommand(context.Background(),
+		Command{TabID: &tabID, Domain: "PierCode", Method: "getTab"}, 10*time.Second)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected failure when every browser fails")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("preferSuccess waited %s for an all-fail command; must return once failCount==relayCount", elapsed)
+	}
+}
+
+// silentFanoutTransport never delivers any result — used to check that a
+// cancelled context makes SendCommandFanout surface the error instead of
+// reporting a truncated (empty) result set as if it were complete.
+type silentFanoutTransport struct{ ids []string }
+
+func (t *silentFanoutTransport) SendBrowserCommand(_ *int, _ []byte) (bool, bool) { return true, false }
+func (t *silentFanoutTransport) BrowserRelayIDs() []string                        { return t.ids }
+func (t *silentFanoutTransport) SendToID(_ string, _ []byte) bool                 { return true }
+
+func TestRelayFanoutReturnsErrorOnContextCancel(t *testing.T) {
+	transport := &silentFanoutTransport{ids: []string{"A", "B"}}
+	relay := NewRelayManager(transport)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before the fanout waits
+	_, err := relay.SendCommandFanout(ctx, Command{Domain: "PierCode", Method: "listTabs"}, 5*time.Second)
+	if err == nil {
+		t.Fatal("fanout must surface ctx cancellation, not report a partial result set as complete")
+	}
+}
+
 // fanoutStragglerTransport simulates three browsers where only the first answers;
 // the other two stay silent. It exercises the per-iteration timeout in
 // SendCommandFanout: a single one-shot timer would bound only the first straggler

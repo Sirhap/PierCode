@@ -116,6 +116,7 @@ func renderFrameTree(raw json.RawMessage, refBase int, opts tool.SnapshotOptions
 		out: &out, refs: &refs, byID: byID,
 		maxNodes: maxNodes, maxChars: maxChars, maxDepth: maxDepth,
 		emitting: true, refBase: refBase,
+		visited: make(map[string]bool),
 	}
 	for _, root := range roots {
 		state.walk(root, 1) // indent one level under the iframe header
@@ -174,6 +175,7 @@ func CompactSnapshot(raw json.RawMessage, tab tool.BrowserTab, snapshotID string
 		maxChars: maxChars,
 		maxDepth: maxDepth,
 		byID:     byID,
+		visited:  make(map[string]bool),
 	}
 
 	// Determine the walk roots. When RefID is set we still need to assign refs
@@ -217,6 +219,7 @@ type snapshotWalk struct {
 	targetRef  string // when non-empty, only emit this ref's subtree
 	emitting   bool   // currently inside the emit scope
 	matchedRef bool   // the targetRef was found
+	visited    map[string]bool // cycle guard: NodeIDs already walked
 }
 
 // walk descends the AX subtree rooted at node. visualDepth is the indentation
@@ -224,6 +227,18 @@ type snapshotWalk struct {
 func (s *snapshotWalk) walk(node *axNode, visualDepth int) {
 	if s.truncated || node == nil {
 		return
+	}
+	// Cycle guard. A corrupt/malicious AX payload can have childIds pointing back
+	// to an ancestor (or a node reachable through several parents). The not-kept
+	// branch below recurses over ChildIDs UNCONDITIONALLY — it bypasses maxNodes
+	// and maxDepth (those gate only emitted nodes) — so a cycle recurses until the
+	// goroutine stack overflows, which aborts the whole Go process unrecoverably.
+	// Visiting each NodeID at most once bounds the walk to O(nodes).
+	if node.NodeID != "" {
+		if s.visited[node.NodeID] {
+			return
+		}
+		s.visited[node.NodeID] = true
 	}
 	role := node.Role.String()
 	name := trimText(node.Name.String(), maxSnapshotValueChars)

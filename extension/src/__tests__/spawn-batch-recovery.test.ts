@@ -13,6 +13,7 @@ import {
   startRecoverableSpawnBatch,
   resumeOrphanedSpawnBatches,
   __spawnBatchStateForTest,
+  __injectionStateForTest,
 } from '../background/chat-api'
 
 const PREFIX = 'spawnBatch:'
@@ -60,7 +61,12 @@ async function waitFor(cond: () => boolean, ms = 3000): Promise<void> {
   const deadline = Date.now() + ms
   while (!cond()) {
     if (Date.now() > deadline) throw new Error('waitFor timeout')
-    await new Promise(r => setTimeout(r, 10))
+    // 5ms, not 10ms: under real system load (many parallel vitest workers, or —
+    // as observed — background browser automation competing for the event loop),
+    // event-loop scheduling delay can eat enough of the "cancelled while still
+    // live" test's mocked auth-check window (see below) that a coarser poll
+    // misses it entirely and spins to the 3s timeout on a false negative.
+    await new Promise(r => setTimeout(r, 5))
   }
 }
 
@@ -73,6 +79,7 @@ const spawnCall = (id: string) => ({
 beforeEach(() => {
   installChromeStub()
   __spawnBatchStateForTest().reset()
+  __injectionStateForTest().reset()
 })
 
 describe('startRecoverableSpawnBatch', () => {
@@ -95,6 +102,41 @@ describe('startRecoverableSpawnBatch', () => {
     expect(push![0]).toBe(7)
     expect(push![1].batchKey).toBe('k1')
     expect(push![1].results).toHaveLength(1)
+  })
+
+  // CHAT-API-002: Stop pressed while the batch is still live (handleChatCancel
+  // marks the live rec .cancelled — see chat-api-cancel.test.ts) must not stop
+  // the batch from finishing/persisting/broadcasting its result, but MUST skip
+  // the auto-continue (enqueueInjection) that would otherwise resume the
+  // conversation. Simulates the cancel by grabbing the live rec via the same
+  // registry handleChatCancel uses and flipping it mid-run.
+  it('a batch cancelled while still live finishes and persists but skips enqueueInjection', async () => {
+    // The stub's auth check (chrome.cookies.get) otherwise fails synchronously
+    // fast enough that the batch is added to AND removed from liveSpawnRecords
+    // within a single waitFor poll tick. Delay it so there's a real window to
+    // observe the batch as "live" and flip .cancelled — standing in for the
+    // real network latency that creates this window in production. 300ms (not
+    // 80ms): under load the poll can be scheduled late enough to miss a window
+    // that short — wide margin against event-loop jitter, still comfortably
+    // inside waitFor's 3s timeout.
+    ;(globalThis as any).chrome.cookies.get = async () => {
+      await new Promise(r => setTimeout(r, 300))
+      return null
+    }
+    const promise = startRecoverableSpawnBatch('k5', [spawnCall('c1')], 'qwen', undefined, undefined, {
+      inject: { platform: 'qwen', chatId: 'chat-X', parentId: null },
+    })
+    await waitFor(() => __spawnBatchStateForTest().records.has('k5'))
+    __spawnBatchStateForTest().records.get('k5')!.cancelled = true
+    await promise
+
+    const saved = sessionData[PREFIX + 'k5']
+    expect(saved.done).toBe(true)
+    expect(saved.cancelled).toBe(true)
+    // Still marked injected (handled) even though enqueueInjection was skipped —
+    // otherwise a later resume would try to inject the stale summary anyway.
+    expect(saved.injected).toBe(true)
+    expect(__injectionStateForTest().queue).toHaveLength(0)
   })
 })
 
@@ -195,5 +237,43 @@ describe('resumeOrphanedSpawnBatches', () => {
     // Still pending: the "live" batch is owned by another runner.
     expect(sessionData[PREFIX + 'k4'].done).toBe(false)
     __spawnBatchStateForTest().live.delete('k4')
+  })
+
+  // CHAT-API-002 (SW-restart leg): Stop was pressed and the record's cancelled
+  // flag was persisted (handleChatCancel) before the SW died mid-batch. On
+  // restart, resume must not spend API budget finishing work the user stopped.
+  it('does not resume an undone batch marked cancelled', async () => {
+    sessionData[PREFIX + 'k6'] = {
+      batchKey: 'k6', batchId: 'b6', platform: 'qwen', depth: 0,
+      createdAt: Date.now(), done: false, cancelled: true,
+      agents: [{ call: spawnCall('c1'), agentId: 'a6', status: 'pending' }],
+    }
+
+    await resumeOrphanedSpawnBatches()
+    await new Promise(r => setTimeout(r, 50))
+
+    expect(sessionData[PREFIX + 'k6'].done).toBe(false)
+    expect(__spawnBatchStateForTest().live.has('k6')).toBe(false)
+  })
+
+  // CHAT-API-002 (SW-restart leg): batch finished AND was cancelled before the
+  // SW died between "done" and "queued for injection" — resume must not
+  // auto-continue the conversation the user already stopped.
+  it('does not re-inject a done-but-uninjected batch marked cancelled', async () => {
+    sessionData[PREFIX + 'k7'] = {
+      batchKey: 'k7', batchId: 'b7', platform: 'qwen', depth: 0,
+      createdAt: Date.now(), done: true, cancelled: true,
+      inject: { platform: 'qwen', chatId: 'chat-Y', parentId: null },
+      agents: [{
+        call: spawnCall('c1'), agentId: 'a7', status: 'done',
+        result: { call_id: 'c1', name: 'spawn_agent', output: 'x', success: true },
+      }],
+    }
+
+    await resumeOrphanedSpawnBatches()
+    await new Promise(r => setTimeout(r, 50))
+
+    expect(sessionData[PREFIX + 'k7'].injected).toBeUndefined()
+    expect(__injectionStateForTest().queue).toHaveLength(0)
   })
 })

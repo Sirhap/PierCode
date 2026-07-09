@@ -98,6 +98,7 @@ func (m *RelayManager) SendCommand(ctx context.Context, cmd Command, timeout tim
 
 	var lastFail Result
 	haveFail := false
+	failCount := 0
 	for {
 		select {
 		case res := <-ch:
@@ -112,9 +113,18 @@ func (m *RelayManager) SendCommand(ctx context.Context, cmd Command, timeout tim
 			}
 			// Hold the failure; keep waiting for a success from the owner.
 			// pending[id] stays mapped (deletePending runs only on return), and
-			// the cap-1 channel is now drained, so the owner's later success
-			// result still delivers here via DeliverResult.
+			// the buffered channel keeps the owner's later success deliverable.
 			lastFail, haveFail = res, true
+			failCount++
+			// Once every broadcast recipient has answered with a failure, no
+			// owner success is coming — return now instead of waiting out the
+			// full timeout (a genuinely-closed tab otherwise blocked ~10s/60s).
+			if failCount >= relayCount {
+				if lastFail.Error == "" {
+					lastFail.Error = "browser command failed"
+				}
+				return nil, errors.New(lastFail.Error)
+			}
 		case <-timer.C:
 			if haveFail {
 				if lastFail.Error == "" {
@@ -182,6 +192,7 @@ func (m *RelayManager) SendCommandFanout(ctx context.Context, cmd Command, timeo
 	// waiters stays capped at timeout no matter how many browsers go silent.
 	deadline := time.Now().Add(timeout)
 	results := make([]Result, 0, len(waiters))
+	cancelled := false
 	for _, w := range waiters {
 		rem := time.Until(deadline)
 		if rem <= 0 {
@@ -199,10 +210,17 @@ func (m *RelayManager) SendCommandFanout(ctx context.Context, cmd Command, timeo
 			// Stop waiting on the slow ones; return what we have.
 			m.deletePending(w.cmdID)
 		case <-ctx.Done():
+			// Caller gave up. Keep draining to clean up the remaining pending
+			// entries, but remember to surface the cancellation so the caller
+			// doesn't mistake a truncated result set for "these are all the tabs".
 			m.deletePending(w.cmdID)
+			cancelled = true
 		}
 		timer.Stop()
 		m.deletePending(w.cmdID)
+	}
+	if cancelled {
+		return results, ctx.Err()
 	}
 	return results, nil
 }

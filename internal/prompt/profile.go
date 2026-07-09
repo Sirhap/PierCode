@@ -178,6 +178,33 @@ func DefaultProfileRegistry(defaultPrompt []byte) *ProfileRegistry {
 		PromptAppend:   prompts.WorkerPromptAppend,
 		ContextHandoff: workerResultPacketReminder,
 	})
+	// Sidebar profile: the chat sidebar's main (coordinator) turn. The sidebar
+	// talks to the model over an API and runs sub-agents as in-memory
+	// sub-conversations, so it uses a sidebar-specific base prompt (not the generic
+	// init prompt): §1 drops the web-tab host-sandbox framing and §12 describes API
+	// sub-agents instead of tab workers + <task-notification>. Full tool surface
+	// (no ToolNames) and no ContextHandoff (the sidebar compresses context
+	// client-side). App.tsx fetches GET /prompt?profile=sidebar.
+	registry.Register(Profile{
+		ID:     "sidebar",
+		Prompt: prompts.SidebarBasePrompt,
+	})
+	// Sidebar-worker profile: a sub-agent the sidebar dispatches as an in-memory API
+	// sub-conversation (NOT a browser tab). Base is SidebarBasePrompt (NOT
+	// DefaultPrompt) — DefaultPrompt's §12 is written for tab workers that "only
+	// ever RECEIVE <task-notification> blocks" and "NEVER emit a piercode-agent-result
+	// block", which contradicts an in-memory sub-agent's actual role. SidebarBasePrompt
+	// already describes API sub-agents correctly (no tab-worker framing). PromptAppend
+	// then layers the sub-agent role + plain-text handoff. Unlike the "worker" profile
+	// it does NOT ask for a piercode-agent-result packet, because the sidebar path
+	// (runSubAgent → shapeSubAgentResult) takes the sub-agent's raw final prose as the
+	// result and never parses a packet. fetchWorkerPrompt fetches GET
+	// /prompt?profile=sidebar-worker.
+	registry.Register(Profile{
+		ID:           "sidebar-worker",
+		Prompt:       prompts.SidebarBasePrompt,
+		PromptAppend: prompts.SidebarWorkerPromptAppend,
+	})
 	// ChatGPT profile: inherits the default prompt + all tools (no narrowing),
 	// but appends a warning that ChatGPT's native python/python_user_visible tool
 	// is a no-op here (it emits placeholder output with no real fs/shell/network),

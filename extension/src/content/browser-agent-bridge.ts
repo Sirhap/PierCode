@@ -185,6 +185,23 @@ export function isBrowserAgentFrame(): boolean {
   return browserAgentPlatformFromURL() !== null;
 }
 
+// 是否带**显式** ?piercode_browser_agent= 哨兵（URL query 或其落盘的 sessionStorage
+// 副本），不含 host 兜底。侧边栏 AiFrame 的 src 必带哨兵；offscreen 隐藏 iframe 加载
+// 的是裸 `https://chat.qwen.ai/`，永不带。用于把这两个**都是 qwen 跨域子帧**的场景
+// 区分开（isBrowserAgentFrame 的 host 兜底会把 offscreen 帧也判成 'qwen'，不能用于此）。
+export function hasBrowserAgentSentinel(): boolean {
+  try {
+    if (new URLSearchParams(location.search).get('piercode_browser_agent')) return true;
+  } catch {
+    /* location 不可读：继续看 sessionStorage */
+  }
+  try {
+    return !!window.sessionStorage.getItem(BROWSER_AGENT_PLATFORM_STORAGE_KEY);
+  } catch {
+    return false;
+  }
+}
+
 // ── 平台配置解析 ──────────────────────────────────────────────────────────
 // 选择器表按平台 key（chatgpt/qwen），适配器按当前 host 匹配。两者在本 iframe
 // 内 host 与平台一致，但显式用哨兵里的 platform 作为权威 key，避免 host 变体

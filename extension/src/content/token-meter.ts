@@ -92,10 +92,29 @@ export function whenTokenizerReady(): Promise<void> {
 // 高频重算（content 端 3s 定时刷新 + sidebar 流式每 chunk 重算整段历史）。js-tiktoken 是
 // 纯 JS BPE（~1-5MB/s），重新编码数百 KB 历史是 ~100-300ms 主线程开销，重复跑会卡。记忆化
 // 让不变历史命中缓存，只有增长中的流式尾部重新编码。纯函数，返回值不变。
-const COUNT_CACHE_MAX = 500;
+// Sized to cover a long conversation's message + tool-result segments so a single
+// computeMeter sweep doesn't evict entries it still needs THIS sweep (which would
+// re-encode them next tick and prevent the cold cost from ever converging). Each
+// entry is a tiny int→int pair, so a few thousand is cheap.
+const COUNT_CACHE_MAX = 4000;
 const countCache = new Map<string, number>();
 
 export function countTokens(text: string, platform = 'chatgpt'): number {
+  return countTokensBudgeted(text, platform, null);
+}
+
+// Per-sweep fresh-encode budget (chars). js-tiktoken is pure-JS BPE (~1-5MB/s), so
+// encoding a whole multi-MB conversation in ONE synchronous computeMeter sweep
+// blocks the main thread for seconds → the browser shows "page unresponsive" when a
+// long chat is reopened (the cold sweep after the tokenizer finishes loading). When
+// a budget object is supplied, each call decrements it by the freshly-encoded char
+// count; once exhausted, the rest of the sweep falls back to the cheap char
+// estimate for THIS tick. Cache hits are free (don't touch the budget), so the
+// 3s-interval refresh fills the cache incrementally and converges to exact counts
+// within a few ticks, while no single tick ever blocks on more than the budget.
+const ENCODE_BUDGET_CHARS = 50_000;
+
+function countTokensBudgeted(text: string, platform: string, budget: { remaining: number } | null): number {
   if (!text) return 0;
   ensureTiktoken();
   const enc = loadState === 'ready' ? encoderFor(platform) : null;
@@ -103,17 +122,21 @@ export function countTokens(text: string, platform = 'chatgpt'): number {
   const key = platform + '\0' + text;
   const cached = countCache.get(key);
   if (cached !== undefined) {
-    // LRU touch: re-insert so hot entries stay live.
+    // LRU touch: re-insert so hot entries stay live. Cache hit costs no budget.
     countCache.delete(key);
     countCache.set(key, cached);
     return cached;
   }
+  // Budget exhausted for this sweep → estimate now (don't cache the estimate;
+  // a later tick with fresh budget encodes it precisely).
+  if (budget && budget.remaining <= 0) return estimateTokens(text);
   let n: number;
   try {
     n = Math.round(enc.encode(text).length * platformFactor(platform));
   } catch {
     return estimateTokens(text); // don't cache the fallback — tokenizer may recover
   }
+  if (budget) budget.remaining -= text.length;
   countCache.set(key, n);
   if (countCache.size > COUNT_CACHE_MAX) {
     // Map preserves insertion order → first key is the least-recently-used.
@@ -128,8 +151,13 @@ export function countTokens(text: string, platform = 'chatgpt'): number {
 export function computeMeter(ctx: ConversationContext, platform = 'chatgpt'): TokenMeter {
   let input = 0;
   let output = 0;
+  // One fresh-encode budget shared across the whole sweep, so reopening a long
+  // chat can't synchronously BPE-encode every message in a single tick and freeze
+  // the page. Already-cached messages don't consume it; the cache fills over a few
+  // 3s ticks until the full history is exactly counted.
+  const budget = { remaining: ENCODE_BUDGET_CHARS };
   for (const msg of ctx.messages) {
-    const n = countTokens(msg.content, platform);
+    const n = countTokensBudgeted(msg.content, platform, budget);
     if (msg.role === 'assistant') {
       output += n;
     } else {

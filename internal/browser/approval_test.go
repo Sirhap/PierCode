@@ -25,7 +25,7 @@ func TestApprovalManagerRejectsAndBroadcastsDone(t *testing.T) {
 		}
 	})
 
-	err := manager.Ask(context.Background(), ApprovalAsk{
+	err := manager.askWithPrompt(context.Background(), ApprovalAsk{
 		CallID: "reject-call",
 		Action: "Reject browser action",
 	})
@@ -55,7 +55,7 @@ func TestApprovalManagerContextCancelBroadcastsDone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	err := manager.Ask(ctx, ApprovalAsk{CallID: "cancel-call"})
+	err := manager.askWithPrompt(ctx, ApprovalAsk{CallID: "cancel-call"})
 	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
 		t.Fatalf("expected context deadline, got %v", err)
 	}
@@ -89,8 +89,8 @@ func TestApprovalManagerIncludesClientIDFromContext(t *testing.T) {
 	})
 
 	ctx := tool.ContextWithSourceClientID(context.Background(), "client-a")
-	if err := manager.Ask(ctx, ApprovalAsk{CallID: "approval-route-test", Action: "Route browser action"}); err != nil {
-		t.Fatalf("Ask: %v", err)
+	if err := manager.askWithPrompt(ctx, ApprovalAsk{CallID: "approval-route-test", Action: "Route browser action"}); err != nil {
+		t.Fatalf("askWithPrompt: %v", err)
 	}
 	if len(payloads) != 2 {
 		t.Fatalf("expected ask and done payloads, got %d", len(payloads))
@@ -114,5 +114,19 @@ func TestApprovalManagerIncludesClientIDFromContext(t *testing.T) {
 	}
 	if done.Type != "browser_approval_done" || done.CallID != "approval-route-test" || done.ClientID != "client-a" {
 		t.Fatalf("unexpected done payload: %#v", done)
+	}
+}
+
+// TestApprovalDisabledReturnsNilWithoutPrompt verifies the live Ask path runs
+// browser actions without any user approval: it returns nil immediately and
+// never broadcasts an approval prompt.
+func TestApprovalDisabledReturnsNilWithoutPrompt(t *testing.T) {
+	var broadcasts int
+	m := NewApprovalManager(func([]byte) { broadcasts++ })
+	if err := m.Ask(context.Background(), ApprovalAsk{CallID: "x", Action: "clicked 页面元素"}); err != nil {
+		t.Fatalf("Ask should not block or fail when approval is disabled: %v", err)
+	}
+	if broadcasts != 0 {
+		t.Fatalf("Ask must not broadcast any approval prompt; broadcasts=%d", broadcasts)
 	}
 }

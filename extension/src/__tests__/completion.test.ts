@@ -14,6 +14,7 @@ import {
   chatZAdapter,
   claudeAdapter,
   geminiAdapter,
+  kimiAdapter,
   defaultAdapter,
 } from '../platform-adapters';
 
@@ -158,18 +159,22 @@ describe('attachCompletionDetection wiring', () => {
     expect(a.detectComplete({ stopVisible: false, messageIndex: 0, text: 'y' })).toBe(true);
   });
 
-  it('the misdetecting adapters expose detectComplete + resetCompletion', () => {
-    for (const adapter of [qwenAdapter, chatGPTAdapter, mimoAdapter, aiStudioAdapter, chatZAdapter]) {
+  it('every adapter exposes detectComplete + resetCompletion', () => {
+    // All adapters opt into the shared settle+signature gate. Without it the
+    // submit path falls back to the bare "stop button + 700ms" heuristic, which
+    // ships the FIRST tool's result alone when the model emits several tool
+    // blocks in one turn (a render gap between blocks looks like turn-end). The
+    // detector keeps the turn open while text is still mutating, so a multi-tool
+    // turn's results batch into ONE reply. The gate is conservative (fires only
+    // on stop-gone + text stable + fresh signature) and content's
+    // MAX_SUBMIT_DEFER_MS backstops any stuck-signature platform, so opting in
+    // is safe even for platforms with a reliable stop selector.
+    for (const adapter of [
+      qwenAdapter, chatGPTAdapter, mimoAdapter, aiStudioAdapter, chatZAdapter,
+      claudeAdapter, geminiAdapter, kimiAdapter, defaultAdapter,
+    ]) {
       expect(adapter.detectComplete, `${adapter.name} detectComplete`).toBeTypeOf('function');
       expect(adapter.resetCompletion, `${adapter.name} resetCompletion`).toBeTypeOf('function');
-    }
-  });
-
-  it('adapters with reliable CSS stop selectors do not opt in', () => {
-    // Claude / Gemini / default have a clean stopBtn CSS selector, so they keep
-    // the existing content-side detection and do not carry the optional method.
-    for (const adapter of [claudeAdapter, geminiAdapter, defaultAdapter]) {
-      expect(adapter.detectComplete, `${adapter.name} should not define detectComplete`).toBeUndefined();
     }
   });
 

@@ -154,7 +154,9 @@ func (p *SecurityPolicy) IsAIPage(raw string) bool {
 	if err != nil {
 		return false
 	}
-	host := strings.ToLower(u.Hostname())
+	// Strip a trailing dot: "chatgpt.com." is the same site to the browser as
+	// "chatgpt.com" (fully-qualified form) but would match neither branch below.
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	for _, aiHost := range aiPageHosts {
 		if host == aiHost || strings.HasSuffix(host, "."+aiHost) {
 			return true

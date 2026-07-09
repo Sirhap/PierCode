@@ -164,6 +164,12 @@ func New(config *types.Config) *Executor {
 	e.registry.Register(tool.NewBrowserRecordTool())
 	e.registry.Register(tool.NewBrowserWaitTool())
 	e.registry.Register(tool.NewBrowserWaitForFunctionTool())
+	e.registry.Register(tool.NewBrowserWaitStableTool())
+	e.registry.Register(tool.NewBrowserAssertTool())
+	e.registry.Register(tool.NewBrowserTestTool())
+	e.registry.Register(tool.NewBrowserInterceptTool())
+	e.registry.Register(tool.NewBrowserResetTool())
+	e.registry.Register(tool.NewBrowserVisualDiffTool())
 	e.registry.Register(tool.NewBrowserHoverTool())
 	e.registry.Register(tool.NewBrowserScrollTool())
 	e.registry.Register(tool.NewBrowserEvaluateTool())
@@ -509,13 +515,29 @@ func (e *Executor) lockForTool(name string, args map[string]interface{}, rootDir
 	if strings.EqualFold(strings.TrimSpace(name), "browser_batch") {
 		return func() {}
 	}
-	// Browser write tools mutate browser state, not the filesystem. They hold
-	// the SHARED side of toolMu (so exclusive-lock tools keep their guarantee)
-	// and serialize per target tab instead of globally: multi-agent flows can
-	// drive different tabs in parallel, while calls on the same tab — or the
-	// implicit default tab — stay strictly ordered.
+	// Browser tools reaching this branch mutate BROWSER state (via CDP), never
+	// the workspace filesystem, so they take ONLY a per-target-tab keyed mutex
+	// and stay OUT of toolMu. browser_pdf is read-only-classified and caught by
+	// the toolIsReadOnly branch above; browser_upload is NOT read-only-classified
+	// and does reach here, but its only server-side FS touch is a ResolvePath +
+	// os.Stat (read), so it still shares no writable state with the exclusive-
+	// lock tools (apply_patch/undo/todo_write). Safe to decouple.
+	//
+	// Old behavior took the SHARED side of toolMu here too. But a browser CDP
+	// call can block up to the 6-minute browser timeout, and while it held that
+	// RLock any exclusive-lock tool (apply_patch/undo/todo_write) blocking on
+	// toolMu.Lock() would — via Go's RWMutex writer priority — queue every later
+	// RLock reader behind it: one hung CDP call plus one todo_write stalled all
+	// file reads server-wide. This is the exact writer-priority hazard the
+	// `question` exemption above avoids by holding no lock during its long wait;
+	// browser tools are the same kind of unbounded blocker and get the same
+	// treatment. Decoupling is safe because they share no filesystem state.
+	// Different tabs still run in parallel; same-tab (and implicit default-tab)
+	// calls still serialize on the keyed mutex.
 	if isBrowserToolName(name) {
-		return e.sharedPlusKeyed(browserTabKey(args))
+		mu := e.keyedLock(browserTabKey(args))
+		mu.Lock()
+		return mu.Unlock
 	}
 	// Single-path file writers conflict only on their target file: serialize
 	// per normalized path so parallel workers writing DIFFERENT files don't

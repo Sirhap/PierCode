@@ -34,13 +34,13 @@ import {
   thresholdForPlatform,
 } from './qwen-settings';
 import { dispatchEnterAsSendFallback } from './send-fallback';
-import { installUserSendReminder, markProgrammaticSend, isSystemReminderEnabled } from './user-send-reminder';
+import { installUserSendReminder, markProgrammaticSend, isSystemReminderEnabled, setSystemReminderEnabled } from './user-send-reminder';
 import { messageHasPierCodeTrigger } from './explicit-trigger';
 import { selectorsForHost } from './platform-selectors';
-import { isBrowserAgentFrame } from './browser-agent-bridge';
+import { isBrowserAgentFrame, hasBrowserAgentSentinel } from './browser-agent-bridge';
 import { autoSubmitSettleRemainingMs } from './auto-submit-settle';
 import { T_PANEL, T_PANEL2, T_LINE, T_DIM, T_TXT, T_GLOW, T_GLOW_SOFT, T_AMBER, T_RED, T_FONT } from './terminal-theme';
-import { hashStr, getToolCallId, ensureToolCallId, renderToolCard, renderExecutedCard, toolCardArgPreview, isToolCardLive, initToolCardDeps, streamChunkSubs, streamDoneSubs } from './tool-card';
+import { hashStr, getToolCallId, ensureToolCallId, renderToolCard, renderExecutedCard, toolCardArgPreview, isToolCardLive, clearLiveCardKeys, initToolCardDeps, streamChunkSubs, streamDoneSubs } from './tool-card';
 import { saveToolResult } from './tool-result-store';
 import { scheduleResultEchoDecoration } from './tool-result-echo';
 import { showToast } from './toast';
@@ -60,6 +60,10 @@ const MAX_BATCH_QUIET_MS = 5000;
 // ```piercode-agent-result fenced JSON block. Mirrors the piercode-context
 // detection in qwen-context-compress.ts.
 const AGENT_RESULT_FENCE_RE = /```piercode-agent-result\s*\n([\s\S]*?)\n```/gi;
+// Phase-1 fence detection gate. Non-global (so no lastIndex state) + case
+// -insensitive to match the extractor (parser FENCE_OPEN_RE, /gi). Covers both
+// ```piercode-tool and the short ```tool alias.
+const FENCE_GATE_RE = /```(?:piercode-tool|tool)/i;
 function resolveBatchQuietMs(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_BATCH_QUIET_MS;
   return Math.min(MAX_BATCH_QUIET_MS, Math.max(MIN_BATCH_QUIET_MS, Math.round(value)));
@@ -228,11 +232,34 @@ function isOffscreenHostedFrame(): boolean {
     // Subframe whose parent is the extension's own offscreen doc. We can't read
     // the cross-origin-ish parent's location reliably, but being a subframe +
     // matching the qwen host + chrome.runtime present is the signal we act on.
+    //
+    // EXCLUDE the side-panel browser-agent qwen iframe. It is ALSO a qwen subframe
+    // (window.parent !== window), so without this guard it wrongly enters the
+    // offscreen-relay role: re-injects page-bridge into a sandboxed iframe and
+    // posts OFFSCREEN_READY to the side-panel parent (which never listens), while
+    // never running its real bootstrap — the "qwen browser-agent iframe has no
+    // ⌁初始化 button / no tool detection" bug.
+    //
+    // Distinguish by the EXPLICIT ?piercode_browser_agent= sentinel (URL or its
+    // persisted sessionStorage copy): the side-panel AiFrame carries it; the
+    // offscreen iframe loads a bare `https://chat.qwen.ai/` and never does. Do
+    // NOT use isBrowserAgentFrame() here — its host fallback (subframe + qwen.ai
+    // host ⇒ 'qwen') would ALSO match the offscreen frame and break qwen bx-ua.
+    if (hasBrowserAgentSentinel()) return false;
     return window.parent !== window && /(^|\.)qwen\.ai$/.test(location.hostname);
   } catch {
     return false;
   }
 }
+
+// Declared HERE — above the offscreen-relay block below — not at its old position
+// further down. That block runs during module eval and calls injectPageBridge(),
+// which reads this flag; a `let` declared after the call sits in its temporal dead
+// zone, so the call threw "Cannot access 'pageBridgeInjected' before
+// initialization", aborting the whole module before EOF bootstrap (= the qwen
+// browser-agent iframe ran no bootstrap / showed no ⌁初始化 button). Hoisting it
+// removes the landmine regardless of which top-level block calls inject first.
+let pageBridgeInjected = false;
 
 if (typeof chrome !== 'undefined' && chrome.runtime?.id && isOffscreenHostedFrame()) {
   const post = (m: Record<string, unknown>) => {
@@ -356,7 +383,8 @@ window.addEventListener('message', event => {
   }
 });
 
-let pageBridgeInjected = false;
+// (pageBridgeInjected is declared above, before the offscreen-relay block, to
+// avoid a temporal-dead-zone throw when that block calls injectPageBridge().)
 
 // Inject page-bridge as early as possible (document_start). It installs the
 // keep-alive visibility shim in page context BEFORE the AI site's own scripts
@@ -980,6 +1008,7 @@ function notifyContextInvalid(): void {
 function checkContext(showNotice = false): boolean {
   if (isContextValid()) return true;
   document.querySelectorAll('[data-piercode-key]').forEach(el => el.remove());
+  clearLiveCardKeys();
   const btn = document.querySelector('button[style*="z-index:99999"]');
   if (btn) {
     (btn as HTMLButtonElement).disabled = true;
@@ -1300,6 +1329,7 @@ function bootstrapContentScript() {
 
   function mountInputListener() {
     const attachCurrentEditor = () => {
+      if (piercodeMasterDisabled) return;
       const editorEl = querySelectorFirst(getSiteConfig().editor);
       if (editorEl) attachInputListener(editorEl as HTMLElement);
     };
@@ -1399,6 +1429,12 @@ let tokenRefreshTimer: ReturnType<typeof setInterval> | null = null;
 // 立刻按当前 ctx + 阈值刷新状态面板小点。模块级，便于阈值变更后即时重画，
 // 不必等下一个 3s tick。
 function refreshTokenMeterNow(): void {
+  // Master switch off → do nothing. The visibilitychange listener below is never
+  // removed and statusPanel.setMeter re-creates the panel DOM when root===null,
+  // so without this guard a tab refocus AFTER the switch is turned off resurrects
+  // the destroyed status panel and resumes per-refocus scanConversation+computeMeter
+  // (the exact cost the master-switch teardown / audit #14 eliminated).
+  if (piercodeMasterDisabled) return;
   try {
     syncConversationStateForCurrentURL();
     const ctx = scanConversation();
@@ -1597,7 +1633,16 @@ function runSpawnBatchRecoverable(spawns: any[], onAccepted?: () => void): Promi
     };
 
     void (async () => {
-      const start = { type: 'CONTENT_SPAWN_AGENT', spawns, platform: platformProfile, batchKey };
+      // Carry this page's WS client id + conversation url so the SW's ChatGPT
+      // proxy→tab-worker fallback can ask the Go /exec spawn_agent to push
+      // open_worker_tab back to THIS dispatching page (the server routes that
+      // message by client id). Without it the fallback errors "no dispatcher
+      // client connected".
+      const start = {
+        type: 'CONTENT_SPAWN_AGENT', spawns, platform: platformProfile, batchKey,
+        dispatcherClientId: getPierCodeClientId(),
+        conversationUrl: observeConversationURL(),
+      };
       try {
         const resp = await chrome.runtime.sendMessage(start);
         if (!resp?.ok) {
@@ -1635,7 +1680,7 @@ function runSpawnBatchRecoverable(spawns: any[], onAccepted?: () => void): Promi
   });
 }
 
-async function executeToolCallReturn(toolCall: any, withGuidance = true): Promise<ToolExecutionResult> {
+async function executeToolCallReturn(toolCall: any, withGuidance = true, execKey?: string): Promise<ToolExecutionResult> {
   if (!checkContext(true)) return { output: '', stopStream: false, sendable: false };
   if (toolCall.name === 'question') {
     const q: string = toolCall.args?.question ?? '';
@@ -1662,7 +1707,16 @@ async function executeToolCallReturn(toolCall: any, withGuidance = true): Promis
     // re-detect this same spawn_agent fence and launch a SECOND batch — the
     // user-reported "refresh re-runs the sub-agent" bug. The SW owns/recovers the
     // first batch on its own, so once accepted, content must never relaunch it.
-    const dedupKey = spawnDedupKey(toolCall);
+    //
+    // Use the batch loop's own `execKey` when provided (the auto-exec path passes
+    // it). It must EXACTLY equal the key a post-refresh DOM rescan recomputes, or
+    // the early mark lands under a different key and the rescan relaunches a
+    // duplicate sub-agent. spawnDedupKey(toolCall) does NOT match in the no-call_id
+    // case: scheduleToBatch stamped a synthesized `ol_<hash>` callId onto this
+    // object via ensureToolCallId, so spawnDedupKey would take the call_id branch
+    // (`…:spawn_agent:ol_…`) while the rescan parses fresh (no callId) and uses the
+    // hash branch (`…:<toolDedupHash>`). Threading execKey keeps them identical.
+    const dedupKey = execKey || spawnDedupKey(toolCall);
     try {
       const results = await runSpawnBatchRecoverable([spawn], () => markExecuted(dedupKey));
       injectToolResult(maybeTruncate(formatToolResults(results)));
@@ -2229,7 +2283,7 @@ function startDOMObserver(_responseSelector: string) {
             const btnEl = cardEl?.querySelector('button') as HTMLButtonElement | null;
             if (btnEl) { btnEl.disabled = true; btnEl.textContent = '执行中...'; }
 
-            const { output, stopStream, sendable, alreadyInjected } = await executeToolCallReturn(toolCall, withGuidance);
+            const { output, stopStream, sendable, alreadyInjected } = await executeToolCallReturn(toolCall, withGuidance, key);
             if (sendable) {
               markExecuted(key);
               // Cache the result so an executed card orphaned by an SPA DOM
@@ -2399,7 +2453,6 @@ function startDOMObserver(_responseSelector: string) {
   async function scanText(text: string, sourceEl?: Element) {
     if (piercodeMasterDisabled) return;
     if (!isResponseSessionActive()) return;
-    const lower = text.toLowerCase();
 
     // Worker result-packet detection runs FIRST, before any platform-specific DOM
     // path that early-returns (Qwen `parsedQwenTool` return, Chat Z unconditional
@@ -2573,7 +2626,13 @@ function startDOMObserver(_responseSelector: string) {
     }
 
     // ── Phase 1: JSON 围栏格式（优先） ──
-    if (lower.includes('```piercode-tool') || lower.includes('```tool')) {
+    // Case-INSENSITIVE gate, matching the extractor (FENCE_OPEN_RE is /gi) and
+    // the Phase-2 XML gate (/<tool/i) — a mixed/upper-case fence tag otherwise
+    // passes the extractor's grammar but is rejected here and never extracted.
+    // A non-global regex .test() avoids allocating a full lowercase copy of the
+    // (growing) response on every scan, so the per-scan streaming cost the old
+    // case-sensitive includes optimized for is preserved.
+    if (FENCE_GATE_RE.test(text)) {
       // 花括号配对提取（extractFenceToolCalls）取代 FENCE_RE 整段匹配：FENCE_RE
       // 的非贪婪 body 在 args 字符串里的第一个 ``` 处截断（write_file 写 markdown
       // /代码文件必现），截断残尾还会被再匹配成"幽灵 fence"、解析成另一个工具。
@@ -2612,7 +2671,7 @@ function startDOMObserver(_responseSelector: string) {
     }
 
     // ── Phase 2: XML 格式（兼容回退） ──
-    if (lower.includes('<tool')) {
+    if (/<tool/i.test(text)) {
       TOOL_RE.lastIndex = 0;
       let match;
       while ((match = TOOL_RE.exec(text)) !== null) {
@@ -2961,6 +3020,12 @@ function startDOMObserver(_responseSelector: string) {
   }
 
   new MutationObserver(mutations => {
+    // Master switch off: bail before any per-mutation work (findResponseContainer
+    // / scanNode / echo scan). scanText's own guard stops tool detection, but the
+    // observer still fires per DOM mutation on a streaming page — this skips the
+    // wasted CPU the off-switch is meant to eliminate.
+    if (piercodeMasterDisabled) return;
+    let sawStructuralChange = false;
     for (const mutation of mutations) {
       if (mutation.type === 'characterData') {
         const container = findResponseContainer((mutation.target as Text).parentElement);
@@ -2972,11 +3037,14 @@ function startDOMObserver(_responseSelector: string) {
           }
         }
       } else {
+        sawStructuralChange = true;
         mutation.addedNodes.forEach(scanNode);
       }
     }
     // 工具结果回显（用户气泡里的 ### name #id 回填）→ 紧凑结果卡。节流 300ms。
-    scheduleResultEchoDecoration(platformAdapter.userSelector);
+    // 结果回填是新增节点（childList），不是 AI 流式打字（characterData）；纯
+    // characterData 批次不会产生新的工具结果气泡，跳过可省掉一轮全用户气泡扫描。
+    if (sawStructuralChange) scheduleResultEchoDecoration(platformAdapter.userSelector);
   }).observe(document.body, { childList: true, subtree: true, characterData: true });
 
   // Mark already-rendered history as out-of-scope. The TUI should only mirror
@@ -3047,41 +3115,58 @@ function initAttachmentLimitForPlatform(): number {
     case 'aistudio': return 0;
     // chatgpt's composer is a ProseMirror contenteditable filled via execCommand,
     // which takes long text without clipping (the same path large tool results go
-    // through every turn). Typing the init prompt inline is preferred there — the
-    // .txt-attachment indirection added a read-the-file hop and an upload that can
-    // fail, with no clipping problem to justify it. 0 = no wall, type it.
+    // through every turn). Type the init prompt inline — the .txt-attachment
+    // indirection added a read-the-file hop and an upload that can fail, with no
+    // clipping problem to justify it. 0 = no wall, type it.
     case 'chatgpt': return 0;
+    // qwen: type the init prompt in full, never upload it as an attachment. Qwen's
+    // file input is lazily mounted behind the ＋ menu, and the programmatic
+    // file-input/paste/drop injection "succeeds" (no throw) without Qwen's React
+    // actually registering the file — so the model got the "已作为附件上传" pointer
+    // for a file that was never attached. 0 = no wall → fillAndSend types it.
+    case 'qwen': return 0;
     default: return INIT_ATTACHMENT_THRESHOLD;
   }
 }
 
+let initPromptInFlight = false;
+
 async function sendInitPrompt() {
-  const prompt = await fetchInitPromptForCurrentProfile();
-  if (!prompt) { alert('获取初始化提示词失败'); return; }
+  if (initPromptInFlight) return;
+  initPromptInFlight = true;
+  const btn = document.querySelector<HTMLButtonElement>('[data-piercode-init-btn]');
+  if (btn) { btn.disabled = true; btn.textContent = '⌁ 初始化中…'; }
+  try {
+    const prompt = await fetchInitPromptForCurrentProfile();
+    if (!prompt) { alert('获取初始化提示词失败'); return; }
 
-  if (location.hostname.includes('aistudio.google.com')) {
-    await fillAiStudioSystemInstructions(prompt);
-    return;
-  }
-
-  // #8 init-context-too-long: if the prompt exceeds this platform's input wall,
-  // upload it as a .txt attachment (typed it would be truncated), then send a
-  // short pointer so the model reads the file. On any upload failure, fall back
-  // to typing the full prompt (best-effort).
-  if (shouldUploadInitAsAttachment(prompt, initAttachmentLimitForPlatform())) {
-    try {
-      await uploadInitPromptAsAttachment(prompt, 'piercode-init.txt');
-      await fillAndSend(
-        '初始化提示词较长，已作为附件 piercode-init.txt 上传。请先完整阅读该附件内容并据此初始化，然后按其中的握手要求回复。',
-        true,
-      );
+    if (location.hostname.includes('aistudio.google.com')) {
+      await fillAiStudioSystemInstructions(prompt);
       return;
-    } catch (err) {
-      console.warn('[PierCode] 初始化提示词附件上传失败，回退为直接输入:', err);
     }
-  }
 
-  fillAndSend(prompt, true);
+    // #8 init-context-too-long: if the prompt exceeds this platform's input wall,
+    // upload it as a .txt attachment (typed it would be truncated), then send a
+    // short pointer so the model reads the file. On any upload failure, fall back
+    // to typing the full prompt (best-effort).
+    if (shouldUploadInitAsAttachment(prompt, initAttachmentLimitForPlatform())) {
+      try {
+        await uploadInitPromptAsAttachment(prompt, 'piercode-init.txt');
+        await fillAndSend(
+          '初始化提示词较长，已作为附件 piercode-init.txt 上传。请先完整阅读该附件内容并据此初始化，然后按其中的握手要求回复。',
+          true,
+        );
+        return;
+      } catch (err) {
+        console.warn('[PierCode] 初始化提示词附件上传失败，回退为直接输入:', err);
+      }
+    }
+
+    fillAndSend(prompt, true);
+  } finally {
+    initPromptInFlight = false;
+    if (btn) { btn.disabled = false; btn.textContent = '⌁ 初始化'; }
+  }
 }
 
 async function fillAiStudioSystemInstructions(prompt: string) {
@@ -3401,10 +3486,16 @@ function bootstrapGate() {
       if (changes.extensionEnabled.newValue !== false) {
         if (started) {
           piercodeMasterDisabled = false;
+          // SYNCHRONOUS restore, mirroring the synchronous setSystemReminderEnabled(false)
+          // on switch-off below. Without this, the flip back on relies solely on
+          // user-send-reminder's own async storage.onChanged listener — a send-press
+          // or tool exec in that gap would still carry no [系统提示]/with_guidance:false.
+          try { setSystemReminderEnabled(true); } catch {}
           try {
             statusPanel.init();
             statusPanel.setProvider(platformAdapter.name, platformProfile);
           } catch {}
+          try { injectInitButton(); } catch {}     // 重新插入 ⌁初始化 按钮（停用时被移除的），否则要刷新才回
           try { startTokenRefresh(); } catch {}   // 恢复 3s 令牌刷新（停用时停掉的）
           console.log('[PierCode] 总开关已开启，恢复运行');
         } else {
@@ -3412,13 +3503,25 @@ function bootstrapGate() {
         }
       } else {
         piercodeMasterDisabled = true;
+        // SYNCHRONOUS: kill the user-message [系统提示] append + tool with_guidance
+        // immediately. The reminder module's own async storage listener also fires,
+        // but a send-press in the gap before it resolves would still append — this
+        // flips the flag with no round-trip. (Fixes: switch off but messages still
+        // carry the reminder.)
+        try { setSystemReminderEnabled(false); } catch {}
         try { statusPanel.destroy(); } catch {}
         try { visualIndicator.hideAllIndicators(); } catch {}
         try { document.querySelectorAll('[data-piercode-init-btn]').forEach(el => el.remove()); } catch {}
+        // 已渲染的工具卡片 + liveCardKeys 内存态一并清（同 checkContext 失败路径），
+        // 否则关总开关后卡片残留在页面上，跟"上下文失效"分支行为不一致。
+        try {
+          document.querySelectorAll('[data-piercode-key]').forEach(el => el.remove());
+          clearLiveCardKeys();
+        } catch {}
         // 停掉持续后台定时器，别让停用后仍 3s 一跑（审计 #14）。DOM MutationObserver
         // 由 scanText 顶部的 piercodeMasterDisabled 早退兜底（不再检测/执行工具）。
         try { stopTokenRefresh(); } catch {}
-        console.log('[PierCode] 总开关已关闭，插件停用（已渲染的卡片刷新页面后清除）');
+        console.log('[PierCode] 总开关已关闭，插件停用');
       }
     });
   } catch {
@@ -3461,7 +3564,15 @@ function isTopFrame(): boolean {
 }
 if (isTopFrame()) {
   bootstrapGate();
-} else if (isBrowserAgentFrame()) {
+} else if (isBrowserAgentFrame() && hasBrowserAgentSentinel()) {
+  // Require the EXPLICIT ?piercode_browser_agent= sentinel, symmetric with the
+  // offscreen-relay gate above (isOffscreenHostedFrame also uses the sentinel).
+  // isBrowserAgentFrame() alone falls back to host, so a bare offscreen qwen
+  // relay iframe (https://chat.qwen.ai/, no sentinel) would ALSO match and run
+  // a full second bootstrap — StatusPanel + init button + a 3s token-refresh +
+  // forced-autoExecute DOM observer — inside a frame that should only relay
+  // fetches. The sentinel check confines this branch to the real sidebar AI
+  // iframe.
   // 侧边栏内嵌的 AI iframe（chatgpt.com / chat.qwen.ai 带 ?piercode_browser_agent=）。
   // 新模型：iframe 跑**与顶层 AI 页完全相同**的 content bootstrap（DOM 观察 + scanText +
   // autoExecute + StatusPanel + 初始化按钮），用户在 AI 自己的输入框说话，AI 吐

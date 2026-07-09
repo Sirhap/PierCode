@@ -1,3 +1,4 @@
+import { attachCompletionDetection } from './completion';
 import { pushPierCodeTool } from './shared';
 import type { PlatformAdapter } from './types';
 
@@ -5,6 +6,8 @@ export const kimiAdapter: PlatformAdapter = {
   name: 'kimi',
   match: () => location.hostname.includes('kimi.com'),
   newSessionUrl: () => `${location.protocol}//${location.host}/`,
+  // #15: batch a multi-tool turn's results into one reply — see claude.ts.
+  ...attachCompletionDetection(),
   responseSelector: '.segment-assistant',
   extractText: (el: Element, buf: string[]): boolean => {
     const classAttr = el.getAttribute('class') || '';
