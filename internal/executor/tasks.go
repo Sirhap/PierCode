@@ -554,21 +554,6 @@ func (m *TaskManager) run(ctx context.Context, t *Task, spec tool.TaskSpec) {
 		}
 	}()
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		finish(-1, fmt.Sprintf("stdout pipe: %v", err), TaskFailed)
-		return
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		finish(-1, fmt.Sprintf("stderr pipe: %v", err), TaskFailed)
-		return
-	}
-	if err := cmd.Start(); err != nil {
-		finish(-1, fmt.Sprintf("start: %v", err), TaskFailed)
-		return
-	}
-
 	// Wrap OnChunk so both the per-task subscriber and the global fanout
 	// receive every chunk. Either may be nil.
 	onChunk := func(stream, text string) {
@@ -578,24 +563,23 @@ func (m *TaskManager) run(ctx context.Context, t *Task, spec tool.TaskSpec) {
 		m.fanoutChunk(t.ID, t.CallID, stream, text)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go m.pumpStream(t, "stdout", stdout, onChunk, &wg)
-	go m.pumpStream(t, "stderr", stderr, onChunk, &wg)
+	// Give os/exec writers instead of calling StdoutPipe/StderrPipe. Wait closes
+	// those pipes as soon as the process exits, which can race a pump goroutine
+	// and drop output from short-lived commands on Linux. With writers, Wait
+	// owns and joins the copy goroutines; ConfigureCommand's WaitDelay still
+	// bounds commands whose descendants inherit and hold the OS pipes open.
+	stdoutWriter := newTaskStreamWriter(t, "stdout", onChunk)
+	stderrWriter := newTaskStreamWriter(t, "stderr", onChunk)
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
+	if err := cmd.Start(); err != nil {
+		finish(-1, fmt.Sprintf("start: %v", err), TaskFailed)
+		return
+	}
 
-	// Reap the process BEFORE draining the pumps, not after. cmd.Wait() closes
-	// the stdout/stderr read ends once the MAIN process exits (the WaitDelay
-	// grace set in ConfigureCommand lets buffered output drain first, so normal
-	// output isn't truncated). A command that double-forks / setsid's a daemon
-	// leaves that grandchild holding the pipe WRITE end open after the main
-	// process exits — it escaped the process group, so Cancel()'s SIGKILL can't
-	// reach it and the pipe never EOFs on its own. The old order (wg.Wait()
-	// first) let the pumps block forever on that never-closing pipe, so
-	// cmd.Wait() — the only thing that force-closes the pipes — was never
-	// reached: the task stayed "running" and task_stop could never reclaim it.
-	// Reaping first lets that forced close unblock the stuck pumps.
 	waitErr := cmd.Wait()
-	wg.Wait()
+	stdoutWriter.Flush()
+	stderrWriter.Flush()
 	exitCode := 0
 	errMsg := ""
 	status := TaskDone
@@ -619,6 +603,66 @@ func (m *TaskManager) run(ctx context.Context, t *Task, spec tool.TaskSpec) {
 	}
 
 	finish(exitCode, errMsg, status)
+}
+
+// taskStreamWriter preserves streaming callbacks while allowing os/exec to
+// manage pipe lifetime. A writer is used by one exec copy goroutine, but the
+// mutex keeps Flush safe if task execution is refactored to call it earlier.
+type taskStreamWriter struct {
+	mu      sync.Mutex
+	task    *Task
+	stream  string
+	onChunk func(string, string)
+	pending []byte
+}
+
+// newTaskStreamWriter creates an output sink for one command stream.
+func newTaskStreamWriter(t *Task, stream string, onChunk func(string, string)) *taskStreamWriter {
+	return &taskStreamWriter{task: t, stream: stream, onChunk: onChunk}
+}
+
+// Write stores and publishes complete UTF-8 sequences from a command stream.
+func (w *taskStreamWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	inputLen := len(data)
+	combined := data
+	if len(w.pending) > 0 {
+		combined = append(append([]byte(nil), w.pending...), data...)
+		w.pending = nil
+	}
+	emit, leftover := splitOnUTF8Boundary(combined)
+	w.pending = append(w.pending[:0], leftover...)
+	w.emitLocked(emit)
+	return inputLen, nil
+}
+
+// Flush publishes an incomplete trailing sequence after command completion.
+func (w *taskStreamWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.emitLocked(w.pending)
+	w.pending = nil
+}
+
+// emitLocked appends a decoded chunk and synchronously notifies subscribers.
+func (w *taskStreamWriter) emitLocked(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	chunk := procutil.DecodeCommandOutput(data)
+	w.task.mu.Lock()
+	switch w.stream {
+	case "stdout":
+		w.task.stdoutBuf = appendBounded(w.task.stdoutBuf, []byte(chunk))
+	case "stderr":
+		w.task.stderrBuf = appendBounded(w.task.stderrBuf, []byte(chunk))
+	}
+	w.task.mu.Unlock()
+	if w.onChunk != nil {
+		w.onChunk(w.stream, chunk)
+	}
 }
 
 func (m *TaskManager) pumpStream(t *Task, stream string, r io.ReadCloser, onChunk func(string, string), wg *sync.WaitGroup) {
