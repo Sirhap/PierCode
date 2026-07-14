@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+let asyncErrors: string[] = [];
+let onError: ((event: ErrorEvent) => void) | null = null;
+let onUnhandledRejection: ((event: PromiseRejectionEvent) => void) | null = null;
+let consoleErrorSpy: ReturnType<typeof vi.spyOn> | null = null;
+
 // Regression: content/index.ts top-level offscreen-relay block (entered when the
 // frame is a qwen subframe WITHOUT the browser-agent sentinel — i.e. the hidden
 // offscreen bx-ua iframe) calls injectPageBridge() during module eval. That
@@ -15,6 +20,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 describe('content/index.ts module eval in an offscreen-hosted qwen frame', () => {
   beforeEach(() => {
     vi.resetModules();
+    asyncErrors = [];
+    onError = event => {
+      asyncErrors.push(String(event.error?.message || event.message || event));
+    };
+    onUnhandledRejection = event => {
+      asyncErrors.push(String((event.reason as any)?.message || event.reason || event));
+    };
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      asyncErrors.push(args.map(String).join(' '));
+    });
     // Make isOffscreenHostedFrame() true: a qwen subframe (parent !== self) with
     // NO ?piercode_browser_agent= sentinel (so it is treated as the offscreen
     // frame, not the side-panel browser-agent frame).
@@ -42,6 +59,12 @@ describe('content/index.ts module eval in an offscreen-hosted qwen frame', () =>
   });
 
   afterEach(() => {
+    if (onError) window.removeEventListener('error', onError);
+    if (onUnhandledRejection) window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    consoleErrorSpy?.mockRestore();
+    onError = null;
+    onUnhandledRejection = null;
+    consoleErrorSpy = null;
     delete (globalThis as any).chrome;
     vi.resetModules();
   });
@@ -49,5 +72,7 @@ describe('content/index.ts module eval in an offscreen-hosted qwen frame', () =>
   it('does not throw a temporal-dead-zone error on pageBridgeInjected', async () => {
     // A throw here (TDZ on pageBridgeInjected) would reject the dynamic import.
     await expect(import('../content/index')).resolves.toBeDefined();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(asyncErrors).toEqual([]);
   });
 });

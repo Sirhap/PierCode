@@ -6,6 +6,7 @@ const AI_PAGE_HOSTS = [
   'gemini.google.com', 'aistudio.google.com', 'qwen.ai', 'qwenlm.ai',
   'chat.z.ai', 'kimi.com', 'claude.ai', 'free.easychat.top',
   'aistudio.xiaomimimo.com', 'chatgpt.com', 'chat.openai.com',
+  'ultraspeed.xiaomimimo.com',
 ]
 const SENSITIVE_HOST_PATTERNS = ['bank', 'alipay', 'paypal']
 const SENSITIVE_PATH_KEYWORDS = [

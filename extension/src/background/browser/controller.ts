@@ -853,21 +853,23 @@ export function makeController(deps: ControllerDeps = {}) {
       const t0 = Date.now()
       const results: TestStepResult[] = []
       let passed = 0, failed = 0
+      let currentTabId = typeof args.tabId === 'number' ? args.tabId : undefined
       for (let i = 0; i < parsed.length; i++) {
         const step = parsed[i]
         const input: Record<string, unknown> = { ...step.input }
-        if (typeof args.tabId === 'number' && input.tabId === undefined) input.tabId = args.tabId
+        if (typeof currentTabId === 'number' && input.tabId === undefined) input.tabId = currentTabId
         const s0 = Date.now()
         const r = await dispatchRef(step.name, input, '', opts)
         const ms = Date.now() - s0
         if (r.success) {
           passed++
           results.push({ index: i + 1, tool: step.name, status: 'pass', ms })
+          currentTabId = extractStepTabId(step.name, r.output) ?? (typeof input.tabId === 'number' ? input.tabId : currentTabId)
           // Settle after steps that plausibly mutated the page, so the next
           // step / assert doesn't race the render. A quiet page resolves in
           // ~quietMs, so this costs little on read-only-ish steps too.
           if (settleBetween && !NO_SETTLE_TOOLS.has(step.name)) {
-            try { await waitStableInner({ tabId: input.tabId as number | undefined }, 250, 1500) } catch { /* settle is best-effort */ }
+            try { await waitStableInner({ tabId: currentTabId }, 250, 1500) } catch { /* settle is best-effort */ }
           }
         } else {
           failed++
@@ -889,7 +891,7 @@ export function makeController(deps: ControllerDeps = {}) {
       if (failed > 0) {
         // Failure artifacts: page URL + console tail (best-effort).
         try {
-          const tab = await ensureTab({ tabId: args.tabId })
+          const tab = await ensureTab({ tabId: currentTabId ?? args.tabId })
           const t = await chrome.tabs.get(tab.tabId)
           report.pageUrl = t.url || ''
           report.consoleTail = events.readConsole(tab.tabId).slice(-6).map(m => `[${m.level}] ${m.text}`)
@@ -1089,6 +1091,20 @@ function safeRegex(pattern?: string): RegExp | null {
   if (!pattern) return null
   try { return new RegExp(pattern) } catch { return null }
 }
+
+function extractStepTabId(tool: string, output: string): number | undefined {
+  if (!TAB_RESULT_TOOLS.has(tool)) return undefined
+  const m = String(output || '').match(/\btabId=(\d+)\b|\btab\s+(\d+)\b/)
+  const raw = m?.[1] || m?.[2]
+  if (!raw) return undefined
+  const id = Number(raw)
+  return Number.isFinite(id) && id > 0 ? id : undefined
+}
+
+const TAB_RESULT_TOOLS = new Set([
+  'browser_click', 'browser_type', 'browser_new_tab', 'browser_use_tab',
+  'browser_navigate', 'browser_reload', 'browser_reset_page',
+])
 
 // browser_test inter-step settle skips tools that don't mutate the page —
 // pure reads and the wait tools themselves (settling after a wait is a no-op

@@ -207,6 +207,24 @@ func TestReplace(t *testing.T) {
 	})
 }
 
+func TestLevenshteinSimilarityUsesRuneLength(t *testing.T) {
+	a := "删除订单状态"
+	b := "保留订单状态"
+	dist := levenshtein(a, b)
+	byteLen := len(a)
+	if len(b) > byteLen {
+		byteLen = len(b)
+	}
+	byteSimilarity := 1 - float64(dist)/float64(byteLen)
+	runeSimilarity := lineSimilarity(a, b)
+	if byteSimilarity < singleCandidateSimilarityThreshold {
+		t.Fatalf("test setup should demonstrate the old byte-length bug, got %.3f", byteSimilarity)
+	}
+	if runeSimilarity >= singleCandidateSimilarityThreshold {
+		t.Fatalf("rune-length similarity should reject unrelated CJK lines: %.3f", runeSimilarity)
+	}
+}
+
 func TestEditPreservesCRLFLineEndings(t *testing.T) {
 	// Files authored on Windows arrive as CRLF. replace() works on
 	// LF-normalized content, but the on-disk file must keep its original

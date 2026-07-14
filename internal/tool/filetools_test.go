@@ -283,6 +283,14 @@ func TestGlobTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(cfg.RootDir, "sub", "nested.go"), []byte(""), 0644)
+	if err := os.MkdirAll(filepath.Join(cfg.RootDir, "src", "pkg"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.RootDir, "src2"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(cfg.RootDir, "src", "pkg", "inside.go"), []byte(""), 0644)
+	os.WriteFile(filepath.Join(cfg.RootDir, "src2", "outside.go"), []byte(""), 0644)
 
 	g := NewGlobTool(cfg)
 
@@ -306,6 +314,19 @@ func TestGlobTool(t *testing.T) {
 		res := g.Execute(testCtx(cfg, map[string]interface{}{"pattern": "*.rs"}))
 		if res.Output != "No files found" {
 			t.Errorf("got %q", res.Output)
+		}
+	})
+
+	t.Run("recursive prefix does not match sibling prefix", func(t *testing.T) {
+		res := g.Execute(testCtx(cfg, map[string]interface{}{"pattern": "src/**/*.go"}))
+		if res.Status != "success" {
+			t.Fatal(res.Error)
+		}
+		if !strings.Contains(res.Output, "src/pkg/inside.go") {
+			t.Fatalf("expected src match, got %q", res.Output)
+		}
+		if strings.Contains(res.Output, "src2/outside.go") {
+			t.Fatalf("recursive prefix leaked sibling path: %q", res.Output)
 		}
 	})
 }

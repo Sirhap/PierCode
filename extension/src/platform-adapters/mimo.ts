@@ -4,7 +4,7 @@ import type { PlatformAdapter } from './types';
 
 export const mimoAdapter: PlatformAdapter = {
   name: 'mimo',
-  match: () => location.hostname.includes('aistudio.xiaomimimo.com'),
+  match: () => location.hostname.includes('xiaomimimo.com'),
   newSessionUrl: () => `${location.protocol}//${location.host}/`,
   // #15: Mimo's send and stop share one button (told apart only by an inner SVG
   // viewBox), so completion is easy to misjudge — gate on the stop control going

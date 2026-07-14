@@ -124,7 +124,7 @@ export function selectorsForHost(host: string): PlatformSelectors {
   if (host.includes('chatgpt.com') || host.includes('chat.openai.com')) return PLATFORM_SELECTORS.chatgpt;
   if (host.includes('gemini.google.com')) return PLATFORM_SELECTORS.gemini;
   if (host.includes('qwen.ai') || host.includes('qwenlm.ai')) return PLATFORM_SELECTORS.qwen;
-  if (host.includes('aistudio.xiaomimimo.com')) return PLATFORM_SELECTORS.mimo;
+  if (host.includes('aistudio.xiaomimimo.com') || host.includes('ultraspeed.xiaomimimo.com')) return PLATFORM_SELECTORS.mimo;
   // Default: AI Studio (aistudio.google.com and anything else).
   return PLATFORM_SELECTORS.aistudio;
 }

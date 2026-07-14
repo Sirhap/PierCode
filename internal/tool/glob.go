@@ -102,8 +102,8 @@ func (t *GlobTool) Execute(ctx *Context) *Result {
 			if matched && prefixDir != "" {
 				rel, _ := filepath.Rel(safePath, p)
 				relDir := filepath.Dir(rel)
-				if relDir != "." && !strings.HasPrefix(relDir, prefixDir) &&
-					relDir != prefixDir {
+				if relDir != "." && relDir != prefixDir &&
+					!strings.HasPrefix(relDir, prefixDir+string(filepath.Separator)) {
 					matched = false
 				}
 			}

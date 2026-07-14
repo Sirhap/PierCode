@@ -10,6 +10,7 @@ const AI_PAGE_HOSTS = [
   'aistudio.xiaomimimo.com',
   'chatgpt.com',
   'chat.openai.com',
+  'ultraspeed.xiaomimimo.com',
 ];
 
 export function browserRelayWsUrl(apiUrl: string, token: string): string | null {

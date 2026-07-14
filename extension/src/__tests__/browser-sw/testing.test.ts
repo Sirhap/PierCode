@@ -6,7 +6,11 @@ beforeEach(() => {
     debugger: { sendCommand: vi.fn(), attach: vi.fn(async () => {}) },
     tabs: {
       query: vi.fn(async () => [{ id: 1, url: 'https://x.com/page', title: 'X Page' }]),
-      get: vi.fn(async () => ({ id: 1, url: 'https://x.com/page', title: 'X Page' })),
+      get: vi.fn(async (tabId: number) => ({
+        id: tabId,
+        url: tabId === 42 ? 'https://example.com/' : 'https://x.com/page',
+        title: tabId === 42 ? 'Example Domain' : 'X Page',
+      })),
     },
     runtime: { sendMessage: vi.fn() },
   }
@@ -210,6 +214,59 @@ describe('controller.test (scripted runner)', () => {
     })
     expect(calls[0].opts.skipApproval).toBe(true)
     expect(calls[0].args.tabId).toBe(7)
+  })
+
+  it('carries browser_new_tab tabId into later steps', async () => {
+    const { ctl, calls } = await makeHarness(name =>
+      name === 'browser_new_tab'
+        ? { output: 'opened tabId=42 url=https://example.com/', success: true }
+        : { output: 'ok', success: true })
+    const out = await ctl.test({
+      steps: [
+        { name: 'browser_new_tab', input: { url: 'https://example.com/' } },
+        { name: 'browser_assert', input: { kind: 'title', expect: 'Example Domain' } },
+        { name: 'browser_get_page_text', input: { maxChars: 200 } },
+      ],
+    })
+    expect(out).toContain('result: PASS')
+    expect(calls[0].args.tabId).toBeUndefined()
+    expect(calls[1].args.tabId).toBe(42)
+    expect(calls[2].args.tabId).toBe(42)
+  })
+
+  it('does not infer tabId from arbitrary read output text', async () => {
+    const { ctl, calls } = await makeHarness(name =>
+      name === 'browser_get_page_text'
+        ? { output: 'This document mentions tab 42 but it is page content.', success: true }
+        : { output: 'ok', success: true })
+    const out = await ctl.test({
+      tabId: 7,
+      steps: [
+        { name: 'browser_get_page_text', input: { maxChars: 200 } },
+        { name: 'browser_assert', input: { kind: 'title', expect: 'Still current' } },
+      ],
+    })
+    expect(out).toContain('result: PASS')
+    expect(calls[0].args.tabId).toBe(7)
+    expect(calls[1].args.tabId).toBe(7)
+  })
+
+  it('reports failure artifacts from the inherited current tab', async () => {
+    const { ctl } = await makeHarness(name =>
+      name === 'browser_new_tab'
+        ? { output: 'opened tabId=42 url=https://example.com/', success: true }
+        : { output: 'ASSERT FAIL: title — expected Missing; actual Example Domain', success: false })
+    ctl.events.recordConsole(42, { level: 'error', text: 'example failure' })
+    const out = await ctl.test({
+      name: 'new-tab failure',
+      steps: [
+        { name: 'browser_new_tab', input: { url: 'https://example.com/' } },
+        { name: 'browser_assert', input: { kind: 'title', expect: 'Missing' } },
+      ],
+    })
+    expect(out).toContain('result: FAIL')
+    expect(out).toContain('page: https://example.com/')
+    expect(out).toContain('[error] example failure')
   })
 
   it('batch forwards __skipApproval to sub-calls too', async () => {

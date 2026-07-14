@@ -46,6 +46,7 @@ docs/.jekyll-metadata
 .claude/
 .todos.json
 .piercode/
+.mimocode/
 .playwright-mcp/
 release-packages/
 release/

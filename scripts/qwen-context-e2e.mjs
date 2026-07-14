@@ -11,6 +11,17 @@ const summaryTokens = Number(process.env.PIERCODE_QWEN_E2E_SUMMARY_TOKENS || '65
 const toolTimeoutMs = Number(process.env.PIERCODE_QWEN_E2E_TOOL_TIMEOUT_MS || '150000');
 const fillAndSendTimeoutMs = Number(process.env.PIERCODE_QWEN_E2E_FILL_TIMEOUT_MS || '120000');
 const callId = `post_compress_list_dir_${Date.now()}`;
+const SW_DIRECT_DISABLED_RE = /SW_DIRECT_BROWSER=false|Go relay path is disabled|service worker now/i;
+
+function swDirectRelayError(name, message) {
+  return [
+    `${name} failed: ${message}`,
+    '',
+    'scripts/qwen-context-e2e.mjs still executes browser_* through the deprecated Go→WS relay.',
+    'The current extension executes browser_* tools in the service worker (SW-direct),',
+    'so this script needs to be ported before it can validate the active browser path.',
+  ].join('\n');
+}
 
 if (!apiUrl || !token) {
   throw new Error('qwen-context-e2e requires PIERCODE_API_URL and PIERCODE_TOKEN for an already-running PierCode backend.');
@@ -32,7 +43,7 @@ try {
     console.warn('qwen-context-e2e: PIERCODE_EXTENSION_ID not set; assuming extension is already configured with low threshold.');
   }
 
-  await step('wait for real Chrome relay', async () => {
+  await step('wait for installed extension connection', async () => {
     const stats = await waitForStats(stats => Number(stats.browser_relays || 0) > 0);
     if (!stats.browser_providers?.Extension) throw new Error(`Extension provider missing: ${JSON.stringify(stats)}`);
     return stats;
@@ -310,7 +321,13 @@ async function execTool(name, args) {
   }
   if (!response.ok) throw new Error(`${name} HTTP ${response.status}: ${await response.text()}`);
   const body = await response.json();
-  if (body.status !== 'success') throw new Error(`${name} failed: ${body.error || body.output || JSON.stringify(body)}`);
+  if (body.status !== 'success') {
+    const message = body.error || body.output || JSON.stringify(body);
+    if (SW_DIRECT_DISABLED_RE.test(String(message))) {
+      throw new Error(swDirectRelayError(name, message));
+    }
+    throw new Error(`${name} failed: ${message}`);
+  }
   return body;
 }
 

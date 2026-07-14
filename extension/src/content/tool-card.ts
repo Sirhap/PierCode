@@ -259,6 +259,7 @@ export function isToolCardLive(key: string): boolean {
     // without us observing it). If gone, drop the stale key so a re-render fires.
     if (document.querySelector(`[data-piercode-key="${CSS.escape(key)}"]`)) return true;
     liveCardKeys.delete(key);
+    console.log('[PierCode] isToolCardLive: 卡片已从DOM消失, key=', key);
     return false;
   }
   // Cold path: not in the registry (e.g. card rendered before this module
@@ -341,11 +342,12 @@ export function renderExecutedCard(data: any, sourceEl: Element, key: string): b
   data = ensureToolCallId(data, key);
   // Already live (e.g. a prior executed-card render) → nothing to do.
   if (isToolCardLive(key)) return true;
+  console.log('[PierCode] renderExecutedCard: 重新渲染只读卡, key=', key);
 
   const blockEl = findToolBlockElement(sourceEl, data);
   const messageContent = sourceEl.closest('message-content') ?? sourceEl.closest('.prose') ?? sourceEl;
   const anchor = blockEl?.parentElement ?? messageContent.parentElement ?? sourceEl.parentElement;
-  if (!anchor) return false;
+  if (!anchor) { console.log('[PierCode] renderExecutedCard: 无锚点, key=', key); return false; }
 
   // A previously-decorated block whose card was orphaned: clear the stale flag so
   // the block-hide below re-applies to the rebuilt node.
@@ -423,9 +425,9 @@ export function renderExecutedCard(data: any, sourceEl: Element, key: string): b
     anchor.insertBefore(card, messageContent);
   }
   liveCardKeys.add(key);
+  console.log('[PierCode] renderExecutedCard: 只读卡已渲染, key=', key);
   return true;
 }
-
 /** Returns true when a card for `key` is present in the DOM after this call
  *  (either freshly inserted or already there), false when it bailed without one
  *  (no anchor, or the anchor vanished). Callers MUST only burn the dedup key on
@@ -441,10 +443,10 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
   // Find stable anchor: message-content's parent, which Angular doesn't rebuild
   const messageContent = sourceEl.closest('message-content') ?? sourceEl.closest('.prose') ?? sourceEl;
   const anchor = blockEl?.parentElement ?? messageContent.parentElement ?? sourceEl.parentElement;
-  if (!anchor) return false;
+  if (!anchor) { console.log('[PierCode] renderToolCard: 无锚点, key=', key); return false; }
 
   // Card already exists (anywhere) → nothing to do, key stays burned.
-  if (isToolCardLive(key)) return true;
+  if (isToolCardLive(key)) { console.log('[PierCode] renderToolCard: 卡片已存在, key=', key); return true; }
   // The block was decorated but its card is gone (SPA rebuilt the node and the
   // card was orphaned with the old <pre>). Re-decorate: clear the stale flag and
   // fall through to insert a fresh card.
@@ -882,5 +884,6 @@ export function renderToolCard(data: any, _full: string, sourceEl: Element, key:
     anchor.insertBefore(card, messageContent);
   }
   liveCardKeys.add(key);
+  console.log('[PierCode] renderToolCard: 卡片已渲染, key=', key);
   return true;
 }

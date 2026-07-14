@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"regexp"
 	"sort"
@@ -285,6 +284,20 @@ func levenshtein(a, b string) int {
 	return matrix[len(ra)][len(rb)]
 }
 
+func lineSimilarity(a, b string) float64 {
+	ra := []rune(a)
+	rb := []rune(b)
+	maxLen := len(ra)
+	if len(rb) > maxLen {
+		maxLen = len(rb)
+	}
+	if maxLen == 0 {
+		return 1.0
+	}
+	dist := levenshtein(a, b)
+	return 1 - float64(dist)/float64(maxLen)
+}
+
 func min3(a, b, c int) int {
 	if a < b {
 		if a < c {
@@ -421,12 +434,10 @@ func BlockAnchorReplacer(content, find string) []string {
 			for j := 1; j < searchBlockSize-1 && j < actualBlockSize-1; j++ {
 				origLine := strings.TrimSpace(originalLines[c.startLine+j])
 				srchLine := strings.TrimSpace(searchLines[j])
-				maxLen := math.Max(float64(len(origLine)), float64(len(srchLine)))
-				if maxLen == 0 {
+				if len([]rune(origLine)) == 0 && len([]rune(srchLine)) == 0 {
 					continue
 				}
-				dist := levenshtein(origLine, srchLine)
-				similarity += (1 - float64(dist)/maxLen) / float64(linesToCheck)
+				similarity += lineSimilarity(origLine, srchLine) / float64(linesToCheck)
 				if similarity >= singleCandidateSimilarityThreshold {
 					break
 				}
@@ -456,12 +467,10 @@ func BlockAnchorReplacer(content, find string) []string {
 			for j := 1; j < searchBlockSize-1 && j < actualBlockSize-1; j++ {
 				origLine := strings.TrimSpace(originalLines[c.startLine+j])
 				srchLine := strings.TrimSpace(searchLines[j])
-				maxLen := math.Max(float64(len(origLine)), float64(len(srchLine)))
-				if maxLen == 0 {
+				if len([]rune(origLine)) == 0 && len([]rune(srchLine)) == 0 {
 					continue
 				}
-				dist := levenshtein(origLine, srchLine)
-				similarity += 1 - float64(dist)/maxLen
+				similarity += lineSimilarity(origLine, srchLine)
 			}
 			similarity /= float64(linesToCheck)
 		} else {

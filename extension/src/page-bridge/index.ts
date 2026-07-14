@@ -45,6 +45,7 @@ const KEEP_ALIVE_HOSTS = [
   'gemini.google.com', 'aistudio.google.com',
   'kimi.com', 'chat.z.ai',
   'aistudio.xiaomimimo.com',
+  'ultraspeed.xiaomimimo.com',
 ];
 
 function installKeepAliveVisibilityShim(): void {

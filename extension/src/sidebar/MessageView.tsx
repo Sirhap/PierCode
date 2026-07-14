@@ -100,6 +100,18 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
+function safeMarkdownHref(raw: string): string | null {
+  const trimmed = raw.trim()
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return null
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'mailto:') return trimmed
+  } catch {
+    return null
+  }
+  return null
+}
+
 export function renderMarkdown(text: string): string {
   if (!text) return ''
   let src = text.replace(/\r\n/g, '\n')
@@ -131,7 +143,12 @@ export function renderMarkdown(text: string): string {
   src = src.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
   src = src.replace(/\*(.+?)\*/g, '<em>$1</em>')
   src = src.replace(/~~(.+?)~~/g, '<del>$1</del>')
-  src = src.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+  src = src.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, href) => {
+    const safeHref = safeMarkdownHref(href)
+    return safeHref
+      ? `<a href="${escapeHtml(safeHref)}" target="_blank" rel="noopener">${label}</a>`
+      : `${label} (${href})`
+  })
   src = src.replace(/`([^`]+)`/g, '<code>$1</code>')
   src = src.replace(/\n\n+/g, '</p><p>')
   src = src.replace(/\n/g, '<br/>')

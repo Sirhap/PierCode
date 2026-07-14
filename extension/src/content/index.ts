@@ -246,7 +246,7 @@ function isOffscreenHostedFrame(): boolean {
     // NOT use isBrowserAgentFrame() here — its host fallback (subframe + qwen.ai
     // host ⇒ 'qwen') would ALSO match the offscreen frame and break qwen bx-ua.
     if (hasBrowserAgentSentinel()) return false;
-    return window.parent !== window && /(^|\.)qwen\.ai$/.test(location.hostname);
+    return window.parent !== window && /(^|\.)qwen\.ai$/.test(window.location.hostname);
   } catch {
     return false;
   }
@@ -1165,7 +1165,7 @@ function getSiteConfig(): SiteConfig {
   // Selector strings/order live in the PLATFORM_SELECTORS table (single source of
   // truth); this builder applies the runtime-only bits: the adapter override and
   // the AI-Studio stopBtnMatch callback when CSS can't express the stop state.
-  const base = selectorsForHost(location.hostname);
+  const base = selectorsForHost(window.location.hostname);
   return {
     editor: base.editor,
     sendBtn: base.sendBtn,
@@ -1473,8 +1473,8 @@ function getConversationId(): string {
   // already-executed tools (the old pathname-derived id changed across the flip).
   const key = getConversationKey();
   if (key) return key;
-  const m = location.pathname.match(/\/(?:chat|c)\/([^/?#]+)/) || location.search.match(/[?&]id=([^&]+)/);
-  return m ? m[1] : `${location.hostname}${location.pathname}${location.search}`;
+  const m = window.location.pathname.match(/\/(?:chat|c)\/([^/?#]+)/) || window.location.search.match(/[?&]id=([^&]+)/);
+  return m ? m[1] : `${window.location.hostname}${window.location.pathname}${window.location.search}`;
 }
 
 function scopedExecutionKey(key: string): string {
@@ -1540,7 +1540,7 @@ async function executeToolCallRaw(toolCall: any): Promise<string | null> {
   if (typeof toolCall.name === 'string' && toolCall.name.startsWith('browser_')) {
     const callId = getToolCallId(toolCall);
     const r: any = await new Promise(res => chrome.runtime.sendMessage(
-      { type: 'EXEC_BROWSER_TOOL', name: toolCall.name, args: toolCall.args || {}, callId, conversationUrl: location.href },
+      { type: 'EXEC_BROWSER_TOOL', name: toolCall.name, args: toolCall.args || {}, callId, conversationUrl: window.location.href },
       res));
     if (!r) return '[PierCode] 浏览器工具无响应';
     const out = r.output || r.error || '[PierCode] 空响应';
@@ -1738,7 +1738,7 @@ async function executeToolCallReturn(toolCall: any, withGuidance = true, execKey
     if (!checkContext(true)) return { output: '', stopStream: false, sendable: false };
     const callId = getToolCallId(toolCall);
     const r: any = await new Promise(res => chrome.runtime.sendMessage(
-      { type: 'EXEC_BROWSER_TOOL', name: toolCall.name, args: toolCall.args || {}, callId, conversationUrl: location.href },
+      { type: 'EXEC_BROWSER_TOOL', name: toolCall.name, args: toolCall.args || {}, callId, conversationUrl: window.location.href },
       res));
     if (!r) return { output: '[PierCode] 浏览器工具无响应', stopStream: false, sendable: true };
     return { output: r.output || r.error || '[PierCode] 空响应', stopStream: false, sendable: true };
@@ -2651,16 +2651,24 @@ function startDOMObserver(_responseSelector: string) {
         // orphaned (ChatGPT rebuilds the message DOM on stream-finalize), so the
         // executed state stays visible; it never re-enters the exec path.
         if (isExecuted(key)) {
-          if (sourceEl && !isToolCardLive(key)) renderExecutedCard(data, sourceEl, key);
+          if (sourceEl && !isToolCardLive(key)) {
+            console.log('[PierCode] 自愈: 已执行工具卡片孤立, 重新渲染只读卡, key=', key);
+            renderExecutedCard(data, sourceEl, key);
+          }
           continue;
         }
         if (processed.has(key) && (!sourceEl || isToolCardLive(key))) continue;
+        if (processed.has(key)) {
+          console.log('[PierCode] 自愈: 未执行工具卡片孤立, 重新渲染, key=', key, 'isLive=', isToolCardLive(key));
+        }
         console.log('[PierCode] 提取到工具调用(JSON):', data);
 
         if (sourceEl) {
           // Burn the key only when the card actually lands in the DOM, so a
           // failed/orphaned render is retried on a later scan.
-          if (renderToolCard(data, '', sourceEl, key, processed)) processed.add(key);
+          const rendered = renderToolCard(data, '', sourceEl, key, processed);
+          if (rendered) processed.add(key);
+          else console.log('[PierCode] 渲染工具卡片失败(JSON), key=', key);
           maybeScheduleAutoExecute(data, key, sourceEl ?? document.body);
         } else {
           if (isExecuted(key)) continue;
@@ -3140,7 +3148,7 @@ async function sendInitPrompt() {
     const prompt = await fetchInitPromptForCurrentProfile();
     if (!prompt) { alert('获取初始化提示词失败'); return; }
 
-    if (location.hostname.includes('aistudio.google.com')) {
+    if (window.location.hostname.includes('aistudio.google.com')) {
       await fillAiStudioSystemInstructions(prompt);
       return;
     }
@@ -3344,7 +3352,7 @@ function isVisibleElement(el: HTMLElement): boolean {
 }
 
 function isQwenPage(): boolean {
-  const h = location.hostname.toLowerCase();
+  const h = window.location.hostname.toLowerCase();
   return h.includes('qwen.ai') || h.includes('qwenlm.ai');
 }
 
@@ -3576,7 +3584,7 @@ if (isTopFrame()) {
   // 侧边栏内嵌的 AI iframe（chatgpt.com / chat.qwen.ai 带 ?piercode_browser_agent=）。
   // 新模型：iframe 跑**与顶层 AI 页完全相同**的 content bootstrap（DOM 观察 + scanText +
   // autoExecute + StatusPanel + 初始化按钮），用户在 AI 自己的输入框说话，AI 吐
-  // piercode-tool，常规自动执行路径直接跑（browser_* 经 /exec→WS→CDP 打到受控 tab）。
+  // piercode-tool，常规自动执行路径直接跑（browser_* 经 SW-direct EXEC_BROWSER_TOOL 打到受控 tab）。
   // 不再走 bridge 注入循环（那套的程序化注入是 "send button never enabled" 的来源）。
   // platformProfile 已在 line 65 覆盖成 'browser-agent'，故初始化按钮拉浏览器操作 prompt。
   // 普通页把这些站嵌进 iframe 不带哨兵，不会进此分支。

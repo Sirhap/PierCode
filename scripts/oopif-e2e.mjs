@@ -1,6 +1,5 @@
-// OOPIF (cross-origin iframe) end-to-end check against the REAL user Chrome with
-// the installed PierCode extension (extension/dist), driving the already-running
-// backend by PIERCODE_API_URL + PIERCODE_TOKEN.
+// Legacy OOPIF (cross-origin iframe) diagnostic for the old Go→WS browser relay,
+// driving the already-running backend by PIERCODE_API_URL + PIERCODE_TOKEN.
 //
 // It serves a parent page on 127.0.0.1:<A> that embeds an iframe whose src is
 // http://localhost:<B>/frame — a DIFFERENT host, so Chrome site-isolates it into
@@ -17,6 +16,10 @@
 // REQUIRES: the installed extension reloaded to the current extension/dist (so
 // the OOPIF sessionId plumbing is present), and the user to approve the click
 // when the approval card appears (or auto-approve enabled).
+//
+// Current production browser_* execution is SW-direct (EXEC_BROWSER_TOOL). This
+// script still posts browser_* to /exec, so it cannot validate the active path
+// until ported.
 
 import { createServer } from 'node:http';
 import net from 'node:net';
@@ -25,6 +28,17 @@ const apiUrl = (process.env.PIERCODE_API_URL || '').replace(/\/+$/, '');
 const token = process.env.PIERCODE_TOKEN || '';
 if (!apiUrl || !token) {
   throw new Error('oopif-e2e requires PIERCODE_API_URL and PIERCODE_TOKEN (the running backend).');
+}
+const SW_DIRECT_DISABLED_RE = /SW_DIRECT_BROWSER=false|Go relay path is disabled|service worker now/i;
+
+function swDirectRelayError(name, message) {
+  return [
+    `${name} failed: ${message}`,
+    '',
+    'scripts/oopif-e2e.mjs still executes browser_* through the deprecated Go→WS relay.',
+    'The current extension executes browser_* tools in the service worker (SW-direct),',
+    'so this script needs to be ported before it can validate the active browser path.',
+  ].join('\n');
 }
 
 function freePort() {
@@ -111,7 +125,11 @@ async function execTool(name, args, { allowError = false } = {}) {
   try { json = JSON.parse(text); } catch { json = { raw: text }; }
   if (!res.ok) throw new Error(`${name} HTTP ${res.status}: ${text}`);
   if (!allowError && json.status && json.status !== 'success') {
-    throw new Error(`${name} failed: ${json.error || json.output || JSON.stringify(json)}`);
+    const message = json.error || json.output || JSON.stringify(json);
+    if (SW_DIRECT_DISABLED_RE.test(String(message))) {
+      throw new Error(swDirectRelayError(name, message));
+    }
+    throw new Error(`${name} failed: ${message}`);
   }
   return json;
 }

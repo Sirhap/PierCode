@@ -6,11 +6,21 @@ import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 
 const allowIsolatedChromeSmoke = process.env.PIERCODE_ALLOW_ISOLATED_CHROME_SMOKE === '1' || process.env.CI === 'true';
+const SW_DIRECT_DISABLED_RE = /SW_DIRECT_BROWSER=false|Go relay path is disabled|service worker now/i;
+function swDirectRelayError(name, message) {
+  return [
+    `${name} failed: ${message}`,
+    '',
+    'scripts/browser-smoke.mjs still exercises the deprecated Go→WS browser relay.',
+    'The current extension executes browser_* tools in the service worker (SW-direct),',
+    'so this script is a legacy relay diagnostic until it is ported to EXEC_BROWSER_TOOL.',
+  ].join('\n');
+}
 if (!allowIsolatedChromeSmoke) {
   throw new Error([
     'scripts/browser-smoke.mjs starts a fresh isolated Chrome profile and loads extension/dist.',
     'It does not test the real user Chrome profile or the already-installed PierCode extension.',
-    'For real installed-extension verification, run scripts/browser-live-smoke.mjs after configuring the installed extension.',
+    'For real installed-extension verification, use a logged-in AI page/content-route browser_test flow; scripts/browser-live-smoke.mjs only diagnoses the deprecated Go→WS relay.',
     'Set PIERCODE_ALLOW_ISOLATED_CHROME_SMOKE=1 only when you intentionally want the isolated CI-style smoke.',
   ].join(' '));
 }
@@ -657,7 +667,11 @@ async function execTool(port, token, name, args) {
   }
   const body = await response.json();
   if (body.status !== 'success') {
-    throw new Error(`${name} failed: ${body.error || body.output || JSON.stringify(body)}`);
+    const message = body.error || body.output || JSON.stringify(body);
+    if (SW_DIRECT_DISABLED_RE.test(String(message))) {
+      throw new Error(swDirectRelayError(name, message));
+    }
+    throw new Error(`${name} failed: ${message}`);
   }
   return body;
 }

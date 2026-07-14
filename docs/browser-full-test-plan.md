@@ -62,14 +62,24 @@ cd extension && npx tsc --noEmit
 cd extension && npm run build
 ```
 
-真实 Chrome live smoke 使用当前运行的后端 token：
+真实 Chrome / 已安装扩展验收以 SW-direct/content-route 为准：在已登录的 AI 页面
+（例如 Qwen）让页面输出 `browser_test` 工具块，确认扩展服务工作线程执行
+`EXEC_BROWSER_TOOL`，并返回 `TEST REPORT: ... result: PASS`。后端仅负责
+文件/shell 等非浏览器工具。
+
+旧 Go→WS relay smoke 只用于诊断历史链路：
 
 ```bash
 go run ./cmd/server -dir .
 PIERCODE_API_URL=http://127.0.0.1:<port> PIERCODE_TOKEN=<token> node scripts/browser-live-smoke.mjs
 ```
 
-新增浏览器工具、真实用户插件、真实 Chrome relay 的验收必须使用 `scripts/browser-live-smoke.mjs`。`scripts/browser-smoke.mjs` 会新开隔离 Chrome profile 并加载 `extension/dist`，只用于 CI/回归辅助；手动运行时必须显式设置 `PIERCODE_ALLOW_ISOLATED_CHROME_SMOKE=1`，且不得把它的结果记为“真实 Chrome/已安装扩展通过”。
+`scripts/browser-live-smoke.mjs` 走废弃的 Go→WS browser relay；当前扩展默认
+`SW_DIRECT_BROWSER=true`，会拒绝该 relay，因此它不能再作为真实 Chrome /
+已安装扩展通过的证据。`scripts/browser-smoke.mjs` 会新开隔离 Chrome profile
+并加载 `extension/dist`，只用于 CI/回归辅助；手动运行时必须显式设置
+`PIERCODE_ALLOW_ISOLATED_CHROME_SMOKE=1`，且不得把它的结果记为“真实 Chrome/
+已安装扩展通过”。
 
 Qwen 上下文压缩端到端脚本：
 
@@ -207,9 +217,11 @@ node scripts/qwen-context-e2e.mjs
 - 临时测试阈值只能用于触发压缩，完成迁移后必须恢复 `DEFAULT_QWEN_MAX_CONTEXT_TOKENS = 1_000_000` 并重载扩展，避免新会话循环压缩。
 - `content.js` 必须保持 MV3 classic content script，不能因为共享 chunk 生成顶层 `import`。`extension/src/__tests__/content-build.test.ts` 已覆盖该回归。
 
-### 场景 A：本地业务审批页面全工具链
+### 场景 A：本地业务审批页面全工具链（旧 Go→WS relay）
 
-测试页由 `scripts/browser-live-smoke.mjs` 启动本地 HTTP server，页面模拟真实审批流程：
+历史测试页由 `scripts/browser-live-smoke.mjs` 启动本地 HTTP server，页面模拟真实审批流程。
+当前 SW-direct 架构下，该脚本只能作为旧 relay 诊断资料，不能作为真实 Chrome /
+已安装扩展验收通过证据：
 
 1. 打开“报销/审批报告”页面。
 2. 读取 tab 列表并选择当前测试页。
@@ -378,7 +390,8 @@ cd extension && npm test -- --run
 - `cd extension && npm test -- --run`: pass/fail
 - `cd extension && npx tsc --noEmit`: pass/fail
 - `cd extension && npm run build`: pass/fail
-- `node scripts/browser-live-smoke.mjs`: pass/fail
+- SW-direct/content-route `browser_test` on a real logged-in AI page: pass/fail
+- `node scripts/browser-live-smoke.mjs`: legacy Go→WS relay diagnostic only
 
 ## Real Chrome Results
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { stripToolBlocks, parsePartialToolCalls } from '../sidebar/MessageView'
+import { stripToolBlocks, parsePartialToolCalls, renderMarkdown } from '../sidebar/MessageView'
 
 const CLOSED = '前言\n```piercode-tool\n{"name":"read_file","call_id":"a1","args":{"path":"x.ts"}}\n```\n后文'
 const OPEN = '前言\n```piercode-tool\n{"name":"read_file","call_id":"a1","args":{"path":"x.ts"}}'   // still streaming, no closing fence
@@ -45,5 +45,14 @@ describe('parsePartialToolCalls', () => {
   it('defaults call_id/args when the JSON omits them', () => {
     const calls = parsePartialToolCalls('```piercode-tool\n{"name":"list_dir"}\n```')
     expect(calls).toEqual([{ name: 'list_dir', call_id: '', args: {} }])
+  })
+})
+
+describe('renderMarkdown', () => {
+  it('does not render javascript: links as clickable hrefs', () => {
+    const html = renderMarkdown('[click](javascript:alert(1)) [ok](https://example.com/a?b=1)')
+    expect(html).not.toContain('href="javascript:')
+    expect(html).toContain('javascript:alert(1)')
+    expect(html).toContain('href="https://example.com/a?b=1"')
   })
 })

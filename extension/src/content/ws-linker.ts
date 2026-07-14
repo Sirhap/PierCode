@@ -362,7 +362,7 @@ function currentProvider(): string {
   if (h.includes("qwen.ai") || h.includes("qwenlm.ai")) return "Qwen";
   if (h.includes("claude.ai") || h.includes("free.easychat.top")) return "Claude";
   if (h.includes("chatgpt.com") || h.includes("chat.openai.com")) return "ChatGPT";
-  if (h.includes("aistudio.xiaomimimo.com")) return "MiMo";
+  if (h.includes("aistudio.xiaomimimo.com") || h.includes("ultraspeed.xiaomimimo.com")) return "MiMo";
   if (h.includes("gemini.google.com")) return "Gemini";
   if (h.includes("aistudio.google.com")) return "AI Studio";
   if (h.includes("kimi.com")) return "Kimi";
@@ -595,7 +595,7 @@ function getInjectConfig(): InjectConfig {
       fillMethod: "execCommand"
     };
   }
-  if (h.includes("aistudio.xiaomimimo.com")) {
+  if (h.includes("aistudio.xiaomimimo.com") || h.includes("ultraspeed.xiaomimimo.com")) {
     return {
       editor: "textarea",
       sendBtn: "button[data-track-id='home_send_btn']",

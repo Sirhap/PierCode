@@ -51,7 +51,8 @@ const AI_PAGE_URLS = [
   '*://aistudio.xiaomimimo.com/*',
   '*://chatgpt.com/*',
   '*://*.chatgpt.com/*',
-  '*://chat.openai.com/*'
+  '*://chat.openai.com/*',
+  '*://ultraspeed.xiaomimimo.com/*'
 ];
 
 type AuthInfo = {

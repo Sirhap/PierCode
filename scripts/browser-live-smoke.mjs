@@ -11,6 +11,18 @@ const pdfOutput = join(smokeDir, 'browser-live-smoke.pdf');
 
 const apiUrl = (process.env.PIERCODE_API_URL || '').replace(/\/+$/, '');
 const token = process.env.PIERCODE_TOKEN || '';
+const SW_DIRECT_DISABLED_RE = /SW_DIRECT_BROWSER=false|Go relay path is disabled|service worker now/i;
+function swDirectRelayError(name, message) {
+  return [
+    `${name} failed: ${message}`,
+    '',
+    'scripts/browser-live-smoke.mjs exercises the deprecated Go→WS browser relay.',
+    'The current extension executes browser_* tools in the service worker (SW-direct),',
+    'so this script cannot validate the active browser path. Use an AI page/content-route',
+    'smoke (for example Qwen emitting a browser_test piercode-tool block), or port this',
+    'script to send EXEC_BROWSER_TOOL through the extension service worker.',
+  ].join('\n');
+}
 if (!apiUrl || !token) {
   throw new Error([
     'browser-live-smoke requires the real user Chrome with the installed PierCode extension.',
@@ -771,7 +783,11 @@ async function execTool(name, args) {
   }
   const body = await response.json();
   if (body.status !== 'success') {
-    throw new Error(`${name} failed: ${body.error || body.output || JSON.stringify(body)}`);
+    const message = body.error || body.output || JSON.stringify(body);
+    if (SW_DIRECT_DISABLED_RE.test(String(message))) {
+      throw new Error(swDirectRelayError(name, message));
+    }
+    throw new Error(`${name} failed: ${message}`);
   }
   return body;
 }
@@ -796,7 +812,14 @@ async function execToolAllowError(name, args) {
   if (!response.ok) {
     throw new Error(`${name} HTTP ${response.status}: ${await response.text()}`);
   }
-  return response.json();
+  const body = await response.json();
+  if (body.status !== 'success') {
+    const message = body.error || body.output || JSON.stringify(body);
+    if (SW_DIRECT_DISABLED_RE.test(String(message))) {
+      throw new Error(swDirectRelayError(name, message));
+    }
+  }
+  return body;
 }
 
 async function step(label, fn) {
